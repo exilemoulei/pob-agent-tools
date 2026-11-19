@@ -20,6 +20,30 @@ High-signal CLI, managed dual-upstream headless engine, offline Lua game-data SQ
 - **External Economy, Meta, PoEDB & Wiki (`pob price` / `pob meta` / `pob poedb` / `pob wiki`)**:
   - `poe.ninja`: 52 overview categories, `--variant`, `--limit`, `--detailed` (corrupted/21-20 gems/links/listings via stash API), `pob meta` (`build-index-state`), and fixed character URL import (`Name-1234`).
   - `poedb.tw`: 24h CN/US autocomplete index + 12h cleaned pages with `DropChance` weights, `ModFamilyList`, and `fossil_no` tags.
+- **AI Gear Upgrade Workflow (`pob trade`)**: official PoE1 trade search, comparison against the equipped item, Harvest same-tier element conversion, and headless PoB DPS/EHP verification. See [docs/TRADE.md](docs/TRADE.md) and the default behavior in [AGENTS.md](AGENTS.md).
+- **Crafting Bench Lookup (`pob bench`)**: offline poedb/wiki snapshot of bench modifiers per slot (prefix/suffix, roll range, cost, unlock), used for the "buy an open-affix base and craft" fallback.
+
+---
+
+## For AI agents
+
+This repository is designed to be driven by an AI agent; [AGENTS.md](AGENTS.md) is the
+contract it reads first (and `CLAUDE.md` imports it for Claude Code). The default
+gear-upgrade loop is:
+
+```powershell
+pob load "<build source>"
+pob summary
+pob trade search --slot gloves --budget 20 --stat "to Cold Resistance=40" --pob auto
+```
+
+`pob trade` searches the official trade site (read-only), compares listings with the
+equipped item, expands Harvest-convertible elements when asked (`--allow-conversion`),
+and verifies the top candidates through the local headless PoB. DPS/EHP only ever comes
+from PoB; `-` means "not verified". When no listing fits, `--open-suffix` / `--open-prefix`
+plus `pob bench suggest` plan a crafting-bench fallback (bench mods are lower tier, so
+quote the minimum). The `pob-trade-upgrade` skill in `.claude/skills/` describes the full
+workflow.
 
 ---
 

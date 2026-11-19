@@ -13,6 +13,8 @@ from typing import Any
 import click
 
 from . import __version__
+from .cli_bench import bench_group
+from .cli_trade import trade as trade_group
 from .daemon import (
     BootstrapMissingError,
     call_daemon,
@@ -326,6 +328,11 @@ def cmd_update(
 
     if state_name == STATE_BOOTSTRAP_MISSING:
         sys.exit(1)
+
+
+main.add_command(trade_group)
+main.add_command(bench_group)
+
 
 
 @main.command("status")

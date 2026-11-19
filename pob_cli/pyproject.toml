@@ -45,3 +45,6 @@ version = { attr = "pob_cli.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+pob_cli = ["data/*.json"]

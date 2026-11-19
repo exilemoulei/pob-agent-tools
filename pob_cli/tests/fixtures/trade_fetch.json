@@ -1,0 +1,94 @@
+{
+  "result": [
+    {
+      "id": "row_fire",
+      "item": {
+        "name": "Doom Hand",
+        "typeLine": "Slink Gloves",
+        "frameType": 2,
+        "ilvl": 84,
+        "explicitMods": [
+          {
+            "description": "+35% to Fire Resistance",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_3372524247",
+            "mods": [{ "name": "of the Kiln", "tier": "S3", "level": 60, "magnitudes": [{ "min": "35", "max": "35" }] }]
+          },
+          {
+            "description": "+70 to maximum Life",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_3299347043",
+            "mods": [{ "name": "Stout", "tier": "P5", "level": 24, "magnitudes": [{ "min": "70", "max": "79" }] }]
+          },
+          {
+            "description": "20% increased Attack Speed",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_210067635",
+            "mods": [{ "name": "of Fervour", "tier": "S2", "level": 60, "magnitudes": [{ "min": "20", "max": "22" }] }]
+          }
+        ]
+      },
+      "listing": {
+        "price": { "amount": 15, "currency": "chaos" }
+      }
+    },
+    {
+      "id": "row_cold",
+      "item": {
+        "name": "Rift Claw",
+        "typeLine": "Slink Gloves",
+        "frameType": 2,
+        "ilvl": 82,
+        "explicitMods": [
+          {
+            "description": "+30% to Cold Resistance",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_4220027924",
+            "mods": [{ "name": "of the Ice", "tier": "S4", "level": 60, "magnitudes": [{ "min": "30", "max": "35" }] }]
+          },
+          {
+            "description": "+60 to maximum Life",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_3299347043",
+            "mods": [{ "name": "Stout", "tier": "P6", "level": 24, "magnitudes": [{ "min": "60", "max": "69" }] }]
+          },
+          {
+            "description": "12% increased Attack Speed",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_210067635",
+            "mods": [{ "name": "of Fervour", "tier": "S4", "level": 60, "magnitudes": [{ "min": "12", "max": "14" }] }]
+          }
+        ]
+      },
+      "listing": {
+        "price": { "amount": 10, "currency": "chaos" }
+      }
+    },
+    {
+      "id": "row_unique",
+      "item": {
+        "name": "Atziri's Acuities",
+        "typeLine": "Legion Gloves",
+        "frameType": 3,
+        "ilvl": 86,
+        "explicitMods": [
+          {
+            "description": "+40% to Lightning Resistance",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_1671376347",
+            "mods": [{ "name": "of the Lightning", "tier": "S2", "level": 60, "magnitudes": [{ "min": "40", "max": "45" }] }]
+          },
+          {
+            "description": "+90 to maximum Life",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_3299347043",
+            "mods": [{ "name": "Stout", "tier": "P2", "level": 24, "magnitudes": [{ "min": "90", "max": "99" }] }]
+          }
+        ]
+      },
+      "listing": {
+        "price": { "amount": 300, "currency": "divine" }
+      }
+    }
+  ]
+}

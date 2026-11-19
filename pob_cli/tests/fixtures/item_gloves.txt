@@ -1,0 +1,9 @@
+Rarity: RARE
+Doom Hand
+Slink Gloves
+--------
+Item Level: 84
+--------
++35% to Fire Resistance
++70 to maximum Life
+20% increased Attack Speed
