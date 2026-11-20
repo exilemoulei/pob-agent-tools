@@ -34,6 +34,7 @@ from .bridge_client import (
     BridgeWorker,
 )
 from .comparator import borrow_from_ref, compare_builds, rank_gems, rank_nodes, run_matrix
+from .errors import DaemonRequestError
 from .game_data import ensure_gamedata_index, query_local_data
 from .importers import load_build_into_worker, share_code_to_xml
 from .mutators import (
@@ -72,15 +73,6 @@ GLOBAL_IDLE_TIMEOUT_SEC = 1800.0    # 30 minutes
 UPDATE_RECHECK_INTERVAL_SEC = 1800.0  # 30 minutes
 
 _stderr_alert_emitted = False
-
-
-class DaemonRequestError(RuntimeError):
-    """The daemon is up and answered, but rejected this request (`ok: false`).
-
-    This is an argument/state problem on the caller's side (unknown spec, no synced
-    loadouts, nothing loaded in a slot, ...), as opposed to the daemon itself failing
-    (not running, failed to boot, timed out, crashed), which stays a plain RuntimeError.
-    """
 
 
 class BootstrapMissingError(RuntimeError):
@@ -502,6 +494,8 @@ class DaemonManager:
                     )
                     if isinstance(exc, BridgeError):
                         raise BridgeError(f"{exc}{guidance}") from exc
+                    if isinstance(exc, (DaemonRequestError, ValueError)):
+                        raise DaemonRequestError(f"{exc}{guidance}") from exc
                     raise RuntimeError(f"{exc}{guidance}") from exc
                 raise
             return self._attach_warning_if_degraded(load_res)
@@ -747,7 +741,7 @@ class DaemonManager:
             mw = self.get_worker("main")
             rw = self.get_worker("ref")
             if not rw.last_good_code:
-                raise RuntimeError(
+                raise DaemonRequestError(
                     "No reference build loaded in 'ref' slot. Run `pob load <source> --target ref` or `pob compare <source>` first."
                 )
             return borrow_from_ref(
@@ -793,8 +787,16 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
                 params = req.get("params") or {}
                 result = manager.dispatch(action, params)
                 self._send_json(200, {"ok": True, "result": result})
+            except (DaemonRequestError, ValueError) as exc:
+                self._send_json(
+                    400,
+                    {"ok": False, "error": str(exc), "type": type(exc).__name__, "errorKind": "request"},
+                )
             except BridgeError as exc:
-                self._send_json(400, {"ok": False, "error": str(exc), "type": "BridgeError"})
+                self._send_json(
+                    400,
+                    {"ok": False, "error": str(exc), "type": "BridgeError", "errorKind": "daemon"},
+                )
             except Exception as exc:
                 self._send_json(
                     400,
@@ -802,6 +804,7 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
                         "ok": False,
                         "error": str(exc),
                         "type": exc.__class__.__name__,
+                        "errorKind": "daemon",
                         "trace": traceback.format_exc(limit=4),
                     },
                 )
@@ -917,6 +920,16 @@ def _read_boot_error(runtime_dir: Path | None = None) -> dict[str, Any] | None:
         return None
 
 
+def _rpc_result(data: dict[str, Any]) -> dict[str, Any]:
+    """Preserve the daemon's request/failure classification in the CLI process."""
+    if not data.get("ok"):
+        message = data.get("error") or "Daemon error"
+        if data.get("errorKind") == "request":
+            raise DaemonRequestError(message)
+        raise RuntimeError(message)
+    return data["result"]
+
+
 def call_daemon(
     action: str,
     params: dict[str, Any] | None = None,
@@ -942,9 +955,7 @@ def call_daemon(
                     json={"action": action, "params": params or {}},
                 )
                 data = resp.json()
-                if not data.get("ok"):
-                    raise DaemonRequestError(data.get("error") or "Daemon error")
-                return data["result"]
+                return _rpc_result(data)
         except httpx.RequestError:
             # Stale daemon.json; clean up and fall through to auto_start
             try:
@@ -1088,9 +1099,7 @@ def call_daemon(
             json={"action": action, "params": params or {}},
         )
         data = resp.json()
-        if not data.get("ok"):
-            raise DaemonRequestError(data.get("error") or "Daemon error")
-        return data["result"]
+        return _rpc_result(data)
 
 
 def main() -> None:

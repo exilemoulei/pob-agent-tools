@@ -7,7 +7,9 @@ Two kinds are kept apart:
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
+from socketserver import TCPServer
 from typing import Any
 
 import httpx
@@ -107,12 +109,35 @@ def test_bootstrap_missing_still_prints_guidance(monkeypatch: pytest.MonkeyPatch
     assert "daemon failure" not in res.output
 
 
-# --- call_daemon classifies `ok: false` as a rejection --------------------------------------
+# --- RPC errors carry an explicit request/failure classification ---------------------------
 
 
-def test_call_daemon_raises_request_error_on_ok_false(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {"ok": False, "error": "Build has no synced loadouts available.", "errorKind": "request"},
+            DaemonRequestError,
+        ),
+        (
+            {"ok": False, "error": "Headless engine crashed", "type": "BridgeError", "errorKind": "daemon"},
+            RuntimeError,
+        ),
+        (
+            {"ok": False, "error": "Unexpected failure", "type": "RuntimeError", "errorKind": "daemon"},
+            RuntimeError,
+        ),
+        ({"ok": False, "error": "Old daemon response"}, RuntimeError),
+    ],
+)
+def test_call_daemon_classifies_rpc_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    payload: dict[str, Any],
+    expected: type[Exception],
+) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"ok": False, "error": "Build has no synced loadouts available."})
+        return httpx.Response(400, json=payload)
 
     real_client = httpx.Client
 
@@ -123,7 +148,43 @@ def test_call_daemon_raises_request_error_on_ok_false(monkeypatch: pytest.Monkey
     monkeypatch.setattr(daemon, "read_daemon_state", lambda *a, **k: {"port": 1, "token": "t"})
     monkeypatch.setattr(daemon.httpx, "Client", fake_client)
 
-    with pytest.raises(DaemonRequestError, match="no synced loadouts"):
+    with pytest.raises(expected, match=payload["error"]) as caught:
         daemon.call_daemon("switch_main", {"loadout": "x"}, auto_start=False, runtime_dir=tmp_path)
 
+    assert isinstance(caught.value, DaemonRequestError) == (expected is DaemonRequestError)
     assert issubclass(DaemonRequestError, RuntimeError)  # `pob update` / `pob stop` still catch it
+
+
+@pytest.mark.parametrize(
+    ("failure", "kind"),
+    [
+        (ValueError("Unknown spec"), "request"),
+        (DaemonRequestError("Undo stack is empty."), "request"),
+        (daemon.BridgeError("Headless engine crashed"), "daemon"),
+        (RuntimeError("Unexpected failure"), "daemon"),
+    ],
+)
+def test_rpc_handler_marks_error_kind(failure: Exception, kind: str) -> None:
+    class FailingManager:
+        token = "test-token"
+
+        def dispatch(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+            raise failure
+
+    server = TCPServer(("127.0.0.1", 0), daemon.make_handler(FailingManager()))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with httpx.Client(trust_env=False) as client:
+            response = client.post(
+                f"http://127.0.0.1:{server.server_address[1]}/rpc",
+                headers={"X-PoB-Token": "test-token"},
+                json={"action": "summary", "params": {}},
+            )
+        assert response.status_code == 400
+        assert response.json()["errorKind"] == kind
+        assert response.json()["error"] == str(failure)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

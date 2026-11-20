@@ -7,6 +7,7 @@ from typing import Any
 
 from .analyzer import resolve_skill_group_index, resolve_slot_name
 from .bridge_client import BridgeWorker
+from .errors import DaemonRequestError
 from .formatters import strip_pob_escapes
 from .snapshot import capture_digest, diff_digest, run_mutation
 
@@ -155,14 +156,14 @@ def _apply_anoint_in_place(
     items_res = w.call("list_items", {})
     slot_obj = next((s for s in items_res.get("slots", []) if s["name"] == resolved_slot), None)
     if not slot_obj or not slot_obj.get("selItemId"):
-        raise RuntimeError(f"Slot '{resolved_slot}' has no equipped item to anoint.")
+        raise DaemonRequestError(f"Slot '{resolved_slot}' has no equipped item to anoint.")
 
     item_id = int(slot_obj["selItemId"])
     edit_state = w.call("item_edit_begin", {"id": item_id})
     try:
         actions = edit_state.get("actions", {})
         if not actions.get(action_key):
-            raise RuntimeError(
+            raise DaemonRequestError(
                 f"Item '{edit_state.get('name')}' in slot '{resolved_slot}' does not support '{action_key}' "
                 f"(may be Corrupted, Mirrored, or not an anointable base)."
             )
@@ -754,7 +755,7 @@ def edit_item_mods(
         items_res = worker.call("list_items", {})
         slot_obj = next((s for s in items_res.get("slots", []) if s["name"] == resolved_slot), None)
         if not slot_obj or not slot_obj.get("selItemId"):
-            raise RuntimeError(f"Slot '{resolved_slot}' has no equipped item to edit.")
+            raise DaemonRequestError(f"Slot '{resolved_slot}' has no equipped item to edit.")
 
         item_id = int(slot_obj["selItemId"])
         before_raw = worker.call("item_raw", {"id": item_id}).get("raw") or ""

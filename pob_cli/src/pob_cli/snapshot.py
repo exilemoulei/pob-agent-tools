@@ -6,6 +6,7 @@ import math
 from typing import Any, Callable
 
 from .bridge_client import BridgeWorker, MAX_UNDO_STEPS
+from .errors import DaemonRequestError
 from .formatters import _parse_numeric_or_none, fmt_delta, fmt_num, strip_pob_escapes
 
 CORE_STAT_KEYS: list[tuple[str, str, str]] = [
@@ -238,7 +239,7 @@ def undo_build(worker: BridgeWorker) -> dict[str, Any]:
     """Pop one snapshot from `worker.undo_stack` and restore it."""
     with worker.lock:
         if not worker.undo_stack:
-            raise RuntimeError("Undo stack is empty.")
+            raise DaemonRequestError("Undo stack is empty.")
         current_code = worker.call("export_code", {})["code"]
         digest_before = capture_digest(worker)
         target_code = worker.undo_stack.pop()
@@ -261,7 +262,7 @@ def redo_build(worker: BridgeWorker) -> dict[str, Any]:
     """Pop one snapshot from `worker.redo_stack` and restore it."""
     with worker.lock:
         if not worker.redo_stack:
-            raise RuntimeError("Redo stack is empty.")
+            raise DaemonRequestError("Redo stack is empty.")
         current_code = worker.call("export_code", {})["code"]
         digest_before = capture_digest(worker)
         target_code = worker.redo_stack.pop()
