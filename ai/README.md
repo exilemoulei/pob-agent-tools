@@ -17,4 +17,4 @@ so a human reviewer can see *why* each change was made, how it was verified, and
 
 | Date | Record | Branch / commit | Status |
 |------|--------|-----------------|--------|
-| 2026-11-21 | [Daemon errors printed as Python tracebacks](2026-11-21-daemon-error-traceback.md) | `fix/daemon-error-traceback` @ `fb61199` | Committed, not pushed |
+| 2026-11-21 | [Daemon errors printed as Python tracebacks](2026-11-21-daemon-error-traceback.md) | `fix/daemon-error-traceback` @ `fb61199` | PR [#4](https://github.com/exilemoulei/pob-agent-tools/pull/4) open |

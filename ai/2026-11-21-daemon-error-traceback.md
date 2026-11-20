@@ -3,7 +3,7 @@
 - **Date**: 2026-11-21
 - **Base**: `feat/macos-support` @ `56d79cb`
 - **Branch / commit**: `fix/daemon-error-traceback` @ `fb61199`
-- **Status**: committed locally, not pushed, no PR yet
+- **Status**: PR [#4](https://github.com/exilemoulei/pob-agent-tools/pull/4) open against `feat/macos-support`
 
 ## Problem
 
