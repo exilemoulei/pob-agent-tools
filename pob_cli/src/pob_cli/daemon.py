@@ -74,6 +74,15 @@ UPDATE_RECHECK_INTERVAL_SEC = 1800.0  # 30 minutes
 _stderr_alert_emitted = False
 
 
+class DaemonRequestError(RuntimeError):
+    """The daemon is up and answered, but rejected this request (`ok: false`).
+
+    This is an argument/state problem on the caller's side (unknown spec, no synced
+    loadouts, nothing loaded in a slot, ...), as opposed to the daemon itself failing
+    (not running, failed to boot, timed out, crashed), which stays a plain RuntimeError.
+    """
+
+
 class BootstrapMissingError(RuntimeError):
     """Raised when no local PoB engine exists and GitHub bootstrap failed or is offline."""
 
@@ -934,7 +943,7 @@ def call_daemon(
                 )
                 data = resp.json()
                 if not data.get("ok"):
-                    raise RuntimeError(data.get("error") or "Daemon error")
+                    raise DaemonRequestError(data.get("error") or "Daemon error")
                 return data["result"]
         except httpx.RequestError:
             # Stale daemon.json; clean up and fall through to auto_start
@@ -1080,7 +1089,7 @@ def call_daemon(
         )
         data = resp.json()
         if not data.get("ok"):
-            raise RuntimeError(data.get("error") or "Daemon error")
+            raise DaemonRequestError(data.get("error") or "Daemon error")
         return data["result"]
 
 

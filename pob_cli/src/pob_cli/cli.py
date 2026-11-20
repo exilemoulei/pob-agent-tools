@@ -11,11 +11,13 @@ from pathlib import Path
 from typing import Any
 
 import click
+import httpx
 
 from . import __version__
 from .cli_trade import bench_group, trade_group
 from .daemon import (
     BootstrapMissingError,
+    DaemonRequestError,
     call_daemon,
     emit_stderr_update_alert,
     read_daemon_state,
@@ -61,6 +63,9 @@ def _echo_stderr_utf8(text: str) -> None:
     click.echo(text, err=True)
 
 
+DAEMON_FAILURE_EXIT_CODE = 5  # same code as upstream/API failures in the exit-code contract
+
+
 def _daemon_call(
     action: str,
     params: dict[str, Any] | None = None,
@@ -68,11 +73,13 @@ def _daemon_call(
     auto_start: bool = True,
     timeout: float = 150.0,
 ) -> dict[str, Any]:
-    """Call daemon; turn known failures into clean stderr messages + exit(1) instead of tracebacks.
+    """Call the daemon; report known failures as clean messages instead of tracebacks.
 
-    - BootstrapMissingError: engine not installed -> update/bootstrap guidance.
-    - RuntimeError: the daemon rejected the request (e.g. "Build has no synced loadouts
-      available.") -> `Error: <message>` via click, exit code 1 (arg/state error).
+    - BootstrapMissingError: engine not installed -> update/bootstrap guidance, exit 1.
+    - DaemonRequestError: the daemon rejected the request (e.g. "Build has no synced
+      loadouts available.") -> `Error: <message>`, exit 1 (arg/state error).
+    - Any other RuntimeError / transport error: the daemon itself failed (not running,
+      boot failure, startup timeout, crash) -> `Error: PoB daemon failure: ...`, exit 5.
     """
     try:
         return call_daemon(action, params, auto_start=auto_start, timeout=timeout)
@@ -80,8 +87,15 @@ def _daemon_call(
         alert = format_stderr_update_alert(exc.update_status) or str(exc)
         _echo_stderr_utf8(alert)
         sys.exit(1)
-    except RuntimeError as exc:
-        raise click.ClickException(str(exc) or f"Daemon error during '{action}'") from exc
+    except DaemonRequestError as exc:
+        raise click.ClickException(str(exc) or f"Daemon rejected '{action}'") from exc
+    except (RuntimeError, httpx.HTTPError, ValueError) as exc:
+        err = click.ClickException(
+            f"PoB daemon failure during '{action}': {str(exc) or type(exc).__name__}\n"
+            "Run `pob stop` and retry; if it keeps failing, check the daemon log under the runtime dir."
+        )
+        err.exit_code = DAEMON_FAILURE_EXIT_CODE
+        raise err from exc
 
 
 def _prepend_warning(body: str, res: dict[str, Any]) -> str:
