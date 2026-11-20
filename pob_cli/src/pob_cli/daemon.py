@@ -526,7 +526,11 @@ class DaemonManager:
             return self._attach_warning_if_degraded(sum_res)
 
         if action == "audit":
-            return audit_build(self.get_worker(target))
+            return audit_build(
+                self.get_worker(target),
+                keep=list(params.get("keep") or []),
+                attribution=bool(params.get("attribution", True)),
+            )
 
         if action == "items":
             return inspect_items(
@@ -696,6 +700,7 @@ class DaemonManager:
             return run_matrix(
                 self.get_worker(target),
                 scenarios=params.get("scenarios"),
+                keep=list(params.get("keep") or []),
             )
 
         if action == "rank_nodes":

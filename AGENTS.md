@@ -16,7 +16,7 @@ pob undo | pob redo | pob stop [--json]
 
 # Read-Only Inspection & Audit
 pob summary [--target main|ref] [--json]                                               # Offence (Hit/DoT/FullDPS/Minion*), Defence (EHP/MaxHit/Res), Warnings
-pob audit [--target main|ref] [--json]                                                 # Hard gaps + 4-dim water audit (Config/Flasks/Skills/Party -> Pinnacle)
+pob audit [--keep <var|Flask N|flasks|gem>]... [--no-attribution] [--target main|ref] [--json]  # Hard gaps + 4-dim water audit -> Pinnacle; per-item PoB re-calc attribution; --keep build-guaranteed conditions (e.g. ascendancy needs conditionStationary)
 pob config list [--all] [--target main|ref] [--json]                                   # Active (or all) ConfigTab vars + raw customMods
 pob items [--slot "Weapon 1"|"#1"] [--all] [--raw] [--target main|ref] [--json]        # Equipped table, single slot, or all equipped + allocated jewels raw
 pob skills [--group main|1|"label"] [--json]                                           # Skill groups or per-gem DPS tooltips
@@ -36,7 +36,7 @@ pob tree change [--allocate id1,id2:effectId] [--deallocate id3] [--apply]
 pob tree set-class [Class] [Ascendancy] [--secondary-asc <Bloodline|None>] [--apply]
 pob config set [<var>=<val|reset> ...] [--custom-mods "<text|clear>"] [--append-mods "<text>"] [--apply]
 pob batch (--file ops.json | --json-ops '[...]') [--apply]
-pob matrix [Original Pinnacle Uber FlasksOff "Label:Pinnacle,k=v"] [-s <spec>]... [--json]  # Atomic multi-scenario comparison
+pob matrix [Original Pinnacle Uber FlasksOff "Label:Pinnacle,k=v"] [-s <spec>]... [--keep <var>]... [--json]  # Atomic multi-scenario comparison (--keep applies to Pinnacle/Uber de-watering)
 
 # ROI Ranking, 3-Baseline A/B Comparison & Transplant
 pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--max-dist 5] [--top 15] [--json]

@@ -660,12 +660,34 @@ def cmd_summary(target: str, as_json: bool) -> None:
     _echo_utf8(_prepend_warning("\n".join(lines), res))
 
 
+def _fmt_signed_pct(delta: Any, pct: Any) -> str:
+    """Render '+1,234 (+4.2%)' for a PoB-measured delta; '-' when unavailable, '0' when unchanged."""
+    if delta is None:
+        return "-"
+    try:
+        d = float(delta)
+    except (TypeError, ValueError):
+        return "-"
+    if d == 0:
+        return "0"
+    sign = "+" if d > 0 else ""
+    out = f"{sign}{fmt_num(d)}"
+    if pct is not None:
+        out += f" ({sign}{float(pct):.1f}%)"
+    return out
+
+
 @main.command("audit")
 @click.option("--target", type=click.Choice(["main", "ref"]), default="main")
+@click.option("--keep", "keep", multiple=True, help="Inflation item to keep when de-watering (config var, 'Flask N', 'flasks', gem name, 'customMods', 'party'); repeatable or comma-separated.")
+@click.option("--no-attribution", is_flag=True, help="Skip per-item PoB re-measurement of stripped inflation.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
-def cmd_audit(target: str, as_json: bool) -> None:
+def cmd_audit(target: str, keep: tuple[str, ...], no_attribution: bool, as_json: bool) -> None:
     """Run build health check and non-destructive 4-part PoB inflation ('water') audit."""
-    res = _daemon_call("audit", {"target": target})
+    res = _daemon_call(
+        "audit",
+        {"target": target, "keep": list(keep), "attribution": not no_attribution},
+    )
     if as_json:
         _echo_utf8(to_json_str(res))
         return
@@ -686,6 +708,41 @@ def cmd_audit(target: str, as_json: bool) -> None:
         items = stripped.get(dim) or []
         s_rows.append([dim.capitalize(), len(items), "; ".join(items) if items else "_(Clean)_"])
     lines.append(render_table(["Dimension", "Count", "Stripped Items"], s_rows))
+    kept = stripped.get("kept") or []
+    if kept:
+        lines.append("\n**Kept (--keep)**: " + "; ".join(kept))
+
+    attr = res.get("waterAttribution") or []
+    if attr:
+        dps_key = (res.get("original") or {}).get("primaryDpsKey") or "DPS"
+        lines.append(
+            "\n#### 2b. Per-Item Water Attribution (PoB re-calc, restoring ONE item on the de-watered baseline)"
+        )
+        a_rows = []
+        for r in attr:
+            if r.get("error"):
+                a_rows.append([r["dimension"], r["label"], "error", r["error"], "", ""])
+                continue
+            a_rows.append(
+                [
+                    r["dimension"],
+                    r["label"],
+                    _fmt_signed_pct(r.get("dpsDelta"), r.get("dpsPct")),
+                    _fmt_signed_pct(r.get("totalEhpDelta"), r.get("totalEhpPct")),
+                    _fmt_signed_pct(r.get("physMaxHitDelta"), r.get("physMaxHitPct")),
+                    _fmt_signed_pct(r.get("eleMaxHitDelta"), r.get("eleMaxHitPct")),
+                ]
+            )
+        lines.append(
+            render_table(
+                ["Dim", "Item", f"Δ{dps_key}", "ΔTotalEHP", "ΔPhys MaxHit", "ΔEle MaxHit"],
+                a_rows,
+            )
+        )
+        lines.append(
+            "_Items your build guarantees in a real boss fight (ascendancy/keystone conditions, "
+            "self-applied ailments, always-on charges) can be re-run with `--keep <var>`._"
+        )
 
     orig = res.get("original", {})
     dew = res.get("dewateredPinnacle", {})
@@ -1521,17 +1578,19 @@ def cmd_batch(
     multiple=True,
     help="Scenario spec (e.g. Original, Pinnacle, Uber, FlasksOff, 'Wither15:Pinnacle,MultiplierWitheredStackCount=15').",
 )
+@click.option("--keep", "keep", multiple=True, help="Inflation item to keep when de-watering (config var, 'Flask N', 'flasks', gem name, 'customMods', 'party'); repeatable or comma-separated.")
 @click.option("--target", type=click.Choice(["main", "ref"]), default="main")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 def cmd_matrix(
     scenarios: tuple[str, ...],
     opt_scenarios: tuple[str, ...],
+    keep: tuple[str, ...],
     target: str,
     as_json: bool,
 ) -> None:
     """Run multi-scenario what-if comparison in one atomic 0-residue transaction (default: Original/Pinnacle/Uber/FlasksOff)."""
     all_specs = [*scenarios, *opt_scenarios] or None
-    res = _daemon_call("matrix", {"target": target, "scenarios": all_specs})
+    res = _daemon_call("matrix", {"target": target, "scenarios": all_specs, "keep": list(keep)})
     if as_json:
         _echo_utf8(to_json_str(res))
         return

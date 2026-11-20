@@ -701,14 +701,21 @@ def _parse_matrix_scenario(spec: str | dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _apply_matrix_scenario_in_place(worker: BridgeWorker, plan: dict[str, Any]) -> dict[str, Any]:
-    """Apply a single parsed matrix scenario in place on the worker."""
+def _apply_matrix_scenario_in_place(
+    worker: BridgeWorker,
+    plan: dict[str, Any],
+    keep: list[str] | None = None,
+) -> dict[str, Any]:
+    """Apply a single parsed matrix scenario in place on the worker.
+
+    ``keep`` is forwarded to de-watering for Pinnacle/Uber bases.
+    """
     applied_info: dict[str, Any] = {"base": plan["base"], "stripped": None, "config": [], "flasks": plan["flasks"]}
 
     if plan["base"] == "Pinnacle":
-        applied_info["stripped"] = dewater_build_in_place(worker)
+        applied_info["stripped"] = dewater_build_in_place(worker, keep=keep)
     elif plan["base"] == "Uber":
-        applied_info["stripped"] = dewater_build_in_place(worker)
+        applied_info["stripped"] = dewater_build_in_place(worker, keep=keep)
         worker.call("set_config", {"var": "enemyIsBoss", "value": "Uber"})
         applied_info["config"].append({"var": "enemyIsBoss", "action": "set", "value": "Uber"})
 
@@ -733,6 +740,7 @@ def run_matrix(
     worker: BridgeWorker,
     *,
     scenarios: list[str | dict[str, Any]] | None = None,
+    keep: list[str] | None = None,
 ) -> dict[str, Any]:
     """Evaluate multiple build scenarios in a single atomic 0-residue transaction.
 
@@ -750,7 +758,7 @@ def run_matrix(
             for idx, plan in enumerate(parsed_plans):
                 if idx > 0:
                     worker.call("import_code", {"code": baseline_code, "mode": "replace"})
-                applied_info = _apply_matrix_scenario_in_place(worker, plan)
+                applied_info = _apply_matrix_scenario_in_place(worker, plan, keep=keep)
                 digest = capture_digest(worker)
                 if first_digest is None:
                     first_digest = digest

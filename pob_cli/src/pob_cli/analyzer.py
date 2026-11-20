@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from .bridge_client import BridgeWorker
@@ -218,18 +219,53 @@ def _has_mageblood_equipped(items_res: dict[str, Any]) -> bool:
     return False
 
 
-def dewater_build_in_place(worker: BridgeWorker) -> dict[str, list[str]]:
+def _normalize_keep(keep: Iterable[str] | None) -> set[str]:
+    """Normalize user keep tokens (config vars, 'Flask N', 'flasks', gem names, 'customMods', 'party')."""
+    out: set[str] = set()
+    for tok in keep or ():
+        for part in str(tok).split(","):
+            p = part.strip().lower()
+            if p:
+                out.add(p)
+    return out
+
+
+def dewater_build_in_place(
+    worker: BridgeWorker,
+    keep: Iterable[str] | None = None,
+) -> dict[str, list[str]]:
     """Strip PoB inflation ('water') in place and set enemyIsBoss='Pinnacle'.
 
     Must be called inside a snapshot wrapper if non-destructive behavior is desired.
-    Returns a dictionary of stripped inflation items across the 4 audit dimensions.
+    Returns a dictionary of stripped inflation items across the 4 audit dimensions,
+    plus ``kept`` (items left untouched because the user listed them in ``keep``).
     """
+    stripped, _records = dewater_build_with_records(worker, keep=keep)
+    return stripped
+
+
+def dewater_build_with_records(
+    worker: BridgeWorker,
+    keep: Iterable[str] | None = None,
+) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
+    """De-water in place and also return reversible per-item records.
+
+    Each record carries the exact bridge calls that ``restore`` the original state of
+    that single item and ``revert`` it back to the de-watered state, so callers can
+    measure every stripped item's real PoB contribution one at a time
+    (see :func:`attribute_water`). ``keep`` tokens are matched case-insensitively
+    against config var names, flask slot names (``Flask 1``) or ``flasks`` (all),
+    skill gem names, ``customMods`` and ``party``.
+    """
+    keep_set = _normalize_keep(keep)
     stripped: dict[str, list[str]] = {
         "config": [],
         "flasks": [],
         "skills": [],
         "party": [],
+        "kept": [],
     }
+    records: list[dict[str, Any]] = []
 
     # 1. Config inflation & enemyIsBoss = Pinnacle
     cfg_res = worker.call("list_config", {})
@@ -248,13 +284,29 @@ def dewater_build_in_place(worker: BridgeWorker) -> dict[str, list[str]]:
             if val in (None, False, "", 0):
                 continue
 
+            is_inflation = (
+                var == "presetBossSkills"
+                or var.startswith(INFLATION_CONFIG_PREFIXES)
+                or var in INFLATION_CONFIG_EXACT
+            )
+            if not is_inflation:
+                continue
+            if var.lower() in keep_set:
+                stripped["kept"].append(f"{var}={val!r} (kept)")
+                continue
             if var == "presetBossSkills":
                 had_preset_boss_skills = True
-                stripped["config"].append(f"{var}={val!r} -> reset")
-                worker.call("reset_config", {"var": var})
-            elif var.startswith(INFLATION_CONFIG_PREFIXES) or var in INFLATION_CONFIG_EXACT:
-                stripped["config"].append(f"{var}={val!r} -> reset")
-                worker.call("reset_config", {"var": var})
+            stripped["config"].append(f"{var}={val!r} -> reset")
+            worker.call("reset_config", {"var": var})
+            records.append(
+                {
+                    "dimension": "config",
+                    "key": var,
+                    "label": f"{var}={val!r}",
+                    "restore": [("set_config", {"var": var, "value": val})],
+                    "revert": [("reset_config", {"var": var})],
+                }
+            )
 
     if current_boss not in ("Pinnacle", "Uber"):
         stripped["config"].append(f"enemyIsBoss={current_boss!r} -> 'Pinnacle'")
@@ -274,11 +326,26 @@ def dewater_build_in_place(worker: BridgeWorker) -> dict[str, list[str]]:
                 if s and not s.startswith("#"):
                     active_custom_lines.append(s)
     if active_custom_lines:
-        stripped["config"].append(f"customMods ({len(active_custom_lines)} active lines: {'; '.join(active_custom_lines[:3])}) -> disabled")
-        worker.call(
-            "set_custom_mods",
-            {"list": [{"title": "Default", "text": "# disabled", "enabled": True}]},
-        )
+        label = f"customMods ({len(active_custom_lines)} active lines: {'; '.join(active_custom_lines[:3])})"
+        if "custommods" in keep_set:
+            stripped["kept"].append(f"{label} (kept)")
+        else:
+            disabled = [{"title": "Default", "text": "# disabled", "enabled": True}]
+            original = [
+                {"title": b.get("title") or "Default", "text": b.get("text") or "", "enabled": b.get("enabled", True)}
+                for b in custom_mods
+            ]
+            stripped["config"].append(f"{label} -> disabled")
+            worker.call("set_custom_mods", {"list": disabled})
+            records.append(
+                {
+                    "dimension": "config",
+                    "key": "customMods",
+                    "label": label,
+                    "restore": [("set_custom_mods", {"list": original})],
+                    "revert": [("set_custom_mods", {"list": disabled})],
+                }
+            )
 
     # 2. Flask inflation (active flasks without Mageblood)
     items_res = worker.call("list_items", {})
@@ -290,8 +357,20 @@ def dewater_build_in_place(worker: BridgeWorker) -> dict[str, list[str]]:
                 slot_name = slot["name"]
                 item = items_by_id.get(slot.get("selItemId") or 0, {})
                 item_title = strip_pob_escapes(item.get("titleZh") or item.get("title") or item.get("name") or slot_name)
+                if "flasks" in keep_set or slot_name.lower() in keep_set:
+                    stripped["kept"].append(f"{slot_name} ({item_title}) (kept)")
+                    continue
                 stripped["flasks"].append(f"{slot_name} ({item_title}) -> active=False")
                 worker.call("set_slot_active", {"slotName": slot_name, "active": False})
+                records.append(
+                    {
+                        "dimension": "flasks",
+                        "key": slot_name,
+                        "label": f"{slot_name} ({item_title})",
+                        "restore": [("set_slot_active", {"slotName": slot_name, "active": True})],
+                        "revert": [("set_slot_active", {"slotName": slot_name, "active": False})],
+                    }
+                )
 
     # 3. Temporary guard / burst / Vaal skills
     skills_res = worker.call("list_skills", {})
@@ -316,37 +395,124 @@ def dewater_build_in_place(worker: BridgeWorker) -> dict[str, list[str]]:
             )
             is_temp = any(pat in combined_lower for pat in TEMPORARY_SKILL_PATTERNS)
             disp = strip_pob_escapes(gem.get("nameZh") or gem.get("name") or gem.get("nameSpec") or "")
+            if not (is_temp or (is_vaal and gem.get("enableGlobal2", False))):
+                continue
+            if any(n.strip().lower() in keep_set for n in names if n.strip()):
+                stripped["kept"].append(f"Group #{g_idx} Gem #{gem['index']} ({disp}) (kept)")
+                continue
+            gem_ref = {"group": g_idx, "index": gem["index"]}
             if is_temp:
                 stripped["skills"].append(f"Group #{g_idx} Gem #{gem['index']} ({disp}) -> enabled=False")
-                worker.call("set_gem", {"group": g_idx, "index": gem["index"], "enabled": False})
-            elif is_vaal and gem.get("enableGlobal2", False):
+                worker.call("set_gem", {**gem_ref, "enabled": False})
+                records.append(
+                    {
+                        "dimension": "skills",
+                        "key": disp,
+                        "label": f"Group #{g_idx} {disp}",
+                        "restore": [("set_gem", {**gem_ref, "enabled": True})],
+                        "revert": [("set_gem", {**gem_ref, "enabled": False})],
+                    }
+                )
+            else:
                 stripped["skills"].append(
                     f"Group #{g_idx} Gem #{gem['index']} ({disp}) -> enableGlobal2=False (base skill kept)"
                 )
-                worker.call(
-                    "set_gem",
+                worker.call("set_gem", {**gem_ref, "enableGlobal1": True, "enableGlobal2": False})
+                records.append(
                     {
-                        "group": g_idx,
-                        "index": gem["index"],
-                        "enableGlobal1": True,
-                        "enableGlobal2": False,
-                    },
+                        "dimension": "skills",
+                        "key": disp,
+                        "label": f"Group #{g_idx} {disp} (Vaal)",
+                        "restore": [("set_gem", {**gem_ref, "enableGlobal1": True, "enableGlobal2": True})],
+                        "revert": [("set_gem", {**gem_ref, "enableGlobal1": True, "enableGlobal2": False})],
+                    }
                 )
 
-    # 4. PartyTab buffs
+    # 4. PartyTab buffs (cleared wholesale; not individually reversible, so no attribution record)
     party_res = worker.call("get_party", {})
     party_fields = party_res.get("fields", {})
     non_empty_party = [k for k, v in party_fields.items() if str(v or "").strip()]
     if non_empty_party or party_res.get("enableExportBuffs"):
-        stripped["party"].append(f"PartyTab fields ({', '.join(non_empty_party or ['enableExportBuffs'])}) -> cleared & disabled")
-        worker.call("party_action", {"action": "disable"})
-        worker.call("party_action", {"action": "clear"})
+        label = f"PartyTab fields ({', '.join(non_empty_party or ['enableExportBuffs'])})"
+        if "party" in keep_set:
+            stripped["kept"].append(f"{label} (kept)")
+        else:
+            stripped["party"].append(f"{label} -> cleared & disabled")
+            worker.call("party_action", {"action": "disable"})
+            worker.call("party_action", {"action": "clear"})
 
-    return stripped
+    return stripped, records
 
 
-def audit_build(worker: BridgeWorker) -> dict[str, Any]:
-    """Run static build health checks + non-destructive 4-part PoB inflation ('water') audit."""
+def _digest_metrics(digest: dict[str, Any], dps_key: str) -> dict[str, float | None]:
+    stats = digest.get("stats", {})
+
+    def f(v: Any) -> float | None:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    ele = [f(stats.get(k)) for k in ("FireMaximumHitTaken", "ColdMaximumHitTaken", "LightningMaximumHitTaken")]
+    ele_vals = [v for v in ele if v is not None]
+    return {
+        "dps": f(stats.get(dps_key)),
+        "totalEhp": f(stats.get("TotalEHP")),
+        "physMaxHit": f(stats.get("PhysicalMaximumHitTaken")),
+        "eleMaxHit": min(ele_vals) if ele_vals else None,
+    }
+
+
+def attribute_water(
+    worker: BridgeWorker,
+    records: list[dict[str, Any]],
+    dewatered_digest: dict[str, Any],
+    dps_key: str,
+) -> list[dict[str, Any]]:
+    """Measure each stripped item's real PoB contribution, one at a time.
+
+    Starting from the de-watered state, every record is restored alone, the build is
+    recalculated by PoB, and the record is reverted again. Deltas are relative to the
+    de-watered baseline, so they answer "how much does keeping only this item add?".
+    No value is estimated: every number is read from the engine.
+    """
+    base = _digest_metrics(dewatered_digest, dps_key)
+    rows: list[dict[str, Any]] = []
+    for rec in records:
+        row: dict[str, Any] = {
+            "dimension": rec["dimension"],
+            "key": rec["key"],
+            "label": rec["label"],
+        }
+        try:
+            for method, params in rec["restore"]:
+                worker.call(method, params)
+            m = _digest_metrics(capture_digest(worker), dps_key)
+            for k in ("dps", "totalEhp", "physMaxHit", "eleMaxHit"):
+                row[k] = m[k]
+                b = base[k]
+                row[f"{k}Delta"] = (m[k] - b) if (m[k] is not None and b is not None) else None
+                row[f"{k}Pct"] = ((m[k] - b) / b * 100.0) if (m[k] is not None and b) else None
+        except Exception as exc:  # noqa: BLE001 - report per-item failures instead of aborting the audit
+            row["error"] = str(exc)
+        finally:
+            for method, params in rec["revert"]:
+                worker.call(method, params)
+        rows.append(row)
+    return rows
+
+
+def audit_build(
+    worker: BridgeWorker,
+    keep: Iterable[str] | None = None,
+    attribution: bool = True,
+) -> dict[str, Any]:
+    """Run static build health checks + non-destructive 4-part PoB inflation ('water') audit.
+
+    ``keep`` lists inflation items the user asserts are real for this build (e.g. an
+    ascendancy that needs ``conditionStationary``); they are left untouched. With
+    ``attribution`` every stripped item is restored alone and re-measured by PoB.
+    """
     with worker.lock:
         snap_code = worker.call("export_code", {})["code"]
         digest_before = capture_digest(worker)
@@ -503,15 +669,21 @@ def audit_build(worker: BridgeWorker) -> dict[str, Any]:
 
         # Run non-destructive de-watering snapshot
         try:
-            stripped = dewater_build_in_place(worker)
+            stripped, records = dewater_build_with_records(worker, keep=keep)
             digest_dewatered = capture_digest(worker)
             dewater_diff = diff_digest(digest_before, digest_dewatered)
+            water_attribution = (
+                attribute_water(worker, records, digest_dewatered, digest_before["primaryDpsKey"])
+                if attribution
+                else []
+            )
         finally:
             worker.call("import_code", {"code": snap_code, "mode": "replace"})
 
         return {
             "healthIssues": health_issues,
             "inflationStripped": stripped,
+            "waterAttribution": water_attribution,
             "original": {
                 "primaryDpsKey": digest_before["primaryDpsKey"],
                 "primaryDps": digest_before["primaryDps"],
