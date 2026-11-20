@@ -68,13 +68,20 @@ def _daemon_call(
     auto_start: bool = True,
     timeout: float = 150.0,
 ) -> dict[str, Any]:
-    """Call daemon and translate BootstrapMissingError into clean stderr guidance + exit(1)."""
+    """Call daemon; turn known failures into clean stderr messages + exit(1) instead of tracebacks.
+
+    - BootstrapMissingError: engine not installed -> update/bootstrap guidance.
+    - RuntimeError: the daemon rejected the request (e.g. "Build has no synced loadouts
+      available.") -> `Error: <message>` via click, exit code 1 (arg/state error).
+    """
     try:
         return call_daemon(action, params, auto_start=auto_start, timeout=timeout)
     except BootstrapMissingError as exc:
         alert = format_stderr_update_alert(exc.update_status) or str(exc)
         _echo_stderr_utf8(alert)
         sys.exit(1)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc) or f"Daemon error during '{action}'") from exc
 
 
 def _prepend_warning(body: str, res: dict[str, Any]) -> str:
