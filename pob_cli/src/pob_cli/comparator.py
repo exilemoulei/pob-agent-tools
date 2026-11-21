@@ -9,6 +9,7 @@ from .analyzer import (
     inspect_tree,
     resolve_skill_group_index,
     resolve_slot_name,
+    verify_restored,
 )
 from .bridge_client import BridgeWorker
 from .formatters import fmt_delta, fmt_num, strip_pob_escapes
@@ -751,6 +752,7 @@ def run_matrix(
 
     with worker.lock:
         baseline_code = worker.call("export_code", {})["code"]
+        baseline_digest = capture_digest(worker)
         results: list[dict[str, Any]] = []
         first_digest: dict[str, Any] | None = None
 
@@ -774,8 +776,10 @@ def run_matrix(
                 )
         finally:
             worker.call("import_code", {"code": baseline_code, "mode": "replace"})
+        restore_check = verify_restored(worker, baseline_code, baseline_digest)
 
         return {
             "baseline": results[0]["name"] if results else "Original",
             "scenarios": results,
+            "restoreCheck": restore_check,
         }

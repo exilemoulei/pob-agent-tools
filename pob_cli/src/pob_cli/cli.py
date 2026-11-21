@@ -665,6 +665,17 @@ def _keep_rejected_warning(rejected: list[str]) -> str:
     return "\n> **WARNING --keep not matched (item was NOT kept)**: " + "; ".join(rejected)
 
 
+def _restore_warning(res: dict[str, Any]) -> str | None:
+    """Warning when the build could not be verified as restored after a what-if run."""
+    chk = res.get("restoreCheck") or {}
+    if chk and not chk.get("verified", True):
+        return (
+            "> **WARNING build not verified as restored**: "
+            f"{chk.get('detail')}. Reload the build (`pob load ...`) before trusting later results."
+        )
+    return None
+
+
 def _fmt_signed_pct(delta: Any, pct: Any) -> str:
     """Render '+1,234 (+4.2%)' for a PoB-measured delta; '-' when unavailable, '0' when unchanged."""
     if delta is None:
@@ -698,6 +709,8 @@ def cmd_audit(target: str, keep: tuple[str, ...], no_attribution: bool, as_json:
         return
 
     lines = ["### Build Health & Inflation ('Water') Audit"]
+    if _restore_warning(res):
+        lines.append(_restore_warning(res))
     issues = res.get("healthIssues", [])
     if issues:
         lines.append("\n#### 1. Health & Hard Gaps")
@@ -1640,6 +1653,8 @@ def cmd_matrix(
             ]
         )
 
+    if _restore_warning(res):
+        _echo_utf8(_restore_warning(res))
     _echo_utf8(f"### Scenario Matrix Comparison (`{target}`, Baseline: `{res.get('baseline')}`, Primary: `{p_key}`)")
     _echo_utf8(
         render_table(

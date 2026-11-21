@@ -246,6 +246,7 @@ def dewater_build_in_place(
 
 
 _KEEP_KEYWORDS = ("flasks", "custommods", "party")
+DEWATER_SENTINEL_TITLE = "pob-cli dewater"
 
 
 def _unmatched_keep(keep_set: set[str], known: dict[str, str]) -> list[str]:
@@ -354,29 +355,49 @@ def dewater_build_with_records(
                 s = line.strip()
                 if s and not s.startswith("#"):
                     active_custom_lines.append(s)
+    # Like pob-mcp, never overwrite the user's own groups: disable each active group in
+    # place (title and text kept) and measure each group on its own. A trailing
+    # comment-only sentinel keeps an enabled block with text, so ConfigTab:BuildModList
+    # does not fall back to the legacy input.customMods once every group is disabled.
     if active_custom_lines:
-        label = f"customMods ({len(active_custom_lines)} active lines: {'; '.join(active_custom_lines[:3])})"
-        if "custommods" in keep_set:
-            stripped["kept"].append(f"{label} (kept)")
-        else:
-            disabled = [{"title": "Default", "text": "# disabled", "enabled": True}]
-            original = [
-                {"title": b.get("title") or "Default", "text": b.get("text") or "", "enabled": b.get("enabled", True)}
-                for b in custom_mods
+        blocks = [
+            {"title": b.get("title") or "Default", "text": b.get("text") or "", "enabled": b.get("enabled", True)}
+            for b in custom_mods
+        ]
+        for b in blocks:
+            known[f"custommods:{b['title'].lower()}"] = f"customMods:{b['title']}"
+        dewatered = [dict(b) for b in blocks]
+        group_records: list[tuple[int, str]] = []
+        for i, b in enumerate(blocks):
+            lines = [
+                ln.strip() for ln in b["text"].splitlines() if ln.strip() and not ln.strip().startswith("#")
             ]
+            if not b["enabled"] or not lines:
+                continue
+            label = f"customMods[{b['title']}] ({len(lines)} active lines: {'; '.join(lines[:3])})"
+            if "custommods" in keep_set or f"custommods:{b['title'].lower()}" in keep_set:
+                stripped["kept"].append(f"{label} (kept)")
+                continue
+            dewatered[i]["enabled"] = False
             stripped["config"].append(f"{label} -> disabled")
-            worker.call("set_custom_mods", {"list": disabled})
-            records.append(
-                {
-                    "dimension": "config",
-                    "key": "customMods",
-                    "label": label,
-                    "restore": [("set_custom_mods", {"list": original})],
-                    "revert": [("set_custom_mods", {"list": disabled})],
-                    "probe": {"kind": "customMods"},
-                    "original": original,
-                }
-            )
+            group_records.append((i, label))
+        if group_records:
+            dewatered.append({"title": DEWATER_SENTINEL_TITLE, "text": "# disabled", "enabled": True})
+            worker.call("set_custom_mods", {"list": dewatered})
+            for i, label in group_records:
+                restored = [dict(b) for b in dewatered]
+                restored[i]["enabled"] = True
+                records.append(
+                    {
+                        "dimension": "config",
+                        "key": f"customMods:{blocks[i]['title']}",
+                        "label": label,
+                        "restore": [("set_custom_mods", {"list": restored})],
+                        "revert": [("set_custom_mods", {"list": dewatered})],
+                        "probe": {"kind": "customMods"},
+                        "original": restored,
+                    }
+                )
 
     # 2. Flask inflation (active flasks without Mageblood)
     items_res = worker.call("list_items", {})
@@ -547,6 +568,44 @@ def _digest_metrics(digest: dict[str, Any], dps_key: str) -> dict[str, float | N
         "physMaxHit": f(stats.get("PhysicalMaximumHitTaken")),
         "eleMaxHit": min(ele_vals) if ele_vals else None,
     }
+
+
+def verify_restored(
+    worker: BridgeWorker,
+    before_code: str,
+    before_digest: dict[str, Any],
+) -> dict[str, Any]:
+    """Check that rolling back to ``before_code`` really reproduced the original build.
+
+    Mirrors pob-mcp's batch_modify rollback check: the restored build must export the
+    same code, or at least recalculate to the same stats. Anything else is reported,
+    because every later command would otherwise run on a silently modified build.
+    """
+    after_code = worker.call("export_code", {}).get("code")
+    if after_code == before_code:
+        return {"verified": True, "detail": "restored build exports identical code"}
+    after = capture_digest(worker).get("stats", {})
+    differing: list[str] = []
+    for k, v in (before_digest.get("stats") or {}).items():
+        try:
+            b = float(v)
+        except (TypeError, ValueError):
+            continue
+        try:
+            a = float(after.get(k))
+        except (TypeError, ValueError):
+            differing.append(k)
+            continue
+        if abs(a - b) > 1e-6 * max(1.0, abs(b)):
+            differing.append(k)
+    if differing:
+        differing.sort()
+        return {
+            "verified": False,
+            "detail": f"{len(differing)} stat(s) differ from before the run (e.g. {', '.join(differing[:5])})",
+            "differing": differing,
+        }
+    return {"verified": True, "detail": "export code differs, but every stat recalculates identical"}
 
 
 def attribute_water(
@@ -795,11 +854,13 @@ def audit_build(
             )
         finally:
             worker.call("import_code", {"code": snap_code, "mode": "replace"})
+        restore_check = verify_restored(worker, snap_code, digest_before)
 
         return {
             "healthIssues": health_issues,
             "inflationStripped": stripped,
             "waterAttribution": water_attribution,
+            "restoreCheck": restore_check,
             "original": {
                 "primaryDpsKey": digest_before["primaryDpsKey"],
                 "primaryDps": digest_before["primaryDps"],

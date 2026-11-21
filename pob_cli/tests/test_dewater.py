@@ -16,6 +16,7 @@ from click.testing import CliRunner
 
 from pob_cli import cli as cli_mod
 from pob_cli.analyzer import (
+    DEWATER_SENTINEL_TITLE,
     attribute_water,
     audit_build,
     dewater_build_in_place,
@@ -202,7 +203,7 @@ def test_records_restore_and_revert_are_exact_inverses() -> None:
     _stripped, records = dewater_build_with_records(w)
     keys = {r["key"] for r in records}
     assert {"conditionStationary", "conditionBeenHitRecently", "useEnduranceCharges"} <= keys
-    assert {"Flask 1", "Flask 2", "customMods", "Molten Shell"} <= keys
+    assert {"Flask 1", "Flask 2", "customMods:Default", "Molten Shell"} <= keys
 
     dewatered = w._snapshot()
     for rec in records:
@@ -210,6 +211,8 @@ def test_records_restore_and_revert_are_exact_inverses() -> None:
             w.call(m, p)
     restored = w._snapshot()
     restored["config"]["enemyIsBoss"] = original["config"]["enemyIsBoss"]
+    # The comment-only sentinel group stays; every user group is back as it was.
+    restored["custom_mods"] = [b for b in restored["custom_mods"] if b["title"] != DEWATER_SENTINEL_TITLE]
     assert restored == original
 
     for rec in records:
@@ -556,3 +559,102 @@ def test_cli_warns_on_unmatched_keep(monkeypatch: pytest.MonkeyPatch) -> None:
         assert out.exit_code == 0, out.output
         assert "--keep not matched (item was NOT kept)" in out.output
         assert "did you mean conditionStationary" in out.output
+
+
+def test_custom_mods_disabled_per_group_without_overwriting_user_groups() -> None:
+    w = FakeWorker()
+    w.custom_mods = [
+        {"title": "Default", "text": "+25 to maximum Mana", "enabled": True},
+        {"title": "Boss buffs", "text": "10% more Damage\n# note", "enabled": True},
+        {"title": "Off", "text": "+1 to Level of all Skill Gems", "enabled": False},
+        {"title": "Notes", "text": "# only a comment", "enabled": True},
+    ]
+    original = [dict(b) for b in w.custom_mods]
+    stripped, records = dewater_build_with_records(w, keep=["customMods:Boss buffs"])
+
+    by_title = {b["title"]: b for b in w.custom_mods}
+    # User groups keep their title and text; only the active, non-kept one is disabled.
+    assert by_title["Default"] == {**original[0], "enabled": False}
+    assert by_title["Boss buffs"] == original[1]
+    assert by_title["Off"] == original[2]
+    assert by_title["Notes"] == original[3]
+    # Sentinel keeps an enabled block with text so PoB does not fall back to input.customMods.
+    assert by_title[DEWATER_SENTINEL_TITLE] == {
+        "title": DEWATER_SENTINEL_TITLE, "text": "# disabled", "enabled": True,
+    }
+    assert any("customMods[Boss buffs]" in k for k in stripped["kept"])
+    assert stripped["keepRejected"] == []
+    cm = [r for r in records if r["key"].startswith("customMods")]
+    assert [r["key"] for r in cm] == ["customMods:Default"]
+
+    dewatered = w._snapshot()
+    rows = attribute_water(w, cm, capture_digest(w), "CombinedDPS")
+    assert "error" not in rows[0]
+    assert w._snapshot() == dewatered
+
+
+def test_audit_reports_build_not_restored() -> None:
+    class BrokenRestoreWorker(FakeWorker):
+        def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "import_code":
+                self.calls.append((method, params))
+                return {}  # rollback silently does nothing
+            if method == "export_code":
+                self.calls.append((method, params))
+                return {"code": repr(sorted(self._snapshot()["config"].items(), key=str))}
+            return super().call(method, params)
+
+    w = BrokenRestoreWorker()
+    res = audit_build(w)
+    chk = res["restoreCheck"]
+    assert chk["verified"] is False
+    assert "CombinedDPS" in chk["differing"]
+
+    w2 = FakeWorker()
+    assert audit_build(w2)["restoreCheck"]["verified"] is True
+    assert run_matrix(w2, scenarios=["Original", "Pinnacle"])["restoreCheck"]["verified"] is True
+
+
+def test_restore_check_accepts_identical_stats_with_different_code() -> None:
+    from pob_cli.analyzer import verify_restored
+
+    w = FakeWorker()
+    before = capture_digest(w)
+
+    class OtherCode(FakeWorker):
+        def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "export_code":
+                return {"code": "DIFFERENT"}
+            return super().call(method, params)
+
+    w3 = OtherCode()
+    chk = verify_restored(w3, "CODE", before)
+    assert chk["verified"] is True
+    assert "recalculates identical" in chk["detail"]
+
+
+def test_cli_warns_when_build_not_restored(monkeypatch: pytest.MonkeyPatch) -> None:
+    chk = {"verified": False, "detail": "2 stat(s) differ from before the run (e.g. CombinedDPS)"}
+
+    def fake_call(action: str, params: dict[str, Any]) -> dict[str, Any]:
+        if action == "audit":
+            return {
+                "healthIssues": [],
+                "inflationStripped": {"config": [], "flasks": [], "skills": [], "party": [], "kept": []},
+                "waterAttribution": [],
+                "original": {},
+                "dewateredPinnacle": {},
+                "restoreCheck": chk,
+            }
+        digest = {"primaryDps": 1.0, "totalEhp": 1.0, "stats": {}}
+        return {
+            "baseline": "Original",
+            "scenarios": [{"name": "Original", "digest": digest, "applied": {"stripped": None}}],
+            "restoreCheck": chk,
+        }
+
+    monkeypatch.setattr(cli_mod, "_daemon_call", fake_call)
+    for args in (["audit"], ["matrix"]):
+        out = CliRunner().invoke(cli_mod.main, args)
+        assert out.exit_code == 0, out.output
+        assert "build not verified as restored" in out.output
