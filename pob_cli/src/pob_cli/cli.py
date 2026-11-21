@@ -660,6 +660,11 @@ def cmd_summary(target: str, as_json: bool) -> None:
     _echo_utf8(_prepend_warning("\n".join(lines), res))
 
 
+def _keep_rejected_warning(rejected: list[str]) -> str:
+    """Loud warning for --keep tokens that matched nothing (those items were NOT kept)."""
+    return "\n> **WARNING --keep not matched (item was NOT kept)**: " + "; ".join(rejected)
+
+
 def _fmt_signed_pct(delta: Any, pct: Any) -> str:
     """Render '+1,234 (+4.2%)' for a PoB-measured delta; '-' when unavailable, '0' when unchanged."""
     if delta is None:
@@ -711,6 +716,8 @@ def cmd_audit(target: str, keep: tuple[str, ...], no_attribution: bool, as_json:
     kept = stripped.get("kept") or []
     if kept:
         lines.append("\n**Kept (--keep)**: " + "; ".join(kept))
+    if stripped.get("keepRejected"):
+        lines.append(_keep_rejected_warning(stripped["keepRejected"]))
 
     attr = res.get("waterAttribution") or []
     if attr:
@@ -1640,6 +1647,16 @@ def cmd_matrix(
             rows,
         )
     )
+    kept: list[str] = []
+    rejected: list[str] = []
+    for sc in sc_list:
+        st_info = (sc.get("applied") or {}).get("stripped") or {}
+        kept += [k for k in st_info.get("kept") or [] if k not in kept]
+        rejected += [r for r in st_info.get("keepRejected") or [] if r not in rejected]
+    if kept:
+        _echo_utf8("\n**Kept (--keep)**: " + "; ".join(kept))
+    if rejected:
+        _echo_utf8(_keep_rejected_warning(rejected))
 
 
 # --- 4.4 ROI Rankings & Cross-Build Comparison ---

@@ -455,3 +455,104 @@ def test_cli_audit_passes_keep_and_renders_attribution(monkeypatch: pytest.Monke
     out2 = CliRunner().invoke(cli_mod.main, ["audit", "--no-attribution"])
     assert out2.exit_code == 0, out2.output
     assert seen["params"]["attribution"] is False
+
+
+def test_attribute_water_flags_restore_that_pob_did_not_apply() -> None:
+    """A silent no-op restore must not be reported as 'this item adds nothing'."""
+
+    class NoOpWorker(FakeWorker):
+        def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "set_config" and params.get("var") == "conditionStationary":
+                self.calls.append((method, params))
+                return {}  # accepted by the RPC, but the value never changes
+            return super().call(method, params)
+
+    w = NoOpWorker()
+    _stripped, records = dewater_build_with_records(w)
+    before = w._snapshot()
+    rows = {r["key"]: r for r in attribute_water(w, records, capture_digest(w), "CombinedDPS")}
+
+    bad = rows["conditionStationary"]
+    assert "restore not applied" in bad["error"]
+    assert "dpsDelta" not in bad
+    # Other items are still measured normally and the baseline is intact.
+    assert rows["useEnduranceCharges"]["totalEhpDelta"] == 30_000
+    assert w._snapshot() == before
+
+
+def test_attribute_water_stops_measuring_when_revert_leaves_baseline_dirty() -> None:
+    class StickyWorker(FakeWorker):
+        def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "set_slot_active" and params == {"slotName": "Flask 1", "active": False}:
+                self.calls.append((method, params))
+                return {}  # flask stays on after the first restore
+            return super().call(method, params)
+
+    w = StickyWorker()
+    w.flasks["Flask 1"] = True
+    _stripped, records = dewater_build_with_records(w)
+    # Dewatering itself could not turn Flask 1 off either; force the de-watered state.
+    w.flasks["Flask 1"] = False
+    rows = attribute_water(w, records, capture_digest(w), "CombinedDPS")
+    keys = [r["key"] for r in rows]
+    i = keys.index("Flask 1")
+    assert "revert not applied" in rows[i]["error"]
+    for later in rows[i + 1 :]:
+        assert later["error"] == "skipped: baseline not restored after Flask 1"
+        assert "dpsDelta" not in later
+
+
+def test_keep_typo_is_reported_and_item_is_still_stripped() -> None:
+    w = FakeWorker()
+    stripped = dewater_build_in_place(w, keep=["conditionStationery", "Flask 9", "flask 2"])
+    assert w.config["conditionStationary"] is False  # typo did not protect it
+    assert w.flasks["Flask 2"] is True
+    rejected = stripped["keepRejected"]
+    assert len(rejected) == 2
+    assert any(r.startswith("conditionstationery") and "did you mean conditionStationary" in r for r in rejected)
+    assert any(r.startswith("flask 9") for r in rejected)
+
+
+def test_valid_keep_tokens_are_not_rejected() -> None:
+    w = FakeWorker()
+    stripped = dewater_build_in_place(
+        w,
+        keep=["conditionStationary", "flask 1", "MOLTEN SHELL", "flasks", "customMods", "party", "bandit"],
+    )
+    assert stripped["keepRejected"] == []
+
+
+def test_cli_warns_on_unmatched_keep(monkeypatch: pytest.MonkeyPatch) -> None:
+    stripped = {
+        "config": [],
+        "flasks": [],
+        "skills": [],
+        "party": [],
+        "kept": [],
+        "keepRejected": ["conditionstationery: not a config var (did you mean conditionStationary?)"],
+    }
+
+    def fake_call(action: str, params: dict[str, Any]) -> dict[str, Any]:
+        if action == "audit":
+            return {
+                "healthIssues": [],
+                "inflationStripped": stripped,
+                "waterAttribution": [],
+                "original": {},
+                "dewateredPinnacle": {},
+            }
+        digest = {"primaryDps": 1.0, "totalEhp": 1.0, "stats": {}}
+        return {
+            "baseline": "Original",
+            "scenarios": [
+                {"name": "Original", "digest": digest, "applied": {"stripped": None}},
+                {"name": "Pinnacle", "digest": digest, "applied": {"stripped": stripped}},
+            ],
+        }
+
+    monkeypatch.setattr(cli_mod, "_daemon_call", fake_call)
+    for args in (["audit", "--keep", "conditionStationery"], ["matrix", "--keep", "conditionStationery"]):
+        out = CliRunner().invoke(cli_mod.main, args)
+        assert out.exit_code == 0, out.output
+        assert "--keep not matched (item was NOT kept)" in out.output
+        assert "did you mean conditionStationary" in out.output

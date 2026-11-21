@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import difflib
 from collections.abc import Iterable
 from typing import Any
 
@@ -244,6 +245,27 @@ def dewater_build_in_place(
     return stripped
 
 
+_KEEP_KEYWORDS = ("flasks", "custommods", "party")
+
+
+def _unmatched_keep(keep_set: set[str], known: dict[str, str]) -> list[str]:
+    """Keep tokens that name nothing in this build, with a close-match hint.
+
+    pob-mcp rejects an unknown config key per key instead of silently ignoring it;
+    a mistyped ``--keep`` would otherwise strip the item it meant to protect.
+    """
+    out: list[str] = []
+    for tok in sorted(keep_set):
+        if tok in known:
+            continue
+        hint = difflib.get_close_matches(tok, list(known), n=1, cutoff=0.8)
+        msg = f"{tok}: not a config var, flask slot, skill gem, or flasks/customMods/party"
+        if hint:
+            msg += f" (did you mean {known[hint[0]]}?)"
+        out.append(msg)
+    return out
+
+
 def dewater_build_with_records(
     worker: BridgeWorker,
     keep: Iterable[str] | None = None,
@@ -264,8 +286,11 @@ def dewater_build_with_records(
         "skills": [],
         "party": [],
         "kept": [],
+        "keepRejected": [],
     }
     records: list[dict[str, Any]] = []
+    # Every name a keep token may legitimately refer to (lowercase -> display form).
+    known: dict[str, str] = {k: k for k in _KEEP_KEYWORDS}
 
     # 1. Config inflation & enemyIsBoss = Pinnacle
     cfg_res = worker.call("list_config", {})
@@ -276,6 +301,8 @@ def dewater_build_with_records(
         for item in sec.get("items", []):
             var = item.get("var")
             val = item.get("value")
+            if var:
+                known[str(var).lower()] = str(var)
             if not var or var in PERMANENT_CONFIG_VARS:
                 continue
             if var == "enemyIsBoss":
@@ -305,6 +332,8 @@ def dewater_build_with_records(
                     "label": f"{var}={val!r}",
                     "restore": [("set_config", {"var": var, "value": val})],
                     "revert": [("reset_config", {"var": var})],
+                    "probe": {"kind": "config", "var": var},
+                    "original": val,
                 }
             )
 
@@ -344,6 +373,8 @@ def dewater_build_with_records(
                     "label": label,
                     "restore": [("set_custom_mods", {"list": original})],
                     "revert": [("set_custom_mods", {"list": disabled})],
+                    "probe": {"kind": "customMods"},
+                    "original": original,
                 }
             )
 
@@ -353,6 +384,8 @@ def dewater_build_with_records(
     items_by_id = {it["id"]: it for it in items_res.get("items", [])}
     if not has_mb:
         for slot in items_res.get("slots", []):
+            if slot.get("isFlask") and slot.get("name"):
+                known[str(slot["name"]).lower()] = str(slot["name"])
             if slot.get("isFlask") and slot.get("active"):
                 slot_name = slot["name"]
                 item = items_by_id.get(slot.get("selItemId") or 0, {})
@@ -369,24 +402,28 @@ def dewater_build_with_records(
                         "label": f"{slot_name} ({item_title})",
                         "restore": [("set_slot_active", {"slotName": slot_name, "active": True})],
                         "revert": [("set_slot_active", {"slotName": slot_name, "active": False})],
+                        "probe": {"kind": "flask", "slot": slot_name},
+                        "original": True,
                     }
                 )
 
     # 3. Temporary guard / burst / Vaal skills
     skills_res = worker.call("list_skills", {})
     for group in skills_res.get("groups", []):
-        if not group.get("enabled", True):
-            continue
         g_idx = group["index"]
+        group_enabled = group.get("enabled", True)
         for gem in group.get("gems", []):
-            if not gem.get("enabled", True) or gem.get("support"):
-                continue
             names = [
                 str(gem.get("nameSpec") or ""),
                 str(gem.get("name") or ""),
                 str(gem.get("nameZh") or ""),
                 str(gem.get("skillId") or ""),
             ]
+            for n in names:
+                if n.strip():
+                    known[n.strip().lower()] = n.strip()
+            if not group_enabled or not gem.get("enabled", True) or gem.get("support"):
+                continue
             combined_lower = " ".join(names).lower()
             is_vaal = (
                 combined_lower.startswith("vaal ")
@@ -411,6 +448,8 @@ def dewater_build_with_records(
                         "label": f"Group #{g_idx} {disp}",
                         "restore": [("set_gem", {**gem_ref, "enabled": True})],
                         "revert": [("set_gem", {**gem_ref, "enabled": False})],
+                        "probe": {"kind": "gem", **gem_ref, "fields": ["enabled"]},
+                        "original": {"enabled": True},
                     }
                 )
             else:
@@ -426,6 +465,8 @@ def dewater_build_with_records(
                         "label": f"Group #{g_idx} {disp} (Vaal)",
                         "restore": [("set_gem", {**gem_ref, "enableGlobal1": original_base_enabled, "enableGlobal2": True})],
                         "revert": [("set_gem", {**gem_ref, "enableGlobal1": True, "enableGlobal2": False})],
+                        "probe": {"kind": "gem", **gem_ref, "fields": ["enableGlobal1", "enableGlobal2"]},
+                        "original": {"enableGlobal1": original_base_enabled, "enableGlobal2": True},
                     }
                 )
 
@@ -442,7 +483,51 @@ def dewater_build_with_records(
             worker.call("party_action", {"action": "disable"})
             worker.call("party_action", {"action": "clear"})
 
+    stripped["keepRejected"] = _unmatched_keep(keep_set, known)
     return stripped, records
+
+
+def _probe_state(worker: BridgeWorker, probe: dict[str, Any]) -> Any:
+    """Read back from PoB the live state a record's restore/revert is meant to set."""
+    kind = probe["kind"]
+    if kind in ("config", "customMods"):
+        cfg = worker.call("list_config", {})
+        if kind == "customMods":
+            return [
+                {"title": b.get("title") or "Default", "text": b.get("text") or "", "enabled": b.get("enabled", True)}
+                for b in cfg.get("customMods", [])
+            ]
+        for sec in cfg.get("sections", []):
+            for item in sec.get("items", []):
+                if item.get("var") == probe["var"]:
+                    return item.get("value")
+        return None
+    if kind == "flask":
+        for slot in worker.call("list_items", {}).get("slots", []):
+            if slot.get("name") == probe["slot"]:
+                return bool(slot.get("active"))
+        return None
+    if kind == "gem":
+        for group in worker.call("list_skills", {}).get("groups", []):
+            if group.get("index") != probe["group"]:
+                continue
+            for gem in group.get("gems", []):
+                if gem.get("index") == probe["index"]:
+                    return {f: bool(gem.get(f, f == "enabled")) for f in probe["fields"]}
+        return None
+    raise ValueError(f"unknown probe kind {kind!r}")
+
+
+def _same_state(a: Any, b: Any) -> bool:
+    """Compare a read-back value with the expected one (PoB stores unset checks as nil)."""
+    if isinstance(a, (dict, list)) or isinstance(b, (dict, list)):
+        return a == b
+    if isinstance(a, bool) or isinstance(b, bool) or a is None or b is None:
+        return bool(a) == bool(b)
+    try:
+        return abs(float(a) - float(b)) <= 1e-9 * max(1.0, abs(float(a)))
+    except (TypeError, ValueError):
+        return a == b
 
 
 def _digest_metrics(digest: dict[str, Any], dps_key: str) -> dict[str, float | None]:
@@ -479,15 +564,36 @@ def attribute_water(
     """
     base = _digest_metrics(dewatered_digest, dps_key)
     rows: list[dict[str, Any]] = []
+    broken_after: str | None = None
     for rec in records:
         row: dict[str, Any] = {
             "dimension": rec["dimension"],
             "key": rec["key"],
             "label": rec["label"],
         }
+        if broken_after is not None:
+            # The de-watered baseline is no longer trustworthy: never measure on it.
+            row["error"] = f"skipped: baseline not restored after {broken_after}"
+            rows.append(row)
+            continue
+        probe = rec.get("probe")
+        try:
+            before = _probe_state(worker, probe) if probe else None
+        except Exception as exc:  # noqa: BLE001
+            row["error"] = f"cannot read state before restore: {exc}"
+            rows.append(row)
+            continue
         try:
             for method, params in rec["restore"]:
                 worker.call(method, params)
+            # Like pob-mcp's set_config applied/rejected: read the state back before
+            # trusting the delta, so a silent no-op is not reported as "no water".
+            if probe:
+                got = _probe_state(worker, probe)
+                if not _same_state(got, rec.get("original")):
+                    raise RuntimeError(
+                        f"restore not applied: expected {rec.get('original')!r}, PoB reads {got!r}"
+                    )
             m = _digest_metrics(capture_digest(worker), dps_key)
             for k in ("dps", "totalEhp", "physMaxHit", "eleMaxHit"):
                 row[k] = m[k]
@@ -497,8 +603,17 @@ def attribute_water(
         except Exception as exc:  # noqa: BLE001 - report per-item failures instead of aborting the audit
             row["error"] = str(exc)
         finally:
-            for method, params in rec["revert"]:
-                worker.call(method, params)
+            try:
+                for method, params in rec["revert"]:
+                    worker.call(method, params)
+                if probe:
+                    back = _probe_state(worker, probe)
+                    if not _same_state(back, before):
+                        raise RuntimeError(f"revert not applied: expected {before!r}, PoB reads {back!r}")
+            except Exception as exc:  # noqa: BLE001
+                broken_after = rec["key"]
+                prev = row.get("error")
+                row["error"] = f"{prev}; {exc}" if prev else str(exc)
         rows.append(row)
     return rows
 
