@@ -676,6 +676,11 @@ def _restore_warning(res: dict[str, Any]) -> str | None:
     return None
 
 
+def _strip_failed_warning(failed: list[str]) -> str:
+    """Warning for items PoB did not actually change when de-watering."""
+    return "\n> **WARNING de-watering not applied (item still active in the baseline)**: " + "; ".join(failed)
+
+
 def _fmt_signed_pct(delta: Any, pct: Any) -> str:
     """Render '+1,234 (+4.2%)' for a PoB-measured delta; '-' when unavailable, '0' when unchanged."""
     if delta is None:
@@ -731,6 +736,10 @@ def cmd_audit(target: str, keep: tuple[str, ...], no_attribution: bool, as_json:
         lines.append("\n**Kept (--keep)**: " + "; ".join(kept))
     if stripped.get("keepRejected"):
         lines.append(_keep_rejected_warning(stripped["keepRejected"]))
+    if stripped.get("stripFailed"):
+        lines.append(_strip_failed_warning(stripped["stripFailed"]))
+    if stripped.get("atDefault"):
+        lines.append("\n**Already at PoB default (not stripped)**: " + "; ".join(stripped["atDefault"]))
 
     attr = res.get("waterAttribution") or []
     if attr:
@@ -1664,14 +1673,18 @@ def cmd_matrix(
     )
     kept: list[str] = []
     rejected: list[str] = []
+    failed: list[str] = []
     for sc in sc_list:
         st_info = (sc.get("applied") or {}).get("stripped") or {}
         kept += [k for k in st_info.get("kept") or [] if k not in kept]
         rejected += [r for r in st_info.get("keepRejected") or [] if r not in rejected]
+        failed += [f for f in st_info.get("stripFailed") or [] if f not in failed]
     if kept:
         _echo_utf8("\n**Kept (--keep)**: " + "; ".join(kept))
     if rejected:
         _echo_utf8(_keep_rejected_warning(rejected))
+    if failed:
+        _echo_utf8(_strip_failed_warning(failed))
 
 
 # --- 4.4 ROI Rankings & Cross-Build Comparison ---

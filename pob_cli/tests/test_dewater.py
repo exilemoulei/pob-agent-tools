@@ -485,17 +485,17 @@ def test_attribute_water_flags_restore_that_pob_did_not_apply() -> None:
 
 def test_attribute_water_stops_measuring_when_revert_leaves_baseline_dirty() -> None:
     class StickyWorker(FakeWorker):
+        sticky = False
+
         def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-            if method == "set_slot_active" and params == {"slotName": "Flask 1", "active": False}:
+            if self.sticky and method == "set_slot_active" and params == {"slotName": "Flask 1", "active": False}:
                 self.calls.append((method, params))
                 return {}  # flask stays on after the first restore
             return super().call(method, params)
 
     w = StickyWorker()
-    w.flasks["Flask 1"] = True
     _stripped, records = dewater_build_with_records(w)
-    # Dewatering itself could not turn Flask 1 off either; force the de-watered state.
-    w.flasks["Flask 1"] = False
+    w.sticky = True
     rows = attribute_water(w, records, capture_digest(w), "CombinedDPS")
     keys = [r["key"] for r in rows]
     i = keys.index("Flask 1")
@@ -658,3 +658,81 @@ def test_cli_warns_when_build_not_restored(monkeypatch: pytest.MonkeyPatch) -> N
         out = CliRunner().invoke(cli_mod.main, args)
         assert out.exit_code == 0, out.output
         assert "build not verified as restored" in out.output
+
+
+def test_dewater_write_pob_ignored_is_not_listed_or_attributed() -> None:
+    """Codex P2: a silently ignored reset must not show up as de-watered with a zero delta."""
+
+    class IgnoredResetWorker(FakeWorker):
+        def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "reset_config" and params.get("var") == "conditionStationary":
+                self.calls.append((method, params))
+                return {}  # accepted by the RPC, but the value stays True
+            return super().call(method, params)
+
+    w = IgnoredResetWorker()
+    stripped, records = dewater_build_with_records(w)
+    assert w.config["conditionStationary"] is True
+    assert not any("conditionStationary" in s for s in stripped["config"])
+    assert any(f.startswith("conditionStationary=True: PoB still reads True") for f in stripped["stripFailed"])
+    assert "conditionStationary" not in {r["key"] for r in records}
+    # Every other item is still verified as stripped and attributed normally.
+    assert "useEnduranceCharges" in {r["key"] for r in records}
+    rows = {r["key"]: r for r in attribute_water(w, records, capture_digest(w), "CombinedDPS")}
+    assert rows["useEnduranceCharges"]["totalEhpDelta"] == 30_000
+
+
+def test_attribute_water_refuses_a_baseline_that_still_has_the_original_value() -> None:
+    w = FakeWorker()
+    _stripped, records = dewater_build_with_records(w)
+    rec = next(r for r in records if r["key"] == "conditionStationary")
+    w.config["conditionStationary"] = True  # baseline drifted back after de-watering
+    row = attribute_water(w, [rec], capture_digest(w), "CombinedDPS")[0]
+    assert row["error"].startswith("baseline not de-watered")
+    assert "dpsDelta" not in row
+
+
+def test_cli_warns_when_dewater_not_applied(monkeypatch: pytest.MonkeyPatch) -> None:
+    stripped = {
+        "config": [], "flasks": [], "skills": [], "party": [], "kept": [], "keepRejected": [],
+        "stripFailed": ["conditionStationary=True: PoB still reads True after de-watering"],
+    }
+
+    def fake_call(action: str, params: dict[str, Any]) -> dict[str, Any]:
+        if action == "audit":
+            return {"healthIssues": [], "inflationStripped": stripped, "waterAttribution": [],
+                    "original": {}, "dewateredPinnacle": {}}
+        digest = {"primaryDps": 1.0, "totalEhp": 1.0, "stats": {}}
+        return {"baseline": "Original", "scenarios": [
+            {"name": "Pinnacle", "digest": digest, "applied": {"stripped": stripped}}]}
+
+    monkeypatch.setattr(cli_mod, "_daemon_call", fake_call)
+    for args in (["audit"], ["matrix"]):
+        out = CliRunner().invoke(cli_mod.main, args)
+        assert out.exit_code == 0, out.output
+        assert "de-watering not applied" in out.output
+
+
+def test_value_already_at_pob_default_is_not_reported_as_failure() -> None:
+    """e.g. conditionChampionIntimidate has defaultState=true: resetting cannot change it."""
+
+    class TypedWorker(FakeWorker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config["conditionChampionIntimidate"] = True
+            self.defaults["conditionChampionIntimidate"] = True
+
+        def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            res = super().call(method, params)
+            if method == "list_config":
+                for item in res["sections"][0]["items"]:
+                    item["type"] = "check"
+            return res
+
+    w = TypedWorker()
+    stripped, records = dewater_build_with_records(w)
+    assert w.config["conditionChampionIntimidate"] is True  # left at its PoB default
+    assert stripped["stripFailed"] == []
+    assert any(a.startswith("conditionChampionIntimidate=True") for a in stripped["atDefault"])
+    assert "conditionChampionIntimidate" not in {r["key"] for r in records}
+    assert not any("conditionChampionIntimidate" in s for s in stripped["config"])

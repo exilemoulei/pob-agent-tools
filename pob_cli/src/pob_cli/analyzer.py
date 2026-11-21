@@ -288,6 +288,8 @@ def dewater_build_with_records(
         "party": [],
         "kept": [],
         "keepRejected": [],
+        "stripFailed": [],
+        "atDefault": [],
     }
     records: list[dict[str, Any]] = []
     # Every name a keep token may legitimately refer to (lowercase -> display form).
@@ -328,6 +330,7 @@ def dewater_build_with_records(
             worker.call("reset_config", {"var": var})
             records.append(
                 {
+                    "strippedEntry": stripped["config"][-1],
                     "dimension": "config",
                     "key": var,
                     "label": f"{var}={val!r}",
@@ -335,6 +338,7 @@ def dewater_build_with_records(
                     "revert": [("reset_config", {"var": var})],
                     "probe": {"kind": "config", "var": var},
                     "original": val,
+                    "cfgItem": item,
                 }
             )
 
@@ -389,6 +393,7 @@ def dewater_build_with_records(
                 restored[i]["enabled"] = True
                 records.append(
                     {
+                        "strippedEntry": f"{label} -> disabled",
                         "dimension": "config",
                         "key": f"customMods:{blocks[i]['title']}",
                         "label": label,
@@ -418,6 +423,7 @@ def dewater_build_with_records(
                 worker.call("set_slot_active", {"slotName": slot_name, "active": False})
                 records.append(
                     {
+                        "strippedEntry": stripped["flasks"][-1],
                         "dimension": "flasks",
                         "key": slot_name,
                         "label": f"{slot_name} ({item_title})",
@@ -464,6 +470,7 @@ def dewater_build_with_records(
                 worker.call("set_gem", {**gem_ref, "enabled": False})
                 records.append(
                     {
+                        "strippedEntry": stripped["skills"][-1],
                         "dimension": "skills",
                         "key": disp,
                         "label": f"Group #{g_idx} {disp}",
@@ -481,6 +488,7 @@ def dewater_build_with_records(
                 worker.call("set_gem", {**gem_ref, "enableGlobal1": True, "enableGlobal2": False})
                 records.append(
                     {
+                        "strippedEntry": stripped["skills"][-1],
                         "dimension": "skills",
                         "key": disp,
                         "label": f"Group #{g_idx} {disp} (Vaal)",
@@ -504,15 +512,83 @@ def dewater_build_with_records(
             worker.call("party_action", {"action": "disable"})
             worker.call("party_action", {"action": "clear"})
 
+    # Read every stripped item back once: a write PoB silently ignored must not be
+    # listed as de-watered (its attribution would read a misleading zero delta).
+    cache: dict[str, Any] = {}
+    verified: list[dict[str, Any]] = []
+    for rec in records:
+        got = _probe_state(worker, rec["probe"], cache)
+        if not _same_state(got, rec["original"]):
+            verified.append(rec)
+            continue
+        stripped[rec["dimension"]].remove(rec["strippedEntry"])
+        if rec["probe"]["kind"] == "config" and _config_write_works(worker, rec):
+            # reset_config wrote PoB's default and the value did not move: it already
+            # was the default (e.g. conditionChampionIntimidate defaults to true).
+            stripped["atDefault"].append(f"{rec['label']} (PoB default, nothing to strip)")
+        else:
+            stripped["stripFailed"].append(f"{rec['label']}: PoB still reads {got!r} after de-watering")
+    records = verified
+
     stripped["keepRejected"] = _unmatched_keep(keep_set, known)
     return stripped, records
 
 
-def _probe_state(worker: BridgeWorker, probe: dict[str, Any]) -> Any:
-    """Read back from PoB the live state a record's restore/revert is meant to set."""
+def _alternate_config_value(item: dict[str, Any], val: Any) -> Any:
+    """A valid value different from ``val`` for this config option, or None if there is none."""
+    typ = item.get("type")
+    if typ == "check":
+        return not bool(val)
+    if typ in ("count", "integer", "countAllowZero", "float"):
+        try:
+            return 0 if float(val) != 0 else 1
+        except (TypeError, ValueError):
+            return 0
+    if typ == "list":
+        for opt in item.get("list") or []:
+            if str(opt.get("val")) != str(val):
+                return opt.get("val")
+        return None
+    if typ == "text":
+        return "" if val else "x"
+    return None
+
+
+def _config_write_works(worker: BridgeWorker, rec: dict[str, Any]) -> bool:
+    """True when PoB accepts a write to this var and reset_config lands back on ``original``.
+
+    Tells "the value already is PoB's default" apart from "PoB ignored the write";
+    the var is left reset (at its default) either way.
+    """
+    var = rec["probe"]["var"]
+    alt = _alternate_config_value(rec.get("cfgItem") or {}, rec["original"])
+    if alt is None:
+        return False
+    try:
+        worker.call("set_config", {"var": var, "value": alt})
+        moved = not _same_state(_probe_state(worker, rec["probe"]), rec["original"])
+    finally:
+        worker.call("reset_config", {"var": var})
+    return moved and _same_state(_probe_state(worker, rec["probe"]), rec["original"])
+
+
+def _probe_state(worker: BridgeWorker, probe: dict[str, Any], cache: dict[str, Any] | None = None) -> Any:
+    """Read back from PoB the live state a record's restore/revert is meant to set.
+
+    ``cache`` lets a caller read many items with one list call per kind; only pass it
+    while nothing is being written in between.
+    """
+
+    def fetch(method: str) -> dict[str, Any]:
+        if cache is None:
+            return worker.call(method, {})
+        if method not in cache:
+            cache[method] = worker.call(method, {})
+        return cache[method]
+
     kind = probe["kind"]
     if kind in ("config", "customMods"):
-        cfg = worker.call("list_config", {})
+        cfg = fetch("list_config")
         if kind == "customMods":
             return [
                 {"title": b.get("title") or "Default", "text": b.get("text") or "", "enabled": b.get("enabled", True)}
@@ -524,12 +600,12 @@ def _probe_state(worker: BridgeWorker, probe: dict[str, Any]) -> Any:
                     return item.get("value")
         return None
     if kind == "flask":
-        for slot in worker.call("list_items", {}).get("slots", []):
+        for slot in fetch("list_items").get("slots", []):
             if slot.get("name") == probe["slot"]:
                 return bool(slot.get("active"))
         return None
     if kind == "gem":
-        for group in worker.call("list_skills", {}).get("groups", []):
+        for group in fetch("list_skills").get("groups", []):
             if group.get("index") != probe["group"]:
                 continue
             for gem in group.get("gems", []):
@@ -640,6 +716,11 @@ def attribute_water(
             before = _probe_state(worker, probe) if probe else None
         except Exception as exc:  # noqa: BLE001
             row["error"] = f"cannot read state before restore: {exc}"
+            rows.append(row)
+            continue
+        if probe and _same_state(before, rec.get("original")):
+            # Restoring would change nothing, so a zero delta would be meaningless.
+            row["error"] = f"baseline not de-watered: PoB already reads the original value {before!r}"
             rows.append(row)
             continue
         try:
