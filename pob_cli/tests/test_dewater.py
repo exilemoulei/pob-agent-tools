@@ -281,6 +281,7 @@ def test_vaal_attribution_restores_original_base_skill_state(base_enabled: bool)
     _stripped, records = dewater_build_with_records(w)
     vaal_record = next(r for r in records if r["key"] == "Vaal Discipline")
     dewatered = w._snapshot()
+    assert w.gems[(3, 2)]["enabled"] is True
     assert w.gems[(3, 2)]["enableGlobal1"] is True
     assert w.gems[(3, 2)]["enableGlobal2"] is False
 
