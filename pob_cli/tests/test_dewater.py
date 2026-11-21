@@ -22,6 +22,7 @@ from pob_cli.analyzer import (
     dewater_build_with_records,
 )
 from pob_cli.comparator import run_matrix
+from pob_cli.mutators import _add_gem_with_default_skill_flags, _apply_config_in_place
 from pob_cli.snapshot import capture_digest
 
 
@@ -289,6 +290,74 @@ def test_vaal_attribution_restores_original_base_skill_state(base_enabled: bool)
     assert row["dpsDelta"] == (-50_000 if not base_enabled else 50_000)
     assert vaal_record["restore"][0][1]["enableGlobal1"] is base_enabled
     assert w._snapshot() == dewatered
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_added_gem_uses_pob_mcp_skill_defaults(enabled: bool) -> None:
+    class AddedGemWorker:
+        def __init__(self) -> None:
+            self.gem: dict[str, Any] = {}
+
+        def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "add_gem":
+                self.gem = {
+                    "index": 2, "enabled": params["enabled"],
+                    "enableGlobal1": True, "enableGlobal2": True,
+                }
+                return {"gem": dict(self.gem)}
+            if method == "set_gem":
+                assert params["group"] == 3 and params["index"] == 2
+                self.gem.update({k: params[k] for k in ("enableGlobal1", "enableGlobal2")})
+                return {"gem": dict(self.gem)}
+            raise AssertionError(f"unexpected bridge call {method}")
+
+    w = AddedGemWorker()
+    result = _add_gem_with_default_skill_flags(
+        w, {"group": 3, "nameSpec": "Vaal Discipline", "enabled": enabled}
+    )
+    assert result["gem"] == {
+        "index": 2, "enabled": enabled,
+        "enableGlobal1": True, "enableGlobal2": False,
+    }
+
+
+def test_config_list_values_and_boss_aliases_match_pob_mcp() -> None:
+    class ConfigWorker:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, Any]]] = []
+
+        def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append((method, params))
+            if method == "list_config":
+                return {"sections": [{"items": [
+                    {"var": "enemyIsBoss", "type": "list", "list": [
+                        {"val": "None", "label": "No"},
+                        {"val": "Boss", "label": "Standard Boss"},
+                        {"val": "Pinnacle", "label": "Guardian/Pinnacle Boss"},
+                    ]},
+                    {"var": "bandit", "type": "list", "list": [
+                        {"val": "None", "label": "Kill all"},
+                    ]},
+                    {"var": "usePowerCharges", "type": "check"},
+                ]}]}
+            if method in ("set_config", "reset_config"):
+                return {}
+            raise AssertionError(f"unexpected bridge call {method}")
+
+    w = ConfigWorker()
+    _apply_config_in_place(w, [
+        ("enemyIsBoss", "None"),
+        ("enemyIsBoss", "Shaper"),
+        ("bandit", "Kill all"),
+        ("usePowerCharges", "none"),
+    ])
+    edits = [(method, params) for method, params in w.calls if method != "list_config"]
+    assert edits == [
+        ("set_config", {"var": "enemyIsBoss", "value": "None"}),
+        ("set_config", {"var": "enemyIsBoss", "value": "Pinnacle"}),
+        ("set_config", {"var": "bandit", "value": "None"}),
+        ("reset_config", {"var": "usePowerCharges"}),
+    ]
 
 
 def test_attribute_water_reports_errors_per_item() -> None:

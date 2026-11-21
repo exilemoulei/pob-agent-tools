@@ -363,6 +363,20 @@ def modify_skill(
     return run_mutation(worker, _do_skill_set, apply=apply)
 
 
+def _add_gem_with_default_skill_flags(w: BridgeWorker, params: dict[str, Any]) -> dict[str, Any]:
+    """Match pob-mcp's added-gem defaults: base skill on, Vaal skill off."""
+    res = w.call("add_gem", params)
+    gem_index = (res.get("gem") or {}).get("index")
+    if gem_index is None:
+        raise RuntimeError("add_gem did not return the added gem index")
+    updated = w.call(
+        "set_gem",
+        {"group": params["group"], "index": gem_index, "enableGlobal1": True, "enableGlobal2": False},
+    )
+    res["gem"] = updated.get("gem", res["gem"])
+    return res
+
+
 def add_skill_gem(
     worker: BridgeWorker,
     *,
@@ -391,7 +405,7 @@ def add_skill_gem(
         else:
             add_params["nameSpec"] = gem_name.strip()
 
-        res = w.call("add_gem", add_params)
+        res = _add_gem_with_default_skill_flags(w, add_params)
         return {"groupIndex": g_idx, "addedGem": res, "resolvedCandidate": chosen}
 
     return run_mutation(worker, _do_add, apply=apply)
@@ -1117,23 +1131,43 @@ def _apply_config_in_place(
     touched_boss = False
 
     # Build case-insensitive config var lookup so e.g. MultiplierWitheredStackCount resolves to multiplierWitheredStackCount
-    known_vars: dict[str, str] = {}
+    known_vars: dict[str, dict[str, Any]] = {}
     if assignments:
         cfg_meta = w.call("list_config", {})
         for sec in cfg_meta.get("sections", []):
             for item in sec.get("items", []):
                 vname = item.get("var")
                 if vname:
-                    known_vars[str(vname).lower()] = str(vname)
+                    known_vars[str(vname).lower()] = item
 
     for raw_var, raw_val in assignments:
-        var = known_vars.get(str(raw_var).strip().lower(), str(raw_var).strip())
+        item = known_vars.get(str(raw_var).strip().lower(), {})
+        var = str(item.get("var") or str(raw_var).strip())
         v_str = str(raw_val).strip()
-        if v_str.lower() in ("reset", "none", "null", "default"):
+        list_options = item.get("list") or []
+        none_is_option = item.get("type") == "list" and any(
+            str(option.get("val")).lower() == "none" for option in list_options
+        )
+        if raw_val is None or v_str.lower() in ("reset", "null", "default", "__unset__") or (
+            v_str.lower() == "none" and not none_is_option
+        ):
             res = w.call("reset_config", {"var": var})
             applied_vars.append({"var": var, "action": "reset", "result": res})
         else:
             coerced = _coerce_config_value(raw_val)
+            if var == "enemyIsBoss" and isinstance(coerced, str):
+                coerced = {
+                    "shaper": "Pinnacle", "sirus": "Pinnacle",
+                    "uber atziri": "Boss", "atziri": "Boss",
+                }.get(coerced.lower(), coerced)
+            if item.get("type") == "list" and isinstance(coerced, str):
+                for option in list_options:
+                    if coerced.lower() in (
+                        str(option.get("val")).lower(),
+                        str(option.get("label") or "").lower(),
+                    ):
+                        coerced = option["val"]
+                        break
             res = w.call("set_config", {"var": var, "value": coerced})
             applied_vars.append({"var": var, "action": "set", "value": coerced, "result": res})
         if var in ("enemyIsBoss", "presetBossSkills"):
@@ -1455,7 +1489,7 @@ def run_batch(
                         add_params["nameSpec"] = cand.get("name") or gem_name
                     else:
                         add_params["nameSpec"] = gem_name
-                    w.call("add_gem", add_params)
+                    _add_gem_with_default_skill_flags(w, add_params)
                 elif op.get("removeGem") is not None:
                     t_gem = _resolve_gem_in_group(group, op["removeGem"])
                     w.call("delete_gem", {"group": g_idx, "index": t_gem["index"]})
