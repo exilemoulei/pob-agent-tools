@@ -237,6 +237,59 @@ def test_attribute_water_measures_each_item_alone_and_reverts() -> None:
     assert w._snapshot() == before
 
 
+@pytest.mark.parametrize("base_enabled", [False, True])
+def test_vaal_attribution_restores_original_base_skill_state(base_enabled: bool) -> None:
+    class VaalWorker(FakeWorker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.gems[(3, 2)] = {
+                "enabled": True,
+                "enableGlobal1": base_enabled,
+                "enableGlobal2": True,
+            }
+
+        def _stats(self) -> dict[str, Any]:
+            stats = super()._stats()
+            vaal = self.gems[(3, 2)]
+            stats["CombinedDPS"] += (
+                (100_000 if vaal["enableGlobal1"] else 0)
+                + (50_000 if vaal["enableGlobal2"] else 0)
+            )
+            return stats
+
+        def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "list_skills":
+                result = super().call(method, params)
+                result["groups"][0]["gems"].append(
+                    {
+                        "index": 2,
+                        "name": "Vaal Discipline",
+                        "nameSpec": "Vaal Discipline",
+                        "skillId": "VaalDiscipline",
+                        **self.gems[(3, 2)],
+                    }
+                )
+                return result
+            if method == "set_gem" and params["index"] == 2:
+                self.gems[(3, 2)].update(
+                    {k: params[k] for k in ("enableGlobal1", "enableGlobal2") if k in params}
+                )
+                return {}
+            return super().call(method, params)
+
+    w = VaalWorker()
+    _stripped, records = dewater_build_with_records(w)
+    vaal_record = next(r for r in records if r["key"] == "Vaal Discipline")
+    dewatered = w._snapshot()
+    assert w.gems[(3, 2)]["enableGlobal1"] is True
+    assert w.gems[(3, 2)]["enableGlobal2"] is False
+
+    row = attribute_water(w, [vaal_record], capture_digest(w), "CombinedDPS")[0]
+    assert row["dpsDelta"] == (-50_000 if not base_enabled else 50_000)
+    assert vaal_record["restore"][0][1]["enableGlobal1"] is base_enabled
+    assert w._snapshot() == dewatered
+
+
 def test_attribute_water_reports_errors_per_item() -> None:
     w = FakeWorker()
     base = capture_digest(w)

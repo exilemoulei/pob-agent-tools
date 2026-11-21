@@ -414,6 +414,7 @@ def dewater_build_with_records(
                     }
                 )
             else:
+                original_base_enabled = gem.get("enableGlobal1", True)
                 stripped["skills"].append(
                     f"Group #{g_idx} Gem #{gem['index']} ({disp}) -> enableGlobal2=False (base skill kept)"
                 )
@@ -423,7 +424,7 @@ def dewater_build_with_records(
                         "dimension": "skills",
                         "key": disp,
                         "label": f"Group #{g_idx} {disp} (Vaal)",
-                        "restore": [("set_gem", {**gem_ref, "enableGlobal1": True, "enableGlobal2": True})],
+                        "restore": [("set_gem", {**gem_ref, "enableGlobal1": original_base_enabled, "enableGlobal2": True})],
                         "revert": [("set_gem", {**gem_ref, "enableGlobal1": True, "enableGlobal2": False})],
                     }
                 )
