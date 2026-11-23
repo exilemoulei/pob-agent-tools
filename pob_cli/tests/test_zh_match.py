@@ -62,6 +62,8 @@ def test_fold_han_equates_scripts() -> None:
 def test_search_folds_apply_to_both_sides() -> None:
     assert _fold_search_text("聖宗") == _fold_search_text("圣宗")
     assert _norm_calc_text("魔力回復") == _norm_calc_text("魔力回复")
+    # PoB's "Recovery" row: 恢復 in zh-rTW, 回复 in zh-rCN; the section label 魔力 precedes it.
+    assert _norm_calc_text("魔力恢復") == _norm_calc_text("魔力回复")
 
 
 def test_named_option_matches_traditional_label_by_fold(english_lookup: dict[str, str]) -> None:
