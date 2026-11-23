@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -187,7 +187,18 @@ jobs:
           cp -R runtime-dist/bin "$POB_RUNTIME_DIR/engine/bin"
 
           # Live bootstrap: fetches official PoB PoE1/ + PobTools Data/bridge/bridge.lua and passes gate_result!
-          pob bootstrap --no-zh --json
+          # raw.githubusercontent.com intermittently answers 503 under load; retry with backoff.
+          for attempt in 1 2 3; do
+            if pob bootstrap --no-zh --json; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "pob bootstrap failed after $attempt attempts" >&2
+              exit 1
+            fi
+            echo "::warning::pob bootstrap attempt $attempt failed; retrying in $((attempt * 20))s"
+            sleep $((attempt * 20))
+          done
 
           # Load a minimal PoB XML build with a Fireball skill group to verify full calculation, Inflate/Deflate, mutation, and matrix
           cat > "$RUNNER_TEMP/test_build.xml" <<'EOF'
