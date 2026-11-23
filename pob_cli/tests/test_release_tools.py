@@ -9,9 +9,11 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from ed25519_sign import TEST_PUBLIC_KEY, sign_sums_text
 
 REPO = Path(__file__).resolve().parents[2]
 VERSION = "0.9.0"
+KEYS = (TEST_PUBLIC_KEY,)
 
 
 @pytest.fixture(scope="module")
@@ -36,7 +38,8 @@ def _full_release(rt: ModuleType, root: Path) -> Path:
     rt.pack_windows(_fake_dist(root), out, VERSION)
     for name in rt.python_asset_names(VERSION):
         (out / name).write_bytes(b"python-dist " + name.encode())
-    rt.write_sums(out)
+    sums = rt.write_sums(out)
+    (out / "SHA256SUMS.txt.sig").write_text(sign_sums_text(sums.read_bytes()), encoding="ascii")
     return out
 
 
@@ -67,14 +70,23 @@ def test_sums_are_lf_coreutils_format(rt: ModuleType, tmp_path: Path) -> None:
     raw = (out / "SHA256SUMS.txt").read_bytes()
     assert b"\r" not in raw
     sums = rt.parse_sums(raw.decode())
-    assert set(sums) == rt.expected_assets(VERSION, ["windows-x64"]) - {"SHA256SUMS.txt"}
+    assert set(sums) == rt.expected_assets(VERSION, ["windows-x64"]) - {"SHA256SUMS.txt", "SHA256SUMS.txt.sig"}
 
 
 def test_verify_accepts_a_complete_release(rt: ModuleType, tmp_path: Path) -> None:
-    assert rt.verify(_full_release(rt, tmp_path), VERSION, ["windows-x64"]) == []
+    assert rt.verify(_full_release(rt, tmp_path), VERSION, ["windows-x64"], KEYS) == []
 
 
-@pytest.mark.parametrize("damage", ["missing", "extra", "tampered", "alias"])
+def test_verify_needs_a_known_key(rt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    out = _full_release(rt, tmp_path)
+    assert any("no release public key" in p for p in rt.verify(out, VERSION, ["windows-x64"]))
+    other = rt.signature_module()
+    monkeypatch.setattr(rt, "signature_module", lambda: other)
+    monkeypatch.setattr(other, "RELEASE_PUBLIC_KEYS", KEYS)
+    assert rt.verify(out, VERSION, ["windows-x64"]) == []
+
+
+@pytest.mark.parametrize("damage", ["missing", "extra", "tampered", "alias", "unsigned", "resigned-sums"])
 def test_verify_reports_damage(rt: ModuleType, tmp_path: Path, damage: str) -> None:
     out = _full_release(rt, tmp_path)
     if damage == "missing":
@@ -83,10 +95,17 @@ def test_verify_reports_damage(rt: ModuleType, tmp_path: Path, damage: str) -> N
         (out / "notes.txt").write_text("x", encoding="utf-8")
     elif damage == "tampered":
         (out / "pob_cli-0.9.0.tar.gz").write_bytes(b"swapped")
-    else:
+    elif damage == "alias":
         (out / "pob4agents-windows-x64.zip").write_bytes(b"other")
+        sums = rt.write_sums(out)
+        (out / "SHA256SUMS.txt.sig").write_text(sign_sums_text(sums.read_bytes()), encoding="ascii")
+    elif damage == "unsigned":
+        (out / "SHA256SUMS.txt.sig").unlink()
+    else:
+        # A swapped file with a matching, but unsigned, SHA256SUMS.txt: what a hostile mirror can do.
+        (out / "pob_cli-0.9.0.tar.gz").write_bytes(b"swapped")
         rt.write_sums(out)
-    problems = rt.verify(out, VERSION, ["windows-x64"])
+    problems = rt.verify(out, VERSION, ["windows-x64"], KEYS)
     assert problems, damage
 
 
@@ -109,9 +128,10 @@ def test_scoop_manifest_points_at_new_name(rt: ModuleType, tmp_path: Path) -> No
 
 def test_cli_verify_exit_codes(rt: ModuleType, tmp_path: Path) -> None:
     out = _full_release(rt, tmp_path)
-    assert rt.main(["verify", "--dir", str(out), "--version", VERSION]) == 0
+    args = ["verify", "--dir", str(out), "--version", VERSION, "--public-key", TEST_PUBLIC_KEY]
+    assert rt.main(args) == 0
     (out / "pob4agents-0.9.0-windows-x64.zip").unlink()
-    assert rt.main(["verify", "--dir", str(out), "--version", VERSION]) == 1
+    assert rt.main(args) == 1
 
 
 def test_notes_name_the_wheel_and_attestations(rt: ModuleType) -> None:

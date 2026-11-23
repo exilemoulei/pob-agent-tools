@@ -83,6 +83,12 @@ jobs:
         run: |
           python -m pytest pob_cli/tests -v
 
+      - name: Check install.ps1's Ed25519 verifier (PowerShell 7 and Windows PowerShell 5.1)
+        run: |
+          ./install.ps1 -SelfTest
+          powershell -NoProfile -ExecutionPolicy Bypass -File ./install.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 -SelfTest failed under Windows PowerShell 5.1" }
+
       - name: Verify installed CLI entry point
         run: |
           pob --version

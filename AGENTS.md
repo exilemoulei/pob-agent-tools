@@ -51,7 +51,7 @@ Releases are cut by bumping `__version__` in `pob_cli/src/pob_cli/__init__.py` a
 - **Chinese text.** The Windows engine shows Traditional names by default, while queries and the local dictionary are Simplified. Compare Chinese labels only after `game_data.fold_han`, and fall back to the English name from `game_data.english_for_zh`.
 - **Exit codes are a contract:** `1` for a bad request, `5` for a daemon or engine fault with a clean `Error: ...` line, `0`..`6` for trade. Agents branch on them.
 - **Docs move with the code.** A changed command or flag updates `docs/guides/commands.md`, both READMEs (`README.md` in Chinese, `README_EN.md`) and `skills/pob/SKILL.md` when it touches a recipe. A new doc goes into `docs/` and its index.
-- **Supply chain.** Every `uses:` in a workflow is pinned to a commit SHA with a `# vX.Y.Z` comment; Dependabot bumps Actions and the uv lockfile.
+- **Supply chain.** Every `uses:` in a workflow is pinned to a commit SHA with a `# vX.Y.Z` comment; Dependabot bumps Actions and the uv lockfile. Anything pob or an installer downloads from a release is trusted only through the Ed25519-signed `SHA256SUMS.txt` (`updater/signature.py`, `install.ps1`); keep the two public-key lists equal.
 
 ## Commits
 

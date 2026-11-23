@@ -5,24 +5,34 @@ agree on one list. Assets are `pob4agents-<version>-<platform>.<ext>`, with a ve
 `pob4agents-<platform>.<ext>` for `/releases/latest/download/<name>`. Windows also keeps the names
 releases up to v0.8.0 used (`pob-v<version>-windows-x64.zip`, `pob-windows-x64.zip`), because
 saved install scripts, pinned versions and README links still request them.
+
+`SHA256SUMS.txt.sig` is the Ed25519 signature of `SHA256SUMS.txt` (base64), made with OpenSSL from the
+`RELEASE_SIGNING_KEY` secret and checked against the public keys in
+`pob_cli/src/pob_cli/updater/signature.py`, the same check pob and install.ps1 run.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import importlib.util
 import json
 import re
 import shutil
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from types import ModuleType
 
 REPO_SLUG = "exilemoulei/pob4agents"
 PRODUCT = "pob4agents"
 DIST_NAME = "pob_cli"
 """Normalized distribution name in wheel and sdist file names."""
 SUMS_NAME = "SHA256SUMS.txt"
+SIG_NAME = "SHA256SUMS.txt.sig"
+SIGNATURE_MODULE = Path(__file__).resolve().parents[1] / "src" / "pob_cli" / "updater" / "signature.py"
 WINDOWS = "windows-x64"
 PLATFORM_EXT = {WINDOWS: "zip"}
 LEGACY_WINDOWS_ALIAS = "pob-windows-x64.zip"
@@ -63,7 +73,7 @@ def python_asset_names(version: str) -> list[str]:
 
 
 def expected_assets(version: str, platforms: list[str]) -> set[str]:
-    names = {SUMS_NAME, *python_asset_names(version)}
+    names = {SUMS_NAME, SIG_NAME, *python_asset_names(version)}
     for platform in platforms:
         names.update(platform_asset_names(version, platform))
     return names
@@ -103,11 +113,53 @@ def write_sums(asset_dir: Path) -> Path:
     lines = [
         f"{_sha256(p)}  {p.name}"
         for p in sorted(asset_dir.iterdir())
-        if p.is_file() and p.name != SUMS_NAME
+        if p.is_file() and p.name not in (SUMS_NAME, SIG_NAME)
     ]
     sums = asset_dir / SUMS_NAME
     sums.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     return sums
+
+
+def signature_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("pob_release_signature", SIGNATURE_MODULE)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load {SIGNATURE_MODULE}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _openssl(*args: str, data: bytes | None = None) -> bytes:
+    proc = subprocess.run(["openssl", *args], input=data, capture_output=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"openssl {args[0]} failed: {proc.stderr.decode(errors='replace').strip()}")
+    return proc.stdout
+
+
+def public_key_of(key_pem: Path) -> str:
+    """Base64 raw 32-byte public key of an Ed25519 private key PEM (the last 32 bytes of its SPKI DER)."""
+    der = _openssl("pkey", "-in", str(key_pem), "-pubout", "-outform", "DER")
+    return base64.b64encode(der[-32:]).decode()
+
+
+def sign_sums(asset_dir: Path, key_pem: Path) -> Path:
+    """Write SHA256SUMS.txt.sig: the base64 Ed25519 signature of SHA256SUMS.txt's exact bytes."""
+    sums = Path(asset_dir) / SUMS_NAME
+    raw = _openssl("pkeyutl", "-sign", "-rawin", "-inkey", str(key_pem), "-in", str(sums))
+    if len(raw) != 64:
+        raise RuntimeError(f"Expected a 64-byte Ed25519 signature, got {len(raw)} bytes")
+    sig = Path(asset_dir) / SIG_NAME
+    sig.write_text(base64.b64encode(raw).decode() + "\n", encoding="ascii", newline="\n")
+    return sig
+
+
+def keygen(out: Path) -> str:
+    """Create an Ed25519 private key PEM (mode 600) and return its base64 public key."""
+    if out.exists():
+        raise FileExistsError(f"{out} exists; refusing to overwrite a key")
+    _openssl("genpkey", "-algorithm", "ed25519", "-out", str(out))
+    out.chmod(0o600)
+    return public_key_of(out)
 
 
 def parse_sums(text: str) -> dict[str, str]:
@@ -124,8 +176,13 @@ def parse_sums(text: str) -> dict[str, str]:
     return out
 
 
-def verify(asset_dir: Path, version: str, platforms: list[str]) -> list[str]:
-    """Problems with a release's files: exact file set, checksums, aliases, archive layout."""
+def verify(
+    asset_dir: Path, version: str, platforms: list[str], keys: tuple[str, ...] | None = None
+) -> list[str]:
+    """Problems with a release's files: exact file set, signature, checksums, aliases, archive layout.
+
+    `keys` defaults to the public keys pob ships; dry runs pass their throwaway key.
+    """
     asset_dir = Path(asset_dir)
     problems: list[str] = []
     present = {p.name for p in asset_dir.iterdir() if p.is_file()}
@@ -138,7 +195,15 @@ def verify(asset_dir: Path, version: str, platforms: list[str]) -> list[str]:
         sums = parse_sums((asset_dir / SUMS_NAME).read_text(encoding="utf-8"))
     except ValueError as exc:
         return [*problems, str(exc)]
-    for name in sorted(present - {SUMS_NAME}):
+    sig = asset_dir / SIG_NAME
+    if sig.is_file():
+        sums_bytes = (asset_dir / SUMS_NAME).read_bytes()
+        mod = signature_module()
+        if keys is None and not mod.RELEASE_PUBLIC_KEYS:
+            problems.append("no release public key in updater/signature.py; nothing can verify this release")
+        elif not mod.verify_sums(sums_bytes, sig.read_text(encoding="ascii"), keys):
+            problems.append(f"{SIG_NAME} does not verify {SUMS_NAME} against the release public keys")
+    for name in sorted(present - {SUMS_NAME, SIG_NAME}):
         if name not in sums:
             problems.append(f"{name} has no {SUMS_NAME} entry")
         elif sums[name] != _sha256(asset_dir / name):
@@ -196,7 +261,7 @@ uv tool install "https://github.com/{REPO_SLUG}/releases/download/{tag}/{wheel}"
 
 Then run `pob bootstrap` once (add `--proxy http://127.0.0.1:7890` if GitHub needs a proxy) to install the PoB engine.
 
-Every file is listed in `{SUMS_NAME}`, and each has a build attestation: `gh attestation verify <file> -R {REPO_SLUG}`.
+Every file is listed in `{SUMS_NAME}`, signed in `{SIG_NAME}` (Ed25519), and each has a build attestation: `gh attestation verify <file> -R {REPO_SLUG}`.
 """
 
 
@@ -209,10 +274,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--version", required=True)
     p = sub.add_parser("sums", help=f"write {SUMS_NAME} for a directory")
     p.add_argument("--dir", type=Path, required=True)
+    p = sub.add_parser("sign", help=f"write {SIG_NAME} with an Ed25519 private key PEM")
+    p.add_argument("--dir", type=Path, required=True)
+    p.add_argument("--key", type=Path, required=True)
+    p = sub.add_parser("pubkey", help="print the base64 public key of a private key PEM")
+    p.add_argument("--key", type=Path, required=True)
+    p = sub.add_parser("keygen", help="create a release signing key (for the repository owner)")
+    p.add_argument("--out", type=Path, required=True)
     p = sub.add_parser("verify", help="check a directory holds exactly one release's files")
     p.add_argument("--dir", type=Path, required=True)
     p.add_argument("--version", required=True)
     p.add_argument("--platforms", default=WINDOWS, help="comma-separated, e.g. windows-x64")
+    p.add_argument("--public-key", action="append", help="base64 key to verify with instead of pob's")
     p = sub.add_parser("update-scoop", help="point bucket/pob.json at a release")
     p.add_argument("--manifest", type=Path, required=True)
     p.add_argument("--version", required=True)
@@ -227,9 +300,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"zip_sha256={zip_sha}")
     elif args.cmd == "sums":
         print(write_sums(args.dir).read_text(encoding="utf-8"), end="")
+    elif args.cmd == "sign":
+        print(sign_sums(args.dir, args.key))
+    elif args.cmd == "pubkey":
+        print(public_key_of(args.key))
+    elif args.cmd == "keygen":
+        public_key = keygen(args.out)
+        print(f"Private key: {args.out} (keep it offline; never commit it)")
+        print(f"Public key:  {public_key}")
+        print("1. Add the PEM file's full text as the repository secret RELEASE_SIGNING_KEY.")
+        print("2. Add the public key to RELEASE_PUBLIC_KEYS in pob_cli/src/pob_cli/updater/signature.py")
+        print("   and to $ReleasePublicKeys in install.ps1, in a commit released before the key signs.")
     elif args.cmd == "verify":
         platforms = [p for p in args.platforms.split(",") if p]
-        problems = verify(args.dir, check_version(args.version), platforms)
+        keys = tuple(args.public_key) if args.public_key else None
+        problems = verify(args.dir, check_version(args.version), platforms, keys)
         for problem in problems:
             print(f"FAIL {problem}", file=sys.stderr)
         if problems:

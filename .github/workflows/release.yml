@@ -232,12 +232,33 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Write SHA256SUMS.txt and verify the file set
+      - name: Write and sign SHA256SUMS.txt, then verify the file set
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          DRY_RUN: ${{ needs.prepare.outputs.dry_run }}
+          # Only tag runs ever see the release key; pull requests and branch dry runs get an empty value.
+          SIGNING_KEY: ${{ github.ref_type == 'tag' && secrets.RELEASE_SIGNING_KEY || '' }}
         run: |
-          python pob_cli/packaging/release_tools.py sums --dir release-assets
-          python pob_cli/packaging/release_tools.py verify --dir release-assets --version "$VERSION"
+          set -euo pipefail
+          tools=pob_cli/packaging/release_tools.py
+          key="$RUNNER_TEMP/release-signing-key.pem"
+          trap 'rm -f "$key"' EXIT
+          python "$tools" sums --dir release-assets
+          if [ "$DRY_RUN" = true ]; then
+            # Dry runs exercise signing with a throwaway key and verify against it.
+            python "$tools" keygen --out "$key" > /dev/null
+            verify_keys=(--public-key "$(python "$tools" pubkey --key "$key")")
+          else
+            if [ -z "$SIGNING_KEY" ]; then
+              echo "::error::The RELEASE_SIGNING_KEY secret is not set; releases must be signed."
+              exit 1
+            fi
+            (umask 077; printf '%s\n' "$SIGNING_KEY" > "$key")
+            verify_keys=()
+          fi
+          python "$tools" sign --dir release-assets --key "$key"
+          rm -f "$key"
+          python "$tools" verify --dir release-assets --version "$VERSION" "${verify_keys[@]}"
 
       - name: Upload release assets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
