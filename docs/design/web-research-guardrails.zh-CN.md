@@ -1,4 +1,4 @@
-# `pob4agents` 联网机制核验与「犹豫即强搜」硬护栏施工方案 (`docs/WEB_RESEARCH_GUARDRAILS_PLAN.md`)
+# `pob4agents` 联网机制核验与「犹豫即强搜」硬护栏施工方案 (`docs/design/web-research-guardrails.zh-CN.md`)
 
 > **当前状态**：已完成并验收通过（Completed & Verified）—— 承接 `debd050`，4 层架构（`pob research` + PoEDB 本地 8,468 条双语索引精确匹配 + 长句自动拆词 `[AUTO-SPLIT]` + `--mods` 常规前后缀置顶与 `--filter` + `pob wiki` 机制小节优先提取 + Gate 1 `[MECHANICS-RESEARCH-REQUIRED]` + Gate 2 `grep`/`glob`/`read` 禁扫引擎 Lua + Gate 3 V5 犹豫即强搜闸门 + 万古之剑双 `30% less` 提示卡统一 + DSH 插件/Skill/文档同步）已通过全量离线门禁（`check.py --fast` 1.47s / `--self-test` 5/5 / 全量 pytest `966 passed, 1 skipped` / `verify-plugin.mjs` OK）与 `bot:测试大肥鱼` 两轮多模型实测（DeepSeek V4.1 Flash + 2 路 Gemini 4 Hydrogen：主动联网率 100%、犹豫词 0%、Q6 零误伤 PASS、Round 2 全部 5 项 P0/P1/P2 修复 5/5 验收通过且 GT 10/10 满分），就绪等待主人确认提交推送与 `v0.8.0` 发版。
 

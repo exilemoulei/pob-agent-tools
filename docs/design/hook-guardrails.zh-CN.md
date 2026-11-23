@@ -1,4 +1,4 @@
-# `pob4agents` Hook 硬护栏与防「假执行」施工方案 (`docs/HOOK_GUARDRAILS_PLAN.md`)
+# `pob4agents` Hook 硬护栏与防「假执行」施工方案 (`docs/design/hook-guardrails.zh-CN.md`)
 
 > **当前状态**：已完成并经 4 轮实机验收闭环（Completed & Verified）—— 三阶段施工、4 轮 DeepSeek V4.1 Flash 红队实测闭环（R1–R5 安全硬防线全过、R3 提速 -43.2%、R4 现场真拦强辅 CoC 幻觉并纠偏、R5 零误伤 PASS、并发 `POB_HOOK_SESSION_ID` 100% 隔离）、29/29 实测草稿离线回放（0 误伤 / 5/5 真幻觉命中）与全量门禁全绿：`check.py --fast`（1.44s, `ruff=0, arch=0`）、`check.py --self-test`（5/5 PASS）、全量 `check.py`（944 passed, 0 failed, 1 skipped）与 `verify-plugin.mjs`（`VERIFY_PLUGIN_OK`）。
 
