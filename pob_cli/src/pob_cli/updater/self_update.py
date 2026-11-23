@@ -101,7 +101,10 @@ def _checked_at(value: Any) -> float:
     cache is refreshed instead of breaking the command that reads it."""
     if isinstance(value, bool) or not isinstance(value, int | float):
         return 0.0
-    return float(value) if math.isfinite(value) else 0.0
+    try:
+        return float(value) if math.isfinite(value) else 0.0
+    except OverflowError:  # an int too large for a float
+        return 0.0
 
 
 def pending_notice(runtime_dir: Path, now: float | None = None) -> tuple[str | None, bool]:
@@ -391,6 +394,8 @@ def windows_swap_script(pid: int, current: Path, new_dir: Path, version: str) ->
             "  Write-Result $true ''",
             "} catch {",
             "  Write-Result $false $_.Exception.Message",
+            "  # Keep the download only when the rollback failed too, so the user can recover from it.",
+            "  if (Test-Path -LiteralPath $current) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }",
             "  exit 1",
             "}",
         ]

@@ -144,6 +144,8 @@ def test_windows_swap_script_waits_retries_and_reports() -> None:
     # Records the outcome where the next pob run looks for it.
     assert f"$result = '{self_update.swap_result_path(current)}'" in script
     assert "Write-Result $false $_.Exception.Message" in script and f"version = '{NEW}'" in script
+    # A failed swap drops its download unless the rollback failed too.
+    assert "if (Test-Path -LiteralPath $current) { Remove-Item -LiteralPath $staging" in script
 
 
 def test_schedule_windows_swap_starts_outside_the_install(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -277,7 +279,7 @@ def test_no_notice_without_a_terminal(monkeypatch: pytest.MonkeyPatch, tmp_path:
 # --- Faults: a damaged cache, the network, the disk, a second update, a failed Windows swap ------
 
 
-@pytest.mark.parametrize("checked_at", ["x", [1], {"a": 1}, None, True, float("nan"), float("inf")])
+@pytest.mark.parametrize("checked_at", ["x", [1], {"a": 1}, None, True, float("nan"), float("inf"), 10**400])
 def test_damaged_cache_counts_as_never_checked(tmp_path: Path, checked_at: object) -> None:
     (tmp_path / self_update.CHECK_FILENAME).write_text(
         json.dumps({"checkedAt": checked_at, "latest": f"v{NEW}"}), encoding="utf-8"
