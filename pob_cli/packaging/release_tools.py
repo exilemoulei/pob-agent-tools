@@ -33,8 +33,10 @@ from types import ModuleType
 
 REPO_SLUG = "exilemoulei/pob4agents"
 PRODUCT = "pob4agents"
-DIST_NAME = "pob_cli"
-"""Normalized distribution name in wheel and sdist file names."""
+DIST_NAME = "pob4agents"
+"""Distribution name on PyPI and in wheel and sdist file names (`pob_cli` up to v0.8.0)."""
+SHIM_NAME = "pob-cli"
+"""The distribution's earlier name, kept on PyPI as an alias that installs pob4agents."""
 SUMS_NAME = "SHA256SUMS.txt"
 SIG_NAME = "SHA256SUMS.txt.sig"
 SIGNATURE_MODULE = Path(__file__).resolve().parents[1] / "src" / "pob_cli" / "updater" / "signature.py"
@@ -314,6 +316,48 @@ def verify(
     return problems
 
 
+def write_shim_project(out_dir: Path, version: str) -> Path:
+    """Write the `pob-cli` PyPI alias: no code, the same `pob` command, pinned to pob4agents==version.
+
+    `pip install pob-cli` and `uv tool install pob-cli` keep working under the old name. It is built
+    and published to PyPI next to pob4agents, never attached to the GitHub release.
+    """
+    check_version(version)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "README.md").write_text(
+        f"# pob-cli\n\n`pob-cli` is the earlier name of [pob4agents](https://pypi.org/project/{DIST_NAME}/). "
+        f"This package only installs `{DIST_NAME}=={version}` and its `pob` command.\n",
+        encoding="utf-8",
+    )
+    (out_dir / "pyproject.toml").write_text(
+        f"""[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "{SHIM_NAME}"
+version = "{version}"
+description = "Earlier name of pob4agents; installs pob4agents"
+readme = "README.md"
+license = {{ text = "GPL-3.0-or-later" }}
+requires-python = ">=3.11"
+dependencies = ["{DIST_NAME}=={version}"]
+
+[project.urls]
+Homepage = "https://github.com/{REPO_SLUG}"
+
+[project.scripts]
+pob = "pob_cli.cli:main"
+
+[tool.setuptools]
+packages = []
+""",
+        encoding="utf-8",
+    )
+    return out_dir
+
+
 def update_scoop_manifest(manifest_path: Path, version: str, sha256: str) -> None:
     """Point `bucket/pob.json` at a release; the app stays `pob` so `scoop update pob` keeps working."""
     check_version(version)
@@ -394,6 +438,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--manifest", type=Path, required=True)
     p.add_argument("--version", required=True)
     p.add_argument("--sha256", required=True)
+    p = sub.add_parser("shim", help=f"write the {SHIM_NAME} PyPI alias project for a version")
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--version", required=True)
     p = sub.add_parser("notes", help="print the install section of the release notes")
     p.add_argument("--version", required=True)
     args = parser.parse_args(argv)
@@ -428,6 +475,8 @@ def main(argv: list[str] | None = None) -> int:
         if problems:
             return 1
         print(f"OK {len(expected_assets(args.version, platforms))} files for {args.version}")
+    elif args.cmd == "shim":
+        print(write_shim_project(args.out, args.version))
     elif args.cmd == "update-scoop":
         update_scoop_manifest(args.manifest, args.version, args.sha256)
     elif args.cmd == "notes":

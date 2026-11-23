@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 from .. import __version__
 
-USER_AGENT = f"pob-cli/{__version__} (+https://github.com/exilemoulei/pob4agents)"
+USER_AGENT = f"pob4agents/{__version__} (+https://github.com/exilemoulei/pob4agents)"
 
 POBTOOLS_LATEST_URL = "https://github.com/Hsiung-Shao/PobTools-zh/releases/latest"
 POBTOOLS_DOWNLOAD_BASE = "https://github.com/Hsiung-Shao/PobTools-zh/releases/download"

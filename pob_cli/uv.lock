@@ -165,7 +165,7 @@ wheels = [
 ]
 
 [[package]]
-name = "pob-cli"
+name = "pob4agents"
 source = { editable = "." }
 dependencies = [
     { name = "click" },

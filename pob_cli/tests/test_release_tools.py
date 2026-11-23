@@ -114,7 +114,7 @@ def test_verify_reports_damage(rt: ModuleType, tmp_path: Path, damage: str) -> N
     elif damage == "extra":
         (out / "notes.txt").write_text("x", encoding="utf-8")
     elif damage == "tampered":
-        (out / "pob_cli-0.9.0.tar.gz").write_bytes(b"swapped")
+        (out / "pob4agents-0.9.0.tar.gz").write_bytes(b"swapped")
     elif damage == "alias":
         (out / "pob4agents-windows-x64.zip").write_bytes(b"other")
         sums = rt.write_sums(out)
@@ -123,7 +123,7 @@ def test_verify_reports_damage(rt: ModuleType, tmp_path: Path, damage: str) -> N
         (out / "SHA256SUMS.txt.sig").unlink()
     else:
         # A swapped file with a matching, but unsigned, SHA256SUMS.txt: what a hostile mirror can do.
-        (out / "pob_cli-0.9.0.tar.gz").write_bytes(b"swapped")
+        (out / "pob4agents-0.9.0.tar.gz").write_bytes(b"swapped")
         rt.write_sums(out)
     problems = rt.verify(out, VERSION, ["windows-x64"], KEYS)
     assert problems, damage
@@ -157,7 +157,7 @@ def test_cli_verify_exit_codes(rt: ModuleType, tmp_path: Path) -> None:
 
 def test_notes_name_the_wheel_and_attestations(rt: ModuleType) -> None:
     notes = rt.release_notes(VERSION)
-    assert "releases/download/v0.9.0/pob_cli-0.9.0-py3-none-any.whl" in notes
+    assert "releases/download/v0.9.0/pob4agents-0.9.0-py3-none-any.whl" in notes
     assert "gh attestation verify" in notes
 
 
@@ -195,3 +195,17 @@ def test_verify_rejects_a_build_without_executable_pob(rt: ModuleType, tmp_path:
     (out / "SHA256SUMS.txt.sig").write_text(sign_sums_text(sums.read_bytes()), encoding="ascii")
     problems = rt.verify(out, VERSION, ["linux-x64"], KEYS)
     assert "pob4agents-0.9.0-linux-x64.tar.gz has no executable pob" in problems
+
+
+def test_shim_installs_pob4agents_under_the_old_name(rt: ModuleType, tmp_path: Path) -> None:
+    import tomllib
+
+    project = rt.write_shim_project(tmp_path / "shim", VERSION)
+    data = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert data["name"] == "pob-cli"
+    assert data["version"] == VERSION
+    assert data["dependencies"] == ["pob4agents==0.9.0"]
+    main = tomllib.loads((REPO / "pob_cli" / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert main["name"] == "pob4agents"
+    assert data["scripts"] == main["scripts"]
+    assert data["requires-python"] == main["requires-python"]

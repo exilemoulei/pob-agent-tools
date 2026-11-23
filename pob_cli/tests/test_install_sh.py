@@ -52,7 +52,7 @@ class _Release:
     def publish(self, *, runs: bool = True, sign: bool = True, tamper: bool = False) -> None:
         files = {
             f"pob4agents-9.9.9-{_platform()}.tar.gz": _build_tar(runs),
-            "pob_cli-9.9.9-py3-none-any.whl": b"fake wheel",
+            "pob4agents-9.9.9-py3-none-any.whl": b"fake wheel",
         }
         sums = "".join(f"{hashlib.sha256(d).hexdigest()}  {n}\n" for n, d in sorted(files.items())).encode()
         if tamper:
@@ -113,6 +113,13 @@ def run_installer(tmp_path: Path, release: tuple[_Release, str]):  # type: ignor
     for tool in ("uv", "pipx"):
         (shims / tool).write_text(f'#!/bin/sh\necho "{tool} $*" >> "{log}"\n', encoding="utf-8")
         (shims / tool).chmod(0o755)
+    # python3 runs the signature check for real but never reaches the user's pip.
+    (shims / "python3").write_text(
+        f'#!/bin/sh\nif [ "$1" = -m ] && [ "$2" = pip ]; then echo "python3 $*" >> "{log}"; exit 1; fi\n'
+        f'exec "{sys.executable}" "$@"\n',
+        encoding="utf-8",
+    )
+    (shims / "python3").chmod(0o755)
     env = {
         k: v for k, v in os.environ.items() if not k.upper().endswith("_PROXY") and not k.startswith("POB_")
     }
@@ -178,13 +185,13 @@ def test_refuses_a_signature_by_another_key(release: tuple[_Release, str], run_i
     assert "not signed by a pob4agents release key" in proc.stderr
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="the fallback needs python3 >= 3.11 on PATH")
 def test_falls_back_to_the_verified_wheel(release: tuple[_Release, str], run_installer, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     release[0].publish(runs=False)
     proc = run_installer()
     assert "does not run on this machine" in proc.stdout, proc.stdout + proc.stderr
     log = run_installer.log.read_text(encoding="utf-8")
-    assert re.search(r"^uv tool install --force .*/pob_cli-9\.9\.9-py3-none-any\.whl$", log, re.M), log
+    assert re.search(r"^uv tool install --force .*/pob4agents-9\.9\.9-py3-none-any\.whl$", log, re.M), log
+    assert "python3 -m pip show pob-cli" in log  # the pre-0.9 name is cleared first
     assert not (tmp_path / "app").exists()
 
 

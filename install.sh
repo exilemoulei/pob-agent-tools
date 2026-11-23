@@ -231,6 +231,13 @@ verify_sums_signature() { # sums-file sig-file backend
 install_python_package() { # pip-style requirement: a wheel file or a git+ URL
   command -v python3 >/dev/null 2>&1 || die "python3 (>=3.11) is required for this install. On macOS: brew install python@3.13"
   python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || die "Python 3.11+ is required (found $(python3 --version))."
+  # The package was called pob-cli up to v0.8.0. Under pip both names own the same pob_cli/ files,
+  # so the old one goes first; uv and pipx would otherwise keep two tools that both provide `pob`.
+  remove_old_python_installs pob-cli
+  if python3 -m pip show pob-cli >/dev/null 2>&1; then
+    say "Removing the earlier pip install (pob-cli) ..."
+    python3 -m pip uninstall -y pob-cli >/dev/null 2>&1 || true
+  fi
   if command -v uv >/dev/null 2>&1; then
     say "Installing the Python package with uv tool ..."
     uv tool install --force "$1"
@@ -253,10 +260,11 @@ platform_tag() {
   printf '%s-%s' "$os" "$arch"
 }
 
-remove_old_python_installs() {
+remove_old_python_installs() { # [names...] (default: both package names)
   # Earlier install.sh versions installed the Python package, whose `pob` would shadow the link.
-  local name
-  for name in pob-cli pob4agents; do
+  local name names=("$@")
+  if [ "${#names[@]}" -eq 0 ]; then names=(pob-cli pob4agents); fi
+  for name in "${names[@]}"; do
     if command -v uv >/dev/null 2>&1 && uv tool list 2>/dev/null | grep -q "^$name "; then
       say "Removing the earlier uv tool install ($name) ..."
       uv tool uninstall "$name" >/dev/null 2>&1 || true

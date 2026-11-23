@@ -125,11 +125,33 @@ jobs:
       - name: Build wheel and sdist
         run: python -m build pob_cli --outdir dist-python
 
+      - name: Build the pob-cli alias (PyPI only)
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python pob_cli/packaging/release_tools.py shim --out "$RUNNER_TEMP/pob-cli-shim" --version "$VERSION"
+          python -m build "$RUNNER_TEMP/pob-cli-shim" --outdir dist-shim
+
+      - name: Check both install and run pob
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/check-venv"
+          uv pip install --python "$RUNNER_TEMP/check-venv" dist-python/*.whl dist-shim/*.whl
+          "$RUNNER_TEMP/check-venv/bin/pob" --version
+
+      # Release files are the asset-* artifacts; assemble collects exactly those.
       - name: Upload Python distributions
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: python-dist
+          name: asset-python
           path: dist-python/*
+          if-no-files-found: error
+
+      - name: Upload the pob-cli alias
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pypi-shim
+          path: dist-shim/*
           if-no-files-found: error
 
   build-windows:
@@ -207,7 +229,7 @@ jobs:
       - name: Upload Windows assets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: windows-x64
+          name: asset-windows-x64
           path: dist-windows/*
           if-no-files-found: error
 
@@ -286,7 +308,7 @@ jobs:
       - name: Upload ${{ matrix.platform }} assets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ matrix.platform }}
+          name: asset-${{ matrix.platform }}
           path: dist-posix/*
           if-no-files-found: error
 
@@ -307,8 +329,8 @@ jobs:
 
       - name: Download build outputs
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        # Every artifact so far is a release file: the Python dists and each platform build.
         with:
+          pattern: asset-*
           path: release-assets
           merge-multiple: true
 
@@ -541,16 +563,23 @@ jobs:
     needs: [prepare, publish]
     if: vars.ENABLE_PYPI == 'true' && needs.prepare.outputs.prerelease == 'false'
     runs-on: ubuntu-latest
+    # PyPI needs a trusted publisher (this workflow, environment "pypi") on both pob4agents and pob-cli.
     environment:
       name: pypi
-      url: https://pypi.org/p/pob-cli
+      url: https://pypi.org/p/pob4agents
     permissions:
       id-token: write
     steps:
-      - name: Download Python distributions
+      - name: Download pob4agents
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: python-dist
+          name: asset-python
+          path: dist/
+
+      - name: Download the pob-cli alias
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pypi-shim
           path: dist/
 
       - name: Publish to PyPI via Trusted Publishing
