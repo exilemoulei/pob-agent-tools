@@ -86,9 +86,13 @@ function Download-File([string]$Url, [string]$OutFile, [string]$ProxyUrl) {
 # Release signing keys: base64 raw Ed25519 public keys, the same list as RELEASE_PUBLIC_KEYS in
 # pob_cli/src/pob_cli/updater/signature.py (test_release_signature.py keeps them equal).
 $ReleasePublicKeys = @("fvwea+k3NZ54EzRFCoMYgvZLy3XTkKGXxo2UPmsNZIM=")
-# Releases after v0.8.0 ship SHA256SUMS.txt.sig. For them a missing or bad signature stops the
-# install, so a GitHub mirror can serve the files but cannot change them.
+# Releases after v0.8.0 ship SHA256SUMS.txt.sig, and for them a missing or bad signature stops the
+# install. Through a mirror every release needs a valid signature (the mirror also picks the tag
+# when none is pinned), so a mirror can serve the files but cannot change them; releases from
+# before signing install only straight from GitHub.
 $FirstSignedVersion = [version]"0.8.1"
+# The tag goes into URLs and file names and decides whether a signature is required.
+$TagPattern = '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?\z'
 
 # --- Ed25519 signature check (RFC 8032, section 5.1.7): verification only, plain PowerShell -------
 # Windows PowerShell has no Ed25519, so this uses .NET BigInteger and SHA-512 directly. Every
@@ -241,6 +245,9 @@ if ($Version) {
     Write-Host "Resolving latest release from github.com/$Repo ..."
     $Tag = Resolve-LatestTag -ProxyUrl $Proxy
 }
+if ($Tag -cnotmatch $TagPattern) {
+    throw "'$Tag' is not a release tag (expected vX.Y.Z); refusing to install."
+}
 
 $TagVersion = $Tag.Substring(1)
 # Releases from v0.9.0 name the zip pob4agents-<version>-windows-x64.zip; earlier ones (still
@@ -266,13 +273,16 @@ try {
         $HaveSig = $false
     }
     $PlainVersion = [version]($TagVersion -replace "-.*$", "")
+    $SignedEra = $PlainVersion -ge $FirstSignedVersion
     if ($HaveSig) {
         $sigText = Get-Content -LiteralPath $SigPath -Raw
         if (-not (Test-ReleaseSums ([System.IO.File]::ReadAllBytes($SumsPath)) $sigText)) {
             throw "SHA256SUMS.txt of $Tag is not signed by a pob4agents release key; refusing to install."
         }
         Write-Host "Release signature verified (Ed25519)."
-    } elseif ($PlainVersion -ge $FirstSignedVersion) {
+    } elseif ($Mirror -and -not $SignedEra) {
+        throw "Could not download SHA256SUMS.txt.sig for $Tag; a release from before signing installs only straight from GitHub, without POB_GITHUB_MIRROR."
+    } elseif ($Mirror -or $SignedEra) {
         throw "Could not download SHA256SUMS.txt.sig for $Tag; refusing to install an unsigned release."
     } else {
         Write-Host "$Tag predates signed releases; checking its SHA-256 only."
@@ -341,7 +351,11 @@ try {
             Remove-Item -LiteralPath $BackupDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     } catch {
-        if ((Test-Path -LiteralPath $BackupDir) -and -not (Test-Path -LiteralPath $InstallDir)) {
+        # A move that failed halfway can leave part of the new build behind; the backup wins.
+        if (Test-Path -LiteralPath $BackupDir) {
+            if (Test-Path -LiteralPath $InstallDir) {
+                Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
             Move-Item -LiteralPath $BackupDir -Destination $InstallDir -Force
         }
         throw
