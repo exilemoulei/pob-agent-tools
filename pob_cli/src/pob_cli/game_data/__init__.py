@@ -22,8 +22,6 @@ from .constants import (
     _ZH_META_VER_CACHE,
     COLOR_NAMES,
     DEFAULT_PROJECT_ROOT,
-    FALLBACK_POB_ROOT,
-    FALLBACK_RUNTIME_DIR,
     ITEM_SKILL_FILES,
     LUA_SKIP_KEYS_MOD,
     LUA_SKIP_KEYS_SKILL,
@@ -173,8 +171,6 @@ from .zh_dict import (
 __all__ = [
     "COLOR_NAMES",
     "DEFAULT_PROJECT_ROOT",
-    "FALLBACK_POB_ROOT",
-    "FALLBACK_RUNTIME_DIR",
     "ITEM_SKILL_FILES",
     "LUA_ESCAPE_MAP",
     "LUA_ESCAPE_RE",

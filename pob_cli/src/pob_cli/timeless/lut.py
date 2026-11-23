@@ -122,7 +122,7 @@ def _resolve_game_dir(
                 detected_game="poe2",
                 trigger=f"pob_dir={p}",
                 error=f"Timeless engine directory `{p}` points at a PoE2 directory (`PoE2`).",
-                remediation="Point `POB_ROOT` / `pob_dir` to a PoE1 PobTools directory or use `pob2` in `F:/poe2`.",
+                remediation="Point `POB_ROOT` / `pob_dir` to a PoE1 PobTools directory or use `pob2`.",
                 equivalent_command="pob bootstrap",
                 rule_id="ENV_POE2_ENGINE_IN_POB1",
             )

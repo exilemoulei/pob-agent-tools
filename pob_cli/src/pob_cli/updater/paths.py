@@ -267,7 +267,6 @@ def _find_legacy_dir(legacy_dir: Path | None = None) -> Path | None:
         checkout_root = detect_source_checkout_root()
         if checkout_root is not None:
             candidates.append(checkout_root / "PobTools[20261102]")
-        candidates.append(Path("F:/poe/PobTools[20261102]"))
 
     for cand in candidates:
         if is_valid_engine_dir(cand):

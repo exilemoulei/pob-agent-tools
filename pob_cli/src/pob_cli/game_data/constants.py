@@ -149,8 +149,6 @@ DEFAULT_PROJECT_ROOT = (
     if os.environ.get("POB_HOME", "").strip()
     else (detect_source_checkout_root() or get_runtime_dir())
 )
-FALLBACK_POB_ROOT = Path("F:/poe/PobTools[20261102]")
-FALLBACK_RUNTIME_DIR = Path("F:/poe/.runtime")
 
 # Process-local memoization to avoid re-parsing manifest.xml or re-opening SQLite on warm queries
 _MANIFEST_VER_CACHE: dict[tuple[str, int, int], str] = {}

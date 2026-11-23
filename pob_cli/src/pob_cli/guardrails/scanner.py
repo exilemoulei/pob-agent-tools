@@ -441,7 +441,7 @@ def check_poe2_timeless_jewel(jewel_name: str | None, *, expected_game: str = GA
             trigger=matched,
             error=f"Jewel `{raw}` is a Path of Exile 2 timeless/radius jewel and does not exist in PoE1 `pob timeless`.",
             remediation=(
-                "Use `pob2` (`F:/poe2`) for PoE2 timeless/radius jewels, or run `pob timeless list` "
+                "Use `pob2` for PoE2 timeless/radius jewels, or run `pob timeless list` "
                 "for supported PoE1 Historic jewels (e.g. `Lethal Pride`, `Brutal Restraint`, `Heroic Tragedy`)."
             ),
             equivalent_command="pob timeless list",
@@ -476,7 +476,7 @@ def check_poe2_class_or_ascendancy(
             trigger=raw,
             error=f"`{raw}` is a Path of Exile 2 {kind_label} and does not exist in PoE1.",
             remediation=(
-                "Use `pob2` (`F:/poe2`) for PoE2 classes/ascendancies, or pick a PoE1 class "
+                "Use `pob2` for PoE2 classes/ascendancies, or pick a PoE1 class "
                 "(Marauder, Duelist, Ranger, Shadow, Witch, Templar, Scion)."
             ),
             equivalent_command=equiv,

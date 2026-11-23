@@ -64,7 +64,7 @@ def _validate_xml_for_poe1(
                 f"Build XML uses PoE2 root `<PathOfBuilding2>`{tv_note}; "
                 "`pob` only supports PoE1 `<PathOfBuilding>` builds."
             ),
-            remediation="Load PoE2 builds with `pob2` (`F:/poe2`).",
+            remediation="Load PoE2 builds with `pob2`.",
             equivalent_command=f"pob2 load{src_arg}",
             rule_id="XML_POE2_ROOT_IN_POB1",
         )
@@ -75,7 +75,7 @@ def _validate_xml_for_poe1(
                 detected_game="poe2",
                 trigger=f'treeVersion="{tv}"',
                 error=f"Build uses PoE2 version `{tv}` (PoE1 uses `3_*`).",
-                remediation="Load PoE2 builds with `pob2` (`F:/poe2`).",
+                remediation="Load PoE2 builds with `pob2`.",
                 equivalent_command=f"pob2 load{src_arg}",
                 rule_id="XML_POE2_TREE_IN_POB1",
             )
@@ -86,7 +86,7 @@ def _validate_xml_for_poe1(
                 detected_game="poe2",
                 trigger=f'targetVersion="{tv}"',
                 error=f"Build uses PoE2 targetVersion `{tv}` (PoE1 uses `3_0`).",
-                remediation="Load PoE2 builds with `pob2` (`F:/poe2`).",
+                remediation="Load PoE2 builds with `pob2`.",
                 equivalent_command=f"pob2 load{src_arg}",
                 rule_id="XML_POE2_TREE_IN_POB1",
             )
@@ -96,7 +96,7 @@ def _validate_xml_for_poe1(
             detected_game="poe2",
             trigger=f'className="{class_name}"',
             error=f"Build uses PoE2-only class `{class_name}`.",
-            remediation="Load PoE2 builds with `pob2` (`F:/poe2`).",
+            remediation="Load PoE2 builds with `pob2`.",
             equivalent_command=f"pob2 load{src_arg}",
             rule_id="XML_POE2_CLASS_IN_POB1",
         )
@@ -107,7 +107,7 @@ def _validate_xml_for_poe1(
                 detected_game="poe2",
                 trigger=f'Slot name="{sl}"',
                 error=f"Build XML contains PoE2 belt slot `{sl}`.",
-                remediation="Load PoE2 builds with `pob2` (`F:/poe2`).",
+                remediation="Load PoE2 builds with `pob2`.",
                 equivalent_command=f"pob2 load{src_arg}",
                 rule_id="XML_POE2_SLOT_IN_POB1",
             )
@@ -131,7 +131,7 @@ def _validate_xml_for_poe2(
                 "Path of Building (PoE2) strictly requires `<PathOfBuilding2>`."
             ),
             remediation=(
-                "Load PoE1 builds with `pob` (F:/poe), or export a PoE2 build from PathOfBuilding-PoE2."
+                "Load PoE1 builds with `pob`, or export a PoE2 build from PathOfBuilding-PoE2."
             ),
             equivalent_command=f"pob load{src_arg}",
             rule_id="XML_POE1_ROOT_IN_POB2",
@@ -262,7 +262,7 @@ URL_GATE_RULES: tuple[UrlGateRule, ...] = (
         belongs_to="poe2",
         pattern=re.compile(r"^(?:https?://)?(?:www\.|cdn\.)?poe2db\.tw(?=[/?#:]|$)", re.IGNORECASE),
         label="poe2db.tw (PoE2 Database)",
-        counterpart_hint="Use `pob2` (`F:/poe2`) for PoE2DB links, or `https://poedb.tw/...` (`pob poedb`) for PoE1.",
+        counterpart_hint="Use `pob2` for PoE2DB links, or `https://poedb.tw/...` (`pob poedb`) for PoE1.",
         url_rewriter=(r"(?i)\bpoe2db\.tw\b", "poedb.tw"),
     ),
     UrlGateRule(
@@ -273,7 +273,7 @@ URL_GATE_RULES: tuple[UrlGateRule, ...] = (
             re.IGNORECASE,
         ),
         label="poe.ninja/poe2 (PoE2)",
-        counterpart_hint="Use `pob2` (`F:/poe2`) for `poe.ninja/poe2` links, or `https://poe.ninja/poe1/...` (`pob`) for PoE1.",
+        counterpart_hint="Use `pob2` for `poe.ninja/poe2` links, or `https://poe.ninja/poe1/...` (`pob`) for PoE1.",
     ),
     UrlGateRule(
         rule_id="URL_POE2_TRADE2",
@@ -283,35 +283,35 @@ URL_GATE_RULES: tuple[UrlGateRule, ...] = (
             re.IGNORECASE,
         ),
         label="pathofexile.com/trade2 (PoE2 Trade)",
-        counterpart_hint="Use `pob2 trade` (`F:/poe2`) for PoE2 `/trade2/`, or `/trade/` (`pob trade`) for PoE1.",
+        counterpart_hint="Use `pob2 trade` for PoE2 `/trade2/`, or `/trade/` (`pob trade`) for PoE1.",
     ),
     UrlGateRule(
         rule_id="URL_POE2_WIKI",
         belongs_to="poe2",
         pattern=re.compile(r"^(?:https?://)?(?:www\.)?poe2wiki\.net(?=[/?#:]|$)", re.IGNORECASE),
         label="poe2wiki.net (PoE2 Wiki)",
-        counterpart_hint="Use `pob2 wiki` (`F:/poe2`) for PoE2 Wiki, or `poewiki.net` (`pob wiki`) for PoE1.",
+        counterpart_hint="Use `pob2 wiki` for PoE2 Wiki, or `poewiki.net` (`pob wiki`) for PoE1.",
     ),
     UrlGateRule(
         rule_id="URL_POE2_MAXROLL",
         belongs_to="poe2",
         pattern=re.compile(r"^(?:https?://)?(?:www\.)?maxroll\.gg/poe2(?=[/?#]|$)", re.IGNORECASE),
         label="maxroll.gg/poe2 (PoE2)",
-        counterpart_hint="Use `pob2 load` (`F:/poe2`) for `maxroll.gg/poe2`, or `maxroll.gg/poe` (`pob`) for PoE1.",
+        counterpart_hint="Use `pob2 load` for `maxroll.gg/poe2`, or `maxroll.gg/poe` (`pob`) for PoE1.",
     ),
     UrlGateRule(
         rule_id="URL_POE2_MOBALYTICS",
         belongs_to="poe2",
         pattern=re.compile(r"^(?:https?://)?(?:www\.)?mobalytics\.gg/poe-2(?=[/?#]|$)", re.IGNORECASE),
         label="mobalytics.gg/poe-2 (PoE2)",
-        counterpart_hint="Use `pob2` (`F:/poe2`) for `mobalytics.gg/poe-2`, or `mobalytics.gg/poe` (`pob`) for PoE1.",
+        counterpart_hint="Use `pob2` for `mobalytics.gg/poe-2`, or `mobalytics.gg/poe` (`pob`) for PoE1.",
     ),
     UrlGateRule(
         rule_id="URL_POE2_URI_SCHEME",
         belongs_to="poe2",
         pattern=re.compile(r"^pob2:(?://|[/\\])", re.IGNORECASE),
         label="pob2:// protocol URI (PoE2)",
-        counterpart_hint="Use `pob2 load` (`F:/poe2`) for `pob2://` URIs, or `pob://` (`pob`) for PoE1.",
+        counterpart_hint="Use `pob2 load` for `pob2://` URIs, or `pob://` (`pob`) for PoE1.",
     ),
 )
 
@@ -368,7 +368,7 @@ def validate_engine_root(
             error=f"Engine directory `{p}` contains `PoE2/` only and has no `PoE1/` subdirectory.",
             remediation=(
                 "Point `POB_ROOT` to a PoE1 PobTools directory or run `pob bootstrap` "
-                "(or use `pob2` in `F:/poe2`)."
+                "(or use `pob2`)."
             ),
             equivalent_command="pob bootstrap",
             rule_id="ENV_POE2_ENGINE_IN_POB1",

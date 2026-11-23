@@ -32,7 +32,7 @@ POE2_ONLY_REVERSE_TRAPS_FOR_POB1: tuple[TrapRule, ...] = (
         en_words=("uncut skill gem", "uncut spirit gem", "uncut support gem"),
         zh_phrases=("未切割的技能宝石", "未切割的精魂宝石", "未切割的辅助宝石", "原胚技能石", "精魂宝石"),
         error="Uncut Skill/Spirit/Support Gems (`未切割的宝石`/`精魂宝石`) belong to Path of Exile 2.",
-        remediation="Use `pob2` (`F:/poe2`) for PoE2 gems, or query specific PoE1 gems via `pob data gem <name>`.",
+        remediation="Use `pob2` for PoE2 gems, or query specific PoE1 gems via `pob data gem <name>`.",
         equivalent_command='pob2 data gem "<query>"',
     ),
     TrapRule(
@@ -144,7 +144,7 @@ POE2_ONLY_REVERSE_TRAPS_FOR_POB1: tuple[TrapRule, ...] = (
             "and off-hand Focus (`法器`, `armour.focus`) are PoE2 equipment classes."
         ),
         remediation=(
-            "Use `pob2` (`F:/poe2`) for PoE2 equipment, or PoE1 weapon/shield/wand/spirit-shield "
+            "Use `pob2` for PoE2 equipment, or PoE1 weapon/shield/wand/spirit-shield "
             "slots in `pob`."
         ),
         equivalent_command="pob2 trade search --slot focus",
