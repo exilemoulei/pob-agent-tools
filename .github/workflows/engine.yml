@@ -143,6 +143,12 @@ jobs:
       - name: Install package and dev tools from the lockfile
         run: uv sync --project pob_cli --locked --extra dev --no-editable --active
 
+      # macOS ships LibreSSL, which cannot sign Ed25519, so the OpenSSL signing test would skip there
+      # and push macOS one skip past the shared POSIX budget.
+      - name: Put Homebrew OpenSSL 3 first on PATH (macOS)
+        if: runner.os == 'macOS'
+        run: echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
+
       - name: Build native POSIX LuaJIT + lua-utf8 runtime
         run: |
           chmod +x pob_cli/packaging/build_posix_runtime.sh
