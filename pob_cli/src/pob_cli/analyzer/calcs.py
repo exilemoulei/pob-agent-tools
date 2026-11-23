@@ -9,6 +9,7 @@ from typing import Any
 
 from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
+from ..game_data import fold_han
 from ..snapshot import _call_batch
 from .tree_inspect import _normalize_query_list
 
@@ -81,13 +82,16 @@ def _parse_calc_cell_value(raw_text: str, disp_text: str) -> float | None:
 
 
 def _norm_calc_text(text: str | None) -> str:
-    """Normalize calc label/query: strip PoB escapes, split camelCase, lowercase, collapse punctuation."""
+    """Normalize calc label/query: strip PoB escapes, split camelCase, lowercase, collapse punctuation.
+
+    Also folds Traditional -> Simplified Chinese, since pob-zh.exe labels default to Traditional.
+    """
     if not text:
         return ""
     cleaned = strip_pob_escapes(str(text))
     cleaned = _CAMEL_SPLIT_RE.sub(r"\1 \2", cleaned)
     cleaned = _CALC_PUNCT_RE.sub(" ", cleaned).strip().lower()
-    return cleaned
+    return fold_han(cleaned)
 
 
 def _compact_calc_text(text: str | None) -> str:

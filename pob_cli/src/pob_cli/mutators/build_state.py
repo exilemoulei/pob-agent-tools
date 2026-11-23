@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+from .. import game_data as _game_data
 from ..analyzer import resolve_skill_group_index
 from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
 from ..guardrails import check_poe2_class_or_ascendancy
 from ..snapshot import run_mutation
-from .common import _BatchCache
+from .common import _BatchCache, _fold_search_text
 
 LOADOUT_SENTINELS = frozenset(
     {
@@ -24,30 +26,37 @@ LOADOUT_SENTINELS = frozenset(
 )
 
 
+def _query_forms(query: str, pob_dir: Path | None) -> set[str]:
+    """Folded query plus its English name: the engine may label options in Traditional or
+    Simplified Chinese, and a dictionary hit also matches the always-present English label."""
+    q_en = _game_data.english_for_zh(query, pob_dir=pob_dir) or ""
+    return {_fold_search_text(query), _fold_search_text(q_en)} - {""}
+
+
+def _labels(opt: dict[str, Any]) -> tuple[str, str]:
+    return _fold_search_text(str(opt.get("name") or "")), _fold_search_text(str(opt.get("nameZh") or ""))
+
+
 def _match_named_option(
     options: list[dict[str, Any]],
     query: str,
     entity_label: str,
+    *,
+    pob_dir: Path | None = None,
 ) -> dict[str, Any]:
     q = query.strip()
-    q_low = q.lower()
+    q_low = _fold_search_text(q)
     if q_low in ("none", "无", "clear", "0"):
         for opt in options:
             if opt.get("id") == 0 or str(opt.get("name") or "").lower() == "none":
                 return opt
 
+    wanted = _query_forms(q, pob_dir)
     for opt in options:
-        n_en = strip_pob_escapes(str(opt.get("name") or "")).strip().lower()
-        n_zh = strip_pob_escapes(str(opt.get("nameZh") or "")).strip().lower()
-        if q_low in (n_en, n_zh) or (q.isdigit() and int(q) == opt.get("id")):
+        if wanted & set(_labels(opt)) or (q.isdigit() and int(q) == opt.get("id")):
             return opt
 
-    sub_matches = [
-        opt
-        for opt in options
-        if q_low in strip_pob_escapes(str(opt.get("name") or "")).strip().lower()
-        or q_low in strip_pob_escapes(str(opt.get("nameZh") or "")).strip().lower()
-    ]
+    sub_matches = [opt for opt in options if any(w in label for w in wanted for label in _labels(opt) if label)]
     if len(sub_matches) == 1:
         return sub_matches[0]
     if len(sub_matches) > 1:
@@ -66,6 +75,7 @@ def _apply_class_ascendancy_in_place(
     secondary_ascendancy_name: str | None = None,
     cache: _BatchCache | None = None,
 ) -> dict[str, Any]:
+    pob_dir = getattr(w, "pob_root", None)
     check_poe2_class_or_ascendancy(class_name, field="class")
     check_poe2_class_or_ascendancy(ascendancy_name, field="ascendancy")
     check_poe2_class_or_ascendancy(secondary_ascendancy_name, field="secondary_ascendancy")
@@ -82,7 +92,7 @@ def _apply_class_ascendancy_in_place(
     class_change_mode: str | None = None
 
     if class_name is not None and str(class_name).strip():
-        target_class_obj = _match_named_option(classes, str(class_name), "class")
+        target_class_obj = _match_named_option(classes, str(class_name), "class", pob_dir=pob_dir)
     else:
         cur_cid = before.get("classId")
         target_class_obj = next((c for c in classes if c.get("id") == cur_cid), None)
@@ -96,6 +106,7 @@ def _apply_class_ascendancy_in_place(
                 target_class_obj.get("ascendancies", []),
                 asc_q,
                 f"ascendancy for {target_class_obj.get('name')}",
+                pob_dir=pob_dir,
             )
         else:
             try:
@@ -105,27 +116,18 @@ def _apply_class_ascendancy_in_place(
                     target_class_obj.get("ascendancies", []),
                     asc_q,
                     f"ascendancy for {target_class_obj.get('name')}",
+                    pob_dir=pob_dir,
                 )
             except ValueError:
                 found_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
-                q_low = asc_q.lower()
+                wanted = _query_forms(asc_q, pob_dir)
                 for cls in classes:
                     for asc in cls.get("ascendancies", []):
                         if asc.get("id") == 0:
                             continue
-                        n_en = strip_pob_escapes(str(asc.get("name") or "")).strip().lower()
-                        n_zh = strip_pob_escapes(str(asc.get("nameZh") or "")).strip().lower()
-                        if q_low in (n_en, n_zh) or q_low in n_en or q_low in n_zh:
+                        if any(w_q in label for w_q in wanted for label in _labels(asc) if label):
                             found_pairs.append((cls, asc))
-                exact_pairs = [
-                    p
-                    for p in found_pairs
-                    if q_low
-                    in (
-                        strip_pob_escapes(str(p[1].get("name") or "")).strip().lower(),
-                        strip_pob_escapes(str(p[1].get("nameZh") or "")).strip().lower(),
-                    )
-                ]
+                exact_pairs = [p for p in found_pairs if wanted & set(_labels(p[1]))]
                 chosen_pairs = exact_pairs or found_pairs
                 if len(chosen_pairs) == 1:
                     target_class_obj, target_asc_obj = chosen_pairs[0]
@@ -136,7 +138,9 @@ def _apply_class_ascendancy_in_place(
                     raise
 
     if secondary_ascendancy_name is not None and str(secondary_ascendancy_name).strip():
-        target_sec_obj = _match_named_option(secondary, str(secondary_ascendancy_name), "secondary ascendancy")
+        target_sec_obj = _match_named_option(
+            secondary, str(secondary_ascendancy_name), "secondary ascendancy", pob_dir=pob_dir
+        )
 
     if target_class_obj is not None and target_class_obj.get("id") != before.get("classId"):
         cid = int(target_class_obj["id"])

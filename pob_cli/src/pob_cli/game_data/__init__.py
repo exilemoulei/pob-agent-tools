@@ -160,13 +160,14 @@ from .tree_index import (
     ensure_treedata_index,
 )
 from .tree_query import query_tree_data
-from .tw_norm import _fold_search_text, is_legacy_awakened_gem, normalize_tw_query
+from .tw_norm import _fold_search_text, fold_han, is_legacy_awakened_gem, normalize_tw_query
 from .zh_dict import (
     _apply_stat_values,
     _build_template_variants,
     _norm_template,
     _ZhDictionary,
 )
+from .zh_match import english_for_zh
 
 __all__ = [
     "COLOR_NAMES",
@@ -290,8 +291,10 @@ __all__ = [
     "_unique_matching_mod_lines",
     "_write_gamedata_sqlite",
     "detect_versions",
+    "english_for_zh",
     "ensure_gamedata_index",
     "ensure_treedata_index",
+    "fold_han",
     "get_gem_level_bounds",
     "ground_text_entities",
     "is_legacy_awakened_gem",

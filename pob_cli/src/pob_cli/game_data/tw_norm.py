@@ -11,7 +11,12 @@ from .constants import (
     _FOLD_CHAR_MAP,
     _POB_ESCAPE_RE,
 )
+from .tables_han import HAN_FOLD
 from .tables_tw import _TRAD_TO_SIMP_MAP, _TW_ALIAS_RE, TW_TO_EN_ALIASES
+
+# Unihan's full Traditional -> Simplified fold, with the hand-picked PoE term choices on top
+# (e.g. 鍊 -> 链 as in 链结, where Unihan picks 炼).
+_HAN_FOLD_ALL = {**HAN_FOLD, **_TRAD_TO_SIMP_MAP}
 
 
 def is_legacy_awakened_gem(name: str) -> bool:
@@ -73,3 +78,13 @@ def _fold_search_text(text: str) -> str:
     decomposed = unicodedata.normalize("NFKD", text)
     stripped = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
     return stripped.translate(_FOLD_CHAR_MAP).lower()
+
+
+def fold_han(text: str | None) -> str:
+    """Fold Traditional Chinese characters to Simplified so both scripts compare equal.
+
+    Apply it to both sides of a comparison: pob-zh.exe shows Traditional (zh-rTW) labels by default
+    while users and our dictionaries mostly use Simplified. Only closes character-level gaps
+    (聖宗 == 圣宗); names the two translations word differently need `english_for_zh`.
+    """
+    return str(text).translate(_HAN_FOLD_ALL) if text else ""

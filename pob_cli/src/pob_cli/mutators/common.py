@@ -321,13 +321,17 @@ def _call_batch(
 
 
 def _fold_search_text(text: str | None) -> str:
-    """Fold Unicode diacritics (NFKD), normalize apostrophes/dashes, lowercase, and collapse spaces."""
+    """Fold diacritics (NFKD), apostrophes/dashes, case, spaces, and Traditional -> Simplified Chinese.
+
+    The Chinese fold matters because pob-zh.exe labels default to Traditional while queries are
+    mostly Simplified; both sides go through this function, so either script matches.
+    """
     if not text:
         return ""
     cleaned = strip_pob_escapes(str(text)).translate(_APOSTROPHE_TRANS)
     decomposed = unicodedata.normalize("NFKD", cleaned)
     stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
-    return _WS_COLLAPSE_RE.sub(" ", stripped).strip().lower()
+    return _game_data.fold_han(_WS_COLLAPSE_RE.sub(" ", stripped).strip().lower())
 
 
 def _fold_no_apos(text: str | None) -> str:

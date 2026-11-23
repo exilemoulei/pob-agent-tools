@@ -14,6 +14,7 @@ import pytest
 from engine_paths import find_runnable_engine
 from support import dead_proxy_url
 
+from pob_cli.game_data import fold_han
 from pob_cli.importers import xml_to_share_code
 
 GOLDEN_URL = "https://poedb.tw/pob/AWqOLSSmyG"
@@ -150,7 +151,8 @@ def test_e2e_m2_what_if_apply_undo_redo_and_anoint(e2e_runtime_dir: Path) -> Non
     try_ring_md = _run_pob_proc(
         "item", "try", "--raw", sample_ring, "--tooltip-only", runtime_dir=e2e_runtime_dir, check=True
     ).stdout
-    assert "Ruby Ring" in try_ring_md or "红玉戒指" in try_ring_md
+    # A zh engine renders the tooltip in its display locale (Traditional by default).
+    assert "Ruby Ring" in try_ring_md or "红玉戒指" in fold_han(try_ring_md)
     assert "- id\n" not in try_ring_md
 
     sum_mid = _run_pob("summary", runtime_dir=e2e_runtime_dir)

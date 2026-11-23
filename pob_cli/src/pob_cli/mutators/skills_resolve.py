@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .. import game_data as _game_data
 from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
 from .common import _call_batch, _fold_search_text, _is_batch_error, _validate_gem_level
@@ -58,7 +59,7 @@ def _pick_best_gem_candidate(candidates: list[dict[str, Any]], gem_name: str) ->
         if (
             q_low in (n_en, n_zh)
             or (fb_low and fb_low in (n_en, n_zh))
-            or (q_fold and q_fold == _fold_search_text(c.get("name")))
+            or (q_fold and q_fold in (_fold_search_text(c.get("name")), _fold_search_text(c.get("nameZh"))))
         ):
             return c
     return candidates[0]
@@ -78,7 +79,17 @@ def _resolve_gem_candidate(w: BridgeWorker, g_idx: int, gem_name: str) -> dict[s
             "gem_search",
             {"group": g_idx, "query": fb_query, "byDps": False, "supportableOnly": False, "limit": 20},
         )
-        return _pick_best_gem_candidate(fb_res.get("gems", []), gem_name)
+        cand = _pick_best_gem_candidate(fb_res.get("gems", []), gem_name)
+        if cand is not None:
+            return cand
+    # Simplified and Traditional translations can name a gem differently; retry by English name.
+    q_en = _game_data.english_for_zh(gem_name, pob_dir=getattr(w, "pob_root", None))
+    if q_en:
+        en_res = w.call(
+            "gem_search",
+            {"group": g_idx, "query": q_en, "byDps": False, "supportableOnly": False, "limit": 20},
+        )
+        return _pick_best_gem_candidate(en_res.get("gems", []), q_en)
     return None
 
 

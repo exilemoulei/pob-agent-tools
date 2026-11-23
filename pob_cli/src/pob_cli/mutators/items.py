@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .. import game_data as _game_data
 from ..analyzer import resolve_slot_name
 from ..bridge_client import BridgeWorker
 from ..errors import DaemonRequestError
@@ -322,6 +323,20 @@ def _search_item_db_items(
     )
     items = list(res.get("items", []))
     total_hits = int(res.get("total", len(items)))
+
+    # Simplified and Traditional translations often name the same item differently (法师之血 vs
+    # 魔血), so a Chinese query the engine's display locale misses retries by its English name.
+    q_en = _game_data.english_for_zh(q, pob_dir=getattr(worker, "pob_root", None)) if not items else None
+    if q_en:
+        res = worker.call(
+            "item_db",
+            {"kind": kind, "query": q_en, "size": min(200, max(limit, 50)), "page": 1},
+            timeout=30.0,
+        )
+        items = list(res.get("items", []))
+        total_hits = int(res.get("total", len(items)))
+        if items:
+            q = q_en
 
     if not items:
         q_low = q.lower()
