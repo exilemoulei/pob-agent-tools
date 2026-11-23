@@ -24,4 +24,4 @@
 ### 2026-11-23 编写重构后 Hook 硬护栏防假执行施工方案 docs/HOOK_GUARDRAILS_PLAN.md（三道闸门+进程外回执+否定语境豁免+自动代跑塞真值） → 未改重构中源码
 ### 2026-11-22 完成 DSH 3/3 实机验收（H01/H02/H03 全 PASS）并落地二阶精修（Ramako 固定 -20% DoT 抗、Frost Bomb 禁回血、幽魂藏身处施法、diagnose 展示 Pantheon、PowerShell --return 空格容错、SKILL 步数纪律） → pytest 531/207 passed + 实机 smoke 全绿
 ### 2026-11-22 Swarm 3 路 + 文档落地 pob4agents 3.28–3.30 防幻觉与构筑守卫全栈加固（退场觉醒过滤/卓越上限硬拦截/台服繁简映射/冷却提取/CWS零盾与多里亚尼等8项诊断守卫/rank-nodes双修/Skill同步） → 全量 pytest 883 passed (1 skipped) + 最终复检 393 passed + 3 套真实 PoB 实机验收全绿
-### 2026-11-22 完成项目改名 pob-agent-tools -> pob4agents（b7df897 + 合并 3dc7128 -> 0035f32），同步重命名 GitHub 仓库为 exilemoulei/pob4agents 并推送 origin/main → PYTHONPATH=F:/poe/pob_cli/src pytest 228 passed (1 skipped) + git push exit 0
+### 2026-11-22 完成项目改名 pob-agent-tools -> pob4agents（b7df897 + 合并 3dc7128 -> 0035f32），同步重命名 GitHub 仓库为 exilemoulei/pob4agents 并推送 origin/main → PYTHONPATH=pob_cli/src pytest 228 passed (1 skipped) + git push exit 0

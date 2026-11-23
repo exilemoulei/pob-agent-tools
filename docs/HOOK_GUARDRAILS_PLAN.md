@@ -34,7 +34,7 @@
 | **L1** | `pob_cli/src/pob_cli/turn_receipts.py` | 进程外执行回执账本与轮次状态读写（`<POB_RUNTIME_DIR>/turn_receipts.jsonl` 与 `hook_turn_<hash>.json`）：线程本地 `receipt_context()`、argv 命令分类、原子追加与滚动截断（`256KB` / 最近 `200` 条）、按 `turnStartTs` 聚合本轮算力/验视/帧率回执。注册 `LAYER_MAP["turn_receipts"] = 1`，仅依赖 L0 `guardrails` 与 L1 `updater.get_runtime_dir`。 |
 | **L4** | `pob_cli/src/pob_cli/cli_hook/` 子包（`__init__.py`、`gates.py`、`remediate.py`、`protocols.py`） | 拆薄子包暴露 `pob hook <pre-prompt \| pre-tool \| verify-stop> [--protocol raw\|agy\|claude]`，读取 `stdin` UTF-8 JSON，输出紧凑 JSON 决策；Gate 3 不通过时在 `<=2.5s` 预算内调用 L0/L1/L2/L3 接口代跑缺失取证。注册 `LAYER_MAP["cli_hook"] = 4` 与 `cli.py` `_LAZY_SUBCOMMANDS["hook"]`（满足 `[spec-sync]` 与 `pob.spec` `collect_submodules("pob_cli")`）。 |
 | **L4 埋点** | `pob_cli/src/pob_cli/cli_common.py`（`GuardrailGroup.invoke` + `invoke_daemon`） | 在 `GuardrailGroup.invoke` 统一包一层 `receipt_context(raw_args)` 并在 `finally` 落盘 1 行轻量回执（耗时 `<1ms`）；在 `invoke_daemon` 返回后把 `action`/`params`/`res`（`rev`、`target`、`applied`、`slot`）回填进当前 `receipt_context`。排除 `hook`/`serve`/`_daemon`/`--help`/`--version`，且支持 `POB_HOOK_DISABLE_RECEIPTS=1`。 |
-| **宿主适配** | `F:/dsh/plugins/dsh-pob-assistant/{hook-bridge.mjs,index.mjs,verify-plugin.mjs}` + `hooks/{hooks.json,claude-hooks.json}` | DSH 侧薄胶水接入 `agent/pre-step`、`tools/pre-execute`、`agent/turn-stopping`；跨宿主侧提供 Antigravity (`hooks/hooks.json`) 与 Claude Code (`hooks/claude-hooks.json`) 模板。 |
+| **宿主适配** | `<dsh>/plugins/dsh-pob-assistant/{hook-bridge.mjs,index.mjs,verify-plugin.mjs}` + `hooks/{hooks.json,claude-hooks.json}` | DSH 侧薄胶水接入 `agent/pre-step`、`tools/pre-execute`、`agent/turn-stopping`；跨宿主侧提供 Antigravity (`hooks/hooks.json`) 与 Claude Code (`hooks/claude-hooks.json`) 模板。 |
 
 ---
 
@@ -180,7 +180,7 @@
 
 ## 5. 各宿主薄胶水接线方式
 
-### 5.1 DeepSeek Harness (`F:/dsh/plugins/dsh-pob-assistant/`)
+### 5.1 DeepSeek Harness (`<dsh>/plugins/dsh-pob-assistant/`)
 将 Hook 桥接抽离至独立小模块 `hook-bridge.mjs`，由 `index.mjs` 注册 3 个 Cordis 钩子（默认均可通过 config 开关控制，异常一律 Fail-Open）：
 1. **`agent/pre-step`**（waterfall）：按 `(agent.id, turn, userText)` 去重，调用 `pob --offline hook pre-prompt --protocol raw` 锚定 `turnStartTs` 并按需注入 `<pob-grounding>`（若 hook 不可用回退旧版 `pob ground`）。
 2. **`tools/pre-execute`**（waterfall）：拦截 shell 工具（`bash`/`shell`/`powershell`/`run_command`/`exec_command`/`terminal`），从 `exec.arguments` 提取命令传给 `pob --offline hook pre-tool --protocol raw`（`supportsOverwrite: false`）；若返回 `decision === "deny"`，返回 `{ kind: 'deny', reason: res.reason }`（遵循 DSH `PreToolDecision` 契约，不做参数重写），否则 `return next()`。
@@ -211,7 +211,7 @@
      - 离线自动代跑塞真值（V1 `ground`、V4 `ticks`、Mock daemon 下 V2 `summary` / V3 `item_inspect`）。
    - 门禁必过：`python pob_cli/scripts/check.py --fast`、`--self-test`、`check.py` 全量全绿（所有文件 `<=650L / <=24,000B` CRLF，函数 `<=200L`）。
 2. **Step 2 — DSH 插件联调与对抗实测**：
-   - 落地 `F:/dsh/plugins/dsh-pob-assistant/hook-bridge.mjs`、接线 `index.mjs` 并升级 `verify-plugin.mjs` 实测 `agent/pre-step`、`tools/pre-execute`、`agent/turn-stopping` 三钩子。
-   - 运行 `node F:/dsh/plugins/dsh-pob-assistant/verify-plugin.mjs` 全绿，并执行 4 道红队对抗场景验证（确认违规回复被自动代跑塞真值单次纠偏，正常合规回复 `stopRetries == 0`）。
+   - 落地 `<dsh>/plugins/dsh-pob-assistant/hook-bridge.mjs`、接线 `index.mjs` 并升级 `verify-plugin.mjs` 实测 `agent/pre-step`、`tools/pre-execute`、`agent/turn-stopping` 三钩子。
+   - 运行 `node <dsh>/plugins/dsh-pob-assistant/verify-plugin.mjs` 全绿，并执行 4 道红队对抗场景验证（确认违规回复被自动代跑塞真值单次纠偏，正常合规回复 `stopRetries == 0`）。
 3. **Step 3 — 跨宿主模板与文档收口**：
    - 落盘 `hooks/hooks.json` 与 `hooks/claude-hooks.json`，同步更新 `AGENTS.md`、`README.md`、`README_EN.md` 与 `PROGRESS.md`。

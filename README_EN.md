@@ -152,7 +152,7 @@ After installing `pob`, run `pob bootstrap` once to download the PoB engine. You
 pob --version
 pob bootstrap # Download PobTools-zh and official PoB directly from GitHub
 pob bootstrap --proxy http://127.0.0.1:7890 # Download through an HTTP or SOCKS5 proxy
-pob bootstrap --from-dir "D:\PoE\PobTools" # Seed the engine from an existing local PobTools directory
+pob bootstrap --from-dir "<path-to-PobTools>" # Seed the engine from an existing local PobTools directory
 pob update --check # Check for upstream updates
 pob update --proxy http://127.0.0.1:7890 # Update the engine and refresh loaded build slots
 ```
@@ -207,7 +207,7 @@ pob stop
 ```powershell
 # 1. Import a build into the default main slot
 pob load "https://poedb.tw/pob/AWqOLSSmyG"
-pob load "@D:\builds\my_chieftain.xml"
+pob load "@builds/my_chieftain.xml"
 pob load "https://poe.ninja/poe1/builds/mirage/character/AccountName-1234/CharName"
 
 # 2. Use --target for other builds, such as ref for comparison or exp1 for experiments
@@ -219,7 +219,7 @@ pob switch-main --loadout "Endgame Mageblood"
 pob switch-main --spec 2 --item-set 2 --skill-group 1
 
 # 4. Export an XML file or PoB share code
-pob save "D:\builds\optimized.xml"
+pob save "builds/optimized.xml"
 pob export-code --target exp1
 ```
 
@@ -233,10 +233,10 @@ When you receive a PoB, run `pob diagnose` for a one-shot report covering origin
 
 ```powershell
 # One-shot build diagnosis (-q grounds mechanics/gems mentioned in a question)
-pob diagnose "@D:\builds\my_build.xml" -q "Why is my boss DPS low and why am I getting one-shot?"
+pob diagnose "@builds/my_build.xml" -q "Why is my boss DPS low and why am I getting one-shot?"
 
 # One-shot 3-baseline comparison and Pinnacle audit across two builds
-pob diagnose "@D:\builds\build_a.xml" --compare "@D:\builds\build_b.xml"
+pob diagnose "@builds/build_a.xml" --compare "@builds/build_b.xml"
 
 # Offence, defence, minion summary, and native PoB warnings
 pob summary

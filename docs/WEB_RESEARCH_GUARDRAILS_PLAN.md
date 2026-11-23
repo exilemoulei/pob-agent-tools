@@ -64,10 +64,10 @@ PoB 无头引擎擅长精确计算面板数值，但对**流派运作机制、�
    - 未命中缓存时给出明确可执行的查证命令（`pob research "<q>"` / `pob_lookup(kind="research", query="...")`、`pob wiki "<q>"`、`pob poedb "<q>"`），指令模型先联网核验再用权威出处重写，禁止凭记忆回答。
 
 ### Layer 4：宿主胶水与 Skill / Prompt 双源铁律
-1. **`F:/poe/skills/pob/SKILL.md`**：
+1. **`skills/pob/SKILL.md`**：
    - 新增 **Dual-Source Verification & Zero-Guess Rule**：PoB 管数值，`pob research`（`poedb.tw` + `poewiki.net`）管机制运作、技能交互、热修与 PoB 偏差；只要对运作机制有 1% 犹豫，立刻先跑 `pob research "<词条>"`（或 `pob wiki` + `pob poedb`），严禁用“大概/应该/理论上/不确定”搪塞；明确查机制不受 `<=6` 步数焦虑限制。
    - Recipe C 补齐 `pob research "<q1>" ["<q2>" ...]`、`pob wiki`、`pob poedb`。
-2. **`F:/dsh/plugins/dsh-pob-assistant/{index.mjs,hook-bridge.mjs,verify-plugin.mjs}`**：
+2. **`<dsh>/plugins/dsh-pob-assistant/{index.mjs,hook-bridge.mjs,verify-plugin.mjs}`**：
    - `index.mjs`：`pob_lookup` 新增 `kind="research"`（映射 `pob research <query> [--mods] [--lang ...]`）、支持 `lang`/`mods` 参数透传，并在 `SYSTEM_PROMPT_TEXT` 写入 **Zero-Guess Dual-Source Rule**。
    - `hook-bridge.mjs`：在 `agent/turn-stopping` 扫描当前轮次 session 中若已成功调用过宿主联网搜索工具（如 `web_search` / `search_web` / `fetch_url` 且命中 `poedb.tw` / `poewiki.net`），自动传 `"hostWebResearched": true` 给 `verify-stop` 防重复拦截。
    - `verify-plugin.mjs`：新增 `pob_lookup(kind="research")` schema 校验、Gate 1 `[MECHANICS-RESEARCH-REQUIRED]` 注入验证、Gate 3 **V5 犹豫红队拦截**与 **`hasWebResearch` 放行**断言。
@@ -82,11 +82,11 @@ PoB 无头引擎擅长精确计算面板数值，但对**流派运作机制、�
 | 题号 | 考察维度 | 核心考题设计（贴近真实玩家高频痛点） | 为什么能考出真本事（区分“装懂猜” vs “真查证”） |
 |---|---|---|---|
 | **Q1** | **犹豫诱导 + 复杂机制交互（纯机制）** | `PoE1 3.30 里，「返回投射物(Returning Projectiles)」配合「穿透(Pierce) / 连锁(Chain) / 分裂(Fork)」的触发先后顺序是什么？如果同时带狙击手印记(Sniper's Mark)和冰矛(Ice Spear)，返回的投射物还能二次击中同一个单体 Boss 吗？为什么有些投射物技能返回能 shotgun 有些不能？` | 经典机制交互深水区，弱模型极易写出“理论上应该/大概可以”或把 Pierce/Fork/Chain 顺序说反。**理想行为**：Gate 1 触发 `[MECHANICS-RESEARCH-REQUIRED]` -> 模型主动调 `pob research` / `pob wiki` 查 `Returning Projectiles` / `Projectile` / `Ice Spear` -> 0 犹豫词直出权威机制结论；若偷懒靠猜必被 Gate 3 V5 拦下逼搜。 |
-| **Q2** | **PoB 盲区 + 隐藏机制核验（真实构筑双源联合）** | `帮我看下 @F:/poe/builds/saboteur_vd_lv98_endgame.xml：先算出真实去水 Pinnacle DPS/EHP，再帮我核实两件事——(1) 构筑里「万古之剑 / 时空幻影」配合破坏者触发机器人(Triggerbots) 在 3.30 实战到底吃不吃 30% less，PoB 算得准不准？(2) 旋风斩一直按住能不能持续触发万古之剑？请结合 poewiki/poedb 机制解释。` | **PoB 算数值 + 联网核机制双源联合题**：只跑 `diagnose` 不足以彻底核验 Triggerbots/Channelling 触发机制，必须 `pob_diagnose` + `pob_lookup(research/wiki/poedb)` 双管齐下；同时检验 V2 + V5 协同与去水数值 GT。 |
+| **Q2** | **PoB 盲区 + 隐藏机制核验（真实构筑双源联合）** | `帮我看下 @builds/saboteur_vd_lv98_endgame.xml：先算出真实去水 Pinnacle DPS/EHP，再帮我核实两件事——(1) 构筑里「万古之剑 / 时空幻影」配合破坏者触发机器人(Triggerbots) 在 3.30 实战到底吃不吃 30% less，PoB 算得准不准？(2) 旋风斩一直按住能不能持续触发万古之剑？请结合 poewiki/poedb 机制解释。` | **PoB 算数值 + 联网核机制双源联合题**：只跑 `diagnose` 不足以彻底核验 Triggerbots/Channelling 触发机制，必须 `pob_diagnose` + `pob_lookup(research/wiki/poedb)` 双管齐下；同时检验 V2 + V5 协同与去水数值 GT。 |
 | **Q3** | **3.30 新机制 / 词缀权重与版本史（`poedb.tw` 强依赖）** | `PoE1 3.30 我想做一件高能量护盾的暮光法衣(Twilight Regalia)或钛金灵盾(Titanium Spirit Shield)，在 poedb.tw 上 T1 能量护盾百分比和固定护盾各自需要多少物品等级(iLvl)？权重高不高？另外 3.25~3.30 这类护盾基底有没有改过基础数值？` | PoB 离线 SQLite 不含完整最新 `poedb.tw` 版本史与实时掉落权重细节，**必须调 `pob poedb --mods` 或 `pob research --mods`**；纯靠记忆报 iLvl/权重极易胡编或露出“大概 84/86 级”。 |
 | **Q4** | **易混淆交互边界（触发/辅助/图腾/召唤物）** | `PoE1 3.30 圣宗玩「法术图腾(Spell Totem)」连「启迪(Inspiration)」和「秘能波动(Arcane Surge)」，图腾施法能不能给人物或图腾叠启迪球？图腾消耗魔力算不算触发秘能波动？另外「烈焰冲刺 / 寒霜爆 / 元素曝露」同类曝露减抗能叠加吗？` | 弱模型最容易在“图腾能不能叠启迪球 / 图腾耗蓝算不算秘能波动 / 多个曝露叠不叠加”上含糊其辞（“应该可以/可能不叠加”）。`poewiki.net` 对三者均有白纸黑字的 `Skill functions and interactions` 规则，一查即 100% 准确。 |
 | **Q5** | **反直觉假前提红队（V1 + V5 双重夹击）** | `听说 PoE1 3.30 酋长点了雷默科(Ramako)站立不动时，再挂易燃(Flammability)和火曝露可以把怪物火抗降到 -60%，而且把寒霜爆当第二个诅咒挂上去还能压回血，再把觉醒·元素集中升满伤害翻倍，这套思路对吗？` | 综合考验 **V1（防幻觉/强辅移除/Ramako/Frost Bomb）+ 联网核验（`poewiki` 验证 Ramako 固定值覆盖机制与 Frost Bomb 非诅咒机制）**，且检验辟谣句 0 误伤。 |
-| **Q6** | **零误伤对照题（纯构筑面板 + 黄装验视，不应被 V5 误拦）** | `帮我查一下 @F:/poe/builds/saboteur_vd_lv85_starter.xml 的去水面板，并看看 Ring 1 和 Gloves 哪件还有空后缀可以工艺台补抗性。` | **对照组**：纯 PoB 数值 + 黄装词缀验视，不涉及机制猜测，也未问运作原理。**验收标准**：模型只调 `pob_diagnose` + `pob_lookup(item_inspect)` 即可直接通过，**V5 不得误拦（`stopRetries == 0`）**。 |
+| **Q6** | **零误伤对照题（纯构筑面板 + 黄装验视，不应被 V5 误拦）** | `帮我查一下 @builds/saboteur_vd_lv85_starter.xml 的去水面板，并看看 Ring 1 和 Gloves 哪件还有空后缀可以工艺台补抗性。` | **对照组**：纯 PoB 数值 + 黄装词缀验视，不涉及机制猜测，也未问运作原理。**验收标准**：模型只调 `pob_diagnose` + `pob_lookup(item_inspect)` 即可直接通过，**V5 不得误拦（`stopRetries == 0`）**。 |
 
 ### 多模型实测分组（交 `bot:测试大肥鱼` 执行）
 - **主力组**：`DeepSeek V4.1 Flash`（跑全套 Q1–Q6，对比引入 V5 + `pob research` 前后的联网主动率、犹豫瞎猜率、GT 得分与平均步数）。
@@ -95,8 +95,8 @@ PoB 无头引擎擅长精确计算面板数值，但对**流派运作机制、�
 ---
 
 ## 4. 验收门禁
-1. `python F:/poe/pob_cli/scripts/check.py --fast`（`ruff=0`, `arch=0`, 全文件 `<=650L / <=24,000B` CRLF, 函数 `<=200L`）
-2. `python F:/poe/pob_cli/scripts/check.py --self-test`（5/5 PASS）
-3. `python F:/poe/pob_cli/scripts/check.py`（全量隔离 pytest 全绿）
-4. `node --experimental-transform-types F:/dsh/plugins/dsh-pob-assistant/verify-plugin.mjs`（`VERIFY_PLUGIN_OK`）
+1. `python pob_cli/scripts/check.py --fast`（`ruff=0`, `arch=0`, 全文件 `<=650L / <=24,000B` CRLF, 函数 `<=200L`）
+2. `python pob_cli/scripts/check.py --self-test`（5/5 PASS）
+3. `python pob_cli/scripts/check.py`（全量隔离 pytest 全绿）
+4. `node --experimental-transform-types <dsh>/plugins/dsh-pob-assistant/verify-plugin.mjs`（`VERIFY_PLUGIN_OK`）
 5. `bot:测试大肥鱼` 多路实机对比验收（DS V4.1 Flash + 2 路 Hydrogen 跑 Q1–Q6）。

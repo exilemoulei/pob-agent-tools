@@ -1,6 +1,6 @@
 # PoB Agent Tools (`pob`) v0.2 演进与 Swarm 施工方案
 
-本文档基于 2026-11-12 至 2026-11-19 期间真实 PoE 会话审计与上游接口实测制定，作为下一轮启用 `swarm` 并行开发的唯一施工契约。基础架构红线（`R1`..`R12`）见 `F:/poe/plan.md`，若与本文档冲突以本文档为准（其中 `R2` `sidebar_breakdown` 改为按运行期 `caps.sidebarBreakdown` 动态放行；`R6` `poe.ninja` 角色导入契约按第 3.1 节更新）。
+本文档基于 2026-11-12 至 2026-11-19 期间真实 PoE 会话审计与上游接口实测制定，作为下一轮启用 `swarm` 并行开发的唯一施工契约。基础架构红线（`R1`..`R12`）见 `plan.md`，若与本文档冲突以本文档为准（其中 `R2` `sidebar_breakdown` 改为按运行期 `caps.sidebarBreakdown` 动态放行；`R6` `poe.ninja` 角色导入契约按第 3.1 节更新）。
 
 ---
 
@@ -8,11 +8,11 @@
 
 ### 1.1 引擎分发底座：按需拉取开源双上游（严禁入库 1GB 整合包，严禁裸跑标准 LuaJIT）
 1. **已证实事实**：
-   - `F:/poe/PobTools[20261102]` 的宿主 `pob-zh.exe` 与 `Data/bridge/bridge.lua`（`193` 个 RPC）源自开源 MIT 项目 **`Hsiung-Shao/PobTools-zh`**；整合包仅篡改了 `PoE1/UpdateCheck.lua:90`（硬编码 `if true then return "none" end` 锁死在 `2.67.2`），其余 `1,400` 个 `PoE1/` 文件与官方原版 PoB SHA1 100% 一致。
+   - `PobTools[20261102]` 的宿主 `pob-zh.exe` 与 `Data/bridge/bridge.lua`（`193` 个 RPC）源自开源 MIT 项目 **`Hsiung-Shao/PobTools-zh`**；整合包仅篡改了 `PoE1/UpdateCheck.lua:90`（硬编码 `if true then return "none" end` 锁死在 `2.67.2`），其余 `1,400` 个 `PoE1/` 文件与官方原版 PoB SHA1 100% 一致。
    - **禁止改用标准 LuaJIT + `HeadlessWrapper.lua` 跑原版 PoB**：原版 PoB `>= 2.68.0`（当前 `v2.68.1`）在 `src/Modules/Main.lua:357` 引入了定制语法 `count += 1`，标准 LuaJIT 2.1 直接报语法错误崩溃；且原版 `HeadlessWrapper.lua` 置空了 `Deflate`/`Inflate`/`lcurl`，缺失 `calcs_breakdown`、`node_power`、`gem_search`、`item_tooltip` 及中文物品粘贴反译 `PobToolsReverseText`。
    - **禁止将 `PobTools` 整合包提交进 Git**：整合包重 `1.03 GB`，且 `Data/` 汉化词典（源自 GGG 客户端）非 MIT、`Fonts/FZ_ZY.ttf` 无分发授权。
 2. **统一运行时目录与 Bootstrap 流程**：
-   - 引擎查找优先级：① 环境变量 `POB_ROOT`（显式指定且含 `pob-zh.exe` 与 `PoE1/`）；② 托管目录 `F:/poe/.runtime/engine`（或 `POB_RUNTIME_DIR/engine`）；③ 本地旧版兼容迁移源 `F:/poe/PobTools[20261102]`（若托管目录尚未初始化且本机存在旧目录，可先将干净宿主文件 `pob-zh.exe`、`engine/`、`Data/`、`Fonts/`、`pob-zh.ini` 种子化拷贝至托管目录，再拉取原版 `PoE1/` 更新，彻底摆脱对旧目录及被篡改 `UpdateCheck.lua` 的依赖）。
+   - 引擎查找优先级：① 环境变量 `POB_ROOT`（显式指定且含 `pob-zh.exe` 与 `PoE1/`）；② 托管目录 `.runtime/engine`（或 `POB_RUNTIME_DIR/engine`）；③ 本地旧版兼容迁移源 `PobTools[20261102]`（若托管目录尚未初始化且本机存在旧目录，可先将干净宿主文件 `pob-zh.exe`、`engine/`、`Data/`、`Fonts/`、`pob-zh.ini` 种子化拷贝至托管目录，再拉取原版 `PoE1/` 更新，彻底摆脱对旧目录及被篡改 `UpdateCheck.lua` 的依赖）。
    - 全新机器执行 `pob bootstrap [--proxy <url>] [--no-zh] [--from-dir <offline_path>]`（或首次调任意 `pob` 命令触发引导）时，自动下载组装：
      - **宿主与桥接层**：`https://github.com/Hsiung-Shao/PobTools-zh/releases` 最新 `PobTools-<ver>.zip`（约 `50 MB`）及可选双语词典包 `PobTools-DataV2-<N>.zip`（约 `15 MB`，满足 `manifest.minApp` 约束）。
      - **计算脚本与天赋树层（`PoE1/`）**：`https://raw.githubusercontent.com/PathOfBuildingCommunity/PathOfBuilding/master/manifest.xml` 指向的干净原版 PoB（`v2.68.1+`，含 `3_30` 天赋树与 `Reliquarian`）。
@@ -26,13 +26,13 @@ PoB 在赛季初高频日更，且部分地区直连 GitHub（`github.com` / `ra
 2. **检查时机与增量更新机制**：
    - **每次 Daemon 启动必检**：在 `DaemonManager.start()` 拉起任何 `pob-zh.exe` 子进程**之前**执行版本检查。
    - **长驻守护巡检**：若 Daemon 未退出但距上次检查已超 `30 分钟`，在下次处理 `status`/`load` 请求前自动重检；若有更新，先导出 `main`/`ref` 内存 `export_code`，停掉子进程完成原子替换后再重启子进程并恢复内存构筑。
-   - **PoB SHA1 增量更新**：请求 `raw.githubusercontent.com/PathOfBuildingCommunity/PathOfBuilding/master/manifest.xml`（持久化 `ETag` 至 `F:/poe/.runtime/update_state.json` 发 `If-None-Match`，未更新时 `304` 毫秒级返回）。发现新版本时，对比本地 `PoE1/manifest.xml` 的逐文件 `sha1`（强制校验并修复本地与 manifest 不一致的文件如曾被篡改的 `UpdateCheck.lua`），仅并发下载变更文件到 `.staging/`，SHA1 校验全过后备份旧文件至 `.bak/` 并原子替换。
+   - **PoB SHA1 增量更新**：请求 `raw.githubusercontent.com/PathOfBuildingCommunity/PathOfBuilding/master/manifest.xml`（持久化 `ETag` 至 `.runtime/update_state.json` 发 `If-None-Match`，未更新时 `304` 毫秒级返回）。发现新版本时，对比本地 `PoE1/manifest.xml` 的逐文件 `sha1`（强制校验并修复本地与 manifest 不一致的文件如曾被篡改的 `UpdateCheck.lua`），仅并发下载变更文件到 `.staging/`，SHA1 校验全过后备份旧文件至 `.bak/` 并原子替换。
    - **`gate_result` 冒烟门禁与自动回滚**：替换完成后立即跑一次 `pob-zh.exe --engine-headless` 握手，断言收到 `gate_result.ok == true` 与 `hello`；若探针报错，立即回滚 `.bak/` 并记录 `state="degraded_gate_rollback"`。
 3. **网络超时预算、代理支持与显式提示契约（Agent + 人类双可见）**：
    - **快速失败不卡死**：启动自动检查连接超时硬限 `connect=3.0s, read=8.0s`（单文件下载超时 `20.0s`，支持重试 1 次），绝不允许因 GitHub 不通让 `pob` 命令卡死数十秒。
    - **代理与镜像透传**：原生读取 `POB_PROXY`、`HTTPS_PROXY`、`HTTP_PROXY`、`ALL_PROXY`，同时支持 CLI 显式传 `pob update --proxy <url>` / `pob bootstrap --proxy <url>` 以及 `POB_GITHUB_MIRROR`（可选自定义加速前缀，如将 `https://raw.githubusercontent.com/...` 与 `https://github.com/...` 映射至用户自备镜像）与 `--offline` 跳过检查开关。
    - **双通道显式提示（严禁静默吞错）**：
-     - 每次检查结果写入 `F:/poe/.runtime/update_state.json` 并挂载到 `DaemonManager.update_status`：
+     - 每次检查结果写入 `.runtime/update_state.json` 并挂载到 `DaemonManager.update_status`：
        ```json
        {
          "state": "up_to_date | updated | degraded_network_error | degraded_gate_rollback | bootstrap_missing",
@@ -65,7 +65,7 @@ PoB 在赛季初高频日更，且部分地区直连 GitHub（`github.com` / `ra
 
 ### 2.2 `poe.ninja` 与 `poedb.tw` 高频调用优化 + 本地 0ms 数据库
 1. **本地离线游戏数据库 `pob data <gem|unique|mod|base|translate> "<query>"`**（新增 `game_data.py`）：
-   - 解析本地 `PoE1/Data/`（`Gems.lua`、`Skills/*.lua`、`Uniques/*.lua`、`Bases/*.lua`、`ModExplicit.lua`、`ModCorrupted.lua`、`ModMaster.lua`、`ModEldritch.lua`、`ModTincture.lua`、`ModFoulborn.lua`、`ModJewel.lua`、`ModJewelCluster.lua`）与 `Data/poe1/zh-rCN/*.json` 词典，按 `(pobVersion, dataVersion)` 缓存在 `F:/poe/.runtime/cache/gamedata_*.sqlite`（引擎更新后自动重建）。
+   - 解析本地 `PoE1/Data/`（`Gems.lua`、`Skills/*.lua`、`Uniques/*.lua`、`Bases/*.lua`、`ModExplicit.lua`、`ModCorrupted.lua`、`ModMaster.lua`、`ModEldritch.lua`、`ModTincture.lua`、`ModFoulborn.lua`、`ModJewel.lua`、`ModJewelCluster.lua`）与 `Data/poe1/zh-rCN/*.json` 词典，按 `(pobVersion, dataVersion)` 缓存在 `.runtime/cache/gamedata_*.sqlite`（引擎更新后自动重建）。
    - 零网络延迟、零 Lua 桥接锁竞争（`<15ms`）：支持中英文双向术语互查（`translate`）、宝石 1/20/21 级精确数值与异化变体（`gem`）、暗金与 Foulborn 突变词条（`unique`）、按装备部位/标签/物等检索前缀/后缀 Tier 表与工艺台附魔（`mod`，如秒查“哪些部位可出生命转护盾词缀”）。
 2. **`poedb.tw` 结构化索引与清洗客户端 `pob poedb "<query>" [--mods] [--lang cn|us]`**（新增 `poedb_client.py`）：
    - 解析 `https://poedb.tw/cn/` 顶栏脚本获取带 hash 的 CDN 索引 `https://cdn.poedb.tw/json/autocomplete_cn.<hash>.json` 与 `autocomplete_us.<hash>.json`（磁盘缓存 24h，共 8,500+ 词条），任意中英文名称毫秒级定位标准 `Slug`。
@@ -94,16 +94,16 @@ PoB 在赛季初高频日更，且部分地区直连 GitHub（`github.com` / `ra
 
 | Roster 名称 | 独占写权限文件（严禁越界） | 核心交付职责与自测要求 |
 | :--- | :--- | :--- |
-| `engine-updater` | `F:/poe/pob_cli/src/pob_cli/updater.py` (新建)<br>`F:/poe/pob_cli/src/pob_cli/bridge_client.py`<br>`F:/poe/pob_cli/tests/test_updater.py` (新建) | 1. 实现托管运行时解析、旧目录无损种子迁移、`bootstrap_engine()`、`check_and_apply_updates()`（`raw.githubusercontent.com` `manifest.xml` SHA1 增量更新 + `PobTools-zh` `302` tag 解析 + `gate_result` 探针回滚）。<br>2. 实现代理（`POB_PROXY`/`HTTPS_PROXY`/`--proxy`）、镜像前缀、`<3s` 快速超时与 `update_status`（`stderr` 中文告警 + `updateWarning` 结构化提示）。<br>3. 修复 `bridge_client.py` 中 `import_code` 异常后 `no build is loaded` 死锁自愈，以及 `sidebar_breakdown` 按 `caps` 动态放行。<br>4. 单测覆盖：断网/假代理超时降级提示、SHA1 差量计算、篡改文件修复、`import_code` 坏 XML 自愈。 |
-| `external-apis` | `F:/poe/pob_cli/src/pob_cli/importers.py`<br>`F:/poe/pob_cli/src/pob_cli/external_data.py`<br>`F:/poe/pob_cli/src/pob_cli/poedb_client.py` (新建)<br>`F:/poe/pob_cli/tests/test_external_apis.py` (新建) | 1. 修复 `importers.py` `poe.ninja` 角色导入（保留 `Name-1234` 连字符 + 改读 `build-index-state`/`buildLeagues`）。<br>2. 升级 `external_data.py`：全 52 品类 `CATEGORY_MAP`、`--limit`/`--variant`、`--detailed` (`stash/current/item/overview`)、`query_meta()` (`build-index-state`)、赛季缓存纠偏。<br>3. 新建 `poedb_client.py`：`autocomplete_{cn,us}.<hash>.json` 24h 缓存索引 + `poedb.tw/{cn,us}/<Slug>` 词缀权重 (`DropChance`/`fossil_no`) 与补丁历史清洗，含网络不通友好提示。<br>4. 单测 + 真实只读接口冒烟测试。 |
-| `local-gamedata` | `F:/poe/pob_cli/src/pob_cli/game_data.py` (新建)<br>`F:/poe/pob_cli/tests/test_game_data.py` (新建) | 1. 实现本地 Lua 数据表解析器与 SQLite/JSON 索引缓存（读取 `PoE1/Data/{Gems,Skills/*,Uniques/*,Bases/*,Mod*.lua}` + `Data/poe1/zh-rCN/*.json`）。<br>2. 暴露 `query_local_data(kind, query, ...)`：支持 `translate`（中英互查）、`gem`、`unique`（含 Foulborn）、`mod`（按槽位/weightKey/物等查词缀 Tier 与工艺台）、`base`。<br>3. 单测验证构建耗时与 `<15ms` 查询准确率（如查 `"生命转"` / `"Dark Bargain"` / `"Sap of the Seasons"`）。 |
-| `build-ops` | `F:/poe/pob_cli/src/pob_cli/analyzer.py`<br>`F:/poe/pob_cli/src/pob_cli/mutators.py`<br>`F:/poe/pob_cli/src/pob_cli/comparator.py`<br>`F:/poe/pob_cli/src/pob_cli/formatters.py`<br>`F:/poe/pob_cli/tests/test_build_ops.py` (新建) | 1. `formatters.py`：固化 `"inf"` 修复并补充 `render_update_warning()`。<br>2. `analyzer.py`：实现 `inspect_config()`、`inspect_items(..., all_raw=True)`、双语联合检索 `search_calcs_breakdown()`。<br>3. `mutators.py`：`modify_config(..., append_custom_mods=...)`、`edit_item_mods()`（单条词缀替换/增删）、`search_and_try_item_db()`、`set_class_ascendancy()`。<br>4. `comparator.py`：实现 `run_matrix()` 多工况事务对比。<br>5. 单测验证上述纯函数与无头引擎交互。 |
+| `engine-updater` | `pob_cli/src/pob_cli/updater.py` (新建)<br>`pob_cli/src/pob_cli/bridge_client.py`<br>`pob_cli/tests/test_updater.py` (新建) | 1. 实现托管运行时解析、旧目录无损种子迁移、`bootstrap_engine()`、`check_and_apply_updates()`（`raw.githubusercontent.com` `manifest.xml` SHA1 增量更新 + `PobTools-zh` `302` tag 解析 + `gate_result` 探针回滚）。<br>2. 实现代理（`POB_PROXY`/`HTTPS_PROXY`/`--proxy`）、镜像前缀、`<3s` 快速超时与 `update_status`（`stderr` 中文告警 + `updateWarning` 结构化提示）。<br>3. 修复 `bridge_client.py` 中 `import_code` 异常后 `no build is loaded` 死锁自愈，以及 `sidebar_breakdown` 按 `caps` 动态放行。<br>4. 单测覆盖：断网/假代理超时降级提示、SHA1 差量计算、篡改文件修复、`import_code` 坏 XML 自愈。 |
+| `external-apis` | `pob_cli/src/pob_cli/importers.py`<br>`pob_cli/src/pob_cli/external_data.py`<br>`pob_cli/src/pob_cli/poedb_client.py` (新建)<br>`pob_cli/tests/test_external_apis.py` (新建) | 1. 修复 `importers.py` `poe.ninja` 角色导入（保留 `Name-1234` 连字符 + 改读 `build-index-state`/`buildLeagues`）。<br>2. 升级 `external_data.py`：全 52 品类 `CATEGORY_MAP`、`--limit`/`--variant`、`--detailed` (`stash/current/item/overview`)、`query_meta()` (`build-index-state`)、赛季缓存纠偏。<br>3. 新建 `poedb_client.py`：`autocomplete_{cn,us}.<hash>.json` 24h 缓存索引 + `poedb.tw/{cn,us}/<Slug>` 词缀权重 (`DropChance`/`fossil_no`) 与补丁历史清洗，含网络不通友好提示。<br>4. 单测 + 真实只读接口冒烟测试。 |
+| `local-gamedata` | `pob_cli/src/pob_cli/game_data.py` (新建)<br>`pob_cli/tests/test_game_data.py` (新建) | 1. 实现本地 Lua 数据表解析器与 SQLite/JSON 索引缓存（读取 `PoE1/Data/{Gems,Skills/*,Uniques/*,Bases/*,Mod*.lua}` + `Data/poe1/zh-rCN/*.json`）。<br>2. 暴露 `query_local_data(kind, query, ...)`：支持 `translate`（中英互查）、`gem`、`unique`（含 Foulborn）、`mod`（按槽位/weightKey/物等查词缀 Tier 与工艺台）、`base`。<br>3. 单测验证构建耗时与 `<15ms` 查询准确率（如查 `"生命转"` / `"Dark Bargain"` / `"Sap of the Seasons"`）。 |
+| `build-ops` | `pob_cli/src/pob_cli/analyzer.py`<br>`pob_cli/src/pob_cli/mutators.py`<br>`pob_cli/src/pob_cli/comparator.py`<br>`pob_cli/src/pob_cli/formatters.py`<br>`pob_cli/tests/test_build_ops.py` (新建) | 1. `formatters.py`：固化 `"inf"` 修复并补充 `render_update_warning()`。<br>2. `analyzer.py`：实现 `inspect_config()`、`inspect_items(..., all_raw=True)`、双语联合检索 `search_calcs_breakdown()`。<br>3. `mutators.py`：`modify_config(..., append_custom_mods=...)`、`edit_item_mods()`（单条词缀替换/增删）、`search_and_try_item_db()`、`set_class_ascendancy()`。<br>4. `comparator.py`：实现 `run_matrix()` 多工况事务对比。<br>5. 单测验证上述纯函数与无头引擎交互。 |
 
 ### Wave 2：合流接线与端到端对抗验收（Wave 1 全部合并回主工作区后启动）
 
 | Roster 名称 | 独占写权限文件 | 核心交付职责与硬性验收门禁 |
 | :--- | :--- | :--- |
-| `cli-integrator` | `F:/poe/pob_cli/src/pob_cli/daemon.py`<br>`F:/poe/pob_cli/src/pob_cli/cli.py`<br>`F:/poe/pob_cli/tests/test_e2e_headless.py`<br>`F:/poe/AGENTS.md`<br>`F:/poe/README.md` | 1. 在 `daemon.py` 接入启动前 `check_and_apply_updates()`、30m 巡检热重载、`updateWarning` 注入及全部新 RPC action（`update`, `config_list`, `item_edit`, `item_db`, `tree_set_class`, `matrix`, `game_data`）。<br>2. 在 `cli.py` 暴露新命令与参数：`pob bootstrap`、`pob update [--check|--force|--proxy]`、`pob data`、`pob poedb`、`pob meta`、`pob price [--detailed|--variant|--limit]`、`pob config list`、`pob config set --append-mods`、`pob items --all --raw`、`pob item edit`、`pob item db`、`pob tree set-class`、`pob matrix`；在 `stderr` 与 Markdown/JSON 输出更新失败告警。<br>3. 按电报式极简风格同步更新 `F:/poe/AGENTS.md` 与 `F:/poe/README.md`。 |
+| `cli-integrator` | `pob_cli/src/pob_cli/daemon.py`<br>`pob_cli/src/pob_cli/cli.py`<br>`pob_cli/tests/test_e2e_headless.py`<br>`AGENTS.md`<br>`README.md` | 1. 在 `daemon.py` 接入启动前 `check_and_apply_updates()`、30m 巡检热重载、`updateWarning` 注入及全部新 RPC action（`update`, `config_list`, `item_edit`, `item_db`, `tree_set_class`, `matrix`, `game_data`）。<br>2. 在 `cli.py` 暴露新命令与参数：`pob bootstrap`、`pob update [--check|--force|--proxy]`、`pob data`、`pob poedb`、`pob meta`、`pob price [--detailed|--variant|--limit]`、`pob config list`、`pob config set --append-mods`、`pob items --all --raw`、`pob item edit`、`pob item db`、`pob tree set-class`、`pob matrix`；在 `stderr` 与 Markdown/JSON 输出更新失败告警。<br>3. 按电报式极简风格同步更新 `AGENTS.md` 与 `README.md`。 |
 | `verifier` | 只读验收（不改业务代码） | 逐项实跑第 4 节全部 8 条硬性验收命令，审阅全量 `git diff` 排查并发竞态、路径通配符坑（`[20261102]`）、颜色码误剥离（`R9`）与静默吞错。 |
 
 ---
@@ -117,4 +117,4 @@ PoB 在赛季初高频日更，且部分地区直连 GitHub（`github.com` / `ra
 5. **本地 0ms 数据库验收**：执行 `pob data mod "Life Converted to Energy Shield"`、`pob data gem "Dark Bargain"`、`pob data translate "喋血之刃"`，离线 `< 100ms` 返回准确中英词条与数值。
 6. **`poedb` 与细粒度物价验收**：执行 `pob poedb "傲视头冠" --mods` 返回含 `DropChance` 权重的紧凑表（无 MB 级 HTML 残留）；执行 `pob price "Forbidden Flame" --variant "Necromancer" --limit 50` 与 `pob price "Empower Support" --detailed` 返回腐化等级、挂单量与精确变体价格。
 7. **构筑编排新命令验收**：对已加载构筑依次跑通 `pob config list`、`pob items --all --raw`、`pob item edit --slot "Ring 1" ...`（默认 `what-if` 零残留回滚）、`pob calc "Average Hit"`（非零命中）、`pob matrix`。
-8. **全量自动化测试门禁**：`python -m pytest F:/poe/pob_cli/tests -v` 100% 通过。
+8. **全量自动化测试门禁**：`python -m pytest pob_cli/tests -v` 100% 通过。

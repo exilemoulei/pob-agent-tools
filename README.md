@@ -152,7 +152,7 @@ pob status
 pob --version
 pob bootstrap                                   # 直连 GitHub 下载 PobTools-zh + 官方 PoB
 pob bootstrap --proxy http://127.0.0.1:7890     # 通过 HTTP / SOCKS5 代理下载
-pob bootstrap --from-dir "D:\PoE\PobTools"      # 从本地已有 PobTools 目录离线导入种子
+pob bootstrap --from-dir "<path-to-PobTools>"      # 从本地已有 PobTools 目录离线导入种子
 pob update --check                              # 检查上游是否有新版本
 pob update --proxy http://127.0.0.1:7890        # 更新引擎，并刷新已加载的构筑槽位
 ```
@@ -207,7 +207,7 @@ pob stop
 ```powershell
 # 1. 将构筑导入默认的 main 槽位
 pob load "https://poedb.tw/pob/AWqOLSSmyG"
-pob load "@D:\builds\my_chieftain.xml"
+pob load "@builds/my_chieftain.xml"
 pob load "https://poe.ninja/poe1/builds/mirage/character/AccountName-1234/CharName"
 
 # 2. 用 --target 管理其他构筑，例如用于对比的 ref、用于试配的 exp1
@@ -219,7 +219,7 @@ pob switch-main --loadout "Endgame Mageblood"
 pob switch-main --spec 2 --item-set 2 --skill-group 1
 
 # 4. 导出 XML 文件或 PoB 分享码
-pob save "D:\builds\optimized.xml"
+pob save "builds/optimized.xml"
 pob export-code --target exp1
 ```
 
@@ -233,10 +233,10 @@ pob export-code --target exp1
 
 ```powershell
 # 一键加载并诊断单套构筑（-q 可附带玩家问题做版本陷阱与实体词条核对）
-pob diagnose "@D:\builds\my_build.xml" -q "为什么打Boss伤害低而且容易被秒？"
+pob diagnose "@builds/my_build.xml" -q "为什么打Boss伤害低而且容易被秒？"
 
 # 一键对比两套构筑在三组基准（原面板 / 对齐环境 / Pinnacle 去水）下的表现与隐患
-pob diagnose "@D:\builds\build_a.xml" --compare "@D:\builds\build_b.xml"
+pob diagnose "@builds/build_a.xml" --compare "@builds/build_b.xml"
 
 # 基础攻防与召唤物摘要 + PoB 原生告警
 pob summary
