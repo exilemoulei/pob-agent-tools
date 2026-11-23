@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -89,7 +90,15 @@ def test_installer_carries_the_same_keys() -> None:
     assert tuple(re.findall(r'"([A-Za-z0-9+/=]+)"', m.group(1))) == signature.RELEASE_PUBLIC_KEYS
 
 
-@pytest.mark.skipif(shutil.which("openssl") is None, reason="needs openssl (release.yml signs with it)")
+def _openssl_signs_ed25519() -> bool:
+    """OpenSSL 3+ (`pkeyutl -rawin`); macOS ships LibreSSL or OpenSSL 1.1, which cannot."""
+    if shutil.which("openssl") is None:
+        return False
+    proc = subprocess.run(["openssl", "pkeyutl", "-help"], capture_output=True, text=True, check=False)
+    return "-rawin" in proc.stdout + proc.stderr
+
+
+@pytest.mark.skipif(not _openssl_signs_ed25519(), reason="needs OpenSSL 3+ (release.yml signs with it)")
 def test_openssl_signatures_verify(tmp_path: Path) -> None:
     import importlib.util
 
