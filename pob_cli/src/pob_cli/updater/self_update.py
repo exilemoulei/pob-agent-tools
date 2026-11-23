@@ -11,15 +11,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from .. import __version__
 from .constants import _ASSET_TIMEOUT_SPEC, _AUTO_CHECK_TIMEOUT_SPEC, UpdateError, _to_httpx_timeout
@@ -92,10 +96,18 @@ def notice_enabled() -> bool:
     return not (os.environ.get("POB_OFFLINE", "").strip() or os.environ.get("POB_NO_UPDATE_NOTICE", "").strip())
 
 
+def _checked_at(value: Any) -> float:
+    """The cache's check time. Anything but a finite number counts as never checked, so a damaged
+    cache is refreshed instead of breaking the command that reads it."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0.0
+    return float(value) if math.isfinite(value) else 0.0
+
+
 def pending_notice(runtime_dir: Path, now: float | None = None) -> tuple[str | None, bool]:
     """(a newer release tag to announce or None, whether the cached check is due for a refresh)."""
     data = read_check(runtime_dir)
-    checked = float(data.get("checkedAt") or 0.0)
+    checked = _checked_at(data.get("checkedAt"))
     due = (now or time.time()) - checked >= CHECK_INTERVAL_SECONDS
     latest = data.get("latest")
     newer = latest if isinstance(latest, str) and is_newer(latest, __version__) else None
@@ -156,6 +168,43 @@ def _extract(archive: Path, dest: Path) -> None:
         tf.extractall(dest, filter="data")
 
 
+@contextmanager
+def _network_errors(what: str) -> Iterator[None]:
+    """Turn transport failures (refused, timed out, bad proxy) into one clean UpdateError line."""
+    import httpx
+
+    try:
+        yield
+    except (httpx.HTTPError, httpx.InvalidURL, OSError, ValueError) as exc:
+        detail = str(exc).strip() or type(exc).__name__
+        raise UpdateError(f"{what} failed: {detail} (offline? try --proxy or --mirror).") from exc
+
+
+def _unpack_and_check(staging: Path, name: str, data: bytes, target: str, version: str) -> Path:
+    """Unpack a verified archive into `staging/new` and make sure its pob runs and is `version`."""
+    new_dir = staging / "new"
+    try:
+        staging.mkdir(parents=True, exist_ok=True)
+        archive = staging / name
+        archive.write_bytes(data)
+        shutil.rmtree(new_dir, ignore_errors=True)
+        new_dir.mkdir()
+        _extract(archive, new_dir)
+    except (OSError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        raise UpdateError(f"Could not unpack {name} into {staging}: {exc}") from exc
+    exe = new_dir / ("pob.exe" if is_windows() else "pob")
+    if not exe.is_file():
+        raise UpdateError(f"{name} has no {exe.name} at its root; not installing it.")
+    try:
+        proc = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise UpdateError(f"The downloaded {target} build does not run here: {exc}") from exc
+    # `pob, version X`: compare the last word exactly, so 0.1.1 does not pass for 0.1.10.
+    if proc.returncode != 0 or proc.stdout.split()[-1:] != [version]:
+        raise UpdateError(f"The downloaded {target} build does not run here: {(proc.stderr or proc.stdout)[-300:]}")
+    return new_dir
+
+
 def download_release(
     staging: Path,
     *,
@@ -165,10 +214,14 @@ def download_release(
 ) -> dict[str, Any]:
     """Download, verify and unpack a release build into `staging/new`; return what was installed.
 
-    `{"tag", "version", "dir"}`, or `{"tag", "upToDate": True}` when nothing newer exists.
+    `{"tag", "version", "dir"}`, or `{"tag", "upToDate": True}` when nothing newer exists. Every
+    failure, network and disk included, is an UpdateError.
     """
     make_client = _pkg()._make_http_client
-    with make_client(timeout=_to_httpx_timeout(_AUTO_CHECK_TIMEOUT_SPEC), proxy=proxy, follow_redirects=False) as c:
+    with (
+        _network_errors("Looking up the latest pob4agents release"),
+        make_client(timeout=_to_httpx_timeout(_AUTO_CHECK_TIMEOUT_SPEC), proxy=proxy, follow_redirects=False) as c,
+    ):
         target = tag or latest_release_tag(c, mirror)
     if not target:
         raise UpdateError("Could not find the latest pob4agents release (offline? try --proxy or --mirror).")
@@ -177,7 +230,10 @@ def download_release(
     if tag is None and not is_newer(version, __version__):
         return {"tag": target, "upToDate": True}
     name = build_asset_name(version)
-    with make_client(timeout=_to_httpx_timeout(_ASSET_TIMEOUT_SPEC), proxy=proxy, follow_redirects=True) as c:
+    with (
+        _network_errors(f"Downloading {target}"),
+        make_client(timeout=_to_httpx_timeout(_ASSET_TIMEOUT_SPEC), proxy=proxy, follow_redirects=True) as c,
+    ):
         sums = signed_sums(c, target, mirror)
         if sums is None:
             raise UpdateError(f"{target} has no SHA256SUMS.txt signed by a pob4agents release key; not installing it.")
@@ -186,20 +242,56 @@ def download_release(
         resp = c.get(asset_url(target, name, mirror))
         if resp.status_code != 200:
             raise UpdateError(f"Could not download {name} (HTTP {resp.status_code}).")
-        if hashlib.sha256(resp.content).hexdigest() != sums[name]:
-            raise UpdateError(f"{name} does not match the signed SHA256SUMS.txt; not installing it.")
-    archive = staging / name
-    staging.mkdir(parents=True, exist_ok=True)
-    archive.write_bytes(resp.content)
-    new_dir = staging / "new"
-    shutil.rmtree(new_dir, ignore_errors=True)
-    new_dir.mkdir()
-    _extract(archive, new_dir)
-    exe = new_dir / ("pob.exe" if is_windows() else "pob")
-    proc = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=60)
-    if proc.returncode != 0 or version not in proc.stdout:
-        raise UpdateError(f"The downloaded {target} build does not run here: {(proc.stderr or proc.stdout)[-300:]}")
+        data = resp.content
+    if hashlib.sha256(data).hexdigest() != sums[name]:
+        raise UpdateError(f"{name} does not match the signed SHA256SUMS.txt; not installing it.")
+    new_dir = _unpack_and_check(staging, name, data, target, version)
     return {"tag": target, "version": version, "dir": new_dir}
+
+
+def new_staging(current: Path) -> Path:
+    """A staging directory of this run's own next to `current`, so two updates never share files."""
+    try:
+        return Path(tempfile.mkdtemp(prefix=current.name + ".update-", dir=current.parent))
+    except OSError as exc:
+        raise UpdateError(f"Cannot write next to {current}: {exc}") from exc
+
+
+def _lock(fh: IO[bytes], *, release: bool = False) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK if release else msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN if release else fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+@contextmanager
+def update_lock(current: Path) -> Iterator[None]:
+    """Hold an exclusive lock next to `current` for one update's download, verify and swap.
+
+    The OS drops the lock when the process ends, so a crashed update never leaves it stuck. The lock
+    file stays in place: deleting it would let a third run lock a new file while a second holds the old one.
+    """
+    try:
+        fh = open(current.with_name(current.name + ".update.lock"), "a+b")
+    except OSError as exc:
+        raise UpdateError(f"Cannot write next to {current}: {exc}") from exc
+    with fh:
+        try:
+            _lock(fh)
+        except OSError as exc:
+            raise UpdateError(f"Another pob self-update is running for {current}; let it finish first.") from exc
+        try:
+            yield
+        finally:
+            try:
+                _lock(fh, release=True)
+            except OSError:
+                pass
 
 
 def swap_posix(current: Path, new_dir: Path) -> None:
@@ -215,37 +307,115 @@ def swap_posix(current: Path, new_dir: Path) -> None:
     shutil.rmtree(old, ignore_errors=True)
 
 
-def windows_swap_script(pid: int, current: Path, new_dir: Path) -> str:
-    """PowerShell that waits for this process to exit, then swaps the build directories.
+# --- Windows: swap after exit --------------------------------------------------------------------
 
-    Windows keeps a running pob.exe's directory locked, so the swap happens after exit.
+
+def swap_result_path(current: Path) -> Path:
+    """Where the Windows swap helper records how the swap went, for the next `pob` run to report."""
+    return current.with_name(current.name + ".swap-result.json")
+
+
+def take_swap_result(current: Path) -> dict[str, Any] | None:
+    """Read and remove the helper's result; None when there is none."""
+    path = swap_result_path(current)
+    try:
+        text = path.read_text(encoding="utf-8-sig")  # Windows PowerShell 5.1 writes a BOM
+    except OSError:
+        return None
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    return data if isinstance(data, dict) else {"ok": False, "error": f"unreadable {path.name}"}
+
+
+def cwd_is_inside(current: Path) -> bool:
+    """Windows cannot move a folder that is some process's working directory."""
+    try:
+        return Path.cwd().resolve().is_relative_to(current.resolve())
+    except OSError:
+        return False
+
+
+def windows_swap_script(pid: int, current: Path, new_dir: Path, version: str) -> str:
+    """PowerShell (5.1 and 7) that swaps the build directories once no pob from `current` runs.
+
+    Windows keeps a running pob.exe's directory locked, so the swap waits for this process and every
+    other process started from the folder (the daemon replies to `stop` before it exits), retries
+    the move with backoff, and records the outcome in swap_result_path() because nobody sees its output.
     """
 
-    def q(p: Path) -> str:
+    def q(p: Path | str) -> str:
         return "'" + str(p).replace("'", "''") + "'"
 
-    old = current.with_name(current.name + ".old")
-    return (
-        f"$ErrorActionPreference = 'Stop'; "
-        f"try {{ Wait-Process -Id {int(pid)} -Timeout 120 -ErrorAction SilentlyContinue }} catch {{}}; "
-        f"if (Test-Path -LiteralPath {q(old)}) {{ Remove-Item -LiteralPath {q(old)} -Recurse -Force }}; "
-        f"Move-Item -LiteralPath {q(current)} -Destination {q(old)}; "
-        f"try {{ Move-Item -LiteralPath {q(new_dir)} -Destination {q(current)} }} "
-        f"catch {{ Move-Item -LiteralPath {q(old)} -Destination {q(current)}; throw }}; "
-        f"Remove-Item -LiteralPath {q(old)} -Recurse -Force -ErrorAction SilentlyContinue"
+    staging = new_dir.parent
+    return "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            f"$current = {q(current)}; $old = {q(current.with_name(current.name + '.old'))}",
+            f"$new = {q(new_dir)}; $staging = {q(staging)}; $result = {q(swap_result_path(current))}",
+            "$prefix = $current.TrimEnd('\\') + '\\'",
+            "function Write-Result($ok, $msg) {",
+            f"  @{{ ok = $ok; version = {q(version)}; error = $msg }} | ConvertTo-Json -Compress |"
+            " Set-Content -LiteralPath $result -Encoding UTF8",
+            "}",
+            "function Get-Busy {",
+            "  @(Get-Process -ErrorAction SilentlyContinue | Where-Object {",
+            "    $proc = $_; $path = $null",
+            "    try { $path = $proc.Path } catch {}",
+            f"    $proc.Id -eq {int(pid)} -or ($path -and $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))",
+            "  })",
+            "}",
+            "try {",
+            "  $deadline = (Get-Date).AddSeconds(120)",
+            "  while ((Get-Busy).Count -gt 0 -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }",
+            "  $delay = 250",
+            "  for ($i = 1; ; $i++) {",
+            "    try {",
+            "      if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Recurse -Force }",
+            "      Move-Item -LiteralPath $current -Destination $old",
+            "      break",
+            "    } catch {",
+            "      if ($i -ge 7) { throw }",
+            "      Start-Sleep -Milliseconds $delay; $delay *= 2",
+            "    }",
+            "  }",
+            "  try { Move-Item -LiteralPath $new -Destination $current }",
+            "  catch { Move-Item -LiteralPath $old -Destination $current; throw }",
+            "  Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue",
+            "  Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue",
+            "  Write-Result $true ''",
+            "} catch {",
+            "  Write-Result $false $_.Exception.Message",
+            "  exit 1",
+            "}",
+        ]
     )
 
 
-def schedule_windows_swap(current: Path, new_dir: Path) -> None:
+def schedule_windows_swap(current: Path, new_dir: Path, version: str) -> None:
     import base64
 
-    script = windows_swap_script(os.getpid(), current, new_dir)
+    script = windows_swap_script(os.getpid(), current, new_dir, version)
     encoded = base64.b64encode(script.encode("utf-16-le")).decode()
-    flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
-    subprocess.Popen(
-        ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=flags,
+    flags = (
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        | getattr(subprocess, "DETACHED_PROCESS", 0)
+        | getattr(subprocess, "CREATE_NO_WINDOW", 0)
     )
+    try:
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=flags,
+            # Outside the folder it moves; a working directory inside it would lock it.
+            cwd=str(current.parent),
+        )
+    except OSError as exc:
+        raise UpdateError(f"Could not start PowerShell to finish the update: {exc}") from exc
