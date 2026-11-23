@@ -70,7 +70,7 @@ class TestV5DetectorsL0:
     def test_detect_mechanics_research_need_zero_false_positives_on_controls(self) -> None:
         controls = [
             "帮我查一下 @build.xml 的去水面板和 Ring 1 空后缀",
-            "帮我查一下 @F:/poe/builds/saboteur_vd_lv85_starter.xml 的去水面板，并看看 Ring 1 和 Gloves 哪件还有空后缀可以工艺台补抗性。",
+            "帮我查一下 @C:/pob/builds/saboteur_vd_lv85_starter.xml 的去水面板，并看看 Ring 1 和 Gloves 哪件还有空后缀可以工艺台补抗性。",
             "圣宗开憎恨配启迪要注意什么？",
             "3.28 还能用觉醒元素集中吗？",
             "辅助石怎么选",
@@ -327,7 +327,7 @@ class TestHookV5GatesAndRemediationL4:
         monkeypatch.delenv("POB_HOOK_DISABLE_V5", raising=False)
 
         # Q6 control: pure build panel + item inspect, no mechanics question, no hesitation -> allow_stop
-        q6 = "帮我查一下 @F:/poe/builds/saboteur_vd_lv85_starter.xml 的去水面板，并看看 Ring 1 和 Gloves 哪件还有空后缀可以工艺台补抗性。"
+        q6 = "帮我查一下 @C:/pob/builds/saboteur_vd_lv85_starter.xml 的去水面板，并看看 Ring 1 和 Gloves 哪件还有空后缀可以工艺台补抗性。"
         g1 = handle_pre_prompt({"sessionId": "q6", "turnId": "t1", "userText": q6}, runtime_dir=rt)
         assert g1["needsWebResearch"] is False
         assert "[MECHANICS-RESEARCH-REQUIRED]" not in g1["injectText"]
@@ -335,7 +335,7 @@ class TestHookV5GatesAndRemediationL4:
         append_receipt(
             {
                 "ts": time.time(),
-                "cmd": "diagnose @F:/poe/builds/saboteur_vd_lv85_starter.xml",
+                "cmd": "diagnose @C:/pob/builds/saboteur_vd_lv85_starter.xml",
                 "subcommand": "diagnose",
                 "category": "diagnose",
                 "isCompute": True,
@@ -394,13 +394,13 @@ class TestHookV5GatesAndRemediationL4:
         rt = tmp_path / "rt"
         # Direct raw request: grep / read on PobTools/PoE1/Data and .runtime/engine
         d_grep = handle_pre_tool(
-            {"toolName": "grep", "targetPaths": [r"F:\poe\PobTools[20261102]\PoE1\Data"]},
+            {"toolName": "grep", "targetPaths": [r"C:\pob\PobTools[20261102]\PoE1\Data"]},
             runtime_dir=rt,
         )
         assert d_grep["decision"] == "deny" and d_grep["ruleId"] == "NO_RAW_ENGINE_LUA"
 
         d_read = handle_pre_tool(
-            {"toolName": "read", "targetPaths": [r"F:\poe\.runtime\engine\PoE1\Data\Skills\other.lua"]},
+            {"toolName": "read", "targetPaths": [r"C:\pob\.runtime\engine\PoE1\Data\Skills\other.lua"]},
             runtime_dir=rt,
         )
         assert d_read["decision"] == "deny" and d_read["ruleId"] == "NO_RAW_ENGINE_LUA"
@@ -409,23 +409,23 @@ class TestHookV5GatesAndRemediationL4:
         req_claude, _ = decode_input(
             "pre-tool",
             "claude",
-            {"tool_name": "Grep", "tool_input": {"pattern": "Temporal", "path": r"F:\poe\PobTools[20261102]\PoE1\Data"}},
+            {"tool_name": "Grep", "tool_input": {"pattern": "Temporal", "path": r"C:\pob\PobTools[20261102]\PoE1\Data"}},
         )
         assert handle_pre_tool(req_claude, runtime_dir=rt)["decision"] == "deny"
 
         req_agy, _ = decode_input(
             "pre-tool",
             "agy",
-            {"toolCall": {"name": "read_file", "args": {"Path": r"F:\poe\.runtime\engine\PoE1\Modules\CalcTriggers.lua"}}},
+            {"toolCall": {"name": "read_file", "args": {"Path": r"C:\pob\.runtime\engine\PoE1\Modules\CalcTriggers.lua"}}},
         )
         assert handle_pre_tool(req_agy, runtime_dir=rt)["decision"] == "deny"
 
         # Normal non-engine grep/read stays allowed
-        assert handle_pre_tool({"toolName": "grep", "targetPaths": [r"F:\dsh\workdir\notes.md"]}, runtime_dir=rt)["decision"] == "allow"
+        assert handle_pre_tool({"toolName": "grep", "targetPaths": [r"C:\work\notes.md"]}, runtime_dir=rt)["decision"] == "allow"
 
     def test_gate1_build_path_cn_colon_and_q5_assertion_verification(self, tmp_path: Path) -> None:
         rt = tmp_path / "rt"
-        q2 = "帮我看下 @F:/poe/builds/saboteur_vd_lv98_endgame.xml：先算出真实去水 Pinnacle DPS/EHP，再帮我核实触发机器人吃不吃 30% less？"
+        q2 = "帮我看下 @C:/pob/builds/saboteur_vd_lv98_endgame.xml：先算出真实去水 Pinnacle DPS/EHP，再帮我核实触发机器人吃不吃 30% less？"
         g_q2 = handle_pre_prompt({"sessionId": "q2-cn", "turnId": "t1", "userText": q2}, runtime_dir=rt)
         assert g_q2["hasBuildSource"] is True
         assert g_q2["needsWebResearch"] is True

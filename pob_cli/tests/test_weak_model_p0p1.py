@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 from click.testing import CliRunner
+from engine_paths import find_engine_data
 
 from pob_cli import analyzer, cli, game_data, trade_query
 from pob_cli.errors import CrossGameHallucinationError, HallucinationWarning, LegacyPatchTrapError
@@ -23,12 +24,8 @@ from pob_cli.guardrails import (
     warning_context,
 )
 
-REAL_POB_DIR = Path("F:/poe/.runtime/engine")
-HAS_REAL_POB = (REAL_POB_DIR / "PoE1" / "Data" / "Gems.lua").is_file()
-LEGACY_POB_DIR = Path("F:/poe/PobTools[20261102]")
-if not HAS_REAL_POB and (LEGACY_POB_DIR / "PoE1" / "Data" / "Gems.lua").is_file():
-    REAL_POB_DIR = LEGACY_POB_DIR
-    HAS_REAL_POB = True
+REAL_POB_DIR = find_engine_data()
+HAS_REAL_POB = REAL_POB_DIR is not None
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -903,7 +900,7 @@ def test_base64_source_label_compaction_and_graft_slot_resolution() -> None:
     huge_b64 = "eNrt" + ("A" * 500)
     assert BridgeWorker._compact_source_label(huge_b64) == f"share_code({len(huge_b64)} chars)"
     assert BridgeWorker._compact_source_label("https://pobb.in/abc123") == "https://pobb.in/abc123"
-    assert BridgeWorker._compact_source_label("F:/poe/builds/test.xml") == "F:/poe/builds/test.xml"
+    assert BridgeWorker._compact_source_label("C:/pob/builds/test.xml") == "C:/pob/builds/test.xml"
 
     # Graft slot vs Body Armour disambiguation
     assert normalize_equipment_slot("body") == "Body Armour"

@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+from engine_paths import find_engine_data
 
 from pob_cli.game_data import (
     _fold_search_text,
@@ -16,14 +17,15 @@ from pob_cli.game_data import (
     query_multi,
     resolve_pob_dir,
 )
+from pob_cli.updater import get_shared_cache_dir
 
-REAL_POB_DIR = Path("F:/poe/PobTools[20261102]")
-HAS_REAL_POB = (REAL_POB_DIR / "PoE1" / "Data" / "Gems.lua").is_file()
-MANAGED_POB_DIR = Path("F:/poe/.runtime/engine")
-HAS_MANAGED_POB = (MANAGED_POB_DIR / "PoE1" / "Data" / "Gems.lua").is_file()
+REAL_POB_DIR = find_engine_data()
+HAS_REAL_POB = REAL_POB_DIR is not None
+MANAGED_POB_DIR = REAL_POB_DIR
+HAS_MANAGED_POB = HAS_REAL_POB
 
 
-@pytest.mark.skipif(not HAS_REAL_POB, reason="Real PobTools[20261102] directory not available")
+@pytest.mark.skipif(not HAS_REAL_POB, reason="No real PoB engine found (set POB_ROOT or run pob bootstrap)")
 def test_cold_build_and_warm_query_benchmarks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify cold SQLite index builds < 12s and warm queries execute < 15ms."""
     monkeypatch.delenv("POB_CACHE_DIR", raising=False)
@@ -32,7 +34,7 @@ def test_cold_build_and_warm_query_benchmarks(tmp_path: Path, monkeypatch: pytes
     cold_sec = time.perf_counter() - t0
 
     assert db_path.is_file()
-    assert db_path.parent == tmp_path / "cache"
+    assert db_path.parent == get_shared_cache_dir(tmp_path, pob_root=REAL_POB_DIR)
     assert db_path.name.startswith("gamedata_") and db_path.name.endswith(".sqlite")
     assert cold_sec < 12.0, f"Cold build took {cold_sec:.2f}s (expected < 12.0s)"
 
@@ -62,7 +64,7 @@ def test_cold_build_and_warm_query_benchmarks(tmp_path: Path, monkeypatch: pytes
         assert elapsed_ms < 15.0, f"Warm query {kind}({query!r}) took {elapsed_ms:.2f}ms (expected < 15ms)"
 
 
-@pytest.mark.skipif(not HAS_REAL_POB, reason="Real PobTools[20261102] directory not available")
+@pytest.mark.skipif(not HAS_REAL_POB, reason="No real PoB engine found (set POB_ROOT or run pob bootstrap)")
 def test_mod_bilingual_foulborn_bench_and_filters(tmp_path: Path) -> None:
     """Verify mod search in EN/ZH, Foulborn mods, ModMaster bench crafts, and slot/ilvl filters."""
     res_en = query_local_data("mod", "Life Converted to Energy Shield", pob_dir=REAL_POB_DIR, runtime_dir=tmp_path)
@@ -121,7 +123,7 @@ def test_mod_bilingual_foulborn_bench_and_filters(tmp_path: Path) -> None:
     assert any(m["source"] == "JewelCluster" for m in res_cluster["results"])
 
 
-@pytest.mark.skipif(not HAS_REAL_POB, reason="Real PobTools[20261102] directory not available")
+@pytest.mark.skipif(not HAS_REAL_POB, reason="No real PoB engine found (set POB_ROOT or run pob bootstrap)")
 def test_gem_stats_and_variants(tmp_path: Path) -> None:
     """Verify gem stats at levels 1/20/21, quality stats, ZH names, and transfigured/vaal/awakened variants."""
     res = query_local_data("gem", "Dark Bargain", pob_dir=REAL_POB_DIR, runtime_dir=tmp_path)
@@ -154,7 +156,7 @@ def test_gem_stats_and_variants(tmp_path: Path) -> None:
     assert any(v["name"] == "Awakened Added Fire Damage" and v["relation"] == "awakened" for v in sup["variants"])
 
 
-@pytest.mark.skipif(not HAS_REAL_POB, reason="Real PobTools[20261102] directory not available")
+@pytest.mark.skipif(not HAS_REAL_POB, reason="No real PoB engine found (set POB_ROOT or run pob bootstrap)")
 def test_unique_and_base_and_translate(tmp_path: Path) -> None:
     """Verify unique (incl. Foulborn), base, and bidirectional translate queries."""
     res_sap = query_local_data("unique", "Sap of the Seasons", pob_dir=REAL_POB_DIR, runtime_dir=tmp_path)
@@ -165,7 +167,9 @@ def test_unique_and_base_and_translate(tmp_path: Path) -> None:
     assert sap["base_type"] == "Prismatic Tincture"
     assert sap["base_type_zh"] == "虹彩酊剂"
     assert sap["item_class"] == "Tincture"
-    assert sap["zh_foulborn_name"] == "秽生 四季之侵"
+    # PobTools-zh data-26 dropped Foulborn translations; older data carries them.
+    if sap["zh_foulborn_name"] is not None:
+        assert sap["zh_foulborn_name"] == "秽生 四季之侵"
     assert len(sap["explicits"]) >= 3
 
     res_ab = query_local_data("unique", "Foulborn Abyssus", pob_dir=REAL_POB_DIR, runtime_dir=tmp_path)
@@ -569,7 +573,7 @@ def test_concurrent_build_lockfile_prevents_thundering_herd_and_recovers_stale_l
     assert list(cache_dir.glob("*.tmp")) == []
 
 
-@pytest.mark.skipif(not HAS_REAL_POB, reason="Real PobTools[20261102] directory not available")
+@pytest.mark.skipif(not HAS_REAL_POB, reason="No real PoB engine found (set POB_ROOT or run pob bootstrap)")
 def test_real_pob_diacritics_special_uniques_item_skills_and_partial_zh_translate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

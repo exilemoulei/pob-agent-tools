@@ -189,7 +189,7 @@ class TestReplyScannerV2V3V4:
         assert "CoC" in hits[0]
 
     def test_detect_build_source_in_text(self) -> None:
-        assert detect_build_source_in_text("帮我看下 @F:/poe/build.xml 的防御") == (True, "@F:/poe/build.xml")
+        assert detect_build_source_in_text("帮我看下 @C:/pob/build.xml 的防御") == (True, "@C:/pob/build.xml")
         assert detect_build_source_in_text("看看 https://pobb.in/abc123XYZ 这个构筑") == (
             True,
             "https://pobb.in/abc123XYZ",
