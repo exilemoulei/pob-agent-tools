@@ -43,10 +43,8 @@ def normalize_slot_name(slot: str | None) -> str:
         raise ValueError(
             f"Invalid slot name {slot!r}: must match ^[a-zA-Z0-9._-]{{1,48}}$ and not be '.' or '..'."
         )
-    low = cleaned.lower()
-    if low in ("main", "ref"):
-        return low
-    return cleaned
+    # Lowercase all slugs: slot_<name>.json collides on case-insensitive filesystems (Windows/macOS).
+    return cleaned.lower()
 
 
 def _get_runtime_dir(runtime_dir: Path | None = None) -> Path:

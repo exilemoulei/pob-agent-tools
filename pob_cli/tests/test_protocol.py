@@ -420,6 +420,7 @@ def test_daemon_multi_slot_parallel_locks_and_status(tmp_path: Path, monkeypatch
     assert daemon_mod.normalize_slot_name(None) == "main"
     assert daemon_mod.normalize_slot_name("MAIN") == "main"
     assert daemon_mod.normalize_slot_name("archmage_v2-test.1") == "archmage_v2-test.1"
+    assert daemon_mod.normalize_slot_name("Foo") == daemon_mod.normalize_slot_name("foo") == "foo"
     for bad in ("../escape", "bad/slot", "has space", "..", "."):
         with pytest.raises(ValueError):
             daemon_mod.normalize_slot_name(bad)
