@@ -190,9 +190,19 @@ def _serve_daemon(
             pass
         raise
 
+    import socketserver
     from http.server import ThreadingHTTPServer
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(manager))
+    class _LoopbackHTTPServer(ThreadingHTTPServer):
+        def server_bind(self) -> None:
+            # HTTPServer.server_bind calls socket.getfqdn(host), a reverse DNS lookup that can stall
+            # daemon cold start on hosts with slow resolvers; a loopback daemon never uses server_name.
+            socketserver.TCPServer.server_bind(self)
+            host, bound_port = self.server_address[:2]
+            self.server_name = str(host)
+            self.server_port = bound_port
+
+    server = _LoopbackHTTPServer(("127.0.0.1", port), make_handler(manager))
     manager.server = server
     actual_port = server.server_address[1]
 
