@@ -158,12 +158,6 @@ jobs:
           python3 -m pip install --upgrade pip
           pip install "./pob_cli[dev]"
 
-      - name: Run unit tests (offline mode)
-        env:
-          POB_OFFLINE: "1"
-        run: |
-          python3 -m pytest pob_cli/tests -v
-
       - name: Build native POSIX LuaJIT + lua-utf8 runtime
         run: |
           chmod +x pob_cli/packaging/build_posix_runtime.sh
@@ -189,7 +183,7 @@ jobs:
           # Live bootstrap: fetches official PoB PoE1/ + PobTools Data/bridge/bridge.lua and passes gate_result!
           # raw.githubusercontent.com intermittently answers 503 under load; retry with backoff.
           for attempt in 1 2 3; do
-            if pob bootstrap --no-zh --json; then
+            if pob bootstrap --json; then
               break
             fi
             if [ "$attempt" -eq 3 ]; then
@@ -261,3 +255,11 @@ jobs:
           pob bench list --slot gloves --limit 3 --json
           pob trade convert --text $'Rarity: RARE\nDoom Hand\nSlink Gloves\nImplicits: 0\n+42% to Fire Resistance' --to cold --json
           pob stop --json
+
+      # Runs after the live bootstrap so the ~50 real-engine tests execute instead of skipping.
+      # Expected skips: 3 legacy 2.67.2 snapshot, 1 pob-zh UI labels, 1 Win32-only, 1 network.
+      - name: Run full gate against the real engine
+        env:
+          POB_ROOT: ${{ runner.temp }}/pob-e2e-rt/engine
+        run: |
+          python3 pob_cli/scripts/check.py --min-passed 961 --max-skipped 6
