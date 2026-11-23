@@ -23,6 +23,9 @@ datas = collect_data_files("certifi") + [
 ]
 bundle_runtime = os.environ.get("POB_BUNDLE_RUNTIME", "").strip()
 if bundle_runtime:
+    # Relative to where pyinstaller runs; PyInstaller would resolve it from this spec's directory.
+    bundle_runtime = os.path.abspath(bundle_runtime)
+if bundle_runtime:
     # As data, not binaries: lua-utf8.so resolves lua_* from luajit at load time, which
     # PyInstaller's dependency analysis would otherwise try (and fail) to satisfy.
     for name in ("luajit", "lua-utf8.so"):

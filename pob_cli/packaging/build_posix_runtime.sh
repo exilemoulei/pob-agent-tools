@@ -100,7 +100,13 @@ LUA_CPATH="$OUT_DIR/bin/?.so;;" "$OUT_DIR/bin/luajit" -e '
   local utf8 = require("lua-utf8")
   assert(utf8.len("流放之路") == 4, "lua-utf8 failed")
   local ffi = require("ffi")
-  local z = ffi.load("z")
+  -- Same names headless_runner.lua tries: slim systems have libz.so.1 but no libz.so dev link.
+  local z
+  for _, name in ipairs({ "z", "libz.so.1", "libz.so", "/usr/lib/libz.dylib", "libz.dylib" }) do
+    local ok, lib = pcall(ffi.load, name)
+    if ok then z = lib; break end
+  end
+  assert(z, "no system zlib")
   ffi.cdef("const char *zlibVersion(void);")
   print("OK: LuaJIT=" .. jit.version .. " utf8=ok zlib=" .. ffi.string(z.zlibVersion()))
 '
