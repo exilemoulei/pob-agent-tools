@@ -1,6 +1,6 @@
 # pob4agents
 
-`pob` is a command-line tool that lets AI agents inspect, test and optimize Path of Exile 1 builds with the real Path of Building engine, run headless. It is a Python package (`pob_cli/`, Python 3.11+) whose daemon on `127.0.0.1` drives PobTools-zh's `pob-zh.exe` on Windows and PoB on a LuaJIT runtime built from source on macOS and Linux.
+`pob` is a command-line tool that lets AI agents inspect, test and optimize Path of Exile 1 builds with the real Path of Building engine, run headless. It is a Python package (`pob_cli/`, Python 3.11+) whose daemon on `127.0.0.1` drives PobTools-zh's `pob-zh.exe` on Windows and PoB on a pinned LuaJIT runtime on macOS and Linux.
 
 **Read [docs/architecture.md](docs/architecture.md) before changing code.** It covers how a command reaches the engine, the module layers, engine paths and runtime state, environment variables, Chinese locale matching, the `R1`..`R13` constraints, verification and CI.
 
@@ -16,7 +16,7 @@ python pob_cli/scripts/check.py                       # full gate: fast gate + p
 POB_OFFLINE=1 python -m pytest pob_cli/tests -q       # what PR CI runs: no engine, no network
 pob bootstrap                                         # managed engine in .runtime/engine, for real-engine tests
 pob_cli/packaging/build_posix_runtime.sh ./runtime-dist  # macOS/Linux: LuaJIT + lua-utf8; copy its bin/ to .runtime/engine/bin before bootstrap
-pyinstaller --noconfirm --clean pob_cli/packaging/pob.spec  # Windows: dist/pob/pob.exe
+pyinstaller --noconfirm --clean pob_cli/packaging/pob.spec  # dist/pob; on macOS/Linux set POB_BUNDLE_RUNTIME=./runtime-dist first
 python pob_cli/scripts/gen_han_fold.py Unihan.zip     # regenerate game_data/tables_han.py from Unicode's Unihan
 python pob_cli/scripts/update_bench_costs.py          # regenerate data/bench_costs.json (needs an engine; online unless --from-local-poedb)
 gh workflow run engine.yml -R exilemoulei/pob4agents  # the real-engine gate on Windows, macOS and Linux
@@ -30,7 +30,7 @@ Releases are cut by bumping `__version__` in `pob_cli/src/pob_cli/__init__.py` a
 - `pob_cli/src/pob_cli/data/`, `lua/`: bundled `bench_costs.json` and `headless_runner.lua` (the macOS/Linux engine host).
 - `pob_cli/tests/`: pytest. `engine_paths.py` finds a real engine; `support.py` holds helpers for timing and network-failure tests.
 - `pob_cli/scripts/`: `check.py` and `arch_lint.py` (the gate) and the generators.
-- `pob_cli/packaging/`: `pob.spec` (PyInstaller), `build_posix_runtime.sh`, release helpers.
+- `pob_cli/packaging/`: `pob.spec` (PyInstaller), `build_posix_runtime.sh`, `smoke_frozen.sh`, `release_tools.py` (asset names, packing, sums, signing).
 - `pob_cli/uv.lock`: the locked dev and build environment.
 - `skills/pob/`: the agent skill shipped to users (`SKILL.md`, `references/`). `hooks/`: hook configs for Antigravity (`hooks.json`) and Claude Code (`claude-hooks.json`).
 - `install.ps1`, `install.sh`: one-line installers. `bucket/pob.json`: the Scoop manifest, updated by `release.yml`.
@@ -51,7 +51,7 @@ Releases are cut by bumping `__version__` in `pob_cli/src/pob_cli/__init__.py` a
 - **Chinese text.** The Windows engine shows Traditional names by default, while queries and the local dictionary are Simplified. Compare Chinese labels only after `game_data.fold_han`, and fall back to the English name from `game_data.english_for_zh`.
 - **Exit codes are a contract:** `1` for a bad request, `5` for a daemon or engine fault with a clean `Error: ...` line, `0`..`6` for trade. Agents branch on them.
 - **Docs move with the code.** A changed command or flag updates `docs/guides/commands.md`, both READMEs (`README.md` in Chinese, `README_EN.md`) and `skills/pob/SKILL.md` when it touches a recipe. A new doc goes into `docs/` and its index.
-- **Supply chain.** Every `uses:` in a workflow is pinned to a commit SHA with a `# vX.Y.Z` comment; Dependabot bumps Actions and the uv lockfile. Anything pob or an installer downloads from a release is trusted only through the Ed25519-signed `SHA256SUMS.txt` (`updater/signature.py`, `install.ps1`); keep the two public-key lists equal.
+- **Supply chain.** Every `uses:` in a workflow is pinned to a commit SHA with a `# vX.Y.Z` comment; Dependabot bumps Actions and the uv lockfile. Anything pob or an installer downloads from a release is trusted only through the Ed25519-signed `SHA256SUMS.txt` (`updater/signature.py`, `install.ps1`, `install.sh`); keep the three public-key lists equal. Source tarballs a build downloads are pinned by SHA-256.
 
 ## Commits
 

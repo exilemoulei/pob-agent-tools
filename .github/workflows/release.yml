@@ -17,6 +17,7 @@ on:
       - "pob_cli/packaging/**"
       - "pob_cli/pyproject.toml"
       - "install.ps1"
+      - "install.sh"
 
 permissions:
   contents: read
@@ -210,9 +211,88 @@ jobs:
           path: dist-windows/*
           if-no-files-found: error
 
+  build-posix:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    # Linux builds run in Debian 12 so the binaries need glibc 2.36, not the runner's newer one;
+    # install.sh falls back to the Python package on older systems. Empty means no container.
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-15
+            container: ""
+          - platform: macos-x64
+            runner: macos-15-intel
+            container: ""
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            container: python:3.14-slim-bookworm@sha256:3fe1a0b6c2d6b2ebb572906cdabeca75aeb558c0c17db5ffefbcf8094871c32b
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            container: python:3.14-slim-bookworm@sha256:3fe1a0b6c2d6b2ebb572906cdabeca75aeb558c0c17db5ffefbcf8094871c32b
+    steps:
+      - name: Install build tools (Linux container)
+        if: runner.os == 'Linux'
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential binutils curl ca-certificates git
+
+      - name: Checkout release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14 (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+          enable-cache: false
+
+      - name: Install package and build tools from the lockfile
+        run: uv sync --project pob_cli --locked --extra dev --no-editable --active
+
+      - name: Build the LuaJIT + lua-utf8 runtime from pinned sources
+        run: bash pob_cli/packaging/build_posix_runtime.sh runtime-dist
+
+      - name: Build standalone pob with the runtime inside (PyInstaller onedir)
+        env:
+          POB_BUNDLE_RUNTIME: runtime-dist
+        run: pyinstaller --noconfirm --clean pob_cli/packaging/pob.spec
+
+      - name: Smoke-test standalone pob
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: bash pob_cli/packaging/smoke_frozen.sh dist/pob/pob "$VERSION"
+
+      - name: Package the build, its alias and the runtime
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          python pob_cli/packaging/release_tools.py pack-posix --dist dist/pob --runtime runtime-dist \
+            --out dist-posix --version "$VERSION" --platform "$PLATFORM"
+
+      - name: Upload ${{ matrix.platform }} assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.platform }}
+          path: dist-posix/*
+          if-no-files-found: error
+
   assemble:
     name: Checksums and verification
-    needs: [prepare, build-python, build-windows]
+    needs: [prepare, build-python, build-windows, build-posix]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout release commit
@@ -336,6 +416,46 @@ jobs:
           else
             gh release edit "$TAG" --draft=false --latest
           fi
+
+  installer-posix:
+    name: Install with install.sh (${{ matrix.os }})
+    # After a release: installs the new tag. Dry runs: installs the latest published release.
+    needs: [prepare, publish]
+    if: >-
+      always() && needs.prepare.result == 'success' &&
+      (needs.publish.result == 'success' || needs.prepare.outputs.dry_run == 'true')
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv (for releases without a standalone build)
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          enable-cache: false
+
+      - name: Run install.sh into a temp dir
+        env:
+          DRY_RUN: ${{ needs.prepare.outputs.dry_run }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          export POB_INSTALL_DIR="$RUNNER_TEMP/pob-install" POB_BIN_DIR="$RUNNER_TEMP/pob-bin"
+          if [ "$DRY_RUN" = false ]; then export POB_VERSION="$VERSION"; fi
+          bash install.sh
+          export PATH="$POB_BIN_DIR:$HOME/.local/bin:$PATH"
+          ver="$(pob --version)"
+          if [ "$DRY_RUN" = false ]; then
+            [[ "$ver" == *"$VERSION"* ]] || { echo "::error::install.sh installed '$ver', expected $VERSION"; exit 1; }
+            [ -L "$POB_BIN_DIR/pob" ] || { echo "::error::install.sh did not install the standalone build"; exit 1; }
+          fi
+          echo "install.sh OK: $ver"
 
   installer:
     name: Install with install.ps1

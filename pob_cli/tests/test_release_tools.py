@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import tarfile
 import zipfile
 from pathlib import Path
 from types import ModuleType
@@ -33,9 +35,27 @@ def _fake_dist(root: Path) -> Path:
     return dist
 
 
-def _full_release(rt: ModuleType, root: Path) -> Path:
+def _fake_posix(root: Path) -> tuple[Path, Path]:
+    dist = root / "posix" / "pob"
+    (dist / "_internal" / "Python.framework").mkdir(parents=True)
+    (dist / "pob").write_bytes(b"\x7fELF-fake-pob")
+    (dist / "pob").chmod(0o755)
+    (dist / "_internal" / "Python.framework" / "Python").write_bytes(b"lib")
+    os.symlink("Python.framework/Python", dist / "_internal" / "Python")
+    runtime = root / "posix" / "runtime"
+    (runtime / "bin").mkdir(parents=True)
+    for name in ("luajit", "lua-utf8.so"):
+        (runtime / "bin" / name).write_bytes(name.encode())
+        (runtime / "bin" / name).chmod(0o755)
+    return dist, runtime
+
+
+def _full_release(rt: ModuleType, root: Path, platforms: tuple[str, ...] = ("windows-x64",)) -> Path:
     out = root / "release-assets"
     rt.pack_windows(_fake_dist(root), out, VERSION)
+    for platform in platforms[1:]:
+        dist, runtime = _fake_posix(root / platform)
+        rt.pack_posix(dist, runtime, out, VERSION, platform)
     for name in rt.python_asset_names(VERSION):
         (out / name).write_bytes(b"python-dist " + name.encode())
     sums = rt.write_sums(out)
@@ -128,7 +148,8 @@ def test_scoop_manifest_points_at_new_name(rt: ModuleType, tmp_path: Path) -> No
 
 def test_cli_verify_exit_codes(rt: ModuleType, tmp_path: Path) -> None:
     out = _full_release(rt, tmp_path)
-    args = ["verify", "--dir", str(out), "--version", VERSION, "--public-key", TEST_PUBLIC_KEY]
+    args = ["verify", "--dir", str(out), "--version", VERSION, "--platforms", "windows-x64"]
+    args += ["--public-key", TEST_PUBLIC_KEY]
     assert rt.main(args) == 0
     (out / "pob4agents-0.9.0-windows-x64.zip").unlink()
     assert rt.main(args) == 1
@@ -138,3 +159,39 @@ def test_notes_name_the_wheel_and_attestations(rt: ModuleType) -> None:
     notes = rt.release_notes(VERSION)
     assert "releases/download/v0.9.0/pob_cli-0.9.0-py3-none-any.whl" in notes
     assert "gh attestation verify" in notes
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes and symlinks")
+def test_pack_posix_is_reproducible_and_keeps_modes_and_links(rt: ModuleType, tmp_path: Path) -> None:
+    dist, runtime = _fake_posix(tmp_path)
+    tar_a, sha_a = rt.pack_posix(dist, runtime, tmp_path / "a", VERSION, "macos-arm64")
+    _, sha_b = rt.pack_posix(dist, runtime, tmp_path / "b", VERSION, "macos-arm64")
+    assert sha_a == sha_b
+    assert tar_a.name == "pob4agents-0.9.0-macos-arm64.tar.gz"
+    assert (tmp_path / "a" / "pob4agents-macos-arm64.tar.gz").read_bytes() == tar_a.read_bytes()
+    with tarfile.open(tar_a) as tf:
+        members = {m.name: m for m in tf.getmembers()}
+    assert members["pob"].mode == 0o755 and members["pob"].uid == 0 and members["pob"].mtime == 0
+    assert members["_internal/Python"].issym()
+    assert members["_internal/Python.framework/Python"].mode == 0o644
+    with tarfile.open(tmp_path / "a" / "pob4agents-runtime-0.9.0-macos-arm64.tar.gz") as tf:
+        assert sorted(tf.getnames()) == ["bin", "bin/lua-utf8.so", "bin/luajit"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes and symlinks")
+def test_verify_accepts_every_platform(rt: ModuleType, tmp_path: Path) -> None:
+    out = _full_release(rt, tmp_path, rt.PLATFORMS)
+    assert rt.verify(out, VERSION, list(rt.PLATFORMS), KEYS) == []
+    assert "pob4agents-runtime-0.9.0-linux-arm64.tar.gz" in rt.expected_assets(VERSION, list(rt.PLATFORMS))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes and symlinks")
+def test_verify_rejects_a_build_without_executable_pob(rt: ModuleType, tmp_path: Path) -> None:
+    dist, runtime = _fake_posix(tmp_path)
+    (dist / "pob").chmod(0o644)
+    out = tmp_path / "out"
+    rt.pack_posix(dist, runtime, out, VERSION, "linux-x64")
+    sums = rt.write_sums(out)
+    (out / "SHA256SUMS.txt.sig").write_text(sign_sums_text(sums.read_bytes()), encoding="ascii")
+    problems = rt.verify(out, VERSION, ["linux-x64"], KEYS)
+    assert "pob4agents-0.9.0-linux-x64.tar.gz has no executable pob" in problems
