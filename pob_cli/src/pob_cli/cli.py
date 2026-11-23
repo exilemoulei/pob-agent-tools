@@ -30,6 +30,7 @@ from .cli_lifecycle import register_lifecycle_commands
 from .cli_mutate import register_mutate_commands
 from .cli_mutate_items import register_item_commands
 from .cli_optimize import register_optimize_commands
+from .cli_weights import register_weights_commands
 
 _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
     "trade": (
@@ -80,6 +81,7 @@ register_inspect_commands(main)
 register_item_commands(main)
 register_mutate_commands(main)
 register_optimize_commands(main)
+register_weights_commands(main)
 register_data_commands(main)
 
 __all__ = [

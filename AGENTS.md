@@ -3,7 +3,7 @@
 ## 1. Quick Commands (`pob [--offline] [--compact] [--out <file>]`)
 
 ```powershell
-# Optimization flow: pob audit (dewater & gaps) -> rank-nodes / rank-gems / anoint / bench -> pob trade search (verified via PoB)
+# Optimization flow: pob audit (dewater & gaps) -> weights / rank-nodes / rank-gems / anoint / bench -> pob trade search (verified via PoB)
 # Global output & slot targeting: --target <slug> (alias --slot where non-conflicting; default POB_SLOT or main); --compact (1-line JSON); --out <file> (UTF-8 no-BOM).
 
 # Lifecycle, Foreground Daemon, Engine Bootstrap/Update & Build I/O (127.0.0.1 + X-PoB-Token)
@@ -52,6 +52,7 @@ pob matrix [Original Pinnacle Uber FlasksOff "Label:Pinnacle,k=v"] [-s <spec>]..
 # ROI Ranking, 3-Baseline A/B Comparison & Transplant
 pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--max-dist 5] [--top 15] [--json]
 pob rank-gems [--group main] [--slot N | --add-link] [--field CombinedDPS|FullDPS] [--top 15] [--json]
+pob weights [--mod "<custom mod line>"]... [--scenario Pinnacle] [--keep <spec>]... [--target <slug>] [--json]       # PoB-verified DPS/EHP gain per probe mod (16 defaults; --mod replaces), 0-residue rollback
 pob compare [<ref_source>] [--json]                                                    # 3 baselines: Original / Target Env Aligned / Pinnacle Dewatered
 pob borrow [--item-slot "Weapon 1,Amulet"] [--skill-group main] [--apply] [--json]
 
@@ -79,7 +80,7 @@ pob timeless search --jewel "<name|中文>" --socket <nodeId> [--conqueror C] [-
 - Engine lookup (`updater.resolve_engine_root`): `POB_ROOT` -> `<POB_RUNTIME_DIR>/engine` (source checkout default `F:/poe/.runtime/engine`; installed/frozen default `%LOCALAPPDATA%/pob4agents/engine`, auto-falling back to legacy `%LOCALAPPDATA%/pob-agent-tools` if it already has runtime data) -> read-only legacy seed `F:/poe/PobTools[20261102]` (never mutate legacy dir; PowerShell always `-LiteralPath` for `[20261102]`; `cwd` must be `PoE1`).
 - Packaging & release: `pob_cli/__init__.py` (`__version__`) is single source of truth; frozen `pob.exe` spawns background daemon via hidden `pob _daemon`; `.github/workflows/{ci,release}.yml` build Windows x64 `--onedir` zip + wheel/sdist + `SHA256SUMS.txt`, publish GitHub Release on `v*` tags, and auto-update in-repo Scoop bucket `bucket/pob.json`; `install.ps1` provides 1-line Windows install/upgrade.
 - Env vars: `POB_ROOT`, `POB_RUNTIME_DIR`, `POB_CACHE_DIR`, `POB_SLOT` (default build slot slug), `POB_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`, `POB_GITHUB_MIRROR`, `POB_OFFLINE=1`, `POB_LEGACY_DIR`, `POESESSID` / `POE_COOKIE` (trade env-only).
-- Modules (`pob_cli/src/pob_cli/`, 5-layer strict DAG L0->L4, every file `<=650L`/`<=24KB`, fn `<=200L`): L0 `errors.py`, `ticks.py`, `guardrails/`; L1 `updater/`, `bridge_protocol.py`, `bridge_client.py`, `importers.py`, `game_data/`, `external_data/`, `poedb_client/`; L2 `formatters/`, `snapshot.py`, `analyzer/`, `mutators/`, `comparator/`, `bench/`, `item_inspect.py`, `trade_craft.py`, `trade_item/`, `trade_client/`, `trade_query/`, `trade_eval/`, `timeless/`; L3 `daemon/`; L4 `cli_common.py`, `cli.py`, `cli_lifecycle.py`, `cli_build_io.py`, `cli_inspect.py`, `cli_inspect_parts.py`, `cli_mutate_items.py`, `cli_mutate.py`, `cli_optimize.py`, `cli_data_render.py`, `cli_data.py`, `cli_trade/`, `cli_timeless.py`; bundled `data/bench_costs.json` & `lua/headless_runner.lua`; cross-harness skill `skills/pob/SKILL.md` (`references/`).
+- Modules (`pob_cli/src/pob_cli/`, 5-layer strict DAG L0->L4, every file `<=650L`/`<=24KB`, fn `<=200L`): L0 `errors.py`, `ticks.py`, `guardrails/`; L1 `updater/`, `bridge_protocol.py`, `bridge_client.py`, `importers.py`, `game_data/`, `external_data/`, `poedb_client/`; L2 `formatters/`, `snapshot.py`, `analyzer/`, `mutators/`, `comparator/`, `bench/`, `item_inspect.py`, `trade_craft.py`, `trade_item/`, `trade_client/`, `trade_query/`, `trade_eval/`, `timeless/`; L3 `daemon/`; L4 `cli_common.py`, `cli.py`, `cli_lifecycle.py`, `cli_build_io.py`, `cli_inspect.py`, `cli_inspect_parts.py`, `cli_mutate_items.py`, `cli_mutate.py`, `cli_optimize.py`, `cli_weights.py`, `cli_data_render.py`, `cli_data.py`, `cli_trade/`, `cli_timeless.py`; bundled `data/bench_costs.json` & `lua/headless_runner.lua`; cross-harness skill `skills/pob/SKILL.md` (`references/`).
 - Verification gate (`pob_cli/scripts/check.py` + `arch_lint.py`): `python pob_cli/scripts/check.py --fast` (`ruff` on `src/scripts/packaging/tests` + AST `[file-budget]`/`[fn-budget]`/`[layer-dag]`/`[blocked-rpc]`/`[spec-sync]`, `<3s`); `python pob_cli/scripts/check.py --self-test` (5 mutation checks in `%TEMP%`); `python pob_cli/scripts/check.py` (full gate + isolated offline `pytest`, ratchet `>=905` passed, `skipped<=1`).
 - Runtime state (`<POB_RUNTIME_DIR>/`): `daemon.json` (`pid`, `port`, `token`), `update_state.json`, `slot_<slug>.json`, shared `cache/gamedata_<pobVer>_<dataVer>.sqlite`, `cache/ninja_*.json`, `cache/poedb_*.json`, `cache/trade_ratelimit.json`, `cache/trade_stats*.json`.
 
