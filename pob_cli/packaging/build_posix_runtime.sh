@@ -16,8 +16,24 @@ OUT_DIR="${1:-./posix-runtime}"
 mkdir -p "$OUT_DIR/bin"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
+# Keep these four equal to POSIX_* in pob_cli/src/pob_cli/updater/constants.py (a test checks).
 LUAJIT_COMMIT="2460b3ff93a1c955de3d62cfc825de7d68dc272e"
+LUAJIT_SHA256="5c52d06876d86aa199f9b8cdc65f6f9ac086fdfa8a4489ebf8dc4516e194550b"
 LUAUTF8_TAG="0.1.6"
+LUAUTF8_SHA256="b76873b4afb09abd00508a66887ae1658492078869f9414c334dea35b5769656"
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+check_sha256() {
+  local actual
+  actual="$(sha256_of "$1")"
+  if [ "$actual" != "$2" ]; then
+    echo "[pob-runtime] ERROR: $1 has SHA-256 $actual, expected $2" >&2
+    exit 1
+  fi
+}
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/pob-posix-rt.XXXXXX")"
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -31,6 +47,7 @@ LUAJIT_TAR="$WORKDIR/luajit.tar.gz"
 LUAJIT_SRC="$WORKDIR/luajit-src"
 mkdir -p "$LUAJIT_SRC"
 curl -fsSL "https://github.com/LuaJIT/LuaJIT/archive/${LUAJIT_COMMIT}.tar.gz" -o "$LUAJIT_TAR"
+check_sha256 "$LUAJIT_TAR" "$LUAJIT_SHA256"
 tar -xzf "$LUAJIT_TAR" --strip-components=1 -C "$LUAJIT_SRC"
 
 MAKE_ARGS=(
@@ -55,6 +72,7 @@ LUAUTF8_TAR="$WORKDIR/luautf8.tar.gz"
 LUAUTF8_SRC="$WORKDIR/luautf8-src"
 mkdir -p "$LUAUTF8_SRC"
 curl -fsSL "https://github.com/starwing/luautf8/archive/refs/tags/${LUAUTF8_TAG}.tar.gz" -o "$LUAUTF8_TAR"
+check_sha256 "$LUAUTF8_TAR" "$LUAUTF8_SHA256"
 tar -xzf "$LUAUTF8_TAR" --strip-components=1 -C "$LUAUTF8_SRC"
 
 CC_BIN="${CC:-cc}"
