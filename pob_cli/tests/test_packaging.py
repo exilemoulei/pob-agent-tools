@@ -125,8 +125,13 @@ def test_release_tools_pack_and_scoop_manifest_update(tmp_path: Path) -> None:
         assert "pob.exe" in names
         assert "_internal/cert.pem" in names
 
+    alias_path = out_dir / "pob-windows-x64.zip"
+    assert alias_path.is_file()
+    assert alias_path.read_bytes() == zip_path.read_bytes()
+
     sums = (out_dir / "SHA256SUMS.txt").read_text(encoding="utf-8")
     assert f"{zip_sha}  pob-v0.2.0-windows-x64.zip" in sums
+    assert f"{zip_sha}  pob-windows-x64.zip" in sums
 
     repo_manifest = Path(__file__).resolve().parents[2] / "bucket" / "pob.json"
     copied = tmp_path / "pob.json"

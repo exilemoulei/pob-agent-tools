@@ -91,18 +91,26 @@ scoop install pob
 scoop update pob
 ```
 
-#### 方式三：GitHub Releases 便携压缩包
+#### 方式三：GitHub Releases 便携压缩包（永久链接）
 
-前往 [GitHub Releases](https://github.com/exilemoulei/pob4agents/releases/latest) 下载 `pob-v0.7.0-windows-x64.zip`（文件名随最新 Release 变化，以 Releases 页实际文件名为准），解压后将包含 `pob.exe` 的目录加入系统 `PATH`。
+```powershell
+# 永久链接：始终指向最新正式版，不用关心版本号
+irm https://github.com/exilemoulei/pob4agents/releases/latest/download/pob-windows-x64.zip -OutFile "$env:TEMP\pob-windows-x64.zip"
+```
+
+解压后，把包含 `pob.exe` 的目录加入系统 `PATH`（也可以用浏览器直接打开上面的链接下载）。校验和在同目录的 [`SHA256SUMS.txt`](https://github.com/exilemoulei/pob4agents/releases/latest/download/SHA256SUMS.txt) 里，同时覆盖版本化文件名与永久别名。
 
 #### 方式四：Python 包安装（Python 3.11+，`uv` / `pipx` / `pip`）
 
 ```powershell
-# 使用 uv（推荐）
-uv tool install "git+https://github.com/exilemoulei/pob4agents.git@v0.7.0#subdirectory=pob_cli"
+# 使用 uv（推荐，跟随仓库主分支的最新提交）
+uv tool install "git+https://github.com/exilemoulei/pob4agents.git#subdirectory=pob_cli"
 
-# 或直接安装 Release Wheel
-pip install "https://github.com/exilemoulei/pob4agents/releases/download/v0.7.0/pob_cli-0.7.0-py3-none-any.whl"
+# 需要可复现的固定版本时（把 vX.Y.Z 换成 Releases 页上的具体 tag）
+uv tool install "git+https://github.com/exilemoulei/pob4agents.git@vX.Y.Z#subdirectory=pob_cli"
+
+# pip / pipx 同样可用
+pip install "git+https://github.com/exilemoulei/pob4agents.git#subdirectory=pob_cli"
 ```
 
 > **为 AI Agent 挂载通用 Skill（可选，推荐）**：将仓库内的 [`skills/pob`](skills/pob) 目录复制到你的 Agent 技能目录（如 `~/.agents/skills/pob`、`~/.claude/skills/pob` 或 DeepSeek Harness 的 `skills` 目录），即可让快速模型（如 DeepSeek Flash / Hydrogen / Haiku）按精简路由调用 `pob` 并规避跨版本幻觉。
@@ -539,7 +547,7 @@ pyinstaller --noconfirm --clean pob_cli/packaging/pob.spec
 
 1. 修改 `pob_cli/src/pob_cli/__init__.py` 中的 `__version__`，并合入 `main`。
 2. 创建并推送版本标签：`git tag -s v0.5.0 -m "pob4agents v0.5.0" && git push origin main v0.5.0`。
-3. GitHub Actions 检查版本号、运行测试、构建并冒烟测试 `pob-vX.Y.Z-windows-x64.zip`、Wheel / sdist 和 `SHA256SUMS.txt`，随后发布 GitHub Release，并更新 Scoop 清单 `bucket/pob.json`。
+3. GitHub Actions 检查版本号、运行测试、构建并冒烟测试 `pob-vX.Y.Z-windows-x64.zip`、Wheel / sdist 和 `SHA256SUMS.txt`，随后发布 GitHub Release，并更新 Scoop 清单 `bucket/pob.json`。每个 Release 还会附一份内容相同的永久别名 `pob-windows-x64.zip`，供 `releases/latest/download/pob-windows-x64.zip` 免改版本号直接下载（`latest` 指向最新正式版，跳过 prerelease）。
 
 Agent 命令速查见 [AGENTS.md](AGENTS.md)。
 

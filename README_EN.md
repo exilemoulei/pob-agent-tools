@@ -91,18 +91,26 @@ scoop install pob
 scoop update pob
 ```
 
-#### Option 3: Portable GitHub release
+#### Option 3: Portable GitHub release (permanent link)
 
-Download `pob-v0.7.0-windows-x64.zip` from [GitHub Releases](https://github.com/exilemoulei/pob4agents/releases/latest) (the filename follows the latest release; use whatever name the Releases page shows), extract it, and add the folder containing `pob.exe` to your `PATH`.
+```powershell
+# Permanent link: always the latest stable release, no version string needed
+irm https://github.com/exilemoulei/pob4agents/releases/latest/download/pob-windows-x64.zip -OutFile "$env:TEMP\pob-windows-x64.zip"
+```
+
+Extract it and add the folder containing `pob.exe` to your `PATH` (you can also just open the link above in a browser). Checksums live in [`SHA256SUMS.txt`](https://github.com/exilemoulei/pob4agents/releases/latest/download/SHA256SUMS.txt), which covers both the versioned filenames and the permanent alias.
 
 #### Option 4: Python package (Python 3.11+, `uv` / `pipx` / `pip`)
 
 ```powershell
-# Use uv (recommended)
-uv tool install "git+https://github.com/exilemoulei/pob4agents.git@v0.7.0#subdirectory=pob_cli"
+# Use uv (recommended; tracks the latest commit on the main branch)
+uv tool install "git+https://github.com/exilemoulei/pob4agents.git#subdirectory=pob_cli"
 
-# Or install the release wheel
-pip install "https://github.com/exilemoulei/pob4agents/releases/download/v0.7.0/pob_cli-0.7.0-py3-none-any.whl"
+# Pin an exact version when you need reproducibility (replace vX.Y.Z with a real tag from the Releases page)
+uv tool install "git+https://github.com/exilemoulei/pob4agents.git@vX.Y.Z#subdirectory=pob_cli"
+
+# pip / pipx work the same way
+pip install "git+https://github.com/exilemoulei/pob4agents.git#subdirectory=pob_cli"
 ```
 
 > **Load the bundled AI Agent Skill (optional, recommended)**: Copy [`skills/pob`](skills/pob) into your agent's skill folder (such as `~/.agents/skills/pob`, `~/.claude/skills/pob`, or DeepSeek Harness's `skills` directory) so fast models follow concise `pob` workflows and avoid cross-patch hallucinations.
@@ -541,7 +549,7 @@ pyinstaller --noconfirm --clean pob_cli/packaging/pob.spec
 
 1. Update `__version__` in `pob_cli/src/pob_cli/__init__.py` and merge it into `main`.
 2. Create and push a version tag: `git tag -s v0.5.0 -m "pob4agents v0.5.0" && git push origin main v0.5.0`.
-3. GitHub Actions checks the version, runs tests, builds and smoke-tests `pob-vX.Y.Z-windows-x64.zip`, the wheel / sdist, and `SHA256SUMS.txt`, publishes the GitHub Release, and updates the Scoop manifest at `bucket/pob.json`.
+3. GitHub Actions checks the version, runs tests, builds and smoke-tests `pob-vX.Y.Z-windows-x64.zip`, the wheel / sdist, and `SHA256SUMS.txt`, publishes the GitHub Release, and updates the Scoop manifest at `bucket/pob.json`. Every release also carries a byte-identical stable alias `pob-windows-x64.zip` so `releases/latest/download/pob-windows-x64.zip` always downloads the newest build without editing the version (`latest` skips prereleases).
 
 For a compact command reference for agents, see [AGENTS.md](AGENTS.md).
 

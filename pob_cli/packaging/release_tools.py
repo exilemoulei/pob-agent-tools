@@ -5,14 +5,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import zipfile
 from pathlib import Path
 
 REPO_SLUG = "exilemoulei/pob4agents"
+STABLE_ZIP_NAME = "pob-windows-x64.zip"
+"""Version-free alias mirrored from the tagged zip, served by /releases/latest/download/<name>."""
 
 
 def pack_windows_release(dist_dir: Path, out_dir: Path, tag: str) -> tuple[Path, str]:
-    """Zip `dist_dir` contents at archive root and write `SHA256SUMS.txt` for all assets in `out_dir`."""
+    """Zip `dist_dir` at archive root, mirror it as `STABLE_ZIP_NAME`, and write `SHA256SUMS.txt` for every asset."""
     dist_dir = Path(dist_dir)
     out_dir = Path(out_dir)
     if not (dist_dir / "pob.exe").is_file():
@@ -27,6 +30,10 @@ def pack_windows_release(dist_dir: Path, out_dir: Path, tag: str) -> tuple[Path,
             if path.is_file():
                 zf.write(path, path.relative_to(dist_dir).as_posix())
 
+    alias_path = out_dir / STABLE_ZIP_NAME
+    if alias_path != zip_path:
+        shutil.copyfile(zip_path, alias_path)
+
     lines: list[str] = []
     zip_sha = ""
     for asset in sorted(out_dir.iterdir()):
@@ -36,7 +43,9 @@ def pack_windows_release(dist_dir: Path, out_dir: Path, tag: str) -> tuple[Path,
             if asset.name == zip_name:
                 zip_sha = digest
 
-    (out_dir / "SHA256SUMS.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # newline="\n" keeps SHA256SUMS.txt in GNU coreutils format: Windows text mode would otherwise emit
+    # CRLF and break `sha256sum -c` verification of the published checksums.
+    (out_dir / "SHA256SUMS.txt").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     return zip_path, zip_sha
 
 

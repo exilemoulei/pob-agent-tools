@@ -119,10 +119,22 @@ jobs:
           $tag = "${{ steps.meta.outputs.tag }}"
           $lines = python pob_cli/packaging/release_tools.py pack --dist dist/pob --out release-assets --tag $tag
           if ($LASTEXITCODE -ne 0) { throw "release_tools.py pack failed" }
+          $zipSha = ($lines | Where-Object { $_ -match "^zip_sha256=" }) -replace "^zip_sha256=", ""
           foreach ($line in $lines) {
             $line | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
+          Get-ChildItem release-assets | Select-Object Name, Length | Format-Table -AutoSize
           Get-Content release-assets/SHA256SUMS.txt
+          # Stable alias consumed by README /releases/latest/download links; must never silently disappear.
+          if (-not (Test-Path release-assets/pob-windows-x64.zip -PathType Leaf)) {
+            throw "Stable asset alias pob-windows-x64.zip is missing"
+          }
+          $sums = Get-Content release-assets/SHA256SUMS.txt -Encoding UTF8
+          $aliasLine = $sums | Where-Object { $_ -match "\s\*?pob-windows-x64\.zip$" }
+          if (-not $aliasLine) { throw "SHA256SUMS.txt is missing the stable alias entry" }
+          if ($aliasLine -notmatch [regex]::Escape($zipSha)) {
+            throw "Stable alias hash does not match the versioned zip hash ($zipSha)"
+          }
 
       - name: Upload wheel/sdist artifact for optional PyPI job
         uses: actions/upload-artifact@v4
