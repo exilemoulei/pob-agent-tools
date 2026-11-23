@@ -2,7 +2,7 @@
 """Deterministic lint, architecture-DAG, and offline test gate for `pob_cli`.
 
 Modes:
-  python pob_cli/scripts/check.py             # ruff + arch-lint + isolated offline pytest (>=905 passed, <=1 skipped)
+  python pob_cli/scripts/check.py             # ruff + arch-lint + isolated offline pytest (>=905 passed, <=11 skipped)
   python pob_cli/scripts/check.py --min-passed 961 --max-skipped 6  # CI ratchet for a POSIX real-engine run
   python pob_cli/scripts/check.py --fast      # ruff + AST arch-lint only (<3s)
   python pob_cli/scripts/check.py --self-test # mutation checks in %TEMP% proving every rule fires
@@ -26,7 +26,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 from arch_lint import SKIP_COPY_DIRS, run_arch_lint  # noqa: E402
 
 MIN_PASSED_TESTS = 905
-MAX_SKIPPED_TESTS = 1
+MAX_SKIPPED_TESTS = 11  # Windows skips the 10 POSIX installer and archive tests
 
 
 def _remove_tree_bottom_up(path: Path) -> None:

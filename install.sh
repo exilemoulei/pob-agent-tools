@@ -25,7 +25,7 @@ set -euo pipefail
 REPO="exilemoulei/pob4agents"
 # Release signing keys: base64 raw Ed25519 public keys, the same list as RELEASE_PUBLIC_KEYS in
 # pob_cli/src/pob_cli/updater/signature.py (test_release_signature.py keeps them equal).
-RELEASE_PUBLIC_KEYS=()
+RELEASE_PUBLIC_KEYS=(fvwea+k3NZ54EzRFCoMYgvZLy3XTkKGXxo2UPmsNZIM=)
 # Releases after v0.8.0 ship SHA256SUMS.txt.sig; for them a missing or bad signature stops the install.
 FIRST_SIGNED_VERSION="0.8.1"
 

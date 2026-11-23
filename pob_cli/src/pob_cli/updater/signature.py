@@ -17,7 +17,9 @@ import base64
 import binascii
 import hashlib
 
-RELEASE_PUBLIC_KEYS: tuple[str, ...] = ()
+RELEASE_PUBLIC_KEYS: tuple[str, ...] = (
+    "fvwea+k3NZ54EzRFCoMYgvZLy3XTkKGXxo2UPmsNZIM=",
+)
 """Base64 raw 32-byte Ed25519 public keys. A new key ships here before release.yml signs with it."""
 
 SUMS_NAME = "SHA256SUMS.txt"

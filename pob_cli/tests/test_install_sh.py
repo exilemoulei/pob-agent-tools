@@ -23,7 +23,7 @@ REPO = Path(__file__).resolve().parents[2]
 TAG = "v9.9.9"
 GH = "https://github.com/exilemoulei/pob4agents/releases"
 
-pytestmark = pytest.mark.skipif(
+posix_only = pytest.mark.skipif(
     sys.platform == "win32" or not shutil.which("bash") or not shutil.which("curl"), reason="POSIX installer"
 )
 
@@ -102,7 +102,8 @@ def release() -> Iterator[tuple[_Release, str]]:
 def run_installer(tmp_path: Path, release: tuple[_Release, str]):  # type: ignore[no-untyped-def]
     _, mirror = release
     script = (REPO / "install.sh").read_text(encoding="utf-8")
-    script, n = re.subn(r"^RELEASE_PUBLIC_KEYS=\(\)$", f"RELEASE_PUBLIC_KEYS=({TEST_PUBLIC_KEY})", script, flags=re.M)
+    # Trust only the test key, so a release signed by it installs and nothing else does.
+    script, n = re.subn(r"^RELEASE_PUBLIC_KEYS=\(.*\)$", f"RELEASE_PUBLIC_KEYS=({TEST_PUBLIC_KEY})", script, flags=re.M)
     assert n == 1
     installer = tmp_path / "install.sh"
     installer.write_text(script, encoding="utf-8")
@@ -139,6 +140,7 @@ def run_installer(tmp_path: Path, release: tuple[_Release, str]):  # type: ignor
     return run
 
 
+@posix_only
 def test_installs_the_signed_build(release: tuple[_Release, str], run_installer, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     release[0].publish()
     proc = run_installer()
@@ -150,6 +152,7 @@ def test_installs_the_signed_build(release: tuple[_Release, str], run_installer,
     assert not (tmp_path / "app.new").exists()
 
 
+@posix_only
 def test_upgrade_replaces_an_earlier_python_install(release: tuple[_Release, str], run_installer, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     release[0].publish()
     (tmp_path / "bin").mkdir()
@@ -162,6 +165,7 @@ def test_upgrade_replaces_an_earlier_python_install(release: tuple[_Release, str
     assert (tmp_path / "app" / "pob").is_file()
 
 
+@posix_only
 @pytest.mark.parametrize(
     ("damage", "message"),
     [("tamper", "does not match SHA256SUMS.txt"), ("unsigned", "refusing to install an unsigned release")],
@@ -176,6 +180,7 @@ def test_refuses_a_changed_or_unsigned_release(
     assert not (tmp_path / "bin" / "pob").exists()
 
 
+@posix_only
 def test_refuses_a_signature_by_another_key(release: tuple[_Release, str], run_installer, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     release[0].publish()
     sums = release[0].files["SHA256SUMS.txt"]
@@ -185,6 +190,7 @@ def test_refuses_a_signature_by_another_key(release: tuple[_Release, str], run_i
     assert "not signed by a pob4agents release key" in proc.stderr
 
 
+@posix_only
 def test_falls_back_to_the_verified_wheel(release: tuple[_Release, str], run_installer, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     release[0].publish(runs=False)
     proc = run_installer()
@@ -204,6 +210,7 @@ def test_installer_carries_the_package_keys() -> None:
     assert tuple(m.group(1).split()) == signature.RELEASE_PUBLIC_KEYS
 
 
+@posix_only
 def test_self_test_passes() -> None:
     proc = subprocess.run(["bash", str(REPO / "install.sh"), "--self-test"], capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, proc.stdout + proc.stderr
