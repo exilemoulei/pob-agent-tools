@@ -1,48 +1,126 @@
 name: Release
 
+# prepare -> gate (real engine) + builds (no write access) -> assemble (checksums, verify)
+#   -> publish (draft, upload, verify the uploaded files, publish) -> Scoop PR, PyPI.
+# Pushing a v* tag releases it. Dispatching with a tag (re)releases that existing tag; dispatching
+# without one is a dry run of the dispatched ref: gate, build and verify, upload nothing. Pull requests
+# that touch release inputs run the dry run without the engine gate.
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v0.2.0). Defaults to current ref."
+        description: "Existing tag to release, e.g. v0.9.0. Leave empty for a dry run."
         required: false
         type: string
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/release.yml"
+      - "pob_cli/packaging/**"
+      - "pob_cli/pyproject.toml"
+      - "install.ps1"
 
 permissions:
   contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'pull_request' && github.ref || inputs.tag || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # uv installs packages only; the interpreter is always the official CPython from setup-python.
 env:
   UV_PYTHON_DOWNLOADS: never
 
 jobs:
-  # Nothing is published unless the full gate passes against a fresh real engine on all three OSes.
-  engine-gate:
-    uses: ./.github/workflows/engine.yml
-
-  build-and-release:
-    needs: engine-gate
-    runs-on: windows-latest
-    # Publishes the GitHub Release and pushes the Scoop manifest bump to main.
-    permissions:
-      contents: write
-    defaults:
-      run:
-        shell: pwsh
+  prepare:
+    name: Resolve version and commit
+    runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
-      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+      sha: ${{ steps.meta.outputs.sha }}
+      dry_run: ${{ steps.meta.outputs.dry_run }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
       - name: Checkout repository
-        # Credentials stay persisted for the Scoop manifest push; .git is never uploaded as an artifact.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
+
+      - name: Resolve tag, version and commit
+        id: meta
+        # Inputs reach the script through env, never ${{ }}, so a crafted tag cannot inject shell.
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          read_version() { git show "$1:pob_cli/src/pob_cli/__init__.py" | sed -nE 's/^__version__ = "([^"]+)"$/\1/p'; }
+          case "$EVENT" in
+            push) tag="$REF_NAME" ;;
+            workflow_dispatch) tag="$INPUT_TAG" ;;
+            *) tag="" ;;
+          esac
+          if [ -n "$tag" ]; then
+            dry_run=false
+            sha="$(git rev-parse --verify --quiet "refs/tags/$tag^{commit}")" \
+              || { echo "::error::Tag '$tag' does not exist; push it first."; exit 1; }
+            version="$(read_version "$sha")"
+            if [ "v$version" != "$tag" ]; then
+              echo "::error::Tag $tag does not match __version__ '$version' at that commit."
+              exit 1
+            fi
+            if [ "$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || echo none)" = false ]; then
+              echo "::error::$tag is already published; releases are never replaced."
+              exit 1
+            fi
+          else
+            dry_run=true
+            sha="$(git rev-parse HEAD)"
+            version="$(read_version "$sha")"
+            tag="v$version"
+          fi
+          if ! [[ "$version" =~ $version_re ]]; then
+            echo "::error::__version__ '$version' is not X.Y.Z or X.Y.Z-pre."
+            exit 1
+          fi
+          prerelease=false
+          if [[ "$version" == *-* ]]; then prerelease=true; fi
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "sha=$sha"
+            echo "dry_run=$dry_run"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+          echo "Release $tag (version $version, commit $sha, dry run: $dry_run, prerelease: $prerelease)"
+
+  # Nothing is published unless the full gate passes against a fresh real engine on all three OSes.
+  gate:
+    name: Real-engine gate
+    needs: prepare
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/engine.yml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
+
+  build-python:
+    name: Build wheel and sdist
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
 
       - name: Set up Python 3.14
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -57,59 +135,59 @@ jobs:
           # No cache: a cache written by PR/branch runs must not feed release binaries.
           enable-cache: false
 
-      - name: Install package and dev tools from the lockfile
-        # Non-editable, so tests and smoke checks run against the installed package data.
+      - name: Install build tools from the lockfile
         run: uv sync --project pob_cli --locked --extra dev --no-editable --active
 
-      - name: Resolve and validate version against tag
-        id: meta
-        # Passed via env so a crafted dispatch input cannot inject PowerShell.
-        env:
-          INPUT_TAG: ${{ inputs.tag }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          $tag = if ($env:INPUT_TAG) { $env:INPUT_TAG } else { $env:REF_NAME }
-          if (-not $tag.StartsWith("v")) {
-            throw "Release tag must start with 'v' (got '$tag')."
-          }
-          $tagVersion = $tag.Substring(1)
-          $pkgVersion = (python -c "import pob_cli; print(pob_cli.__version__)").Trim()
-          if ($tagVersion -ne $pkgVersion) {
-            throw "Tag version '$tagVersion' does not match pob_cli.__version__ '$pkgVersion'. Update pob_cli/src/pob_cli/__init__.py first."
-          }
-          $isPre = if ($tagVersion -match "-") { "true" } else { "false" }
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "version=$pkgVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "is_prerelease=$isPre" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "Validated release tag $tag (version $pkgVersion, prerelease=$isPre)"
+      - name: Build wheel and sdist
+        run: python -m build pob_cli --outdir dist-python
 
-      - name: Run lint & architecture gate (fast + self-test)
-        run: |
-          python pob_cli/scripts/check.py --fast
-          if ($LASTEXITCODE -ne 0) { throw "check.py --fast failed (exit $LASTEXITCODE)" }
-          python pob_cli/scripts/check.py --self-test
-          if ($LASTEXITCODE -ne 0) { throw "check.py --self-test failed (exit $LASTEXITCODE)" }
+      - name: Upload Python distributions
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python-dist
+          path: dist-python/*
+          if-no-files-found: error
 
-      - name: Run unit tests (offline mode)
-        env:
-          POB_OFFLINE: "1"
-        run: |
-          python -m pytest pob_cli/tests -v
+  build-windows:
+    name: Build Windows x64
+    needs: prepare
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
 
-      - name: Build Python wheel and sdist
-        run: |
-          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
-          python -m build pob_cli --outdir release-assets
+      - name: Set up Python 3.14
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
 
-      - name: Build standalone Windows x64 binary (PyInstaller)
-        run: |
-          pyinstaller --noconfirm --clean pob_cli/packaging/pob.spec
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+          enable-cache: false
+
+      - name: Install package and build tools from the lockfile
+        # Non-editable, so smoke checks run against the installed package data.
+        run: uv sync --project pob_cli --locked --extra dev --no-editable --active
+
+      - name: Build standalone pob.exe (PyInstaller onedir)
+        run: pyinstaller --noconfirm --clean pob_cli/packaging/pob.spec
 
       - name: Smoke-test standalone pob.exe (including frozen _daemon spawn)
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           $exe = Join-Path (Resolve-Path "dist/pob") "pob.exe"
           $ver = (& $exe --version).Trim()
-          if ($LASTEXITCODE -ne 0 -or $ver -notmatch [regex]::Escape("${{ steps.meta.outputs.version }}")) {
+          if ($LASTEXITCODE -ne 0 -or $ver -notmatch [regex]::Escape($env:VERSION)) {
             throw "Unexpected pob.exe --version output: '$ver' (exit $LASTEXITCODE)"
           }
           & $exe timeless --help | Out-Null
@@ -136,93 +214,212 @@ jobs:
           Write-Host "Standalone pob.exe smoke test passed ($ver)."
           exit 0
 
-      - name: Package Windows x64 zip and SHA256SUMS.txt
-        id: pack
+      - name: Package the zip and its aliases
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          $tag = "${{ steps.meta.outputs.tag }}"
-          $lines = python pob_cli/packaging/release_tools.py pack --dist dist/pob --out release-assets --tag $tag
-          if ($LASTEXITCODE -ne 0) { throw "release_tools.py pack failed" }
-          $zipSha = ($lines | Where-Object { $_ -match "^zip_sha256=" }) -replace "^zip_sha256=", ""
-          foreach ($line in $lines) {
-            $line | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          }
-          Get-ChildItem release-assets | Select-Object Name, Length | Format-Table -AutoSize
-          Get-Content release-assets/SHA256SUMS.txt
-          # Stable alias consumed by README /releases/latest/download links; must never silently disappear.
-          if (-not (Test-Path release-assets/pob-windows-x64.zip -PathType Leaf)) {
-            throw "Stable asset alias pob-windows-x64.zip is missing"
-          }
-          $sums = Get-Content release-assets/SHA256SUMS.txt -Encoding UTF8
-          $aliasLine = $sums | Where-Object { $_ -match "\s\*?pob-windows-x64\.zip$" }
-          if (-not $aliasLine) { throw "SHA256SUMS.txt is missing the stable alias entry" }
-          if ($aliasLine -notmatch [regex]::Escape($zipSha)) {
-            throw "Stable alias hash does not match the versioned zip hash ($zipSha)"
-          }
+          python pob_cli/packaging/release_tools.py pack-windows --dist dist/pob --out dist-windows --version $env:VERSION
+          if ($LASTEXITCODE -ne 0) { throw "release_tools.py pack-windows failed" }
 
-      - name: Upload wheel/sdist artifact for optional PyPI job
+      - name: Upload Windows assets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: python-dist
-          path: |
-            release-assets/*.whl
-            release-assets/*.tar.gz
+          name: windows-x64
+          path: dist-windows/*
+          if-no-files-found: error
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+  assemble:
+    name: Checksums and verification
+    needs: [prepare, build-python, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: "pob4agents ${{ steps.meta.outputs.tag }}"
-          prerelease: ${{ steps.meta.outputs.is_prerelease == 'true' }}
-          generate_release_notes: true
-          files: release-assets/*
-          body: |
-            ### Quick Install (Windows x64, No Python Required)
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
 
-            **PowerShell One-Liner (Install / Update):**
-            ```powershell
-            irm https://raw.githubusercontent.com/exilemoulei/pob4agents/main/install.ps1 | iex
-            ```
+      - name: Set up Python 3.14
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
 
-            **Scoop (Windows Package Manager):**
-            ```powershell
-            scoop bucket add pob https://github.com/exilemoulei/pob4agents
-            scoop install pob
-            # Update later:
-            scoop update pob
-            ```
+      - name: Download build outputs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        # Every artifact so far is a release file: the Python dists and each platform build.
+        with:
+          path: release-assets
+          merge-multiple: true
 
-            **Python (`uv` / `pipx` / `pip`):**
-            ```powershell
-            uv tool install "https://github.com/exilemoulei/pob4agents/releases/download/${{ steps.meta.outputs.tag }}/pob_cli-${{ steps.meta.outputs.version }}-py3-none-any.whl"
-            ```
-
-            After installing, run `pob bootstrap` (or `pob bootstrap --proxy http://127.0.0.1:7890`) once to fetch the headless PoB engine.
-
-      - name: Update in-repo Scoop bucket manifest (bucket/pob.json)
-        if: steps.meta.outputs.is_prerelease == 'false'
+      - name: Write SHA256SUMS.txt and verify the file set
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          $tag = "${{ steps.meta.outputs.tag }}"
-          $ver = "${{ steps.meta.outputs.version }}"
-          $sha = "${{ steps.pack.outputs.zip_sha256 }}"
+          python pob_cli/packaging/release_tools.py sums --dir release-assets
+          python pob_cli/packaging/release_tools.py verify --dir release-assets --version "$VERSION"
 
-          git fetch origin main
-          git checkout -B main origin/main
+      - name: Upload release assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: release-assets/*
+          if-no-files-found: error
 
-          python pob_cli/packaging/release_tools.py update-scoop --manifest bucket/pob.json --version $ver --tag $tag --sha256 $sha
-          if ($LASTEXITCODE -ne 0) { throw "release_tools.py update-scoop failed" }
+  publish:
+    name: Publish GitHub release
+    needs: [prepare, gate, assemble]
+    if: needs.prepare.outputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
 
+      - name: Set up Python 3.14
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Download release assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: release-assets/SHA256SUMS.txt
+
+      - name: Create or refresh the draft release
+        # A rerun replaces the draft's files; a published release is never touched (prepare checks).
+        run: |
+          set -euo pipefail
+          python pob_cli/packaging/release_tools.py notes --version "$VERSION" > "$RUNNER_TEMP/notes.md"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release view "$TAG" --json assets --jq '.assets[].name' | while read -r name; do
+              [ -f "release-assets/$name" ] || gh release delete-asset "$TAG" "$name" --yes
+            done
+          else
+            pre=()
+            if [ "$PRERELEASE" = true ]; then pre=(--prerelease); fi
+            gh release create "$TAG" --draft --verify-tag "${pre[@]}" \
+              --title "pob4agents $TAG" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
+          fi
+          gh release upload "$TAG" release-assets/* --clobber
+
+      - name: Verify the uploaded files
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --dir "$RUNNER_TEMP/uploaded"
+          python pob_cli/packaging/release_tools.py verify --dir "$RUNNER_TEMP/uploaded" --version "$VERSION"
+
+      - name: Publish
+        # Prereleases never become "latest", so /releases/latest/download keeps serving the stable build.
+        run: |
+          if [ "$PRERELEASE" = true ]; then
+            gh release edit "$TAG" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$TAG" --draft=false --latest
+          fi
+
+  installer:
+    name: Install with install.ps1
+    # After a release: installs the new tag. Dry runs: installs the latest published release.
+    needs: [prepare, publish]
+    if: >-
+      always() && needs.prepare.result == 'success' &&
+      (needs.publish.result == 'success' || needs.prepare.outputs.dry_run == 'true')
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - name: Run install.ps1 into a temp dir
+        env:
+          DRY_RUN: ${{ needs.prepare.outputs.dry_run }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "pob-install"
+          $params = @{ InstallDir = $dir; NoPath = $true }
+          if ($env:DRY_RUN -eq "false") { $params.Version = $env:VERSION }
+          ./install.ps1 @params
+          $ver = (& (Join-Path $dir "pob.exe") --version).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Installed pob.exe --version failed: $ver" }
+          if ($env:DRY_RUN -eq "false" -and $ver -notmatch [regex]::Escape($env:VERSION)) {
+            throw "install.ps1 installed '$ver', expected $env:VERSION"
+          }
+          Write-Host "install.ps1 OK: $ver"
+
+  scoop:
+    name: Update the Scoop manifest
+    needs: [prepare, publish]
+    if: needs.prepare.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    # Needs "Allow GitHub Actions to create and approve pull requests" in the repository settings.
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          # This job runs no third-party code; the token pushes the manifest branch.
+          persist-credentials: true
+
+      - name: Open and merge the manifest PR
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --pattern SHA256SUMS.txt --dir "$RUNNER_TEMP"
+          zip="pob4agents-$VERSION-windows-x64.zip"
+          sha="$(awk -v f="$zip" '$2 == f || $2 == "*" f { print $1 }' "$RUNNER_TEMP/SHA256SUMS.txt")"
+          [ -n "$sha" ] || { echo "::error::$zip is missing from SHA256SUMS.txt"; exit 1; }
+          python3 pob_cli/packaging/release_tools.py update-scoop --manifest bucket/pob.json --version "$VERSION" --sha256 "$sha"
+          if git diff --quiet -- bucket/pob.json; then
+            echo "bucket/pob.json already points at $TAG."
+            exit 0
+          fi
+          branch="release/scoop-$TAG"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
           git add bucket/pob.json
-          git diff --cached --quiet
-          if ($LASTEXITCODE -ne 0) {
-            git commit -m "chore(scoop): update pob manifest to $tag [skip ci]"
-            git push origin main
-          }
+          git commit -m "chore(scoop): update pob manifest to $TAG"
+          git push origin "$branch"
+          url="$(gh pr create --base main --head "$branch" \
+            --title "chore(scoop): update pob manifest to $TAG" \
+            --body "Points \`scoop update pob\` at the $TAG release. Opened by the release workflow.")"
+          gh pr merge "$url" --squash --delete-branch
 
   publish-pypi:
-    needs: build-and-release
-    if: vars.ENABLE_PYPI == 'true' && needs.build-and-release.outputs.is_prerelease == 'false'
+    name: Publish to PyPI
+    needs: [prepare, publish]
+    if: vars.ENABLE_PYPI == 'true' && needs.prepare.outputs.prerelease == 'false'
     runs-on: ubuntu-latest
     environment:
       name: pypi

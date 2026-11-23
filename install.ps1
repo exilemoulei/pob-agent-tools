@@ -92,34 +92,43 @@ if ($Version) {
     $Tag = Resolve-LatestTag -ProxyUrl $Proxy
 }
 
-$AssetName = "pob-$Tag-windows-x64.zip"
-$ZipUrl = Apply-Mirror "https://github.com/$Repo/releases/download/$Tag/$AssetName"
-$SumsUrl = Apply-Mirror "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS.txt"
+$TagVersion = $Tag.Substring(1)
+# Releases from v0.9.0 name the zip pob4agents-<version>-windows-x64.zip; earlier ones (still
+# installable with -Version / POB_VERSION) used pob-v<version>-windows-x64.zip.
+$AssetCandidates = @("pob4agents-$TagVersion-windows-x64.zip", "pob-$Tag-windows-x64.zip")
+$ReleaseBase = "https://github.com/$Repo/releases/download/$Tag"
+$SumsUrl = Apply-Mirror "$ReleaseBase/SHA256SUMS.txt"
 
 $TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("pob-install-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 
 try {
-    $ZipPath = Join-Path $TempDir $AssetName
     $SumsPath = Join-Path $TempDir "SHA256SUMS.txt"
     $StageDir = Join-Path $TempDir "stage"
 
-    Write-Host "Downloading $AssetName ($Tag) ..."
-    Download-File -Url $ZipUrl -OutFile $ZipPath -ProxyUrl $Proxy
-
-    Write-Host "Downloading SHA256SUMS.txt and verifying checksum ..."
+    Write-Host "Downloading SHA256SUMS.txt ($Tag) ..."
     Download-File -Url $SumsUrl -OutFile $SumsPath -ProxyUrl $Proxy
+    $SumsLines = Get-Content -LiteralPath $SumsPath -Encoding UTF8
 
+    $AssetName = $null
     $expectedHash = $null
-    foreach ($line in Get-Content -LiteralPath $SumsPath -Encoding UTF8) {
-        if ($line -match "^\s*([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($AssetName))\s*$") {
-            $expectedHash = $Matches[1].ToLowerInvariant()
-            break
+    foreach ($candidate in $AssetCandidates) {
+        foreach ($line in $SumsLines) {
+            if ($line -match "^\s*([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($candidate))\s*$") {
+                $AssetName = $candidate
+                $expectedHash = $Matches[1].ToLowerInvariant()
+                break
+            }
         }
+        if ($AssetName) { break }
     }
-    if (-not $expectedHash) {
-        throw "Checksum entry for $AssetName not found in SHA256SUMS.txt."
+    if (-not $AssetName) {
+        throw "SHA256SUMS.txt of $Tag lists no Windows zip (looked for: $($AssetCandidates -join ', '))."
     }
+
+    $ZipPath = Join-Path $TempDir $AssetName
+    Write-Host "Downloading $AssetName ..."
+    Download-File -Url (Apply-Mirror "$ReleaseBase/$AssetName") -OutFile $ZipPath -ProxyUrl $Proxy
 
     $actualHash = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualHash -ne $expectedHash) {
