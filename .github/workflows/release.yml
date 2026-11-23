@@ -19,7 +19,12 @@ env:
   UV_PYTHON_DOWNLOADS: never
 
 jobs:
+  # Nothing is published unless the full gate passes against a fresh real engine on all three OSes.
+  engine-gate:
+    uses: ./.github/workflows/engine.yml
+
   build-and-release:
+    needs: engine-gate
     runs-on: windows-latest
     # Publishes the GitHub Release and pushes the Scoop manifest bump to main.
     permissions:

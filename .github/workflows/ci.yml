@@ -50,39 +50,6 @@ jobs:
           python3 pob_cli/scripts/check.py --fast
           python3 pob_cli/scripts/check.py --self-test
 
-  # Builds and the other jobs use 3.14; this keeps the requires-python floor honest, since
-  # install.sh runs on whatever system python3 a macOS/Linux user has.
-  floor:
-    name: Python 3.11 floor (offline tests)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.11"
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
-        with:
-          python-version: "3.11"
-          activate-environment: true
-          cache-dependency-glob: "pob_cli/uv.lock"
-
-      - name: Install package and dev tools from the lockfile
-        # Non-editable, so tests and smoke checks run against the installed package data.
-        run: uv sync --project pob_cli --locked --extra dev --no-editable --active
-
-      - name: Run unit tests (offline mode)
-        env:
-          POB_OFFLINE: "1"
-        run: |
-          python3 -m pytest pob_cli/tests -q
-
   test-and-package:
     runs-on: windows-latest
     defaults:
@@ -172,93 +139,42 @@ jobs:
           Write-Host "Frozen pob.exe smoke test passed."
           exit 0
 
-      - name: Bootstrap live pob-zh engine
-        env:
-          POB_RUNTIME_DIR: ${{ runner.temp }}/pob-win-rt
-          POB_LEGACY_DIR: ""
-        run: |
-          # GitHub release and raw downloads intermittently fail under load; retry with backoff.
-          foreach ($attempt in 1..3) {
-            pob bootstrap --json
-            if ($LASTEXITCODE -eq 0) { break }
-            if ($attempt -eq 3) { throw "pob bootstrap failed after $attempt attempts" }
-            Write-Host "::warning::pob bootstrap attempt $attempt failed; retrying in $($attempt * 20)s"
-            Start-Sleep -Seconds ($attempt * 20)
-          }
-          Get-ChildItem "$env:POB_RUNTIME_DIR/engine" | Select-Object Name, Length
-
-      # The release artifact users actually run, driven against a real engine end to end.
-      - name: Smoke-test standalone pob.exe against the real engine
-        env:
-          POB_RUNTIME_DIR: ${{ runner.temp }}/pob-win-rt
-          POB_LEGACY_DIR: ""
-        run: |
-          $exe = Join-Path (Resolve-Path "dist/pob") "pob.exe"
-          function Invoke-Pob {
-            $out = & $exe @args 2>&1 | Out-String
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "=== daemon.log ==="
-              Get-Content -LiteralPath "$env:POB_RUNTIME_DIR/daemon.log" -ErrorAction SilentlyContinue
-              throw "pob.exe $($args -join ' ') failed with exit $LASTEXITCODE. Output: $out"
-            }
-            return $out
-          }
-          $status = Invoke-Pob status --json | ConvertFrom-Json
-          Write-Host "Engine: $($status | ConvertTo-Json -Depth 4 -Compress)"
-          Invoke-Pob new --class Witch --asc Elementalist --level 90 --json | Out-Null
-          Invoke-Pob skill new-group --label Main --gem "Fireball:20:20" --apply --json | Out-Null
-          Invoke-Pob switch-main --skill-group Main --json | Out-Null
-          $summary = Invoke-Pob summary --json
-          Write-Host $summary
-          if ($summary -notmatch '"Life"') { throw "summary has no Life stat" }
-          Invoke-Pob calc "Mana" --json | Out-Null
-          $code = (Invoke-Pob export-code --json | ConvertFrom-Json).code
-          if (-not $code) { throw "export-code returned no code" }
-          Invoke-Pob load $code --json | Out-Null
-          Invoke-Pob tree set-class Witch Necromancer --apply --json | Out-Null
-          Invoke-Pob matrix Original Pinnacle --json | Out-Null
-          Invoke-Pob stop --json | Out-Null
-          Write-Host "Frozen pob.exe real-engine smoke test passed."
-
-      # Experimental: skip counts on Windows are still unknown, so the ratchet is loose for now.
-      - name: Run full gate against the real engine
-        env:
-          POB_ROOT: ${{ runner.temp }}/pob-win-rt/engine
-        run: |
-          python pob_cli/scripts/check.py --min-passed 905 --max-skipped 60
-          if ($LASTEXITCODE -ne 0) { throw "check.py full gate failed (exit $LASTEXITCODE)" }
-
-  test-posix-native:
-    name: POSIX Native (${{ matrix.label }})
+  # Engine-less, offline tests; the real-engine gate lives in engine.yml (nightly + release).
+  # The 3.11 leg keeps the requires-python floor honest, since install.sh runs on whatever
+  # system python3 a macOS/Linux user has.
+  unit-posix:
+    name: Unit tests (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
-            label: macOS-arm64
-            tag: darwin-arm64
-            # Shared macOS runners run timing benchmarks about 2-3x slower than Linux.
-            perf_slack: "3"
+          - os: ubuntu-latest
+            label: Linux-x64, Python 3.11 floor
+            python: "3.11"
           - os: ubuntu-latest
             label: Linux-x64
+            python: "3.14"
             tag: linux-x64
-            perf_slack: "1"
+          - os: macos-15
+            label: macOS-arm64
+            python: "3.14"
+            tag: darwin-arm64
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Set up Python 3.14
+      - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python }}
 
       - name: Set up uv
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python }}
           activate-environment: true
           cache-dependency-glob: "pob_cli/uv.lock"
 
@@ -266,7 +182,15 @@ jobs:
         # Non-editable, so tests and smoke checks run against the installed package data.
         run: uv sync --project pob_cli --locked --extra dev --no-editable --active
 
+      - name: Run unit tests (offline mode)
+        env:
+          POB_OFFLINE: "1"
+        run: |
+          python3 -m pytest pob_cli/tests -q
+
+      # install.sh users compile this runtime themselves, so the build script stays covered here.
       - name: Build native POSIX LuaJIT + lua-utf8 runtime
+        if: matrix.tag
         run: |
           chmod +x pob_cli/packaging/build_posix_runtime.sh
           ./pob_cli/packaging/build_posix_runtime.sh runtime-dist
@@ -274,101 +198,8 @@ jobs:
           ls -lh "pob-runtime-${{ matrix.tag }}.tar.gz"
 
       - name: Upload prebuilt POSIX runtime artifact
+        if: matrix.tag
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pob-runtime-${{ matrix.tag }}
           path: pob-runtime-${{ matrix.tag }}.tar.gz
-
-      - name: End-to-end live PoB bootstrap & headless CLI verification
-        env:
-          POB_RUNTIME_DIR: ${{ runner.temp }}/pob-e2e-rt
-          POB_LEGACY_DIR: ""
-        run: |
-          trap 'echo "=== daemon.log ==="; cat "$POB_RUNTIME_DIR/daemon.log" 2>/dev/null || true' ERR
-          mkdir -p "$POB_RUNTIME_DIR/engine"
-          cp -R runtime-dist/bin "$POB_RUNTIME_DIR/engine/bin"
-
-          # Live bootstrap: fetches official PoB PoE1/ + PobTools Data/bridge/bridge.lua and passes gate_result!
-          # raw.githubusercontent.com intermittently answers 503 under load; retry with backoff.
-          for attempt in 1 2 3; do
-            if pob bootstrap --json; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "pob bootstrap failed after $attempt attempts" >&2
-              exit 1
-            fi
-            echo "::warning::pob bootstrap attempt $attempt failed; retrying in $((attempt * 20))s"
-            sleep $((attempt * 20))
-          done
-
-          # Load a minimal PoB XML build with a Fireball skill group to verify full calculation, Inflate/Deflate, mutation, and matrix
-          cat > "$RUNNER_TEMP/test_build.xml" <<'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <PathOfBuilding>
-            <Build level="90" targetVersion="3_0" className="Witch" ascendClassName="Elementalist" mainSocketGroup="1" viewMode="SKILLS"/>
-            <Tree activeSpec="1"><Spec title="Default" treeVersion="3_25" classId="3" ascendClassId="2" nodes="54447"/></Tree>
-            <Skills activeSkillSet="1">
-              <SkillSet id="1">
-                <Skill mainActiveSkill="1" enabled="true" label="Main">
-                  <Gem nameSpec="Fireball" level="20" quality="20" enabled="true"/>
-                </Skill>
-              </SkillSet>
-            </Skills>
-            <Items activeItemSet="1"><ItemSet id="1"/></Items>
-            <Config activeConfigSet="1"><ConfigSet id="1"/></Config>
-          </PathOfBuilding>
-          EOF
-
-          # Verify persistent daemon auto-start, build load, calculation, mutation, Inflate/Deflate roundtrip, matrix, and clean shutdown
-          pob status --json
-          pob load "@$RUNNER_TEMP/test_build.xml" --json
-          pob summary --json
-          pob diagnose --no-rank -q "Hatred" --json
-          pob ground "Divine Blessing" --json
-          pob data tick coc --cdr 14 --json
-          pob audit --json
-          pob audit --keep conditionStationary --no-attribution --json
-          pob skills --json
-          pob items --json
-          pob tree --json
-          pob tree set-class Witch Necromancer --apply --json
-          pob skill add --group main --gem "Added Fire Damage Support" --level 20 --quality 20 --apply --json
-          pob summary --json
-          CODE="$(pob export-code --json | python3 -c 'import sys, json; print(json.load(sys.stdin)["code"])')"
-          test -n "$CODE"
-          pob load "$CODE" --json
-          pob matrix Original Pinnacle --json
-          pob matrix Original Pinnacle --keep flasks --json
-          pob timeless list --json
-          err_rc=0
-          err_out="$(pob switch-main --loadout nonexistent 2>&1)" || err_rc=$?
-          if [ "$err_rc" -ne 1 ]; then
-            echo "Expected exit code 1 for invalid loadout, got $err_rc: $err_out" >&2
-            exit 1
-          fi
-          case "$err_out" in
-            *Traceback*)
-              echo "Unexpected Traceback in error output: $err_out" >&2
-              exit 1
-              ;;
-          esac
-          case "$err_out" in
-            *"Error:"*) ;;
-            *)
-              echo "Expected Error: prefix, got: $err_out" >&2
-              exit 1
-              ;;
-          esac
-          pob bench list --slot gloves --limit 3 --json
-          pob trade convert --text $'Rarity: RARE\nDoom Hand\nSlink Gloves\nImplicits: 0\n+42% to Fire Resistance' --to cold --json
-          pob stop --json
-
-      # Runs after the live bootstrap so the ~50 real-engine tests execute instead of skipping.
-      # Expected skips: 3 legacy 2.67.2 snapshot, 1 pob-zh UI labels, 1 Win32-only, 1 network.
-      - name: Run full gate against the real engine
-        env:
-          POB_ROOT: ${{ runner.temp }}/pob-e2e-rt/engine
-          POB_TEST_PERF_SLACK: ${{ matrix.perf_slack }}
-        run: |
-          python3 pob_cli/scripts/check.py --min-passed 961 --max-skipped 6

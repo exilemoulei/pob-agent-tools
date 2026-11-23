@@ -572,7 +572,7 @@ pyinstaller --noconfirm --clean pob_cli/packaging/pob.spec
 
 1. Update `__version__` in `pob_cli/src/pob_cli/__init__.py` and merge it into `main`.
 2. Create and push a version tag: `git tag -s v0.5.0 -m "pob4agents v0.5.0" && git push origin main v0.5.0`.
-3. GitHub Actions checks the version, runs tests, builds and smoke-tests `pob-vX.Y.Z-windows-x64.zip`, the wheel / sdist, and `SHA256SUMS.txt`, publishes the GitHub Release, and updates the Scoop manifest at `bucket/pob.json`. Every release also carries a byte-identical stable alias `pob-windows-x64.zip` so `releases/latest/download/pob-windows-x64.zip` always downloads the newest build without editing the version (`latest` skips prereleases).
+3. GitHub Actions checks the version, runs the real-engine gate on Windows, macOS and Linux (`engine.yml`), runs tests, builds and smoke-tests `pob-vX.Y.Z-windows-x64.zip`, the wheel / sdist, and `SHA256SUMS.txt`, publishes the GitHub Release, and updates the Scoop manifest at `bucket/pob.json`. Every release also carries a byte-identical stable alias `pob-windows-x64.zip` so `releases/latest/download/pob-windows-x64.zip` always downloads the newest build without editing the version (`latest` skips prereleases).
 
 For a compact command reference for agents, see [AGENTS.md](AGENTS.md).
 
