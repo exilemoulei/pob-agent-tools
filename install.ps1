@@ -356,7 +356,12 @@ try {
             if (Test-Path -LiteralPath $InstallDir) {
                 Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
             }
-            Move-Item -LiteralPath $BackupDir -Destination $InstallDir -Force
+            # Moving onto a folder that is still there would nest the backup inside it.
+            if (Test-Path -LiteralPath $InstallDir) {
+                Write-Warning "Could not clear $InstallDir; the previous install is in $BackupDir."
+            } else {
+                Move-Item -LiteralPath $BackupDir -Destination $InstallDir -Force
+            }
         }
         throw
     }

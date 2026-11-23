@@ -76,7 +76,8 @@ sha256_of() {
 signature_required() { # version: false only for a well-formed X.Y.Z[-pre] older than FIRST_SIGNED_VERSION
   local v="${1%%-*}" x y i
   # Anything that does not parse needs a signature, so odd input can never switch the check off.
-  [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 0
+  # Components are capped at 9 digits: bash arithmetic wraps on longer ones, which could read as old.
+  [[ "$v" =~ ^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$ ]] || return 0
   IFS=. read -r -a x <<<"$v"
   IFS=. read -r -a y <<<"$FIRST_SIGNED_VERSION"
   for i in 0 1 2; do
@@ -293,7 +294,7 @@ restore_previous_build() { # install-dir: undoes a swap that failed halfway
 # when it runs but could not be put in place (the previous build is restored). It runs as a
 # condition, so set -e is off in here and every step that matters is checked by hand.
 install_build() { # archive
-  local install_dir bin_dir stage link version
+  local install_dir bin_dir stage link version moved_link=0
   install_dir="${POB_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/pob4agents/bin}"
   bin_dir="${POB_BIN_DIR:-$HOME/.local/bin}"
   stage="${install_dir}.new"
@@ -324,11 +325,16 @@ install_build() { # archive
     remove_old_python_installs
     if [ -e "$link" ] && [ ! -L "$link" ]; then
       mv "$link" "$link.old" || { restore_previous_build "$install_dir"; return 2; }
+      moved_link=1
       say "Moved the previous $link to $link.old."
     fi
   fi
   # The previous build goes only once the link runs the new one.
   if ! ln -sfn "$install_dir/pob" "$link" || ! version="$("$link" --version 2>/dev/null)"; then
+    if [ "$moved_link" -eq 1 ]; then
+      rm -f "$link"
+      mv "$link.old" "$link" || say "Could not restore the previous $link; it is in $link.old."
+    fi
     restore_previous_build "$install_dir"
     return 2
   fi

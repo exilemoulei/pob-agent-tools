@@ -155,6 +155,8 @@ def run_installer(tmp_path: Path, release: tuple[_Release, str]):  # type: ignor
     )
     # mv that cannot move the unpacked build into place, as on a full or read-only disk.
     _shim(tmp_path / "failmv" / "mv", f'case "$1" in *.new) exit 1 ;; esac\nexec "{shutil.which("mv")}" "$@"\n')
+    # ln that cannot create the pob link.
+    _shim(tmp_path / "failln" / "ln", "exit 1\n")
     base_env = {
         k: v for k, v in os.environ.items() if not k.upper().endswith("_PROXY") and not k.startswith("POB_")
     }
@@ -167,13 +169,17 @@ def run_installer(tmp_path: Path, release: tuple[_Release, str]):  # type: ignor
         NO_PROXY="*",
     )
 
-    def run(*, direct: bool = False, fail_mv: bool = False, **extra: str) -> subprocess.CompletedProcess[str]:
+    def run(
+        *, direct: bool = False, fail_mv: bool = False, fail_ln: bool = False, **extra: str
+    ) -> subprocess.CompletedProcess[str]:
         env = {**base_env, **extra}
         if direct:
             del env["POB_GITHUB_MIRROR"]
             env["PATH"] = f"{tmp_path / 'direct'}{os.pathsep}{env['PATH']}"
         if fail_mv:
             env["PATH"] = f"{tmp_path / 'failmv'}{os.pathsep}{env['PATH']}"
+        if fail_ln:
+            env["PATH"] = f"{tmp_path / 'failln'}{os.pathsep}{env['PATH']}"
         return subprocess.run(["bash", str(installer)], env=env, capture_output=True, text=True, timeout=120)
 
     run.log = log  # type: ignore[attr-defined]
@@ -216,6 +222,17 @@ def test_a_failed_swap_keeps_the_previous_build(release: tuple[_Release, str], r
     assert (tmp_path / "app" / "marker").read_text(encoding="utf-8") == "previous"
     assert not (tmp_path / "app.old").exists() and not (tmp_path / "app.new").exists()
     assert subprocess.run([str(tmp_path / "bin" / "pob"), "--version"], capture_output=True).returncode == 0
+
+
+@posix_only
+def test_a_failed_link_restores_the_previous_command(release: tuple[_Release, str], run_installer, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    release[0].publish()
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "pob").write_text("#!/bin/sh\necho old\n", encoding="utf-8")
+    proc = run_installer(fail_ln=True)
+    assert proc.returncode != 0
+    assert (tmp_path / "bin" / "pob").read_text(encoding="utf-8").endswith("echo old\n")
+    assert not (tmp_path / "bin" / "pob.old").exists()
 
 
 @posix_only
@@ -297,6 +314,17 @@ def test_without_a_verifier(
         assert proc.returncode != 0
         assert message in proc.stderr
         assert not any("/download/" in r for r in release[0].requests)  # stopped before any download
+
+
+@posix_only
+def test_an_oversized_version_still_needs_a_signature(release: tuple[_Release, str], run_installer, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    # Bash arithmetic wraps 2**64 to 0, which would read as a release from before signing.
+    release[0].publish(sign=False)
+    release[0].latest = "v18446744073709551616.0.0"
+    proc = run_installer(direct=True, POB_VERIFY_WITH="none")
+    assert proc.returncode != 0
+    assert "No Ed25519 verifier" in proc.stderr
+    assert not any("/download/" in r for r in release[0].requests)
 
 
 @posix_only
