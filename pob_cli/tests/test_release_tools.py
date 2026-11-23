@@ -99,10 +99,13 @@ def test_verify_accepts_a_complete_release(rt: ModuleType, tmp_path: Path) -> No
 
 def test_verify_needs_a_known_key(rt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     out = _full_release(rt, tmp_path)
+    mod = rt.signature_module()
+    monkeypatch.setattr(rt, "signature_module", lambda: mod)
+    # No shipped key at all: nothing can verify this release.
+    monkeypatch.setattr(mod, "RELEASE_PUBLIC_KEYS", ())
     assert any("no release public key" in p for p in rt.verify(out, VERSION, ["windows-x64"]))
-    other = rt.signature_module()
-    monkeypatch.setattr(rt, "signature_module", lambda: other)
-    monkeypatch.setattr(other, "RELEASE_PUBLIC_KEYS", KEYS)
+    # The key that signed it: no problems. A shipped key that did not sign it: the signature is rejected.
+    monkeypatch.setattr(mod, "RELEASE_PUBLIC_KEYS", KEYS)
     assert rt.verify(out, VERSION, ["windows-x64"]) == []
 
 
