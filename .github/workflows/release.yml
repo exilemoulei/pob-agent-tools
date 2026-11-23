@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+# uv installs packages only; the interpreter is always the official CPython from setup-python.
+env:
+  UV_PYTHON_DOWNLOADS: never
+
 jobs:
   build-and-release:
     runs-on: windows-latest
@@ -35,16 +39,22 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.14
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.11"
-          # No pip cache: a cache written by PR/branch runs must not feed release binaries.
+          python-version: "3.14"
 
-      - name: Install package and build dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install "./pob_cli[dev]"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+          # No cache: a cache written by PR/branch runs must not feed release binaries.
+          enable-cache: false
+
+      - name: Install package and dev tools from the lockfile
+        # Non-editable, so tests and smoke checks run against the installed package data.
+        run: uv sync --project pob_cli --locked --extra dev --no-editable --active
 
       - name: Resolve and validate version against tag
         id: meta

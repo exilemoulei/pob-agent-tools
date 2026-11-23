@@ -557,8 +557,9 @@ Scripts and agents can use exit codes to decide what to do next. Errors are show
 ## Development, tests, and releases
 
 ```powershell
-# Install development dependencies in editable mode
-pip install -e "./pob_cli[dev]"
+# Install the locked development environment into pob_cli/.venv (same versions as CI)
+uv sync --project pob_cli --extra dev
+# or, without uv: pip install -e "./pob_cli[dev]"
 
 # Run unit and headless integration tests; set POB_OFFLINE=1 for offline mode
 python -m pytest pob_cli/tests -v

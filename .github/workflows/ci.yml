@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+# uv installs packages only; the interpreter is always the official CPython from setup-python.
+env:
+  UV_PYTHON_DOWNLOADS: never
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -25,22 +29,59 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.14
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.11"
-          cache: "pip"
-          cache-dependency-path: "pob_cli/pyproject.toml"
+          python-version: "3.14"
 
-      - name: Install package and dev tools
-        run: |
-          python3 -m pip install --upgrade pip
-          pip install "./pob_cli[dev]"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+          cache-dependency-glob: "pob_cli/uv.lock"
+
+      - name: Install package and dev tools from the lockfile
+        # Non-editable, so tests and smoke checks run against the installed package data.
+        run: uv sync --project pob_cli --locked --extra dev --no-editable --active
 
       - name: Run lint & architecture gate (fast + self-test)
         run: |
           python3 pob_cli/scripts/check.py --fast
           python3 pob_cli/scripts/check.py --self-test
+
+  # Builds and the other jobs use 3.14; this keeps the requires-python floor honest, since
+  # install.sh runs on whatever system python3 a macOS/Linux user has.
+  floor:
+    name: Python 3.11 floor (offline tests)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.11"
+          activate-environment: true
+          cache-dependency-glob: "pob_cli/uv.lock"
+
+      - name: Install package and dev tools from the lockfile
+        # Non-editable, so tests and smoke checks run against the installed package data.
+        run: uv sync --project pob_cli --locked --extra dev --no-editable --active
+
+      - name: Run unit tests (offline mode)
+        env:
+          POB_OFFLINE: "1"
+        run: |
+          python3 -m pytest pob_cli/tests -q
 
   test-and-package:
     runs-on: windows-latest
@@ -53,17 +94,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.14
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.11"
-          cache: "pip"
-          cache-dependency-path: "pob_cli/pyproject.toml"
+          python-version: "3.14"
 
-      - name: Install package and dev tools (non-editable)
-        run: |
-          python -m pip install --upgrade pip
-          pip install "./pob_cli[dev]"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+          cache-dependency-glob: "pob_cli/uv.lock"
+
+      - name: Install package and dev tools from the lockfile
+        # Non-editable, so tests and smoke checks run against the installed package data.
+        run: uv sync --project pob_cli --locked --extra dev --no-editable --active
 
       - name: Run unit tests (offline mode)
         env:
@@ -149,17 +194,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.14
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.11"
-          cache: "pip"
-          cache-dependency-path: "pob_cli/pyproject.toml"
+          python-version: "3.14"
 
-      - name: Install package and dev tools
-        run: |
-          python3 -m pip install --upgrade pip
-          pip install "./pob_cli[dev]"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+          cache-dependency-glob: "pob_cli/uv.lock"
+
+      - name: Install package and dev tools from the lockfile
+        # Non-editable, so tests and smoke checks run against the installed package data.
+        run: uv sync --project pob_cli --locked --extra dev --no-editable --active
 
       - name: Build native POSIX LuaJIT + lua-utf8 runtime
         run: |

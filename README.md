@@ -555,8 +555,9 @@ pob trade convert --file .\dropped_gloves.txt --to lightning
 ## 本地开发、测试与发版
 
 ```powershell
-# 本地可编辑模式安装开发依赖
-pip install -e "./pob_cli[dev]"
+# 按锁文件安装开发环境到 pob_cli/.venv（与 CI 版本一致）
+uv sync --project pob_cli --extra dev
+# 不用 uv 时：pip install -e "./pob_cli[dev]"
 
 # 运行全量单元与无头集成测试（离线模式可设 $env:POB_OFFLINE="1"）
 python -m pytest pob_cli/tests -v

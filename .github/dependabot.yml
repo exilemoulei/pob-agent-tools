@@ -13,7 +13,8 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
 
-  - package-ecosystem: "pip"
+  # Bumps pyproject.toml ranges and the CI/release lockfile pob_cli/uv.lock together.
+  - package-ecosystem: "uv"
     directory: "/pob_cli"
     schedule:
       interval: "weekly"
