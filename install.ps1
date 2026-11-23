@@ -85,7 +85,7 @@ function Download-File([string]$Url, [string]$OutFile, [string]$ProxyUrl) {
 
 # Release signing keys: base64 raw Ed25519 public keys, the same list as RELEASE_PUBLIC_KEYS in
 # pob_cli/src/pob_cli/updater/signature.py (test_release_signature.py keeps them equal).
-$ReleasePublicKeys = @()
+$ReleasePublicKeys = @("fvwea+k3NZ54EzRFCoMYgvZLy3XTkKGXxo2UPmsNZIM=")
 # Releases after v0.8.0 ship SHA256SUMS.txt.sig. For them a missing or bad signature stops the
 # install, so a GitHub mirror can serve the files but cannot change them.
 $FirstSignedVersion = [version]"0.8.1"
