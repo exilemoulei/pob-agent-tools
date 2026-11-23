@@ -137,9 +137,12 @@ jobs:
           - os: macos-15
             label: macOS-arm64
             tag: darwin-arm64
+            # Shared macOS runners run timing benchmarks about 2-3x slower than Linux.
+            perf_slack: "3"
           - os: ubuntu-latest
             label: Linux-x64
             tag: linux-x64
+            perf_slack: "1"
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -261,5 +264,6 @@ jobs:
       - name: Run full gate against the real engine
         env:
           POB_ROOT: ${{ runner.temp }}/pob-e2e-rt/engine
+          POB_TEST_PERF_SLACK: ${{ matrix.perf_slack }}
         run: |
           python3 pob_cli/scripts/check.py --min-passed 961 --max-skipped 6
