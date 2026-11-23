@@ -172,6 +172,62 @@ jobs:
           Write-Host "Frozen pob.exe smoke test passed."
           exit 0
 
+      - name: Bootstrap live pob-zh engine
+        env:
+          POB_RUNTIME_DIR: ${{ runner.temp }}/pob-win-rt
+          POB_LEGACY_DIR: ""
+        run: |
+          # GitHub release and raw downloads intermittently fail under load; retry with backoff.
+          foreach ($attempt in 1..3) {
+            pob bootstrap --json
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 3) { throw "pob bootstrap failed after $attempt attempts" }
+            Write-Host "::warning::pob bootstrap attempt $attempt failed; retrying in $($attempt * 20)s"
+            Start-Sleep -Seconds ($attempt * 20)
+          }
+          Get-ChildItem "$env:POB_RUNTIME_DIR/engine" | Select-Object Name, Length
+
+      # The release artifact users actually run, driven against a real engine end to end.
+      - name: Smoke-test standalone pob.exe against the real engine
+        env:
+          POB_RUNTIME_DIR: ${{ runner.temp }}/pob-win-rt
+          POB_LEGACY_DIR: ""
+        run: |
+          $exe = Join-Path (Resolve-Path "dist/pob") "pob.exe"
+          function Invoke-Pob {
+            $out = & $exe @args 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "=== daemon.log ==="
+              Get-Content -LiteralPath "$env:POB_RUNTIME_DIR/daemon.log" -ErrorAction SilentlyContinue
+              throw "pob.exe $($args -join ' ') failed with exit $LASTEXITCODE. Output: $out"
+            }
+            return $out
+          }
+          $status = Invoke-Pob status --json | ConvertFrom-Json
+          Write-Host "Engine: $($status | ConvertTo-Json -Depth 4 -Compress)"
+          Invoke-Pob new --class Witch --asc Elementalist --level 90 --json | Out-Null
+          Invoke-Pob skill new-group --label Main --gem "Fireball:20:20" --apply --json | Out-Null
+          Invoke-Pob switch-main --skill-group Main --json | Out-Null
+          $summary = Invoke-Pob summary --json
+          Write-Host $summary
+          if ($summary -notmatch '"Life"') { throw "summary has no Life stat" }
+          Invoke-Pob calc "Mana" --json | Out-Null
+          $code = (Invoke-Pob export-code --json | ConvertFrom-Json).code
+          if (-not $code) { throw "export-code returned no code" }
+          Invoke-Pob load $code --json | Out-Null
+          Invoke-Pob tree set-class Witch Necromancer --apply --json | Out-Null
+          Invoke-Pob matrix Original Pinnacle --json | Out-Null
+          Invoke-Pob stop --json | Out-Null
+          Write-Host "Frozen pob.exe real-engine smoke test passed."
+
+      # Experimental: skip counts on Windows are still unknown, so the ratchet is loose for now.
+      - name: Run full gate against the real engine
+        env:
+          POB_ROOT: ${{ runner.temp }}/pob-win-rt/engine
+        run: |
+          python pob_cli/scripts/check.py --min-passed 905 --max-skipped 60
+          if ($LASTEXITCODE -ne 0) { throw "check.py full gate failed (exit $LASTEXITCODE)" }
+
   test-posix-native:
     name: POSIX Native (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
