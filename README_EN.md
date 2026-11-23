@@ -78,7 +78,7 @@ $env:POB_PROXY = "http://127.0.0.1:7890"
 irm https://raw.githubusercontent.com/exilemoulei/pob4agents/main/install.ps1 | iex
 ```
 
-Run the same command again to upgrade. The installer checks SHA256 and stops the old background process.
+Run the same command again to upgrade. The installer checks the release's Ed25519 signature and SHA256 and stops the old background process.
 
 #### Option 2: Scoop
 

@@ -78,7 +78,7 @@ $env:POB_PROXY = "your_proxy_here"
 irm https://raw.githubusercontent.com/exilemoulei/pob4agents/main/install.ps1 | iex
 ```
 
-以后要升级，重新运行这条命令即可。安装脚本会校验 SHA256，并停止旧版后台进程。
+以后要升级，重新运行这条命令即可。安装脚本会校验发布的 Ed25519 签名和 SHA256，并停止旧版后台进程。
 
 #### 方式二：Scoop 包管理器
 

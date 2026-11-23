@@ -6,17 +6,21 @@
 # Installs the standalone build of the latest release (no Python needed) into
 # ~/.local/share/pob4agents/bin and links ~/.local/bin/pob to it. Every download is checked against
 # the release's SHA256SUMS.txt, whose Ed25519 signature is checked first (with OpenSSL 3, or python3
-# when OpenSSL cannot). When no build fits this machine (an older glibc, another CPU, a release
-# without macOS/Linux builds), it installs the Python package with uv, pipx or pip instead.
+# when OpenSSL cannot); with neither verifier it stops before downloading anything. When no build
+# fits this machine (an older glibc, another CPU, a release without macOS/Linux builds), it installs
+# the release's wheel or sdist, checked the same way, with uv, pipx or pip instead.
 #
 # Environment:
 #   POB_VERSION        release to install, 0.9.0 or v0.9.0 (default: latest)
 #   POB_INSTALL_DIR    where the build goes (default: ${XDG_DATA_HOME:-~/.local/share}/pob4agents/bin)
 #   POB_BIN_DIR        where the `pob` link goes (default: ~/.local/bin)
 #   POB_PROXY          proxy for every download (default: HTTPS_PROXY / HTTP_PROXY, as curl reads them)
-#   POB_GITHUB_MIRROR  prefix for GitHub URLs; a mirror can serve the files but cannot change them
+#   POB_GITHUB_MIRROR  prefix for GitHub URLs; through a mirror every release must carry a valid
+#                      signature, so a mirror can serve the files but cannot change them
+#   POB_SKIP_SIGNATURE=1  when the machine has no Ed25519 verifier, install on HTTPS from GitHub and
+#                      SHA-256 alone instead of stopping (ignored when POB_GITHUB_MIRROR is set)
 #   POB_FROM_SOURCE=1  install the Python package instead of the standalone build
-#   POB_BRANCH         install the Python package from this branch of the repository
+#   POB_BRANCH         install the Python package from this branch (or tag) of the repository
 #
 #   ./install.sh --self-test   check the Ed25519 verifier against the RFC 8032 test vectors
 
@@ -28,6 +32,8 @@ REPO="exilemoulei/pob4agents"
 RELEASE_PUBLIC_KEYS=(fvwea+k3NZ54EzRFCoMYgvZLy3XTkKGXxo2UPmsNZIM=)
 # Releases after v0.8.0 ship SHA256SUMS.txt.sig; for them a missing or bad signature stops the install.
 FIRST_SIGNED_VERSION="0.8.1"
+# The tag goes into URLs and file names and decides whether a signature is required.
+TAG_PATTERN='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 
 say() { printf '[pob-install] %s\n' "$*"; }
 die() { printf '[pob-install] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -67,13 +73,15 @@ sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
 
-version_ge() { # a b: true when a >= b, comparing X.Y.Z and ignoring a -prerelease suffix
-  local a="${1%%-*}" b="${2%%-*}" x y i
-  IFS=. read -r -a x <<<"$a"
-  IFS=. read -r -a y <<<"$b"
+signature_required() { # version: false only for a well-formed X.Y.Z[-pre] older than FIRST_SIGNED_VERSION
+  local v="${1%%-*}" x y i
+  # Anything that does not parse needs a signature, so odd input can never switch the check off.
+  [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 0
+  IFS=. read -r -a x <<<"$v"
+  IFS=. read -r -a y <<<"$FIRST_SIGNED_VERSION"
   for i in 0 1 2; do
-    if [ "${x[i]:-0}" -gt "${y[i]:-0}" ]; then return 0; fi
-    if [ "${x[i]:-0}" -lt "${y[i]:-0}" ]; then return 1; fi
+    if ((10#${x[i]} > 10#${y[i]})); then return 0; fi
+    if ((10#${x[i]} < 10#${y[i]})); then return 1; fi
   done
   return 0
 }
@@ -228,7 +236,7 @@ verify_sums_signature() { # sums-file sig-file backend
 
 # --- Python package (fallback, and POB_BRANCH / POB_FROM_SOURCE) -------------------------------
 
-install_python_package() { # pip-style requirement: a wheel file or a git+ URL
+install_python_package() { # pip-style requirement: a wheel or sdist file, or a git+ URL
   command -v python3 >/dev/null 2>&1 || die "python3 (>=3.11) is required for this install. On macOS: brew install python@3.13"
   python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || die "Python 3.11+ is required (found $(python3 --version))."
   # The package was called pob-cli up to v0.8.0. Under pip both names own the same pob_cli/ files,
@@ -276,14 +284,22 @@ remove_old_python_installs() { # [names...] (default: both package names)
   done
 }
 
+restore_previous_build() { # install-dir: undoes a swap that failed halfway
+  rm -rf "$1"
+  if [ -e "$1.old" ]; then mv "$1.old" "$1" || say "Could not restore the previous build; it is in $1.old."; fi
+}
+
+# Returns 1 when the build does not run here (the caller falls back to the Python package) and 2
+# when it runs but could not be put in place (the previous build is restored). It runs as a
+# condition, so set -e is off in here and every step that matters is checked by hand.
 install_build() { # archive
-  local install_dir bin_dir stage link
+  local install_dir bin_dir stage link version
   install_dir="${POB_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/pob4agents/bin}"
   bin_dir="${POB_BIN_DIR:-$HOME/.local/bin}"
   stage="${install_dir}.new"
   rm -rf "$stage"
-  mkdir -p "$stage" "$bin_dir"
-  tar -xzf "$1" -C "$stage"
+  mkdir -p "$stage" "$bin_dir" || return 2
+  tar -xzf "$1" -C "$stage" || { rm -rf "$stage"; return 2; }
   if ! "$stage/pob" --version >/dev/null 2>&1; then
     rm -rf "$stage"
     return 1
@@ -293,20 +309,31 @@ install_build() { # archive
     "$install_dir/pob" stop >/dev/null 2>&1 || true
   fi
   rm -rf "${install_dir}.old"
-  if [ -e "$install_dir" ]; then mv "$install_dir" "${install_dir}.old"; fi
-  mv "$stage" "$install_dir"
-  rm -rf "${install_dir}.old"
+  if [ -e "$install_dir" ] && ! mv "$install_dir" "${install_dir}.old"; then
+    rm -rf "$stage"
+    return 2
+  fi
+  if ! mv "$stage" "$install_dir"; then
+    rm -rf "$stage"
+    restore_previous_build "$install_dir"
+    return 2
+  fi
 
   link="$bin_dir/pob"
   if [ -e "$link" ] && [ ! -L "$link" ]; then
     remove_old_python_installs
     if [ -e "$link" ] && [ ! -L "$link" ]; then
-      mv "$link" "$link.old"
+      mv "$link" "$link.old" || { restore_previous_build "$install_dir"; return 2; }
       say "Moved the previous $link to $link.old."
     fi
   fi
-  ln -sfn "$install_dir/pob" "$link"
-  say "Installed $("$link" --version) to $install_dir"
+  # The previous build goes only once the link runs the new one.
+  if ! ln -sfn "$install_dir/pob" "$link" || ! version="$("$link" --version 2>/dev/null)"; then
+    restore_previous_build "$install_dir"
+    return 2
+  fi
+  rm -rf "${install_dir}.old"
+  say "Installed $version to $install_dir"
   case ":$PATH:" in
     *":$bin_dir:"*) ;;
     *) say "Add $bin_dir to PATH, e.g.: echo 'export PATH=\"$bin_dir:\$PATH\"' >> ~/.profile" ;;
@@ -328,30 +355,40 @@ main() {
     return
   fi
 
-  local tag version base plat name backend wheel
+  local tag version base plat name backend wheel sdist rc need_sig=0
   if [ -n "${POB_VERSION:-}" ]; then tag="v${POB_VERSION#v}"; else tag="$(latest_tag)"; fi
+  [[ "$tag" =~ $TAG_PATTERN ]] || die "'$tag' is not a release tag (expected vX.Y.Z); refusing to install."
   version="${tag#v}"
   say "Release: $tag"
+  # Without a pinned version the mirror also picks the tag, so through a mirror even a release from
+  # before signing needs a valid signature; those install only straight from GitHub.
+  if [ -n "${POB_GITHUB_MIRROR:-}" ] || signature_required "$version"; then need_sig=1; fi
+  backend="$(pick_backend)"
+  if [ -z "$backend" ] && [ "$need_sig" -eq 1 ]; then
+    if [ -n "${POB_GITHUB_MIRROR:-}" ]; then
+      die "No Ed25519 verifier (OpenSSL 3 or python3) to check the release signature, and a mirror is set; refusing to install."
+    fi
+    if [ "${POB_SKIP_SIGNATURE:-}" != 1 ]; then
+      die "No Ed25519 verifier (OpenSSL 3 or python3) to check the release signature; refusing to install. On macOS run 'xcode-select --install' or 'brew install openssl@3', then run this again. To install on HTTPS from GitHub and SHA-256 alone, set POB_SKIP_SIGNATURE=1."
+    fi
+    say "WARNING: POB_SKIP_SIGNATURE=1: the release signature of $tag is NOT checked; trusting HTTPS from GitHub and SHA-256 only."
+  fi
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
   base="https://github.com/$REPO/releases/download/$tag"
 
   fetch "$(github_url "$base/SHA256SUMS.txt")" "$tmp/SHA256SUMS.txt" || die "Could not download SHA256SUMS.txt for $tag."
-  if fetch "$(github_url "$base/SHA256SUMS.txt.sig")" "$tmp/SHA256SUMS.txt.sig" 2>/dev/null; then
-    backend="$(pick_backend)"
-    if [ -n "$backend" ]; then
-      verify_sums_signature "$tmp/SHA256SUMS.txt" "$tmp/SHA256SUMS.txt.sig" "$backend" ||
-        die "SHA256SUMS.txt of $tag is not signed by a pob4agents release key; refusing to install."
-      say "Release signature verified (Ed25519, $backend)."
-    elif [ -n "${POB_GITHUB_MIRROR:-}" ]; then
-      die "Cannot check the release signature (needs OpenSSL 3 or python3), and a mirror is set; refusing to install."
-    else
-      say "Warning: no OpenSSL 3 or python3 to check the release signature; relying on HTTPS from GitHub and SHA-256."
-    fi
-  elif version_ge "$version" "$FIRST_SIGNED_VERSION"; then
-    die "Could not download SHA256SUMS.txt.sig for $tag; refusing to install an unsigned release."
-  else
+  if [ -n "$backend" ] && fetch "$(github_url "$base/SHA256SUMS.txt.sig")" "$tmp/SHA256SUMS.txt.sig" 2>/dev/null; then
+    verify_sums_signature "$tmp/SHA256SUMS.txt" "$tmp/SHA256SUMS.txt.sig" "$backend" ||
+      die "SHA256SUMS.txt of $tag is not signed by a pob4agents release key; refusing to install."
+    say "Release signature verified (Ed25519, $backend)."
+  elif [ "$need_sig" -eq 0 ]; then
     say "$tag predates signed releases; checking SHA-256 only."
+  elif [ -n "$backend" ]; then
+    if ! signature_required "$version"; then
+      die "Could not download SHA256SUMS.txt.sig for $tag; a release from before signing installs only straight from GitHub, without POB_GITHUB_MIRROR."
+    fi
+    die "Could not download SHA256SUMS.txt.sig for $tag; refusing to install an unsigned release."
   fi
 
   sum_of() { awk -v n="$1" '$2 == n || $2 == "*" n { print $1; exit }' "$tmp/SHA256SUMS.txt"; }
@@ -367,23 +404,34 @@ main() {
     name="pob4agents-$version-$plat.tar.gz"
     if download_checked "$name"; then
       say "Downloaded $name (SHA-256 verified)."
-      if install_build "$tmp/$name"; then
+      rc=0
+      install_build "$tmp/$name" || rc=$?
+      if [ "$rc" -eq 0 ]; then
         say ""
         say "Next step, once: pob bootstrap   (behind a proxy: pob bootstrap --proxy http://127.0.0.1:7890)"
         return
       fi
+      [ "$rc" -eq 1 ] || die "Could not put the new build in place; the previous install was left as it was."
       say "The standalone build does not run on this machine (glibc too old?); installing the Python package."
     else
       say "$tag has no standalone build for $plat; installing the Python package."
     fi
   fi
 
+  # Only files the signed SHA256SUMS.txt lists are installed here; a git tag can be moved.
   wheel="$(awk '$2 ~ /-py3-none-any\.whl$/ { sub(/^\*/, "", $2); print $2; exit }' "$tmp/SHA256SUMS.txt")"
+  sdist=""
+  for name in "pob4agents-$version.tar.gz" "pob_cli-$version.tar.gz"; do
+    if [ -n "$(sum_of "$name")" ]; then sdist="$name"; break; fi
+  done
   if [ -n "$wheel" ]; then
     download_checked "$wheel"
     install_python_package "$tmp/$wheel"
+  elif [ -n "$sdist" ]; then
+    download_checked "$sdist"
+    install_python_package "$tmp/$sdist"
   else
-    install_python_package "git+https://github.com/$REPO.git@$tag#subdirectory=pob_cli"
+    die "SHA256SUMS.txt of $tag lists no wheel or sdist; refusing to install from an unverified source. To build from source on purpose, set POB_BRANCH=$tag."
   fi
   say ""
   say "Next step, once: pob bootstrap   (behind a proxy: pob bootstrap --proxy http://127.0.0.1:7890)"
