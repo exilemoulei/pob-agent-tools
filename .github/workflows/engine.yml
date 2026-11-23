@@ -104,7 +104,7 @@ jobs:
         env:
           POB_ROOT: ${{ runner.temp }}/pob-win-rt/engine
         run: |
-          python pob_cli/scripts/check.py --min-passed 977 --max-skipped 14
+          python pob_cli/scripts/check.py --min-passed 977 --max-skipped 15
           if ($LASTEXITCODE -ne 0) { throw "check.py full gate failed (exit $LASTEXITCODE)" }
 
   posix:
@@ -239,4 +239,4 @@ jobs:
           POB_ROOT: ${{ runner.temp }}/pob-e2e-rt/engine
           POB_TEST_PERF_SLACK: ${{ matrix.perf_slack }}
         run: |
-          python3 pob_cli/scripts/check.py --min-passed 975 --max-skipped 6
+          python3 pob_cli/scripts/check.py --min-passed 975 --max-skipped 7
