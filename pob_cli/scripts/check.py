@@ -2,7 +2,8 @@
 """Deterministic lint, architecture-DAG, and offline test gate for `pob_cli`.
 
 Modes:
-  python pob_cli/scripts/check.py             # ruff + arch-lint + isolated offline pytest (>=890 passed, <=1 skipped)
+  python pob_cli/scripts/check.py             # ruff + arch-lint + isolated offline pytest (>=905 passed, <=1 skipped)
+  python pob_cli/scripts/check.py --min-passed 961 --max-skipped 6  # CI ratchet for a POSIX real-engine run
   python pob_cli/scripts/check.py --fast      # ruff + AST arch-lint only (<3s)
   python pob_cli/scripts/check.py --self-test # mutation checks in %TEMP% proving every rule fires
 """
@@ -87,7 +88,12 @@ def run_ruff(pob_cli_root: Path) -> tuple[bool, str]:
     return proc.returncode == 0, combined
 
 
-def run_isolated_pytest(pob_cli_root: Path) -> tuple[bool, str]:
+def run_isolated_pytest(
+    pob_cli_root: Path,
+    *,
+    min_passed: int = MIN_PASSED_TESTS,
+    max_skipped: int = MAX_SKIPPED_TESTS,
+) -> tuple[bool, str]:
     tmp_dir = Path(tempfile.mkdtemp(prefix="pob_check_pytest_"))
     try:
         rt_dir = tmp_dir / "runtime"
@@ -117,12 +123,12 @@ def run_isolated_pytest(pob_cli_root: Path) -> tuple[bool, str]:
             proc.returncode == 0
             and failed == 0
             and errors == 0
-            and passed >= MIN_PASSED_TESTS
-            and skipped <= MAX_SKIPPED_TESTS
+            and passed >= min_passed
+            and skipped <= max_skipped
         )
         summary = (
             f"pytest: passed={passed}, failed={failed}, skipped={skipped}, errors={errors} "
-            f"(ratchet>={MIN_PASSED_TESTS}, max_skipped<={MAX_SKIPPED_TESTS})"
+            f"(ratchet>={min_passed}, max_skipped<={max_skipped})"
         )
         if not ok:
             return False, f"{summary}\n{out}"
@@ -233,8 +239,11 @@ def main(argv: list[str] | None = None) -> int:
             pass
     parser = argparse.ArgumentParser(description="pob_cli lint, architecture DAG, and offline test gate.")
     parser.add_argument("--fast", action="store_true", help="Run ruff + AST arch-lint only (<3s).")
-    parser.add_argument("--self-test", action="store_true", help="Run mutation self-test in %TEMP%.")
+    parser.add_argument("--self-test", action="store_true", help="Run mutation self-test in %%TEMP%%.")
     parser.add_argument("--root", type=Path, default=None, help="Override pob_cli root directory.")
+    # Skips depend on the machine (legacy snapshot, Windows-only, pob-zh engine), so CI pins its own counts.
+    parser.add_argument("--min-passed", type=int, default=MIN_PASSED_TESTS, help="Minimum passed tests.")
+    parser.add_argument("--max-skipped", type=int, default=MAX_SKIPPED_TESTS, help="Maximum skipped tests.")
     args = parser.parse_args(argv)
 
     pob_cli_root = (args.root or Path(__file__).resolve().parents[1]).resolve()
@@ -272,7 +281,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.fast:
         return 0
 
-    pytest_ok, pytest_msg = run_isolated_pytest(pob_cli_root)
+    pytest_ok, pytest_msg = run_isolated_pytest(
+        pob_cli_root, min_passed=args.min_passed, max_skipped=args.max_skipped
+    )
     total_elapsed = time.perf_counter() - t0
     if not pytest_ok:
         print(f"FAIL [pytest] isolated offline test gate failed in {total_elapsed:.2f}s | Fix: inspect failures below.")
