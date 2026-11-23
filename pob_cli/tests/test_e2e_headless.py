@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 from engine_paths import find_runnable_engine
+from support import dead_proxy_url
 
 from pob_cli.importers import xml_to_share_code
 
@@ -309,10 +310,10 @@ def test_e2e_v02_build_ops_deadlock_recovery_and_local_data(e2e_runtime_dir: Pat
 
 
 def test_e2e_v02_degraded_network_alert_and_bootstrap_missing(tmp_path: Path) -> None:
-    """Verify Gate 1: dead proxy POB_PROXY=http://127.0.0.1:9 degrades fast with dual-channel warnings, and bootstrap_missing fails fast."""
+    """Verify Gate 1: a dead POB_PROXY degrades fast with dual-channel warnings, and bootstrap_missing fails fast."""
     degraded_rt = tmp_path / "degraded_rt"
     dead_proxy_env: dict[str, str | None] = {
-        "POB_PROXY": "http://127.0.0.1:9",
+        "POB_PROXY": dead_proxy_url(),
         "POB_OFFLINE": None,
     }
     try:

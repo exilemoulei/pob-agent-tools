@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 import pytest
 from engine_paths import find_legacy_snapshot
+from support import dead_proxy_url
 
 from pob_cli.bridge_client import (
     FORBIDDEN_METHODS,
@@ -173,7 +174,7 @@ def test_invalid_proxy_fast_degradation_under_4s(tmp_path: Path, monkeypatch: py
     rt = tmp_path / "runtime"
     eng = _make_fake_engine(rt / "engine", version="2.67.2")
     monkeypatch.setenv("POB_RUNTIME_DIR", str(rt))
-    monkeypatch.setenv("POB_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("POB_PROXY", dead_proxy_url())
     monkeypatch.delenv("POB_ROOT", raising=False)
 
     t0 = time.monotonic()

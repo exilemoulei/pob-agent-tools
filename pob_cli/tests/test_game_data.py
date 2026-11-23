@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from engine_paths import find_engine_data
+from support import perf_budget
 
 from pob_cli.game_data import (
     _fold_search_text,
@@ -36,14 +37,14 @@ def test_cold_build_and_warm_query_benchmarks(tmp_path: Path, monkeypatch: pytes
     assert db_path.is_file()
     assert db_path.parent == get_shared_cache_dir(tmp_path, pob_root=REAL_POB_DIR)
     assert db_path.name.startswith("gamedata_") and db_path.name.endswith(".sqlite")
-    assert cold_sec < 12.0, f"Cold build took {cold_sec:.2f}s (expected < 12.0s)"
+    assert cold_sec < perf_budget(12.0), f"Cold build took {cold_sec:.2f}s (expected < {perf_budget(12.0):.1f}s)"
 
     # Subsequent ensure_gamedata_index should hit cache immediately
     t_cache = time.perf_counter()
     db_path_2 = ensure_gamedata_index(pob_dir=REAL_POB_DIR, runtime_dir=tmp_path)
     cache_ms = (time.perf_counter() - t_cache) * 1000.0
     assert db_path_2 == db_path
-    assert cache_ms < 15.0, f"Warm index check took {cache_ms:.2f}ms"
+    assert cache_ms < perf_budget(15.0), f"Warm index check took {cache_ms:.2f}ms"
 
     warm_cases: list[tuple[str, str, dict[str, object]]] = [
         ("mod", "Life Converted to Energy Shield", {}),
@@ -61,7 +62,8 @@ def test_cold_build_and_warm_query_benchmarks(tmp_path: Path, monkeypatch: pytes
         res = query_local_data(kind, query, pob_dir=REAL_POB_DIR, runtime_dir=tmp_path, **kwargs)  # type: ignore[arg-type]
         elapsed_ms = (time.perf_counter() - tq) * 1000.0
         assert res["count"] >= 1, f"Expected >= 1 hit for {kind}({query!r})"
-        assert elapsed_ms < 15.0, f"Warm query {kind}({query!r}) took {elapsed_ms:.2f}ms (expected < 15ms)"
+        limit_ms = perf_budget(15.0)
+        assert elapsed_ms < limit_ms, f"Warm query {kind}({query!r}) took {elapsed_ms:.2f}ms (expected < {limit_ms:.0f}ms)"
 
 
 @pytest.mark.skipif(not HAS_REAL_POB, reason="No real PoB engine found (set POB_ROOT or run pob bootstrap)")
