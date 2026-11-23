@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import tarfile
@@ -210,5 +211,104 @@ def test_shim_installs_pob4agents_under_the_old_name(rt: ModuleType, tmp_path: P
     assert data["dependencies"] == ["pob4agents==0.9.0"]
     main = tomllib.loads((REPO / "pob_cli" / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     assert main["name"] == "pob4agents"
-    assert data["scripts"] == main["scripts"]
+    # pob4agents owns the `pob` launcher; uninstalling the alias must not delete it.
+    assert "pob" in main["scripts"] and "scripts" not in data
     assert data["requires-python"] == main["requires-python"]
+
+
+@pytest.mark.parametrize(
+    ("version", "normalized"),
+    [
+        ("0.9.0", "0.9.0"),
+        ("0.9.0-rc.1", "0.9.0rc1"),
+        ("0.9.0-rc1", "0.9.0rc1"),
+        ("1.0.0-beta", "1.0.0b0"),
+        ("1.0.0-alpha.2", "1.0.0a2"),
+        ("1.0.0-pre.3", "1.0.0rc3"),
+        ("1.0.0-c4", "1.0.0rc4"),
+        ("1.0.0-RC.1", "1.0.0rc1"),
+        ("1.0.0-post.2", "1.0.0.post2"),
+        ("1.0.0-1", "1.0.0.post1"),
+        ("1.0.0-dev3", "1.0.0.dev3"),
+        ("1.0.0-rc.1.dev2", "1.0.0rc1.dev2"),
+        ("01.02.003", "1.2.3"),
+    ],
+)
+def test_python_names_use_the_pep440_version(rt: ModuleType, version: str, normalized: str) -> None:
+    assert rt.check_version(version) == version
+    assert rt.pep440_version(version) == normalized
+    assert rt.python_asset_names(version) == [
+        f"pob4agents-{normalized}-py3-none-any.whl",
+        f"pob4agents-{normalized}.tar.gz",
+    ]
+    # Tags and standalone archives keep the version as written.
+    assert rt.versioned_name(version, "linux-x64") == f"pob4agents-{version}-linux-x64.tar.gz"
+
+
+@pytest.mark.parametrize("version", ["1.0.0-foo", "1.0.0-rc.x", "1.0.0-dev.rc1"])
+def test_pep440_rejects_what_build_would_reject(rt: ModuleType, version: str) -> None:
+    with pytest.raises(ValueError):
+        rt.pep440_version(version)
+
+
+def test_prerelease_notes_and_verify_use_the_built_wheel_name(rt: ModuleType, tmp_path: Path) -> None:
+    assert "releases/download/v0.9.0-rc.1/pob4agents-0.9.0rc1-py3-none-any.whl" in rt.release_notes("0.9.0-rc.1")
+    out = tmp_path / "release-assets"
+    rt.pack_windows(_fake_dist(tmp_path), out, "0.9.0-rc.1")
+    for name in ("pob4agents-0.9.0rc1-py3-none-any.whl", "pob4agents-0.9.0rc1.tar.gz"):
+        (out / name).write_bytes(name.encode())
+    sums = rt.write_sums(out)
+    (out / "SHA256SUMS.txt.sig").write_text(sign_sums_text(sums.read_bytes()), encoding="ascii")
+    assert rt.verify(out, "0.9.0-rc.1", ["windows-x64"], KEYS) == []
+
+
+def test_verify_reports_a_truncated_zip(rt: ModuleType, tmp_path: Path) -> None:
+    out = _full_release(rt, tmp_path)
+    zip_path = out / "pob4agents-0.9.0-windows-x64.zip"
+    zip_path.write_bytes(zip_path.read_bytes()[:20])
+    problems = rt.verify(out, VERSION, ["windows-x64"], KEYS)
+    assert any("is not a readable .zip" in p for p in problems)
+
+
+def test_verify_reports_unsafe_zip_paths(rt: ModuleType, tmp_path: Path) -> None:
+    bad = tmp_path / "bad.zip"
+    with zipfile.ZipFile(bad, "w") as zf:
+        zf.writestr("pob.exe", b"MZ")
+        zf.writestr("../evil.dll", b"x")
+    assert rt._formats.zip_problems(bad, "pob.exe") == ["bad.zip has an unsafe path: ../evil.dll"]
+
+
+def _tar_with(path: Path, *members: tarfile.TarInfo) -> Path:
+    with tarfile.open(path, "w:gz") as tf:
+        exe = tarfile.TarInfo("pob")
+        exe.mode = 0o755
+        tf.addfile(exe, io.BytesIO(b""))
+        for member in members:
+            tf.addfile(member)
+    return path
+
+
+def _link(name: str, target: str, kind: bytes) -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.type, info.linkname = kind, target
+    return info
+
+
+@pytest.mark.parametrize(
+    ("name", "target", "kind", "safe"),
+    [
+        ("_internal/Python", "Python.framework/Python", tarfile.SYMTYPE, True),
+        ("_internal/lib/a", "../b", tarfile.SYMTYPE, True),
+        ("_internal/x", "/etc/passwd", tarfile.SYMTYPE, False),
+        ("_internal/x", "../../etc/passwd", tarfile.SYMTYPE, False),
+        ("x", "..", tarfile.SYMTYPE, False),
+        ("_internal/h", "pob", tarfile.LNKTYPE, True),
+        ("_internal/h", "../outside", tarfile.LNKTYPE, False),
+        ("_internal/h", "/etc/passwd", tarfile.LNKTYPE, False),
+    ],
+)
+def test_tar_links_must_stay_inside_the_archive(
+    rt: ModuleType, tmp_path: Path, name: str, target: str, kind: bytes, safe: bool
+) -> None:
+    problems = rt._formats.tar_problems(_tar_with(tmp_path / "b.tar.gz", _link(name, target, kind)), ("pob",))
+    assert (problems == []) is safe, problems

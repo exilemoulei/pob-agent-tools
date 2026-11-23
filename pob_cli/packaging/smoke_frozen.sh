@@ -11,7 +11,8 @@ expected="$2"
 fail() { echo "::error::$*" >&2; exit 1; }
 
 ver="$("$exe" --version)" || fail "pob --version failed"
-[[ "$ver" == *"$expected"* ]] || fail "pob --version printed '$ver', expected $expected"
+# `pob, version X`: compare the last word exactly, so 0.1.1 does not pass for 0.1.10.
+[ "${ver##* }" = "$expected" ] || fail "pob --version printed '$ver', expected $expected"
 "$exe" timeless --help >/dev/null || fail "pob timeless --help failed (missing bundled cli_timeless?)"
 "$exe" diagnose --help >/dev/null || fail "pob diagnose --help failed"
 "$exe" ground "Divine Blessing with Hatred" --json >/dev/null || fail "pob ground failed (missing bundled guardrails/game_data?)"
@@ -31,7 +32,8 @@ LUA_CPATH="$runtime/?.so;;" "$runtime/luajit" -e \
 rt="$(mktemp -d)"
 trap 'rm -rf "$rt"' EXIT
 set +e
-out="$(POB_RUNTIME_DIR="$rt" POB_LEGACY_DIR="" POB_OFFLINE=1 "$exe" status 2>&1)"
+# POB_ROOT="" so an engine the developer has exported cannot satisfy this check.
+out="$(POB_ROOT="" POB_RUNTIME_DIR="$rt" POB_LEGACY_DIR="" POB_OFFLINE=1 "$exe" status 2>&1)"
 code=$?
 set -e
 [ "$code" -eq 1 ] || fail "pob status without an engine exited $code, expected 1: $out"

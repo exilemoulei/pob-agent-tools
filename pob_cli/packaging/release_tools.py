@@ -11,6 +11,9 @@ pob downloads during `pob bootstrap` when it runs from Python rather than a stan
 `SHA256SUMS.txt.sig` is the Ed25519 signature of `SHA256SUMS.txt` (base64), made with OpenSSL from the
 `RELEASE_SIGNING_KEY` secret and checked against the public keys in
 `pob_cli/src/pob_cli/updater/signature.py`, the same check pob and install.ps1 run.
+
+Tags and standalone archives carry the version as written (`0.9.0-rc.1`); wheel and sdist names carry
+its PEP 440 form (`0.9.0rc1`), because that is what `python -m build` writes (release_formats.py).
 """
 
 from __future__ import annotations
@@ -39,7 +42,8 @@ SHIM_NAME = "pob-cli"
 """The distribution's earlier name, kept on PyPI as an alias that installs pob4agents."""
 SUMS_NAME = "SHA256SUMS.txt"
 SIG_NAME = "SHA256SUMS.txt.sig"
-SIGNATURE_MODULE = Path(__file__).resolve().parents[1] / "src" / "pob_cli" / "updater" / "signature.py"
+_HERE = Path(__file__).resolve().parent
+SIGNATURE_MODULE = _HERE.parent / "src" / "pob_cli" / "updater" / "signature.py"
 WINDOWS = "windows-x64"
 POSIX_PLATFORMS = ("macos-arm64", "macos-x64", "linux-x64", "linux-arm64")
 PLATFORMS = (WINDOWS, *POSIX_PLATFORMS)
@@ -50,6 +54,21 @@ LEGACY_WINDOWS_ALIAS = "pob-windows-x64.zip"
 _VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
 # Fixed entry timestamp so the same build always zips to the same bytes.
 _ZIP_DATE = (2020, 1, 1, 0, 0, 0)
+
+
+def _load(name: str, path: Path) -> ModuleType:
+    """Load a module by path: CI runs this file as a script and tests load it by path, so neither has
+    the packaging directory on sys.path."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_formats = _load("pob_release_formats", _HERE / "release_formats.py")
+pep440_version = _formats.pep440_version
 
 
 def check_version(version: str) -> str:
@@ -84,7 +103,9 @@ def runtime_name(version: str, platform: str) -> str:
 
 
 def python_asset_names(version: str) -> list[str]:
-    return [f"{DIST_NAME}-{version}-py3-none-any.whl", f"{DIST_NAME}-{version}.tar.gz"]
+    """Wheel and sdist names as `python -m build` writes them, with the PEP 440 version."""
+    v = pep440_version(version)
+    return [f"{DIST_NAME}-{v}-py3-none-any.whl", f"{DIST_NAME}-{v}.tar.gz"]
 
 
 def expected_assets(version: str, platforms: list[str]) -> set[str]:
@@ -178,22 +199,6 @@ def pack_posix(dist_dir: Path, runtime_dir: Path, out_dir: Path, version: str, p
     return tar_path, _sha256(tar_path)
 
 
-def _tar_problems(path: Path, required: tuple[str, ...]) -> list[str]:
-    try:
-        with tarfile.open(path, "r:gz") as tf:
-            members = {m.name: m for m in tf.getmembers()}
-    except (tarfile.TarError, OSError) as exc:
-        return [f"{path.name} is not a readable .tar.gz: {exc}"]
-    problems = []
-    for name in required:
-        member = members.get(name)
-        if member is None or not member.isreg() or not member.mode & 0o111:
-            problems.append(f"{path.name} has no executable {name}")
-    unsafe = [n for n in members if n.startswith("/") or ".." in Path(n).parts]
-    problems += [f"{path.name} has an unsafe path: {n}" for n in unsafe]
-    return problems
-
-
 def write_sums(asset_dir: Path) -> Path:
     """GNU coreutils format with LF endings, so `sha256sum -c` works on every OS."""
     asset_dir = Path(asset_dir)
@@ -208,12 +213,7 @@ def write_sums(asset_dir: Path) -> Path:
 
 
 def signature_module() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("pob_release_signature", SIGNATURE_MODULE)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Cannot load {SIGNATURE_MODULE}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return _load("pob_release_signature", SIGNATURE_MODULE)
 
 
 def _openssl(*args: str, data: bytes | None = None) -> bytes:
@@ -302,32 +302,33 @@ def verify(
             problems.append(f"{platform} aliases differ from {names[0]}")
     win = asset_dir / versioned_name(version, WINDOWS)
     if WINDOWS in platforms and win.is_file():
-        with zipfile.ZipFile(win) as zf:
-            if "pob.exe" not in zf.namelist():
-                problems.append(f"{win.name} has no pob.exe at its root")
+        problems += _formats.zip_problems(win, "pob.exe")
     for platform in platforms:
         if platform not in POSIX_PLATFORMS:
             continue
         build, runtime = asset_dir / versioned_name(version, platform), asset_dir / runtime_name(version, platform)
         if build.is_file():
-            problems += _tar_problems(build, ("pob",))
+            problems += _formats.tar_problems(build, ("pob",))
         if runtime.is_file():
-            problems += _tar_problems(runtime, RUNTIME_FILES)
+            problems += _formats.tar_problems(runtime, RUNTIME_FILES)
     return problems
 
 
 def write_shim_project(out_dir: Path, version: str) -> Path:
-    """Write the `pob-cli` PyPI alias: no code, the same `pob` command, pinned to pob4agents==version.
+    """Write the `pob-cli` PyPI alias: no code and no scripts, only a pin to pob4agents==version.
 
-    `pip install pob-cli` and `uv tool install pob-cli` keep working under the old name. It is built
-    and published to PyPI next to pob4agents, never attached to the GitHub release.
+    `pip install pob-cli` gets `pob` through the pob4agents dependency. The alias declares no `pob`
+    script of its own, so uninstalling it never removes the launcher pob4agents owns; uv and pipx
+    install only the named package's scripts, so their users install pob4agents. It is built and
+    published to PyPI next to pob4agents, never attached to the GitHub release.
     """
     check_version(version)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "README.md").write_text(
         f"# pob-cli\n\n`pob-cli` is the earlier name of [pob4agents](https://pypi.org/project/{DIST_NAME}/). "
-        f"This package only installs `{DIST_NAME}=={version}` and its `pob` command.\n",
+        f"This package only depends on `{DIST_NAME}=={version}`, which provides the `pob` command; "
+        f"with uv or pipx, install `{DIST_NAME}` instead.\n",
         encoding="utf-8",
     )
     (out_dir / "pyproject.toml").write_text(
@@ -346,9 +347,6 @@ dependencies = ["{DIST_NAME}=={version}"]
 
 [project.urls]
 Homepage = "https://github.com/{REPO_SLUG}"
-
-[project.scripts]
-pob = "pob_cli.cli:main"
 
 [tool.setuptools]
 packages = []
@@ -403,7 +401,7 @@ uv tool install "https://github.com/{REPO_SLUG}/releases/download/{tag}/{wheel}"
 
 Then run `pob bootstrap` once (add `--proxy http://127.0.0.1:7890` if GitHub needs a proxy) to install the PoB engine.
 
-Every file is listed in `{SUMS_NAME}`, signed in `{SIG_NAME}` (Ed25519), and each has a build attestation: `gh attestation verify <file> -R {REPO_SLUG}`.
+Every file is listed in `{SUMS_NAME}`, which is signed in `{SIG_NAME}` (Ed25519). Every file listed in `{SUMS_NAME}` has a build attestation: `gh attestation verify <file> -R {REPO_SLUG}`.
 """
 
 
@@ -463,7 +461,7 @@ def main(argv: list[str] | None = None) -> int:
         public_key = keygen(args.out)
         print(f"Private key: {args.out} (keep it offline; never commit it)")
         print(f"Public key:  {public_key}")
-        print("1. Add the PEM file's full text as the repository secret RELEASE_SIGNING_KEY.")
+        print("1. Add the PEM file's full text as the secret RELEASE_SIGNING_KEY of the `release` environment.")
         print("2. Add the public key to RELEASE_PUBLIC_KEYS in pob_cli/src/pob_cli/updater/signature.py")
         print("   and to the key lists in install.ps1 and install.sh, in a commit released before the key signs.")
     elif args.cmd == "verify":
