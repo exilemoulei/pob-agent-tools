@@ -2,18 +2,14 @@ name: Release
 
 # prepare -> gate (real engine) + builds (no write access) -> assemble (checksums, verify)
 #   -> publish (draft, upload, verify the uploaded files, publish) -> Scoop PR, PyPI.
-# Pushing a v* tag releases it. Dispatching with a tag (re)releases that existing tag; dispatching
-# without one is a dry run of the dispatched ref: gate, build and verify, upload nothing. Pull requests
-# that touch release inputs run the dry run without the engine gate.
+# Pushing a v* tag releases it; a failed release is retried with "Re-run failed jobs" on that run, which
+# only refreshes the draft. Dispatching on a branch is a dry run of it: gate, build, verify and install the
+# latest release, upload nothing (dispatching on a tag releases it like a push). Pull requests that touch release inputs run the dry run without the
+# engine gate. Every job builds the run's own commit (github.sha), never a ref taken from an input.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to release, e.g. v0.9.0. Leave empty for a dry run."
-        required: false
-        type: string
   pull_request:
     branches: ["main"]
     paths:
@@ -26,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'pull_request' && github.ref || inputs.tag || github.ref_name }}
+  group: release-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # uv installs packages only; the interpreter is always the official CPython from setup-python.
@@ -40,7 +36,6 @@ jobs:
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
-      sha: ${{ steps.meta.outputs.sha }}
       dry_run: ${{ steps.meta.outputs.dry_run }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
@@ -52,10 +47,9 @@ jobs:
 
       - name: Resolve tag, version and commit
         id: meta
-        # Inputs reach the script through env, never ${{ }}, so a crafted tag cannot inject shell.
+        # Values reach the script through env, never ${{ }}, so a crafted tag cannot inject shell.
         env:
-          EVENT: ${{ github.event_name }}
-          INPUT_TAG: ${{ inputs.tag }}
+          REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -63,16 +57,11 @@ jobs:
           set -euo pipefail
           version_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
           read_version() { git show "$1:pob_cli/src/pob_cli/__init__.py" | sed -nE 's/^__version__ = "([^"]+)"$/\1/p'; }
-          case "$EVENT" in
-            push) tag="$REF_NAME" ;;
-            workflow_dispatch) tag="$INPUT_TAG" ;;
-            *) tag="" ;;
-          esac
-          if [ -n "$tag" ]; then
+          sha="$(git rev-parse HEAD)"
+          version="$(read_version "$sha")"
+          if [ "$REF_TYPE" = tag ]; then
             dry_run=false
-            sha="$(git rev-parse --verify --quiet "refs/tags/$tag^{commit}")" \
-              || { echo "::error::Tag '$tag' does not exist; push it first."; exit 1; }
-            version="$(read_version "$sha")"
+            tag="$REF_NAME"
             if [ "v$version" != "$tag" ]; then
               echo "::error::Tag $tag does not match __version__ '$version' at that commit."
               exit 1
@@ -83,8 +72,6 @@ jobs:
             fi
           else
             dry_run=true
-            sha="$(git rev-parse HEAD)"
-            version="$(read_version "$sha")"
             tag="v$version"
           fi
           if ! [[ "$version" =~ $version_re ]]; then
@@ -96,7 +83,6 @@ jobs:
           {
             echo "tag=$tag"
             echo "version=$version"
-            echo "sha=$sha"
             echo "dry_run=$dry_run"
             echo "prerelease=$prerelease"
           } >> "$GITHUB_OUTPUT"
@@ -108,8 +94,6 @@ jobs:
     needs: prepare
     if: github.event_name != 'pull_request'
     uses: ./.github/workflows/engine.yml
-    with:
-      ref: ${{ needs.prepare.outputs.sha }}
 
   build-python:
     name: Build wheel and sdist
@@ -119,7 +103,6 @@ jobs:
       - name: Checkout release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
 
       - name: Set up Python 3.14
@@ -159,7 +142,6 @@ jobs:
       - name: Checkout release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
 
       - name: Set up Python 3.14
@@ -236,7 +218,6 @@ jobs:
       - name: Checkout release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
 
       - name: Set up Python 3.14
@@ -285,7 +266,6 @@ jobs:
       - name: Checkout release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
 
       - name: Set up Python 3.14
@@ -351,7 +331,6 @@ jobs:
       - name: Checkout release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
 
       - name: Run install.ps1 into a temp dir

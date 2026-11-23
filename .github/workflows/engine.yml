@@ -6,11 +6,6 @@ name: Engine
 # and on PRs that change this workflow (a new workflow cannot be dispatched before it is on main).
 on:
   workflow_call:
-    inputs:
-      ref:
-        description: "Commit to test (the release passes its tag's commit); defaults to the calling run's commit."
-        type: string
-        default: ""
   workflow_dispatch:
   pull_request:
     branches: ["main"]
@@ -34,7 +29,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
 
       - name: Set up Python 3.14
@@ -131,7 +125,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
 
       - name: Set up Python 3.14
