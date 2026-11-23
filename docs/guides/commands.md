@@ -11,7 +11,7 @@ pob serve [--offline] [--proxy <url>] [--port N] [--runtime-dir <dir>]          
 pob bootstrap [--proxy <url>] [--mirror <url>] [--no-zh] [--from-dir <dir>] [--json]   # Install/seed managed engine (PobTools-zh + PoB master)
 pob update [--check] [--force] [--proxy <url>] [--mirror <url>] [--offline] [--json]   # Incremental SHA1 update (hot-reloads live daemon slots)
 pob status [--json]                                                                    # Daemon PID, PoB/PobTools/Data versions, updateStatus, all named slots
-pob self-update [--check] [--version X.Y.Z] [--proxy <url>] [--mirror <url>] [--json]  # Update pob itself (standalone builds; signed release only); --check reports latest + the update command for this install
+pob self-update [--check] [--version X.Y.Z] [--proxy <url>] [--mirror <url>] [--json]  # Update pob itself (standalone builds; signed release only); --check reports latest + the update command for this install; network/disk/swap failure exits 5
 pob new [--class C] [--asc A] [--secondary-asc S] [--level N] [--target <slug>] [--json]
 pob load "<url|code|@path.xml>" [--target <slug>] [--json]                             # XML, Base64, 8 share sites, or poe.ninja char URL
 pob save <out.xml> | pob export-code [--target <slug>] [--json]                        # Export XML (CLI disk write, R11) or Base64 code

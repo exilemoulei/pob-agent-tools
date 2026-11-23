@@ -22,7 +22,7 @@ python pob_cli/scripts/update_bench_costs.py          # regenerate data/bench_co
 gh workflow run engine.yml -R exilemoulei/pob4agents  # the real-engine gate on Windows, macOS and Linux
 ```
 
-Releases are cut by bumping `__version__` in `pob_cli/src/pob_cli/__init__.py` and pushing a `v*` tag; `release.yml` gates on `engine.yml`, builds, verifies a draft and publishes. `gh workflow run release.yml -R exilemoulei/pob4agents` (on a branch) is a dry run that uploads nothing. Tag only when a release is asked for.
+Releases are cut by bumping `__version__` in `pob_cli/src/pob_cli/__init__.py` and pushing a `v*` tag; `release.yml` gates on `engine.yml`, builds, signs in the `release` environment (which holds `RELEASE_SIGNING_KEY`, limited to `v*` tags; the architecture guide lists the owner's setup), verifies a draft and publishes. `gh workflow run release.yml -R exilemoulei/pob4agents` (on a branch) is a dry run that uploads nothing. Tag only when a release is asked for.
 
 ## Layout
 
