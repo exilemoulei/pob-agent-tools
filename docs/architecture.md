@@ -40,6 +40,8 @@ Engine lookup (`updater.resolve_engine_root`):
 
 `pob bootstrap` installs the managed engine from PobTools-zh and PoB master (or seeds it with `--from-dir`); `pob update` applies incremental SHA1-checked updates and hot-reloads live daemon slots. Updates run a `gate_result` smoke probe and roll back from `.bak/` when it fails.
 
+pob updates itself separately (`updater/self_update.py`, `cli_self_update.py`). On an interactive terminal, a command ends with a stderr line when a newer release exists; it reads `<POB_RUNTIME_DIR>/pob_release_check.json`, which a detached `pob _release-check` refreshes at most once a day from the `/releases/latest` redirect, so no command waits on the network for it (off for `hook`, `serve`, `--offline`, `POB_OFFLINE=1` and `POB_NO_UPDATE_NOTICE=1`). `pob self-update` replaces a standalone build in place after the release's signed `SHA256SUMS.txt` and the build's SHA-256 verify and the new build runs: on macOS and Linux by swapping the build directory, on Windows through a detached PowerShell step that swaps it once `pob.exe` exits. Scoop, uv, pipx, pip and source installs get their own update command instead (`pob self-update --check` prints it).
+
 On macOS and Linux, bootstrap also installs `engine/bin/luajit` and `engine/bin/lua-utf8.so` (`updater/posix_runtime.py`), taking the first that works: the copy inside a standalone build (`_internal/runtime/bin`); `pob4agents-runtime-<version>-<platform>.tar.gz` from this pob's release, then the latest one, trusted only through that release's signed `SHA256SUMS.txt`; or a local compile of LuaJIT and lua-utf8 from source tarballs pinned by SHA-256 (`constants.py`, and `build_posix_runtime.sh`, which a test keeps equal). Each candidate must pass a self-test (`+=`, `..=`, `require("lua-utf8")`) first. pob before 0.9 asked for `pob-runtime-<platform>.tar.gz` without any check; no release publishes that name, so those versions keep compiling.
 
 Runtime state in `<POB_RUNTIME_DIR>/`: `daemon.json`, `update_state.json`, `slot_<slug>.json`, `turn_receipts.jsonl`, `hook_turn_<hash>.json`, and a shared `cache/` with `gamedata_<pobVer>_<dataVer>.sqlite`, `ninja_*.json`, `poedb_*.json`, `trade_ratelimit.json` and `trade_stats*.json`.
@@ -55,6 +57,7 @@ Runtime state in `<POB_RUNTIME_DIR>/`: `daemon.json`, `update_state.json`, `slot
 | `POB_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | Proxy for every download and query |
 | `POB_GITHUB_MIRROR` | Mirror prefix for GitHub downloads in `bootstrap` / `update` |
 | `POB_OFFLINE=1` | Skip update checks (same as `pob --offline`) |
+| `POB_NO_UPDATE_NOTICE=1` | No "pob X is available" line on interactive terminals |
 | `POB_LEGACY_DIR` | Read-only legacy PobTools seed |
 | `POB_LOCALE` | Engine UI locale for `pob-zh.exe` (default `zh-rTW`, see below) |
 | `POB_HOOK_DISABLE_RECEIPTS=1`, `POB_HOOK_DISABLE_V5=1`, `POB_HOOK_SESSION_ID` | Hook receipts, the V5 research gate, and per-session isolation |

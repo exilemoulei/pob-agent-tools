@@ -30,6 +30,7 @@ from .cli_lifecycle import register_lifecycle_commands
 from .cli_mutate import register_mutate_commands
 from .cli_mutate_items import register_item_commands
 from .cli_optimize import register_optimize_commands
+from .cli_self_update import maybe_show_update_notice, register_self_update_commands
 
 _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
     "trade": (
@@ -78,6 +79,7 @@ def main(ctx: click.Context, offline: bool, compact: bool, out_path: str | None)
     ctx.ensure_object(dict)
     ctx.obj["compact"] = compact
     ctx.obj["out"] = out_path
+    maybe_show_update_notice(ctx)
 
 
 register_lifecycle_commands(main)
@@ -86,6 +88,7 @@ register_item_commands(main)
 register_mutate_commands(main)
 register_optimize_commands(main)
 register_data_commands(main)
+register_self_update_commands(main)
 
 __all__ = [
     "DAEMON_FAILURE_EXIT_CODE",

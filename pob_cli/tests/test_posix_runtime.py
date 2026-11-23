@@ -14,7 +14,7 @@ import pytest
 from ed25519_sign import TEST_PUBLIC_KEY, sign_sums_text
 
 from pob_cli import __version__
-from pob_cli.updater import constants, posix_runtime, signature
+from pob_cli.updater import constants, posix_runtime, releases, signature
 
 REPO = Path(__file__).resolve().parents[2]
 BASE = "https://github.com/exilemoulei/pob4agents/releases/download"
@@ -166,6 +166,7 @@ def test_build_script_pins_match_the_updater() -> None:
     [("darwin-arm64", "macos-arm64"), ("darwin-x64", "macos-x64"), ("linux-x64", "linux-x64")],
 )
 def test_release_platform_names(monkeypatch: pytest.MonkeyPatch, tag: str, expected: str) -> None:
-    monkeypatch.setattr(posix_runtime, "get_posix_platform_tag", lambda: tag)
+    monkeypatch.setattr(releases, "get_posix_platform_tag", lambda: tag)
+    monkeypatch.setattr(releases, "is_windows", lambda: False)
     assert posix_runtime.release_platform_tag() == expected
     assert posix_runtime.runtime_asset_name("1.2.3") == f"pob4agents-runtime-1.2.3-{expected}.tar.gz"

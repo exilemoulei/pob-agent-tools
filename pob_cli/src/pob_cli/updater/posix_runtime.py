@@ -26,8 +26,6 @@ from .constants import (
     _ASSET_TIMEOUT_SPEC,
     _CHECK_TIMEOUT_SPEC,
     ASSET_MAX_RETRIES,
-    POB_AGENT_DOWNLOAD_BASE,
-    POB_AGENT_RELEASES_LATEST_URL,
     POSIX_LUAJIT_TARBALL_SHA256,
     POSIX_LUAJIT_TARBALL_URL,
     POSIX_LUAUTF8_TARBALL_SHA256,
@@ -36,9 +34,8 @@ from .constants import (
     _to_httpx_timeout,
     rewrite_github_url,
 )
-from .paths import get_posix_platform_tag
-from .remote import _download_bytes_with_retry, _extract_tag_from_location
-from .signature import SIG_NAME, SUMS_NAME, verify_sums
+from .releases import asset_url, latest_release_tag, release_platform_tag, signed_sums
+from .remote import _download_bytes_with_retry
 
 RUNTIME_FILES = (Path("bin") / "luajit", Path("bin") / "lua-utf8.so")
 # Compound assignment is what stock LuaJIT lacks and PoB >= 2.68 needs; lua-utf8 must load from bin/.
@@ -50,11 +47,6 @@ _SELF_TEST_LUA = (
 
 def _pkg() -> Any:
     return sys.modules["pob_cli.updater"]
-
-
-def release_platform_tag() -> str:
-    """Platform part of release asset names: macos-arm64, macos-x64, linux-x64, linux-arm64."""
-    return get_posix_platform_tag().replace("darwin-", "macos-", 1)
 
 
 def runtime_asset_name(version: str, platform: str | None = None) -> str:
@@ -139,36 +131,10 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _signed_sums(client: Any, tag: str, mirror: str | None) -> dict[str, str] | None:
-    """`{file name: sha256}` from a release's SHA256SUMS.txt, only if its signature verifies."""
-    base = f"{POB_AGENT_DOWNLOAD_BASE}/{tag}"
-    sums_resp = client.get(rewrite_github_url(f"{base}/{SUMS_NAME}", mirror=mirror))
-    sig_resp = client.get(rewrite_github_url(f"{base}/{SIG_NAME}", mirror=mirror))
-    if sums_resp.status_code != 200 or sig_resp.status_code != 200:
-        return None
-    if not verify_sums(sums_resp.content, sig_resp.text):
-        return None
-    out: dict[str, str] = {}
-    for line in sums_resp.text.splitlines():
-        digest, _, name = line.partition("  ")
-        if len(digest) == 64 and name:
-            out[name.lstrip("*").strip()] = digest.lower()
-    return out
-
-
 def _release_tags(client: Any, mirror: str | None) -> list[str]:
     """This pob's own release first, then the latest one (a source checkout may be ahead of both)."""
     tags = [f"v{__version__}"]
-    try:
-        resp = client.get(rewrite_github_url(POB_AGENT_RELEASES_LATEST_URL, mirror=mirror))
-        if resp.status_code in (301, 302, 303, 307, 308):
-            latest = _extract_tag_from_location(resp.headers.get("location", ""))
-        elif resp.status_code == 200 and "/tag/" in str(resp.url):
-            latest = _extract_tag_from_location(str(resp.url))  # a mirror that follows redirects itself
-        else:
-            latest = None
-    except Exception:
-        latest = None
+    latest = latest_release_tag(client, mirror)
     if latest and latest not in tags:
         tags.append(latest)
     return tags
@@ -187,11 +153,11 @@ def _try_download_prebuilt_posix_runtime(
             tags = _release_tags(c, mirror)
         with make_client(timeout=_to_httpx_timeout(_ASSET_TIMEOUT_SPEC), proxy=proxy, follow_redirects=True) as c:
             for tag in tags:
-                sums = _signed_sums(c, tag, mirror)
+                sums = signed_sums(c, tag, mirror)
                 name = runtime_asset_name(tag.removeprefix("v"))
                 if not sums or name not in sums:
                     continue
-                resp = c.get(rewrite_github_url(f"{POB_AGENT_DOWNLOAD_BASE}/{tag}/{name}", mirror=mirror))
+                resp = c.get(asset_url(tag, name, mirror))
                 if resp.status_code != 200 or _sha256(resp.content) != sums[name]:
                     continue
                 tar_tmp = staging_dir / "_downloads" / name
