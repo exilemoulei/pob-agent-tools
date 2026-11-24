@@ -265,6 +265,7 @@ def _resolve_seed_groups(
             prng_grouped = _group_via_prng(first, name, socket, seeds, xml, code, game_dir)
         except Exception:
             prng_grouped = None
+            first.reset()
             if seeds:
                 first.stats(seeds[0])
         if prng_grouped is not None:

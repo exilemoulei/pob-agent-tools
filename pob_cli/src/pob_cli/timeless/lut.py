@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import html
 import math
 import os
 import random
 import re
 import sys
-import xml.etree.ElementTree as ET
 import zlib
 from collections import defaultdict
 from collections.abc import Callable, Sequence
@@ -19,9 +17,23 @@ from ..errors import CrossGameHallucinationError
 from ..formatters import _parse_numeric_or_none
 from ..game_data import fold_han
 from ..guardrails import validate_engine_root
-from ..importers import share_code_to_xml
 from ..locale_cfg import current_lang
 from ..updater import get_shared_cache_dir, resolve_engine_root
+from .xml_helpers import (
+    _ALLOCATES_RE as _ALLOCATES_RE,
+)
+from .xml_helpers import (
+    _active_tree_spec as _active_tree_spec,
+)
+from .xml_helpers import (
+    _extract_allocated_notable_names as _extract_allocated_notable_names,
+)
+from .xml_helpers import (
+    _extract_xml_allocated_nodes as _extract_xml_allocated_nodes,
+)
+from .xml_helpers import (
+    _is_historic_socket_jewel as _is_historic_socket_jewel,
+)
 
 # Jewels stored as one byte per (notable, seed) in `Data/TimelessJewelData/<stem>.zip`.
 # The others (Glorious Vanity, the Abyss family) use variable-length records: every seed is calculated.
@@ -85,7 +97,6 @@ MIN_SEEN = 2  # ... holding every (node, table byte) at least this often
 VERIFY_BATCH = 50  # estimated-best groups calculated per round
 SELF_CHECK = 10  # groups whose second seed is recalculated at the end to confirm the grouping
 _SEED_LINE = re.compile(r"^(?:\{variant:[\d,]+\})?(.*\((\d+)-(\d+)\).* (\w+))$")
-_ALLOCATES_RE = re.compile(r"Allocates ([^\r\n<]+)")
 
 
 def default_workers() -> int:
@@ -261,6 +272,23 @@ def load_node_index(game_dir: Path) -> dict[int, int]:
     return {node: row for node, row in rows.items() if row < n_notable}
 
 
+def _read_lut_zip_or_parts(base_dir: Path, stem: str) -> tuple[bytes | None, Path]:
+    whole = base_dir / f"{stem}.zip"
+    if whole.is_file():
+        return whole.read_bytes(), whole
+    part0 = base_dir / f"{stem}.zip.part0"
+    if part0.is_file():
+        parts: list[tuple[int, Path]] = []
+        for p in base_dir.glob(f"{stem}.zip.part*"):
+            suf = p.name.rsplit(".part", 1)[-1]
+            if suf.isdigit():
+                parts.append((int(suf), p))
+        if parts:
+            parts.sort(key=lambda x: x[0])
+            return b"".join(p.read_bytes() for _, p in parts), part0
+    return None, whole
+
+
 def load_table(
     game_dir: Path,
     stem: str,
@@ -269,17 +297,20 @@ def load_table(
     cache_dir: Path | None = None,
 ) -> bytes:
     """Decompressed lookup table. Reads PoB's file (or shared timeless cache); never writes next to PoB."""
-    table_path = Path(game_dir) / "Data" / "TimelessJewelData" / f"{stem}.zip"
-    if not table_path.is_file():
-        if cache_dir is not None and (Path(cache_dir) / f"{stem}.zip").is_file():
-            table_path = Path(cache_dir) / f"{stem}.zip"
-        else:
-            rt = Path(runtime_dir) if runtime_dir else None
-            cached = get_shared_cache_dir(rt, pob_root=Path(game_dir).parent) / "timeless_lut" / f"{stem}.zip"
-            if cached.is_file():
-                table_path = cached
+    g_data = Path(game_dir) / "Data" / "TimelessJewelData"
+    raw, table_path = _read_lut_zip_or_parts(g_data, stem)
+    if raw is None and cache_dir is not None:
+        raw, table_path = _read_lut_zip_or_parts(Path(cache_dir), stem)
+    if raw is None:
+        rt = Path(runtime_dir) if runtime_dir else None
+        c_dir = get_shared_cache_dir(rt, pob_root=Path(game_dir).parent) / "timeless_lut"
+        raw, _ = _read_lut_zip_or_parts(c_dir, stem)
+        if raw is not None:
+            table_path = c_dir / f"{stem}.zip"
+    if raw is None:
+        raw = (g_data / f"{stem}.zip").read_bytes()
     try:
-        return zlib.decompress(table_path.read_bytes())
+        return zlib.decompress(raw)
     except zlib.error as exc:
         raise RuntimeError(f"Failed to decompress timeless jewel table {table_path}: {exc}") from exc
 
@@ -426,106 +457,3 @@ def _resolve_jewel_static(name: str, jewels: dict[str, Any]) -> str | None:
     if zh_mapped and zh_mapped in jewels:
         return zh_mapped
     return None
-
-
-def _active_tree_spec(root: ET.Element) -> ET.Element | None:
-    """Return the active `<Spec>` element under `<Tree>` (1-based `activeSpec`, defaulting to 1st)."""
-    tree_el = root if root.tag == "Tree" else root.find(".//Tree")
-    if tree_el is None:
-        return None
-    specs = tree_el.findall("Spec")
-    if not specs:
-        return None
-    raw_spec = (tree_el.attrib.get("activeSpec") or "").strip()
-    if raw_spec:
-        try:
-            spec_idx = int(raw_spec)
-        except ValueError:
-            spec_idx = 1
-        if 1 <= spec_idx <= len(specs):
-            return specs[spec_idx - 1]
-    return specs[0]
-
-
-def _extract_xml_allocated_nodes(xml: str) -> set[int] | None:
-    """Return allocated node IDs from the active `<Tree><Spec nodes="..."/>` when explicitly present."""
-    if not xml or "<Tree" not in xml:
-        return None
-    try:
-        root = ET.fromstring(xml)
-    except ET.ParseError:
-        return None
-    active_spec = _active_tree_spec(root)
-    if active_spec is None:
-        return None
-    nodes_attr = (active_spec.attrib.get("nodes") or "").strip()
-    if not nodes_attr:
-        return None
-    parsed = {int(tok) for tok in re.findall(r"\d+", nodes_attr)}
-    return parsed or None
-
-
-def _extract_allocated_notable_names(xml: str, code: str = "") -> set[str]:
-    """Extract notable names from `Allocates <Name>` lines across active ItemSet slots and active Tree sockets."""
-    text = xml
-    if not text and code:
-        try:
-            text = share_code_to_xml(code)
-        except Exception:
-            text = ""
-    if not text:
-        return set()
-
-    scoped_texts: list[str] | None = None
-    if "<Items" in text:
-        try:
-            root = ET.fromstring(text)
-            items_el = root if root.tag == "Items" else root.find(".//Items")
-            if items_el is not None:
-                items_by_id: dict[str, str] = {}
-                for item_el in items_el.findall("Item"):
-                    item_id = (item_el.attrib.get("id") or "").strip()
-                    if item_id:
-                        items_by_id[item_id] = "".join(item_el.itertext())
-                active_set_id = (items_el.attrib.get("activeItemSet") or "").strip()
-                item_sets = items_el.findall("ItemSet")
-                active_set = None
-                if item_sets:
-                    if active_set_id:
-                        active_set = next(
-                            (s for s in item_sets if (s.attrib.get("id") or "").strip() == active_set_id),
-                            None,
-                        )
-                    if active_set is None:
-                        active_set = item_sets[0]
-                slot_parent = active_set if active_set is not None else items_el
-                slot_els = slot_parent.findall("Slot")
-                active_spec = _active_tree_spec(root)
-                tree_socket_els = active_spec.findall("./Sockets/Socket") if active_spec is not None else []
-                if (slot_els or tree_socket_els) and items_by_id:
-                    equipped_ids = {
-                        (el.attrib.get("itemId") or "").strip()
-                        for el in (*slot_els, *tree_socket_els)
-                    } - {"", "0"}
-                    scoped_texts = [items_by_id[iid] for iid in equipped_ids if iid in items_by_id]
-        except ET.ParseError:
-            scoped_texts = None
-
-    sources = scoped_texts if scoped_texts is not None else [text]
-    granted: set[str] = set()
-    for src in sources:
-        for match in _ALLOCATES_RE.findall(src):
-            cleaned = html.unescape(match).strip()
-            if cleaned:
-                granted.add(cleaned)
-    return granted
-
-
-def _is_historic_socket_jewel(socket_info: dict[str, Any], jewels: dict[str, Any]) -> bool:
-    """Detect equipped Historic jewels, including PoB Timeless Jewel Finder titles like 'Lethal Pride 12345; ...'."""
-    if socket_info.get("baseName") == "Timeless Jewel":
-        return True
-    title = str(socket_info.get("title") or "")
-    if not title:
-        return False
-    return any(title == k or title.startswith(k + " ") for k in jewels)

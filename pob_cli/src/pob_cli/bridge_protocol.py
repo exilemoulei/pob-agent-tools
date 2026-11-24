@@ -96,14 +96,13 @@ def _get_local_tree_versions(game_dir: Path) -> tuple[set[str], tuple[int, int] 
     for entry in tree_data_dir.iterdir():
         if not entry.is_dir():
             continue
+        parsed = _parse_tree_version_tuple(entry.name)
+        if parsed is not None and (max_tuple is None or parsed > max_tuple):
+            max_tuple = parsed
+            max_str = f"{parsed[0]}_{parsed[1]}"
         if (entry / ".incomplete").exists() or not any(entry.iterdir()):
             continue
         names.add(entry.name)
-        parsed = _parse_tree_version_tuple(entry.name)
-        if parsed is not None:
-            if max_tuple is None or parsed > max_tuple:
-                max_tuple = parsed
-                max_str = f"{parsed[0]}_{parsed[1]}"
     return names, max_tuple, max_str
 
 
@@ -468,27 +467,32 @@ def decode_batch_responses(
 def apply_worker_locale(worker: Any, norm: str) -> dict[str, Any]:
     """Execute `set_locale` / `set_translate` on an unlocked running `BridgeWorker`."""
     want_translate = norm != "en"
-    worker.locale = norm
+    prev_locale = worker.locale
     if not worker.is_running:
+        worker.locale = norm
         return {"ok": True, "lang": norm, "translate": want_translate, "started": False}
     try:
-        return worker._raw_call_unlocked("set_locale", {"lang": norm}, timeout=5.0)
+        res = worker._raw_call_unlocked("set_locale", {"lang": norm}, timeout=5.0)
+        worker.locale = norm
+        return res
     except BridgeError:
-        if worker.caps.get("translateToggle", True):
+        if norm != "zh-TW" and worker.caps.get("translateToggle", True):
             tr_res = worker._raw_call_unlocked("set_translate", {"enabled": want_translate}, timeout=5.0)
             worker.translate_enabled = bool(tr_res.get("enabled", want_translate))
+            worker.locale = norm
             return {
                 "ok": True,
                 "lang": norm,
                 "translate": worker.translate_enabled,
                 "fallback": "set_translate",
             }
-        if want_translate == worker.translate_enabled:
+        if norm == prev_locale and want_translate == worker.translate_enabled:
             return {"ok": True, "lang": norm, "translate": worker.translate_enabled, "fallback": "noop"}
         return {
             "ok": False,
-            "lang": norm,
+            "lang": prev_locale or "zh-CN",
+            "requestedLang": norm,
             "translate": worker.translate_enabled,
             "fallback": "unsupported",
-            "error": "Engine does not support runtime translation switching; restart worker to apply.",
+            "error": "Engine does not support runtime locale switching; restart worker to apply.",
         }

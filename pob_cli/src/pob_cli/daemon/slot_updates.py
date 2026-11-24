@@ -251,6 +251,9 @@ def handle_set_lang_action(manager: DaemonManager, params: dict[str, Any]) -> di
 
 
 def build_status_payload(manager: DaemonManager) -> dict[str, Any]:
+    boot_t = getattr(manager, "_boot_update_thread", None)
+    if not manager.update_status and boot_t is not None and boot_t.is_alive():
+        boot_t.join(timeout=6.0)
     with manager._reader_barrier():
         with manager._lock:
             workers_snap = dict(manager._workers)

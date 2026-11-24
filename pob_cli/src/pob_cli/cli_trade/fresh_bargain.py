@@ -158,7 +158,8 @@ def _fetch_with_fresh_and_market(
     market_note = ""
     if bargain is not None:
         market_total = total
-        if (max_age is None or stale_fallback) and search_sort == "asc" and want >= 10:
+        is_price_asc = search_sort == "asc" and (not has_auto_query or (query.get("sort") or {}) == {"price": "asc"})
+        if (max_age is None or stale_fallback) and is_price_asc and want >= 10:
             cheapest = rows[:10]  # this search already is "cheapest first, any age"
         else:
             try:
