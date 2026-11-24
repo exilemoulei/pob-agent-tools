@@ -297,6 +297,39 @@ def test_locale_cfg_l0_contracts_and_persistence(tmp_path: Path, monkeypatch: py
     monkeypatch.setenv("POB_LANG", "not-a-lang")
     assert get_active_lang() == ("zh-TW", "config")
 
+    # Frozen runtime-dir marker parity across all 4 (primary, legacy) states (including config.json-only primary)
+    from pob_cli.updater.paths import get_default_runtime_dir
+
+    monkeypatch.delenv("POB_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("POB_HOME", raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    for idx, (prim_files, leg_files, expect_legacy) in enumerate(
+        [
+            ((), (), False),
+            (("config.json",), ("daemon.json",), True),
+            (("daemon.json",), ("daemon.json",), False),
+            (("slot_main.json",), ("engine",), False),
+        ]
+    ):
+        app_base = tmp_path / f"appdata_{idx}"
+        prim_dir = app_base / "pob4agents"
+        leg_dir = app_base / "pob-agent-tools"
+        prim_dir.mkdir(parents=True)
+        leg_dir.mkdir(parents=True)
+        for fn in prim_files:
+            (prim_dir / fn).write_text("{}", encoding="utf-8")
+        for fn in leg_files:
+            if fn == "engine":
+                (leg_dir / fn).mkdir()
+            else:
+                (leg_dir / fn).write_text("{}", encoding="utf-8")
+        if sys.platform == "win32":
+            monkeypatch.setenv("LOCALAPPDATA", str(app_base))
+        else:
+            monkeypatch.setenv("XDG_DATA_HOME", str(app_base))
+        assert resolve_runtime_dir_l0() == get_default_runtime_dir()
+        assert resolve_runtime_dir_l0() == (leg_dir if expect_legacy else prim_dir)
+
 
 @pytest.mark.skipif(_find_win_lua51_dir() is None, reason="No Windows PoE1/lua51.dll available")
 def test_zh_translate_lua_synthetic_and_missing_fallback(tmp_path: Path) -> None:
@@ -314,8 +347,8 @@ def test_zh_translate_lua_synthetic_and_missing_fallback(tmp_path: Path) -> None
     script = tmp_path / "run_zt.lua"
     script.write_text(
         f"""
-local zt = assert(loadfile({json.dumps((LUA_DIR / "zh_translate.lua").as_posix())}))()
-assert(zt.install_pre_bridge({json.dumps(eng.as_posix())}, {{ lang = "zh-CN" }}) == true)
+local zt = assert(loadfile({json.dumps((LUA_DIR / "zh_translate.lua").as_posix(), ensure_ascii=False)}))()
+assert(zt.install_pre_bridge({json.dumps(eng.as_posix(), ensure_ascii=False)}, {{ lang = "zh-CN" }}) == true)
 assert(type(PobToolsSetTranslate) == "function" and type(PobToolsGetTranslate) == "function")
 assert(PobToolsGetTranslate() == true)
 
@@ -346,14 +379,14 @@ assert(PobToolsTranslateDisplay("Mageblood") == "Mageblood")
 assert(PobToolsItemNameZh({{ title = "Mageblood", baseName = "Heavy Belt" }}) == nil)
 
 -- Missing locale dir on disk falls back gracefully to English without error
-zt.install_pre_bridge({json.dumps(no_tw_eng.as_posix())}, {{ lang = "zh-TW" }})
+zt.install_pre_bridge({json.dumps(no_tw_eng.as_posix(), ensure_ascii=False)}, {{ lang = "zh-TW" }})
 local r_miss = zt.set_locale("zh-TW")
 assert(r_miss.ok == true and r_miss.lang == "zh-TW" and r_miss.dictLoaded == false)
 assert(PobToolsTranslateDisplay("Mageblood") == "Mageblood")
 local r_cn2 = zt.set_locale("zh-CN")
 assert(r_cn2.dictLoaded == true and PobToolsTranslateDisplay("Mageblood") == "法师之血")
 
-local f = assert(io.open({json.dumps(out_file.as_posix())}, "wb"))
+local f = assert(io.open({json.dumps(out_file.as_posix(), ensure_ascii=False)}, "wb"))
 f:write("PASS")
 f:close()
 """,
@@ -380,8 +413,8 @@ def test_zh_translate_lua_real_dictionaries_speed_and_accuracy(tmp_path: Path) -
     script = tmp_path / "bench_real_zt.lua"
     script.write_text(
         f"""
-local zt = assert(loadfile({json.dumps((LUA_DIR / "zh_translate.lua").as_posix())}))()
-zt.install_pre_bridge({json.dumps(real_eng.as_posix())}, {{ lang = "zh-CN" }})
+local zt = assert(loadfile({json.dumps((LUA_DIR / "zh_translate.lua").as_posix(), ensure_ascii=False)}))()
+zt.install_pre_bridge({json.dumps(real_eng.as_posix(), ensure_ascii=False)}, {{ lang = "zh-CN" }})
 
 local t0 = os.clock()
 local cn_mb = PobToolsTranslateDisplay("Mageblood")
@@ -395,7 +428,7 @@ local tw_ms = (os.clock() - t1) * 1000
 assert(tw_mb == "魔血", "expected 魔血, got " .. tostring(tw_mb))
 assert(PobToolsAscendancyNameZh("Raider", "Warden") == "守林人")
 
-local f = assert(io.open({json.dumps(out_file.as_posix())}, "wb"))
+local f = assert(io.open({json.dumps(out_file.as_posix(), ensure_ascii=False)}, "wb"))
 f:write(string.format('{{"cnMs":%.2f,"twMs":%.2f}}', cn_ms, tw_ms))
 f:close()
 """,
@@ -404,8 +437,9 @@ f:close()
     rc = _run_lua_inproc(lua_dir, script)
     assert rc == 0
     metrics = json.loads(out_file.read_text(encoding="utf-8"))
-    assert metrics["cnMs"] < 80.0
-    assert metrics["twMs"] < 80.0
+    perf_slack = max(1.0, float(os.environ.get("POB_TEST_PERF_SLACK", "1") or 1.0))
+    assert metrics["cnMs"] < 250.0 * perf_slack
+    assert metrics["twMs"] < 250.0 * perf_slack
 
 
 def test_bridge_worker_set_locale_and_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

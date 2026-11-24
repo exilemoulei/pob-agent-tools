@@ -59,7 +59,6 @@ def _call_batch(
     timeout: float = 30.0,
     raise_on_error: bool = True,
 ) -> list[dict[str, Any]]:
-    """Execute multiple RPCs in one pipelined stdin flush when supported, else fall back to worker.call()."""
     if not calls:
         return []
     batch_fn = getattr(worker, "call_batch", None)
@@ -78,35 +77,25 @@ def _call_batch(
 
 
 def _stat_float(val: Any) -> float:
-    """Parse a stat to float for ordering/threshold checks; returns 0.0 for None/NaN/unparseable."""
     parsed = _parse_numeric_or_none(val)
-    if parsed is None or math.isnan(parsed):
-        return 0.0
-    return parsed
+    return 0.0 if (parsed is None or math.isnan(parsed)) else parsed
 
 
 def _finite_float(val: Any, default: float = 0.0) -> float:
-    """Parse a stat to a strictly finite float (never NaN/Inf)."""
     parsed = _parse_numeric_or_none(val)
-    if parsed is None or not math.isfinite(parsed):
-        return default
-    return float(parsed)
+    return default if (parsed is None or not math.isfinite(parsed)) else float(parsed)
 
 
 def _json_safe_stat(val: Any) -> float | str:
-    """Convert any PoB stat into a finite float or RFC-8259 sentinel string ('inf', '-inf', 'nan')."""
     if val is None:
         return 0.0
     parsed = _parse_numeric_or_none(val)
     if parsed is None:
         return str(val) if isinstance(val, str) and val.strip() else 0.0
-    if math.isfinite(parsed):
-        return parsed
-    return fmt_num(parsed)
+    return parsed if math.isfinite(parsed) else fmt_num(parsed)
 
 
 def _safe_min_ele_max_hit(stats: dict[str, Any]) -> float | str | None:
-    """Safely compute minimum elemental max hit across Fire/Cold/Lightning (inf/NaN-hardened)."""
     vals: list[float] = []
     for key in ("FireMaximumHitTaken", "ColdMaximumHitTaken", "LightningMaximumHitTaken"):
         raw = stats.get(key)
@@ -123,8 +112,6 @@ def _safe_min_ele_max_hit(stats: dict[str, Any]) -> float | str | None:
 
 
 class BuildSnapshot:
-    """Opaque build checkpoint backed by Lua CoW (`cow_snapshot`) or lossless `export_code`."""
-
     __slots__ = ("kind", "token")
 
     def __init__(self, kind: str, token: str) -> None:
@@ -133,23 +120,19 @@ class BuildSnapshot:
 
 
 def worker_caps(worker: Any) -> dict[str, Any]:
-    """Safely return a worker's capability dict (empty when a test FakeWorker lacks `.caps`)."""
     caps = getattr(worker, "caps", None)
     return caps if isinstance(caps, dict) else {}
 
 
 def supports_cow_snapshot(worker: Any) -> bool:
-    """Return True when the worker advertises `cowSnapshot` (C2c Lua CoW rollback)."""
     return bool(worker_caps(worker).get("cowSnapshot"))
 
 
 def supports_direct_calc(worker: Any) -> bool:
-    """Return True when the worker advertises `directCalc` (C1 single-pass direct calc)."""
     return bool(worker_caps(worker).get("directCalc"))
 
 
 def take_snapshot(worker: Any, *, prefer_cow: bool = True) -> BuildSnapshot:
-    """Take a Lua CoW snapshot when advertised, otherwise fall back to `export_code`."""
     if prefer_cow and supports_cow_snapshot(worker):
         res = worker.call("cow_snapshot", {})
         snap_id = res.get("snapId") if isinstance(res, dict) else None
@@ -165,7 +148,6 @@ def restore_snapshot(
     drop: bool = False,
     rebuild: bool = True,
 ) -> None:
-    """Restore a `BuildSnapshot` (CoW or `import_code`), optionally dropping or skipping full rebuild."""
     if snap.kind == "cow":
         params: dict[str, Any] = {"snapId": snap.token}
         if drop:
@@ -178,7 +160,6 @@ def restore_snapshot(
 
 
 def drop_snapshot(worker: Any, snap: BuildSnapshot | None) -> None:
-    """Best-effort release of a Lua CoW snapshot (no-op for `export_code` snapshots)."""
     if snap is None or snap.kind != "cow":
         return
     try:
@@ -253,9 +234,14 @@ def capture_direct_digest(
     if isinstance(res, dict) and isinstance(res.get("points"), dict):
         build_info["points"] = res["points"]
     build_header = dict(base_digest.get("buildHeader") or {}) if isinstance(base_digest, dict) else {}
+    warns: list[str] = []
+    for w in (res.get("warnings") or []) if isinstance(res, dict) else []:
+        txt = strip_pob_escapes(w if isinstance(w, str) else (w.get("text") or w.get("raw") or "") if isinstance(w, dict) else "")
+        if txt:
+            warns.append(txt)
     return digest_from_stats(
         stats,
-        warnings=[],
+        warnings=warns,
         build_info=build_info,
         build_header=build_header,
         skill_flags=skill_flags if isinstance(skill_flags, dict) else None,

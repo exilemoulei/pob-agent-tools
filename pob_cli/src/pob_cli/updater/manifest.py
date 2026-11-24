@@ -128,7 +128,20 @@ def parse_pob_manifest(
         if part and url:
             sources.setdefault(part, {})[plat] = url
 
-    file_elems = root.findall("File")
+    def _is_eligible_elem(f_elem: ET.Element) -> bool:
+        raw_name = (f_elem.attrib.get("name") or "").strip()
+        sha1 = (f_elem.attrib.get("sha1") or "").strip().lower()
+        plat = f_elem.attrib.get("platform")
+        runtime = f_elem.attrib.get("runtime")
+        if not raw_name or not sha1:
+            return False
+        if keep_win32:
+            return not ((plat and plat != "win32") or (runtime and runtime != "win32"))
+        if (plat and plat == "win32") or (runtime and runtime == "win32"):
+            return False
+        return not (plat and plat not in ("any", ""))
+
+    file_elems = [e for e in root.findall("File") if _is_eligible_elem(e)]
     latest_trees = (
         _detect_latest_tree_versions([(e.attrib.get("name") or "").strip() for e in file_elems], count=2)
         if slim
@@ -142,21 +155,6 @@ def parse_pob_manifest(
         sha1 = (f_elem.attrib.get("sha1") or "").strip().lower()
         plat = f_elem.attrib.get("platform")
         runtime = f_elem.attrib.get("runtime")
-        if not raw_name or not sha1:
-            continue
-        if keep_win32:
-            if plat and plat != "win32":
-                continue
-            if runtime and runtime != "win32":
-                continue
-        else:
-            # POSIX (macOS/Linux) uses native LuaJIT + libz; skip Windows DLL/EXE runtime files
-            if plat and plat == "win32":
-                continue
-            if runtime and runtime == "win32":
-                continue
-            if plat and plat not in ("any", ""):
-                continue
         local_rel = raw_name.replace("{space}", " ")
         # Path traversal guard
         norm_parts = Path(local_rel).parts
@@ -358,6 +356,7 @@ def diff_pob_manifest(
     """
     poe1 = Path(poe1_dir)
     local_manifest: PobManifest | None = None
+    local_full_manifest: PobManifest | None = None
     local_manifest_sha1: str | None = None
     local_manifest_path = poe1 / "manifest.xml"
     if local_manifest_path.is_file():
@@ -365,9 +364,12 @@ def diff_pob_manifest(
             local_bytes = local_manifest_path.read_bytes()
             raw_sha1 = hashlib.sha1(local_bytes).hexdigest()
             local_manifest_sha1 = f"{raw_sha1}:slim" if slim else raw_sha1
-            local_manifest = parse_pob_manifest(local_bytes.decode("utf-8", errors="replace"), slim=slim)
+            local_text = local_bytes.decode("utf-8", errors="replace")
+            local_manifest = parse_pob_manifest(local_text, slim=slim)
+            local_full_manifest = parse_pob_manifest(local_text, slim=False) if slim else local_manifest
         except Exception:
             local_manifest = None
+            local_full_manifest = None
 
     cached_files: dict[str, list[Any]] = {}
     cache_path: Path | None = None
@@ -422,9 +424,16 @@ def diff_pob_manifest(
         _save_manifest_stat_cache(cache_path, poe1_key, local_manifest_sha1, updated_cache)
 
     to_delete: list[Path] = []
-    if local_manifest is not None:
+    inv_manifest = local_full_manifest or local_manifest
+    if inv_manifest is not None:
         remote_rels = {e.local_rel.lower() for e in remote_manifest.files.values()}
-        for old_entry in local_manifest.files.values():
+        if slim and remote_manifest.raw_xml:
+            try:
+                remote_full = parse_pob_manifest(remote_manifest.raw_xml, slim=False)
+                remote_rels |= {e.local_rel.lower() for e in remote_full.files.values()}
+            except Exception:
+                pass
+        for old_entry in inv_manifest.files.values():
             if old_entry.local_rel.lower() not in remote_rels:
                 if (poe1 / old_entry.local_rel).is_file():
                     to_delete.append(Path("PoE1") / old_entry.local_rel)

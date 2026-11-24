@@ -47,6 +47,7 @@ _DATA_SUBDIRS: dict[str, str | None] = {
 __all__ = [
     "DEFAULT_LANG",
     "SUPPORTED_LANGS",
+    "_has_runtime_data_l0",
     "current_lang",
     "get_active_lang",
     "lang_to_data_subdir",
@@ -91,7 +92,7 @@ def _has_runtime_data_l0(path: Path) -> bool:
     try:
         if not path.is_dir():
             return False
-        for marker in ("engine", "daemon.json", "update_state.json", "cache", "config.json"):
+        for marker in ("engine", "daemon.json", "update_state.json", "cache"):
             if (path / marker).exists():
                 return True
         return any(path.glob("slot_*.json"))

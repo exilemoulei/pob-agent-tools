@@ -275,7 +275,7 @@ local function handle_agent_probe_build(_params)
 						local missing = nil
 						for _, a in ipairs(ATTRS) do
 							local r_val = (req[a] and req[a] > 0) and math.floor(req[a] * req_mult) or 0
-							if r_val > new_attr[a] then
+							if attr_cur[a] >= r_val and r_val > new_attr[a] then
 								missing = missing or {}
 								missing[a] = { required = r_val, afterRemoval = new_attr[a], deficit = new_attr[a] - r_val }
 							end
@@ -458,7 +458,7 @@ local function handle_compute_grad_build(params)
 	local base_dps, dps_key = primary_dps(calc_base)
 	local req_stat = params.stat
 	local target_stat = (type(req_stat) == "string" and req_stat ~= "") and req_stat or dps_key
-	local use_full_dps = (target_stat == "FullDPS") or (req_stat == nil and dps_key == "FullDPS")
+	local use_full_dps = (target_stat == "FullDPS") or (dps_key == "FullDPS")
 	local base_ehp = calc_base.TotalEHP or 1
 	local base_stat = (target_stat == dps_key) and base_dps or (calc_base[target_stat] or base_dps)
 	local safe_dps, safe_ehp = (base_dps > 0) and base_dps or 1, (base_ehp > 0) and base_ehp or 1
@@ -466,7 +466,8 @@ local function handle_compute_grad_build(params)
 	for i, dim_name in ipairs(dims) do
 		local ml, unit = build_probe_mods(dim_name, is_minion)
 		local out = calc_func({ addNodes = { [{ id = 991000 + i, modList = ml }] = true } }, use_full_dps)
-		local new_dps = use_full_dps and (out.FullDPS or 0) or (out.CombinedDPS or out.TotalDPS or 0)
+		local new_dps = (dps_key == "FullDPS" and (out.FullDPS or 0))
+			or (out[dps_key] or out.CombinedDPS or out.TotalDPS or 0)
 		local new_ehp = out.TotalEHP or 0
 		local new_stat = (target_stat == dps_key) and new_dps or (out[target_stat] or new_dps)
 		local rel_dps, rel_ehp = ((new_dps - base_dps) / unit) / safe_dps, ((new_ehp - base_ehp) / unit) / safe_ehp

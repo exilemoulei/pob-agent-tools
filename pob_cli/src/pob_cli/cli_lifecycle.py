@@ -379,18 +379,18 @@ def cmd_lang(language: str | None, as_json: bool, compact: bool, out_path: str |
             raise click.ClickException(str(exc)) from exc
         persisted_info = set_active_lang(target_lang, runtime_dir=rt_dir)
 
+    eff_lang, eff_src = get_active_lang(rt_dir)
     daemon_res: dict[str, Any] | None = None
     if read_daemon_state(rt_dir) is not None:
         try:
             daemon_res = call_daemon(
                 "lang",
-                {"lang": target_lang, "persist": False} if target_lang else {},
+                {"lang": eff_lang, "persist": False} if target_lang else {},
                 auto_start=False,
             )
         except Exception:
             daemon_res = None
 
-    eff_lang, eff_src = get_active_lang(rt_dir)
     avail: list[str] = ["en"]
     if isinstance(daemon_res, dict) and isinstance(daemon_res.get("availableLocales"), list):
         avail = list(daemon_res["availableLocales"])
@@ -405,26 +405,40 @@ def cmd_lang(language: str | None, as_json: bool, compact: bool, out_path: str |
         except Exception:
             pass
 
+    slots_updated = daemon_res.get("slotsUpdated") if isinstance(daemon_res, dict) else None
+    failed_slots = {
+        k: str(v.get("error") or "failed")
+        for k, v in (slots_updated or {}).items()
+        if isinstance(v, dict) and v.get("ok") is False
+    }
+    daemon_synced = (daemon_res is not None) and not failed_slots
+
     payload: dict[str, Any] = {
         "lang": eff_lang,
         "source": eff_src,
         "availableLocales": avail,
-        "daemonSynced": daemon_res is not None,
+        "daemonSynced": daemon_synced,
     }
     if persisted_info is not None:
         payload["persistedLang"] = persisted_info["lang"]
         payload["configPath"] = persisted_info["configPath"]
-    if isinstance(daemon_res, dict) and daemon_res.get("slotsUpdated"):
-        payload["slotsUpdated"] = daemon_res["slotsUpdated"]
+    if isinstance(slots_updated, dict) and slots_updated:
+        payload["slotsUpdated"] = slots_updated
+    if failed_slots:
+        payload["failedSlots"] = failed_slots
 
     if as_json:
         _emit_json(payload, compact=compact, out_path=out_path)
         return
 
+    sync_label = "yes" if daemon_synced else ("partial/failed" if failed_slots else "no (will apply on start)")
     msg = (
         f"Language: `{eff_lang}` (source: `{eff_src}`) | "
-        f"Available: `{', '.join(avail)}` | Daemon synced: `{'yes' if daemon_res is not None else 'no (will apply on start)'}`"
+        f"Available: `{', '.join(avail)}` | Daemon synced: `{sync_label}`"
     )
+    if failed_slots:
+        err_summary = ", ".join(f"{s}: {e}" for s, e in sorted(failed_slots.items()))
+        msg += f"\nWarning: Slot locale sync failed ({err_summary})."
     if persisted_info is not None and eff_lang != persisted_info["lang"]:
         msg += f"\nNote: Persisted `{persisted_info['lang']}`, but `POB_LANG={eff_lang}` environment variable currently overrides it."
     _emit_text(msg, out_path=out_path)

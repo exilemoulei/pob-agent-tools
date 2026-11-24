@@ -104,7 +104,7 @@ function M.install_pre_launch(game_dir, opts)
 		return false
 	end
 
-	local attempted_trees = {}
+	local attempted_trees, in_flight = {}, {}
 	local function is_tree_data_script(rel)
 		local low = rel:lower()
 		return low:match("^treedata/") ~= nil
@@ -135,10 +135,13 @@ function M.install_pre_launch(game_dir, opts)
 				return resolved
 			end
 		end
-		-- 3. Native host Python callback (_G.__POB_ENSURE_TREE) fetching SHA1-verified tree files
-		if not attempted_trees[tree_ver] and type(_G.__POB_ENSURE_TREE) == "function" then
-			attempted_trees[tree_ver] = true
+		-- 3. Native host Python callback (_G.__POB_ENSURE_TREE) with 5s retry backoff on failure
+		local now = os.clock()
+		local last_ts = attempted_trees[tree_ver]
+		if not in_flight[tree_ver] and (not last_ts or (now - last_ts) >= 5.0) and type(_G.__POB_ENSURE_TREE) == "function" then
+			in_flight[tree_ver], attempted_trees[tree_ver] = true, now
 			pcall(_G.__POB_ENSURE_TREE, tree_ver)
+			in_flight[tree_ver] = nil
 			if file_exists(rel) then
 				M.stats.tree_fallback_hits = M.stats.tree_fallback_hits + 1
 				return rel

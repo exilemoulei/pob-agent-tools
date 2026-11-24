@@ -48,6 +48,8 @@ def _dispatch_query(
     limit: int,
     zh_available: bool,
     mod_filter: str | None = None,
+    pob_dir: Path | None = None,
+    runtime_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     if limit == 0:
         return []
@@ -59,7 +61,7 @@ def _dispatch_query(
         return _query_bases(conn, q_folded, slot, ilvl, limit)
     if kind_norm == "mod":
         return _query_mods(conn, q_folded, slot, ilvl, limit)
-    return _query_translate(conn, q_folded, limit, zh_available)
+    return _query_translate(conn, q_folded, limit, zh_available, pob_dir=pob_dir, runtime_dir=runtime_dir)
 
 
 def _guardrail_scope_for_kind(kind_norm: str) -> Any:
@@ -249,6 +251,8 @@ def query_local_data(
             limit=limit,
             zh_available=zh_available,
             mod_filter=mod_tw,
+            pob_dir=pob_dir,
+            runtime_dir=runtime_dir,
         )
         needs_slang = (not results) or (
             kind_norm == "translate" and not any(r.get("match_type") == "exact" for r in results)
@@ -266,6 +270,8 @@ def query_local_data(
                     limit=limit,
                     zh_available=zh_available,
                     mod_filter=mod_tw,
+                    pob_dir=pob_dir,
+                    runtime_dir=runtime_dir,
                 )
                 if slang_res:
                     results = slang_res
@@ -273,7 +279,7 @@ def query_local_data(
             if not results and kind_norm != "translate":
                 from .zh_match import english_for_zh
 
-                en_canon = english_for_zh(q_clean, pob_dir=pob_dir)
+                en_canon = english_for_zh(q_clean, pob_dir=pob_dir, runtime_dir=runtime_dir)
                 if en_canon and _fold_search_text(en_canon) != q_lower:
                     sib_res = _dispatch_query(
                         conn,
@@ -284,6 +290,8 @@ def query_local_data(
                         limit=limit,
                         zh_available=zh_available,
                         mod_filter=mod_tw,
+                        pob_dir=pob_dir,
+                        runtime_dir=runtime_dir,
                     )
                     if sib_res:
                         results = sib_res

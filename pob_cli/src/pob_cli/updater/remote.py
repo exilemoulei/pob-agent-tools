@@ -386,6 +386,7 @@ def fetch_pob_manifest_subset(
     proxy: str | None = None,
     mirror: str | None = None,
     max_workers: int = 6,
+    timeout: Any = None,
 ) -> list[Path]:
     """Fetch SHA1-verified files matching `predicate` from local `PoE1/manifest.xml` on demand.
 
@@ -412,7 +413,15 @@ def fetch_pob_manifest_subset(
         dst = target_root / entry.local_rel
         if dst.is_file():
             try:
-                if verify_fn(dst.read_bytes(), entry.sha1):
+                if dst.stat().st_size > 2_097_152:
+                    h = hashlib.sha1()
+                    with dst.open("rb") as fh:
+                        while chunk := fh.read(65536):
+                            h.update(chunk)
+                    valid = h.hexdigest().lower() == entry.sha1.lower()
+                else:
+                    valid = bool(verify_fn(dst.read_bytes(), entry.sha1))
+                if valid:
                     ready.append(dst)
                     continue
             except OSError:
@@ -424,8 +433,10 @@ def fetch_pob_manifest_subset(
     if os.environ.get("POB_OFFLINE") == "1":
         raise UpdateError("POB_OFFLINE=1: cannot fetch missing optional PoB assets on demand")
 
+    eff_timeout = _to_httpx_timeout(_ASSET_TIMEOUT_SPEC if timeout is None else timeout)
+    retries = 0 if timeout is not None else ASSET_MAX_RETRIES
     with pkg._make_http_client(
-        timeout=_to_httpx_timeout(_ASSET_TIMEOUT_SPEC),
+        timeout=eff_timeout,
         proxy=proxy,
         follow_redirects=True,
         max_connections=max(max_workers, 4),
@@ -433,7 +444,7 @@ def fetch_pob_manifest_subset(
 
         def _fetch_one(entry: ManifestFileEntry) -> Path:
             url = build_manifest_file_url(manifest, entry, mirror=mirror)
-            data = _download_bytes_with_retry(client, url, retries=ASSET_MAX_RETRIES)
+            data = _download_bytes_with_retry(client, url, retries=retries)
             if not verify_fn(data, entry.sha1):
                 raise UpdateError(
                     f"SHA1 mismatch for '{entry.local_rel}': expected {entry.sha1}, "
@@ -464,6 +475,7 @@ def ensure_tree_data_files(
     dest_dir: Path | None = None,
     proxy: str | None = None,
     mirror: str | None = None,
+    timeout: Any = None,
 ) -> list[Path]:
     """Ensure `TreeData/<tree_version>/*.lua` (tree.lua, sprites.lua, Assets.lua) exist via manifest SHA1."""
     ver = tree_version.strip()
@@ -475,7 +487,9 @@ def ensure_tree_data_files(
         low = entry.local_rel.replace("\\", "/").lower()
         return low.startswith(prefix) and low.endswith(".lua")
 
-    return fetch_pob_manifest_subset(poe1_dir, _want, dest_dir=dest_dir, proxy=proxy, mirror=mirror)
+    return fetch_pob_manifest_subset(
+        poe1_dir, _want, dest_dir=dest_dir, proxy=proxy, mirror=mirror, timeout=timeout
+    )
 
 
 def ensure_timeless_lut_files(

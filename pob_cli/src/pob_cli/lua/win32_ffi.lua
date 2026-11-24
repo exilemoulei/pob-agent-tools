@@ -99,6 +99,7 @@ end
 
 local CP_UTF8 = 65001
 local FILE_ATTR_DIRECTORY = 0x10
+local FILE_ATTR_REPARSE_POINT = 0x400
 local INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
 
 local function utf8_to_wide(s)
@@ -226,13 +227,15 @@ function M.install(game_dir)
 		if win_is_dir(norm) then
 			return true
 		end
-		local acc = ""
-		for seg in norm:gmatch("[^/]+") do
-			if acc == "" then
-				acc = seg
-			else
-				acc = acc .. "/" .. seg
-			end
+		local acc, rest = "", norm
+		local unc_root, unc_tail = norm:match("^(//[^/]+/[^/]+)(.*)$")
+		if unc_root then
+			acc, rest = unc_root, unc_tail or ""
+		elseif norm:sub(1, 1) == "/" then
+			acc, rest = "/", norm:sub(2)
+		end
+		for seg in rest:gmatch("[^/]+") do
+			acc = (acc == "" and seg) or (acc == "/" and ("/" .. seg)) or (acc .. "/" .. seg)
 			if not acc:match("^%a:$") and not win_is_dir(acc) then
 				local ok = kernel32.CreateDirectoryW(utf8_to_wide(acc), nil)
 				if ok == 0 and not win_is_dir(acc) then
@@ -262,7 +265,10 @@ function M.install(game_dir)
 		if norm == "/" or norm == "." or norm == ".." or norm:match("^%a:/?$") then
 			return false, "refusing to remove root/dot directory"
 		end
-		if recurse then
+		local top_attr = kernel32.GetFileAttributesW(utf8_to_wide(norm))
+		local is_reparse = (top_attr ~= INVALID_FILE_ATTRIBUTES)
+			and (bit.band(top_attr, FILE_ATTR_REPARSE_POINT) ~= 0)
+		if recurse and not is_reparse then
 			local fd = ffi.new("WIN_FIND_DATAW")
 			local h = kernel32.FindFirstFileW(utf8_to_wide(norm .. "/*"), fd)
 			if h ~= invalid_handle then
@@ -270,8 +276,15 @@ function M.install(game_dir)
 					local name = wide_to_utf8(fd.cFileName)
 					if name ~= "." and name ~= ".." then
 						local child = norm .. "/" .. name
-						if bit.band(fd.dwFileAttributes, FILE_ATTR_DIRECTORY) ~= 0 then
-							local ok, err = win_remove_dir(child, true)
+						local attr = fd.dwFileAttributes
+						if bit.band(attr, FILE_ATTR_DIRECTORY) ~= 0 then
+							local ok, err
+							if bit.band(attr, FILE_ATTR_REPARSE_POINT) ~= 0 then
+								ok = kernel32.RemoveDirectoryW(utf8_to_wide(child)) ~= 0
+								err = not ok and ("rmdir failed: " .. child) or nil
+							else
+								ok, err = win_remove_dir(child, true)
+							end
 							if not ok then
 								kernel32.FindClose(h)
 								return false, err
@@ -318,15 +331,22 @@ function M.install(game_dir)
 		end
 
 		local closed = false
-		local obj = {}
+		local gc_owner = ffi.gc(handle, function(h)
+			if not closed then
+				closed = true
+				kernel32.FindClose(h)
+			end
+		end)
+		local obj = { _gc = gc_owner }
 		function obj:NextFile()
 			if closed then
 				return false
 			end
 			while true do
 				if kernel32.FindNextFileW(handle, find_data) == 0 then
-					kernel32.FindClose(handle)
 					closed = true
+					ffi.gc(gc_owner, nil)
+					kernel32.FindClose(handle)
 					return false
 				end
 				if valid_entry() then
@@ -343,14 +363,7 @@ function M.install(game_dir)
 		function obj:GetFileModifiedTime()
 			return filetime_to_unix(find_data.ftLastWriteTime)
 		end
-		return setmetatable(obj, {
-			__gc = function()
-				if not closed then
-					kernel32.FindClose(handle)
-					closed = true
-				end
-			end,
-		})
+		return obj
 	end
 
 	-- zlib1.dll Inflate / Deflate

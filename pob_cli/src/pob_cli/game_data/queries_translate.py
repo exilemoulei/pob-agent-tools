@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from .constants import _CJK_PARTICLE_RE, _CJK_RE
@@ -290,7 +291,15 @@ def _lookup_canonical_en_in_conn(
     return out
 
 
-def _query_translate(conn: sqlite3.Connection, q_lower: str, limit: int, zh_available: bool) -> list[dict[str, Any]]:
+def _query_translate(
+    conn: sqlite3.Connection,
+    q_lower: str,
+    limit: int,
+    zh_available: bool,
+    *,
+    pob_dir: Path | None = None,
+    runtime_dir: Path | None = None,
+) -> list[dict[str, Any]]:
     raw_query = q_lower
     if q_lower:
         q_lower = _fold_search_text(normalize_tw_query(q_lower))
@@ -318,7 +327,9 @@ def _query_translate(conn: sqlite3.Connection, q_lower: str, limit: int, zh_avai
         )
 
     if not has_exact and (_CJK_RE.search(raw_query) or _CJK_RE.search(q_lower)):
-        sibling_en = resolve_zh_entity_across_locales(raw_query) or resolve_zh_entity_across_locales(q_lower)
+        sibling_en = resolve_zh_entity_across_locales(
+            raw_query, pob_dir=pob_dir, runtime_dir=runtime_dir
+        ) or resolve_zh_entity_across_locales(q_lower, pob_dir=pob_dir, runtime_dir=runtime_dir)
         if sibling_en:
             scored.extend(_lookup_canonical_en_in_conn(conn, sibling_en))
 

@@ -126,6 +126,14 @@ def check_tree_version_mismatch(code: str, game_dir: Path, pob_version: str | No
                 "Run `pob update` (or set HTTPS_PROXY / POB_PROXY and run "
                 "`pob update --proxy http://127.0.0.1:<port>`) to update the local engine."
             )
+        if os.environ.get("POB_OFFLINE") != "1" and (Path(game_dir) / "manifest.xml").is_file():
+            try:
+                from .updater.remote import ensure_tree_data_files
+
+                if ensure_tree_data_files(Path(game_dir), tv, timeout=10.0):
+                    local_names.add(tv)
+            except Exception:
+                pass
     return None
 
 

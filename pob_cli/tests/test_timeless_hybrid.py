@@ -520,7 +520,14 @@ Historic
     assert set(res_fast.keys()) == EXPECTED_SEARCH_KEYS
     assert res_fast["workers"] == 1
     assert res_fast["calculated"] == 50
-    assert res_fast["estimate"] is not None
+    assert res_fast["estimate"] == {
+        "calculated": 50,
+        "shortlisted": True,
+        "groupsConsidered": 50,
+        "groupsTotal": 500,
+        "maxError": 0.0,
+        "relative": True,
+    }
     assert res_fast["outcomes"][0]["seeds"] == [599]
     assert len(res_fast["outcomes"]) == 10
 

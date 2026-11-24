@@ -34,7 +34,7 @@ _ENTITY_JSON_FILES: tuple[str, ...] = (
     "Z-S29.json",
     "Z-S30.json",
 )
-_GEM_SUP_STRIP_RE = re.compile(r"(?:[（(](?:强)?辅[)）]|强辅|辅助|輔助)$")
+_GEM_SUP_STRIP_RE = re.compile(r"(?:[（(]辅[)）]|辅助|輔助)$")
 _ZH_ENTITY_MAP_CACHE: dict[tuple[str, float], dict[str, str]] = {}
 
 
@@ -90,7 +90,7 @@ def _load_zh_dir_entity_map(zh_dir: Path) -> dict[str, str]:
                 rev_map[raw_k] = en
             if fold_k and fold_k not in rev_map:
                 rev_map[fold_k] = en
-            if is_gem:
+            if is_gem and "强辅" not in zh and "強輔" not in zh and not en.lower().startswith("awakened "):
                 stem_zh = _GEM_SUP_STRIP_RE.sub("", zh).strip()
                 if stem_zh and stem_zh != zh:
                     stem_fold = _normalize_entity_lookup_key(stem_zh)
@@ -135,12 +135,15 @@ def resolve_zh_entity_across_locales(
 
 
 @lru_cache(maxsize=512)
-def _english_for_zh_cached(text: str, pob_dir: str | None, active_lang: str) -> str | None:
+def _english_for_zh_cached(
+    text: str, pob_dir: str | None, runtime_dir: str | None, active_lang: str
+) -> str | None:
     from .queries import query_local_data
 
     resolved_arg = Path(pob_dir) if pob_dir else None
+    rt_arg = Path(runtime_dir) if runtime_dir else None
     try:
-        res = query_local_data("translate", text, pob_dir=resolved_arg, limit=3)
+        res = query_local_data("translate", text, pob_dir=resolved_arg, runtime_dir=rt_arg, limit=3)
     except Exception:
         res = {}
     for row in res.get("results") or ():
@@ -148,12 +151,19 @@ def _english_for_zh_cached(text: str, pob_dir: str | None, active_lang: str) -> 
             en = str(row.get("en") or "").strip()
             if en and not _CJK_RE.search(en):
                 return en
-    return resolve_zh_entity_across_locales(text, pob_dir=resolved_arg)
+    return resolve_zh_entity_across_locales(text, pob_dir=resolved_arg, runtime_dir=rt_arg)
 
 
-def english_for_zh(text: str | None, *, pob_dir: Path | None = None) -> str | None:
+def english_for_zh(
+    text: str | None, *, pob_dir: Path | None = None, runtime_dir: Path | None = None
+) -> str | None:
     """Exact English name for a Chinese (Simplified or Traditional) entity name, else None."""
     q = str(text or "").strip()
     if not q or not _CJK_RE.search(q):
         return None
-    return _english_for_zh_cached(q, str(pob_dir) if pob_dir else None, current_lang())
+    return _english_for_zh_cached(
+        q,
+        str(pob_dir) if pob_dir else None,
+        str(runtime_dir) if runtime_dir else None,
+        current_lang(runtime_dir),
+    )

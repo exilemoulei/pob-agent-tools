@@ -15,6 +15,7 @@ from ..trade_client import TradeError, seller_url
 from ..trade_eval import Candidate, compare_items, score_deltas, verify_candidates_batch
 from ..trade_item import build_item_text, convert_item_text, parse_item_text, sanitize_text, trade_mod_tiers
 from ..trade_query import (
+    INDEXED_WINDOWS,
     OPEN_AFFIX_ID,
     OPEN_PREFIX_ID,
     OPEN_SUFFIX_ID,
@@ -237,6 +238,48 @@ def _collect_bench_options(
     return bench_options
 
 
+def _apply_cli_filters_to_auto_query(
+    parsed: dict[str, Any],
+    *,
+    status: str = "available",
+    budget: float | None = None,
+    currency: str | None = "chaos_equiv",
+    max_age: float | None = None,
+    ilvl_min: int = 0,
+    open_prefix: bool = False,
+    open_suffix: bool = False,
+    open_affix: bool = False,
+) -> dict[str, Any]:
+    """Overlay CLI price/status/indexed/ilvl/open-affix constraints onto a PoB-generated query."""
+    inner = parsed.setdefault("query", {}) if "query" in parsed else parsed
+    if status:
+        inner["status"] = {"option": status.strip().lower()}
+    filters = inner.setdefault("filters", {})
+    if ilvl_min > 0:
+        tf = filters.setdefault("type_filters", {}).setdefault("filters", {})
+        tf["ilvl"] = {"min": ilvl_min}
+    trade_f: dict[str, Any] = {}
+    if budget is not None and budget > 0:
+        curr_norm = (currency or "").strip().lower()
+        trade_f["price"] = {"max": budget} if curr_norm in ("", "chaos_equiv", "equiv") else {"option": curr_norm, "max": budget}
+    if max_age is not None and max_age > 0:
+        window = next((opt for hours, opt in INDEXED_WINDOWS if max_age <= hours), None)
+        if window:
+            trade_f["indexed"] = {"option": window}
+    if trade_f:
+        filters.setdefault("trade_filters", {}).setdefault("filters", {}).update(trade_f)
+    pseudo: list[dict[str, Any]] = []
+    if open_prefix:
+        pseudo.append({"id": OPEN_PREFIX_ID, "value": {"min": 1}, "disabled": False})
+    if open_suffix:
+        pseudo.append({"id": OPEN_SUFFIX_ID, "value": {"min": 1}, "disabled": False})
+    if open_affix and not (open_prefix or open_suffix):
+        pseudo.append({"id": OPEN_AFFIX_ID, "value": {"min": 1}, "disabled": False})
+    if pseudo:
+        inner.setdefault("stats", []).append({"type": "and", "filters": pseudo})
+    return parsed
+
+
 def _execute_trade_api_query(
     ctx: click.Context,
     *,
@@ -268,6 +311,7 @@ def _execute_trade_api_query(
     fetch_limit: int,
     compact: bool,
     out_path: str | None,
+    auto_query_body: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     import pob_cli.cli_trade as _ct
 
@@ -337,7 +381,11 @@ def _execute_trade_api_query(
                 "pseudo_filters": pseudo_filters or None,
                 "allow_corrupted": allow_corrupted,
             }
-            query = build_query(**query_args, max_age_hours=max_age)
+            query = (
+                auto_query_body
+                if isinstance(auto_query_body, dict)
+                else build_query(**query_args, max_age_hours=max_age)
+            )
         except ValueError as exc:
             _err_utf8(str(exc))
             ctx.exit(1)

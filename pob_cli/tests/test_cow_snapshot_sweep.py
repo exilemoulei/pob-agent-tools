@@ -55,6 +55,7 @@ class _CowFakeWorker:
         self.ehp: float | str = 45000.0
         self.config_vars: dict[str, Any] = {"enemyIsBoss": "Pinnacle", "usePowerCharges": False}
         self.points_used = 100
+        self.warnings: list[str] = []
         self.slot_items: dict[str, str] = {}
         self._cow_snaps: dict[str, str] = {}
         self._cow_seq = 0
@@ -71,6 +72,7 @@ class _CowFakeWorker:
                 "ehp": self.ehp,
                 "config_vars": dict(self.config_vars),
                 "points_used": self.points_used,
+                "warnings": list(self.warnings),
                 "slot_items": dict(self.slot_items),
             },
             sort_keys=True,
@@ -84,6 +86,7 @@ class _CowFakeWorker:
         self.ehp = data["ehp"]
         self.config_vars = dict(data["config_vars"])
         self.points_used = int(data["points_used"])
+        self.warnings = list(data.get("warnings", []))
         self.slot_items = dict(data.get("slot_items", {}))
 
     def _stats_map(self, *, skip_ehp: bool = False) -> dict[str, Any]:
@@ -144,6 +147,7 @@ class _CowFakeWorker:
                 "stats": self._stats_map(skip_ehp=skip_ehp),
                 "skillFlags": {"spell": True, "hit": True},
                 "points": {"used": self.points_used, "usedMax": 122, "ascUsed": 8, "ascMax": 8},
+                "warnings": [] if skip_ehp else list(self.warnings),
             }
         if method == "get_stats":
             return {"stats": self._stats_map()}
@@ -280,6 +284,7 @@ def test_capture_direct_digest_and_verify_cow_restored() -> None:
     w = _CowFakeWorker(caps={"cowSnapshot": True, "directCalc": True})
     w.full_dps = 250000.0
     w.points_used = 114
+    w.warnings = ["^xFF8800You do not have enough Strength for your equipment"]
     base_digest = {
         "buildInfo": {"className": "Witch", "level": 95, "points": {"used": 100}},
         "buildHeader": {"mainSocketGroup": {"index": 1}},
@@ -291,6 +296,7 @@ def test_capture_direct_digest_and_verify_cow_restored() -> None:
     assert d_full["totalEhp"] == pytest.approx(45000.0)
     assert d_full["buildInfo"]["points"]["used"] == 114
     assert d_full["skillFlags"] == {"spell": True, "hit": True}
+    assert d_full["warnings"] == ["You do not have enough Strength for your equipment"]
 
     d_skip = capture_direct_digest(w, skip_ehp=True, base_digest=base_digest)
     assert d_skip["primaryDps"] == pytest.approx(250000.0)
@@ -543,10 +549,16 @@ def test_live_cow_snapshot_and_sweep_zero_residue(live_cow_worker: BridgeWorker)
             {"name": "Add Support", "ops": [{"op": "skill", "group": "main", "addGem": "Controlled Destruction Support"}]},
             {"name": "Edit Ring", "ops": [{"op": "item_edit", "slot": "Ring 1", "addMods": ["+100 to maximum Life"]}]},
             {"name": "Config Frenzy", "ops": [{"op": "config", "set": {"useFrenzyCharges": True}}]},
+            {
+                "name": "Attr Warning Variant",
+                "ops": [{"op": "item", "slot": "Helmet", "raw": "Rarity: NORMAL\nRoyal Burgonet\nRequires: 999 Str"}],
+            },
         ],
     )
-    assert res["succeeded"] == 3
+    assert res["succeeded"] == 4
     assert res["restoreCheck"]["verified"] is True
+    assert len(res["variants"][3]["warnings"]) >= 1
+    assert len(res["variants"][3]["diffVsBase"]["newWarnings"]) >= 1
 
     after_stats = live_cow_worker.call("get_stats", {})["stats"]
     after_items = live_cow_worker.call("list_items", {})["items"]

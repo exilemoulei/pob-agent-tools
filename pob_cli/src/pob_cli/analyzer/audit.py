@@ -462,6 +462,8 @@ def audit_build(
     worker: BridgeWorker,
     keep: Iterable[str] | str | None = None,
     attribution: bool = True,
+    *,
+    include_envelope: bool = True,
 ) -> dict[str, Any]:
     """Run static build health checks + non-destructive 4-part PoB inflation ('water') audit."""
     import pob_cli.analyzer as _analyzer
@@ -522,12 +524,13 @@ def audit_build(
                         agent_probe_res = p_res
                 except Exception:
                     pass
-                try:
-                    env_res = worker.call("eval_scenario_envelope", {})
-                    if isinstance(env_res, dict) and not env_res.get("_error"):
-                        scenario_envelope_res = env_res
-                except Exception:
-                    pass
+                if include_envelope:
+                    try:
+                        env_res = worker.call("eval_scenario_envelope", {})
+                        if isinstance(env_res, dict) and not env_res.get("_error"):
+                            scenario_envelope_res = env_res
+                    except Exception:
+                        pass
         finally:
             if hasattr(worker, "last_good_code"):
                 worker.last_good_code = prev_last_good

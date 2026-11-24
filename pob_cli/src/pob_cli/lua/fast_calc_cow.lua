@@ -45,18 +45,16 @@ local function keys_eq(a, b)
 end
 
 local function replace_tbl(dst, src)
-	if type(dst) ~= "table" then return end
-	for k in pairs(dst) do if src[k] == nil then dst[k] = nil end end
-	for k, v in pairs(src) do dst[k] = v end
+	if type(dst) == "table" then
+		for k in pairs(dst) do if src[k] == nil then dst[k] = nil end end
+		for k, v in pairs(src) do dst[k] = v end
+	end
 end
 
 local function sanitize(v)
 	local vt = type(v)
 	if vt == "number" then
-		if v ~= v then return "nan" end
-		if v == m_huge then return "inf" end
-		if v == -m_huge then return "-inf" end
-		return v
+		return (v ~= v and "nan") or (v == m_huge and "inf") or (v == -m_huge and "-inf") or v
 	end
 	return (vt == "boolean" or vt == "string") and v or nil
 end
@@ -335,15 +333,11 @@ end
 local function restore_skills(b, snap)
 	local st = b.skillsTab
 	if type(st) ~= "table" or not skills_differ(b, snap) then return false end
-	if st.activeSkillSetId ~= snap.activeSkillSetId and type(st.SetActiveSkillSet) == "function" then
-		st:SetActiveSkillSet(snap.activeSkillSetId)
-	end
+	if st.activeSkillSetId ~= snap.activeSkillSetId and type(st.SetActiveSkillSet) == "function" then st:SetActiveSkillSet(snap.activeSkillSetId) end
 	local list = st.socketGroupList
 	for i = 1, #snap.groups do list[i] = copy_sg(snap.groups[i]) end
 	while #list > #snap.groups do t_remove(list) end
-	if st.skillSets and st.activeSkillSetId and st.skillSets[st.activeSkillSetId] then
-		st.skillSets[st.activeSkillSetId].socketGroupList = list
-	end
+	if st.skillSets and st.activeSkillSetId and st.skillSets[st.activeSkillSetId] then st.skillSets[st.activeSkillSetId].socketGroupList = list end
 	b.mainSocketGroup = snap.mainSG
 	if b.calcsTab and b.calcsTab.input then b.calcsTab.input.skill_number = snap.calcsSkillNum end
 	if type(st.UpdateSocketGroups) == "function" then st:UpdateSocketGroups()
@@ -364,126 +358,97 @@ local function restore_config(b, snap)
 	local ct = b.configTab
 	if type(ct) ~= "table" then return false end
 	local cs = ct.configSets and ct.activeConfigSetId and ct.configSets[ct.activeConfigSetId]
-	local cur_in = (cs and cs.input) or ct.input
-	local dirty = (ct ~= snap.configTabRef) or (ct.activeConfigSetId ~= snap.activeCfgId)
-		or (not tables_eq(cur_in, snap.cfgIn)) or cmods_differ(cs and cs.customModsList, snap.cmods)
-	if not dirty then return false end
+	local ci = (cs and cs.input) or ct.input
+	if ct == snap.configTabRef and ct.activeConfigSetId == snap.activeCfgId and tables_eq(ci, snap.cfgIn) and not cmods_differ(cs and cs.customModsList, snap.cmods) then return false end
 	if ct.activeConfigSetId ~= snap.activeCfgId and type(ct.SetActiveConfigSet) == "function" then
 		ct:SetActiveConfigSet(snap.activeCfgId)
 		cs = ct.configSets and ct.activeConfigSetId and ct.configSets[ct.activeConfigSetId]
-		cur_in = (cs and cs.input) or ct.input
+		ci = (cs and cs.input) or ct.input
 	end
-	replace_tbl(cur_in, snap.cfgIn)
-	if ct.input and ct.input ~= cur_in then replace_tbl(ct.input, snap.cfgIn) end
+	replace_tbl(ci, snap.cfgIn)
+	if ct.input and ct.input ~= ci then replace_tbl(ct.input, snap.cfgIn) end
 	if cs and snap.cmods ~= nil then cs.customModsList = clone_cmods(snap.cmods) end
 	if type(ct.UpdateControls) == "function" then ct:UpdateControls() end
 	if type(ct.BuildModList) == "function" then ct:BuildModList() end
 	return true
 end
 
-local function rpc_cow_snapshot(_params)
+local function rpc_cow_snapshot(_)
 	local b = get_build()
-	local spec, itab, stab, ct = b.spec, b.itemsTab, b.skillsTab, b.configTab
+	local sp, it, st, ct = b.spec, b.itemsTab, b.skillsTab, b.configTab
 	local cs = ct.configSets and ct.activeConfigSetId and ct.configSets[ct.activeConfigSetId]
-	local alloc_ids, sub_keys, slot_sel, slot_act, set_sel, set_act, j_ids = {}, {}, {}, {}, {}, {}, {}
-	for nid in pairs(spec.allocNodes) do t_insert(alloc_ids, nid) end
-	for k in pairs(spec.subGraphs or {}) do sub_keys[k] = true end
-	for sn, sl in pairs(itab.slots) do
-		slot_sel[sn], slot_act[sn] = sl.selItemId, sl.active
+	local a_ids, sub_k, sl_s, sl_a, st_s, st_a, j_ids, i_ref, i_raw, grps = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+	for nid in pairs(sp.allocNodes) do t_insert(a_ids, nid) end
+	for k in pairs(sp.subGraphs or {}) do sub_k[k] = true end
+	for sn, sl in pairs(it.slots) do
+		sl_s[sn], sl_a[sn] = sl.selItemId, sl.active
 		if sl.nodeId ~= nil and sl.selItemId and sl.selItemId ~= 0 then j_ids[sl.selItemId] = true end
 	end
-	for sn, ss in pairs(itab.activeItemSet or {}) do
-		if type(ss) == "table" and ss.selItemId ~= nil then set_sel[sn], set_act[sn] = ss.selItemId, ss.active end
+	for sn, ss in pairs(it.activeItemSet or {}) do
+		if type(ss) == "table" and ss.selItemId ~= nil then st_s[sn], st_a[sn] = ss.selItemId, ss.active end
 	end
-	for _, iid in pairs(spec.jewels or {}) do if iid and iid ~= 0 then j_ids[iid] = true end end
-
-	local items_ref, item_raw, groups = {}, {}, {}
-	for id, it in pairs(itab.items) do items_ref[id], item_raw[id] = it, type(it) == "table" and it.raw or nil end
-	for gi, sg in ipairs(stab.socketGroupList or {}) do groups[gi] = copy_sg(sg) end
-
+	for _, iid in pairs(sp.jewels or {}) do if iid and iid ~= 0 then j_ids[iid] = true end end
+	for id, o in pairs(it.items) do i_ref[id], i_raw[id] = o, type(o) == "table" and o.raw or nil end
+	for gi, sg in ipairs(st.socketGroupList or {}) do grps[gi] = copy_sg(sg) end
 	next_seq = next_seq + 1
-	local sid = "cow_" .. tostring(next_seq)
+	local sid = "cow_" .. next_seq
 	snapshots[sid] = {
-		specRef = spec, itemsTabRef = itab, skillsTabRef = stab, configTabRef = ct,
-		charLvl = b.characterLevel, charLvlAuto = b.characterLevelAutoMode,
-		bandit = b.bandit, pMajor = b.pantheonMajorGod, pMinor = b.pantheonMinorGod,
-		mainSG = b.mainSocketGroup,
-		calcsSkillNum = b.calcsTab and b.calcsTab.input and b.calcsTab.input.skill_number,
-		activeSpec = b.treeTab and b.treeTab.activeSpec,
-		specListLen = (b.treeTab and b.treeTab.specList) and #b.treeTab.specList or 0,
-		classId = spec.curClassId, ascId = spec.curAscendClassId,
-		secAscId = spec.curSecondaryAscendClassId or spec.secondaryAscendClassId or 0,
-		treeVer = spec.treeVersion,
-		allocNodes = shallow_copy(spec.allocNodes), allocIds = alloc_ids,
-		allocExt = copy_array(spec.allocExtendedNodes),
-		jewels = shallow_copy(spec.jewels), subKeys = sub_keys,
-		notableCnt = spec.allocatedNotableCount, keystoneCnt = spec.allocatedKeystoneCount,
-		masteryCnt = spec.allocatedMasteryCount, masteryTypeCnt = spec.allocatedMasteryTypeCount,
-		masteryTypes = shallow_copy(spec.allocatedMasteryTypes),
-		tattooTypes = shallow_copy(spec.allocatedTattooTypes),
-		masterySel = shallow_copy(spec.masterySelections), hashOvr = shallow_copy(spec.hashOverrides),
-		activeItemSetId = itab.activeItemSetId,
-		slotSel = slot_sel, slotAct = slot_act, setSel = set_sel, setAct = set_act,
-		jewelIds = j_ids, itemsRef = items_ref, itemRaw = item_raw,
-		itemOrderList = copy_array(itab.itemOrderList),
-		activeSkillSetId = stab.activeSkillSetId, groups = groups,
-		activeCfgId = ct.activeConfigSetId,
-		cfgIn = shallow_copy((cs and cs.input) or ct.input),
-		cmods = clone_cmods(cs and cs.customModsList),
-		party = snap_party(b.partyTab),
+		specRef = sp, itemsTabRef = it, skillsTabRef = st, configTabRef = ct,
+		charLvl = b.characterLevel, charLvlAuto = b.characterLevelAutoMode, bandit = b.bandit, pMajor = b.pantheonMajorGod, pMinor = b.pantheonMinorGod,
+		mainSG = b.mainSocketGroup, calcsSkillNum = b.calcsTab and b.calcsTab.input and b.calcsTab.input.skill_number,
+		activeSpec = b.treeTab and b.treeTab.activeSpec, specListLen = (b.treeTab and b.treeTab.specList) and #b.treeTab.specList or 0,
+		classId = sp.curClassId, ascId = sp.curAscendClassId, secAscId = sp.curSecondaryAscendClassId or sp.secondaryAscendClassId or 0, treeVer = sp.treeVersion,
+		allocNodes = shallow_copy(sp.allocNodes), allocIds = a_ids, allocExt = copy_array(sp.allocExtendedNodes),
+		jewels = shallow_copy(sp.jewels), subKeys = sub_k, notableCnt = sp.allocatedNotableCount, keystoneCnt = sp.allocatedKeystoneCount,
+		masteryCnt = sp.allocatedMasteryCount, masteryTypeCnt = sp.allocatedMasteryTypeCount,
+		masteryTypes = shallow_copy(sp.allocatedMasteryTypes), tattooTypes = shallow_copy(sp.allocatedTattooTypes),
+		masterySel = shallow_copy(sp.masterySelections), hashOvr = shallow_copy(sp.hashOverrides),
+		activeItemSetId = it.activeItemSetId, slotSel = sl_s, slotAct = sl_a, setSel = st_s, setAct = st_a,
+		jewelIds = j_ids, itemsRef = i_ref, itemRaw = i_raw, itemOrderList = copy_array(it.itemOrderList),
+		activeSkillSetId = st.activeSkillSetId, groups = grps, activeCfgId = ct.activeConfigSetId,
+		cfgIn = shallow_copy((cs and cs.input) or ct.input), cmods = clone_cmods(cs and cs.customModsList), party = snap_party(b.partyTab),
 	}
 	return { snapId = sid }
 end
 
+local function req_sid(p, fn)
+	local sid = type(p) == "table" and p.snapId or nil
+	if type(sid) ~= "string" or sid == "" then error(fn .. " requires non-empty snapId", 0) end
+	return sid
+end
+
 local function rpc_cow_restore(params)
-	local sid = type(params) == "table" and params.snapId or nil
-	if type(sid) ~= "string" or sid == "" then error("cow_restore requires non-empty snapId", 0) end
-	local snap = snapshots[sid]
-	if not snap then error("Unknown cow snapshot: " .. sid, 0) end
+	local sid = req_sid(params, "cow_restore")
+	local snap = snapshots[sid] or error("Unknown cow snapshot: " .. sid, 0)
 	local b = get_build()
-
-	local sc_dirty = (b.characterLevel ~= snap.charLvl) or (b.characterLevelAutoMode ~= snap.charLvlAuto)
-		or (b.bandit ~= snap.bandit) or (b.pantheonMajorGod ~= snap.pMajor) or (b.pantheonMinorGod ~= snap.pMinor)
-	if sc_dirty then
-		b.characterLevel, b.characterLevelAutoMode = snap.charLvl, snap.charLvlAuto
-		b.bandit, b.pantheonMajorGod, b.pantheonMinorGod = snap.bandit, snap.pMajor, snap.pMinor
-		if b.controls and b.controls.characterLevel and type(b.controls.characterLevel.SetText) == "function" then
-			b.controls.characterLevel:SetText(tostring(snap.charLvl))
-		end
+	local sc_d = b.characterLevel ~= snap.charLvl or b.characterLevelAutoMode ~= snap.charLvlAuto or b.bandit ~= snap.bandit or b.pantheonMajorGod ~= snap.pMajor or b.pantheonMinorGod ~= snap.pMinor
+	if sc_d then
+		b.characterLevel, b.characterLevelAutoMode, b.bandit, b.pantheonMajorGod, b.pantheonMinorGod = snap.charLvl, snap.charLvlAuto, snap.bandit, snap.pMajor, snap.pMinor
+		local cl = b.controls and b.controls.characterLevel
+		if cl and type(cl.SetText) == "function" then cl:SetText(tostring(snap.charLvl)) end
 	end
-
-	local it_dirty, j_dirty, tbl_dirty = restore_items(b, snap)
-	local sp_dirty = restore_spec(b, snap, j_dirty)
-	local itab, spec = b.itemsTab, b.spec
-	if (it_dirty or tbl_dirty or j_dirty or sp_dirty) and type(itab) == "table" then
-		if type(itab.PopulateSlots) == "function" then itab:PopulateSlots() end
-		local post_j = sync_slots(itab, snap)
-		if type(spec) == "table" and (
-			post_j or not tables_eq(spec.jewels, snap.jewels)
-			or not keys_eq(spec.subGraphs or {}, snap.subKeys)
-			or not keys_eq(spec.allocNodes, snap.allocNodes)
-		) then
-			rebuild_cluster_graphs(spec, snap)
-			if type(spec.BuildAllDependsAndPaths) == "function" then spec:BuildAllDependsAndPaths() end
-			if type(itab.PopulateSlots) == "function" then itab:PopulateSlots() end
-			sync_slots(itab, snap)
+	local it_d, j_d, tb_d = restore_items(b, snap)
+	local sp_d = restore_spec(b, snap, j_d)
+	local it, sp = b.itemsTab, b.spec
+	if (it_d or tb_d or j_d or sp_d) and type(it) == "table" then
+		if type(it.PopulateSlots) == "function" then it:PopulateSlots() end
+		local pj = sync_slots(it, snap)
+		if type(sp) == "table" and (pj or not tables_eq(sp.jewels, snap.jewels) or not keys_eq(sp.subGraphs or {}, snap.subKeys) or not keys_eq(sp.allocNodes, snap.allocNodes)) then
+			rebuild_cluster_graphs(sp, snap)
+			if type(sp.BuildAllDependsAndPaths) == "function" then sp:BuildAllDependsAndPaths() end
+			if type(it.PopulateSlots) == "function" then it:PopulateSlots() end
+			sync_slots(it, snap)
 		end
-		if type(itab.UpdateSockets) == "function" then itab:UpdateSockets() end
+		if type(it.UpdateSockets) == "function" then it:UpdateSockets() end
 	end
-	local sk_dirty = restore_skills(b, snap)
-	local cf_dirty = restore_config(b, snap)
-	local pt_dirty = restore_party(b, snap.party)
-
-	if sc_dirty or it_dirty or sp_dirty or sk_dirty or cf_dirty or pt_dirty then
+	local sk_d, cf_d, pt_d = restore_skills(b, snap), restore_config(b, snap), restore_party(b, snap.party)
+	if sc_d or it_d or sp_d or sk_d or cf_d or pt_d then
 		if type(wipeGlobalCache) == "function" then wipeGlobalCache() end
 		b.buildFlag = true
 		if params.rebuild ~= false then
-			if _G.launch and type(_G.launch.OnFrame) == "function" then
-				_G.launch:OnFrame()
+			if _G.launch and type(_G.launch.OnFrame) == "function" then _G.launch:OnFrame()
 			else
-				if b.skillsTab and type(b.skillsTab.UpdateSocketGroups) == "function" then
-					b.skillsTab:UpdateSocketGroups()
-				end
+				if b.skillsTab and type(b.skillsTab.UpdateSocketGroups) == "function" then b.skillsTab:UpdateSocketGroups() end
 				b.calcsTab:BuildOutput()
 				if type(b.RefreshStatList) == "function" then b:RefreshStatList() end
 				b.buildFlag = false
@@ -495,9 +460,7 @@ local function rpc_cow_restore(params)
 end
 
 local function rpc_cow_drop(params)
-	local sid = type(params) == "table" and params.snapId or nil
-	if type(sid) ~= "string" or sid == "" then error("cow_drop requires non-empty snapId", 0) end
-	snapshots[sid] = nil
+	snapshots[req_sid(params, "cow_drop")] = nil
 	return { ok = true }
 end
 
@@ -505,73 +468,56 @@ local function rpc_direct_calc(params)
 	local b = get_build()
 	local skip_ehp = type(params) == "table" and params.skipEHP == true
 	local calcs = b.calcsTab.calcs
-
-	if b.buildFlag and b.skillsTab and type(b.skillsTab.UpdateSocketGroups) == "function" then
-		b.skillsTab:UpdateSocketGroups()
-	end
-	if b.spec and type(b.spec.nodes) == "table" then
-		for _, node in pairs(b.spec.nodes) do node.finalModList = node.modList end
-	end
+	if b.buildFlag and b.skillsTab and type(b.skillsTab.UpdateSocketGroups) == "function" then b.skillsTab:UpdateSocketGroups() end
+	if b.spec and type(b.spec.nodes) == "table" then for _, nd in pairs(b.spec.nodes) do nd.finalModList = nd.modList end end
 	if type(wipeGlobalCache) == "function" then wipeGlobalCache() end
-
 	local env, cP, cE, cM = calcs.initEnv(b, "CALCULATOR")
 	env.triggerSourceCache = {}
 	calcs.perform(env, skip_ehp and true or nil)
-
 	local out = env.player.output
 	if has_full_dps_skills(b) then
 		if env.player.mainSkill and type(cacheSkillUUID) == "function" then
 			local uid = cacheSkillUUID(env.player.mainSkill, env)
-			local cached = GlobalCache and GlobalCache.cachedData and GlobalCache.cachedData["CALCULATOR"]
-			local me = cached and cached[uid]
+			local cd = GlobalCache and GlobalCache.cachedData and GlobalCache.cachedData["CALCULATOR"]
+			local me = cd and cd[uid]
 			if me and me.Env == env then env.triggerSourceCache[uid] = me end
 		end
-		local fdps = calcs.calcFullDPS(b, "CALCULATOR", {}, {
-			cachedPlayerDB = cP, cachedEnemyDB = cE, cachedMinionDB = cM,
-			env = nil, triggerSourceCache = env.triggerSourceCache,
-		})
-		out.SkillDPS, out.FullDPS, out.FullDotDPS = fdps.skills, fdps.combinedDPS, fdps.TotalDotDPS
-	else
-		out.FullDPS, out.FullDotDPS = 0, 0
-	end
-
-	if env.modDB and type(env.modDB.Sum) == "function" then
-		out.ExtraPoints = env.modDB:Sum("BASE", nil, "ExtraPoints")
+		local fd = calcs.calcFullDPS(b, "CALCULATOR", {}, { cachedPlayerDB = cP, cachedEnemyDB = cE, cachedMinionDB = cM, env = nil, triggerSourceCache = env.triggerSourceCache })
+		out.SkillDPS, out.FullDPS, out.FullDotDPS = fd.skills, fd.combinedDPS, fd.TotalDotDPS
+	else out.FullDPS, out.FullDotDPS = 0, 0 end
+	local mdb = env.modDB
+	if mdb and type(mdb.Sum) == "function" then
+		out.ExtraPoints = mdb:Sum("BASE", nil, "ExtraPoints")
 		local sc = { source = "Tree" }
-		out["Spec:LifeInc"] = env.modDB:Sum("INC", sc, "Life")
-		out["Spec:ManaInc"] = env.modDB:Sum("INC", sc, "Mana")
-		out["Spec:ArmourInc"] = env.modDB:Sum("INC", sc, "Armour", "ArmourAndEvasion")
-		out["Spec:EvasionInc"] = env.modDB:Sum("INC", sc, "Evasion", "ArmourAndEvasion")
-		out["Spec:EnergyShieldInc"] = env.modDB:Sum("INC", sc, "EnergyShield")
+		out["Spec:LifeInc"], out["Spec:ManaInc"], out["Spec:EnergyShieldInc"] = mdb:Sum("INC", sc, "Life"), mdb:Sum("INC", sc, "Mana"), mdb:Sum("INC", sc, "EnergyShield")
+		out["Spec:ArmourInc"], out["Spec:EvasionInc"] = mdb:Sum("INC", sc, "Armour", "ArmourAndEvasion"), mdb:Sum("INC", sc, "Evasion", "ArmourAndEvasion")
 	end
-
-	local stats = {}
-	for k, v in pairs(out) do
-		if type(k) == "string" then local sv = sanitize(v); if sv ~= nil then stats[k] = sv end end
-	end
-	local mout = (type(out.Minion) == "table" and out.Minion)
-		or (env.minion and type(env.minion.output) == "table" and env.minion.output) or nil
-	if mout then
-		for mk, mv in pairs(mout) do
-			if type(mk) == "string" and stats["Minion" .. mk] == nil then
-				local sv = sanitize(mv)
-				if sv ~= nil then stats["Minion" .. mk] = sv end
-			end
+	local stats, sflags, warns = {}, {}, {}
+	for k, v in pairs(out) do if type(k) == "string" then local sv = sanitize(v); if sv ~= nil then stats[k] = sv end end end
+	local mo = (type(out.Minion) == "table" and out.Minion) or (env.minion and type(env.minion.output) == "table" and env.minion.output) or nil
+	if mo then
+		for mk, mv in pairs(mo) do
+			if type(mk) == "string" and stats["Minion" .. mk] == nil then local sv = sanitize(mv); if sv ~= nil then stats["Minion" .. mk] = sv end end
 		end
 	end
-
-	local sflags = {}
 	local rf = env.player.mainSkill and env.player.mainSkill.skillFlags
-	if type(rf) == "table" then
-		for fk, fv in pairs(rf) do if type(fk) == "string" and type(fv) == "boolean" then sflags[fk] = fv end end
+	if type(rf) == "table" then for fk, fv in pairs(rf) do if type(fk) == "string" and type(fv) == "boolean" then sflags[fk] = fv end end end
+	if not skip_ehp and type(b.RefreshStatList) == "function" and b.controls and b.controls.warnings then
+		local pe, po = b.calcsTab.mainEnv, b.calcsTab.mainOutput
+		b.calcsTab.mainEnv, b.calcsTab.mainOutput = env, out
+		pcall(b.RefreshStatList, b)
+		b.calcsTab.mainEnv, b.calcsTab.mainOutput = pe, po
+		local tr = (type(PobToolsGetTranslate) == "function" and PobToolsGetTranslate() and type(PobToolsTranslateDisplay) == "function") and PobToolsTranslateDisplay or nil
+		for _, wl in ipairs(b.controls.warnings.lines or {}) do
+			if type(wl) == "string" and wl ~= "" then warns[#warns + 1] = tr and tr(wl) or wl end
+		end
 	end
-
-	local points = nil
+	local pts = nil
 	if b.spec and type(b.spec.CountAllocNodes) == "function" then
-		local used, asc = b.spec:CountAllocNodes()
-		points = { used = used, usedMax = 99 + 23 + (tonumber(out.ExtraPoints) or 0), ascUsed = asc, ascMax = 8 }
+		local u, a = b.spec:CountAllocNodes()
+		pts = { used = u, usedMax = 122 + (tonumber(out.ExtraPoints) or 0), ascUsed = a, ascMax = 8 }
 	end
-	return { stats = stats, skillFlags = sflags, points = points }
+	return { stats = stats, skillFlags = sflags, points = pts, warnings = warns }
 end
 
 M.rpc_handlers = {

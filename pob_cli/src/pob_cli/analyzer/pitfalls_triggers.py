@@ -107,34 +107,30 @@ def deduplicate_trigger_gaps(
         cliff_info = cliff_by_key.get(tkey)
         if cliff_info is not None:
             probe_cdr = _finite_float(cliff_info.get("currentIcdrPct"), default=-1.0)
-            linked = int(cliff_info.get("linkedTriggeredSpells") or 1)
-            if probe_cdr > msg_cdr:
-                if linked <= 1:
+            b_cd = _finite_float(cliff_info.get("baseActionCd"), default=0.25)
+            src_aps = _finite_float(cliff_info.get("sourceAps"), default=0.0)
+            if probe_cdr > msg_cdr and b_cd > 0.0 and src_aps > 0.0:
+                tick = compute_server_tick_cooldown(b_cd, probe_cdr, aps=src_aps)
+                if not tick.get("overspeed"):
                     continue
-                b_cd = _finite_float(cliff_info.get("baseActionCd"), default=0.25)
-                src_aps = _finite_float(cliff_info.get("sourceAps"), default=0.0)
-                if b_cd > 0.0 and src_aps > 0.0:
-                    tick = compute_server_tick_cooldown(b_cd, probe_cdr, aps=src_aps)
-                    if not tick.get("overspeed"):
-                        continue
-                    disp = m_trig.group(1) if m_trig else tkey
-                    loc = m_trig.group(2) if (m_trig and m_trig.group(2)) else "-"
-                    nb = tick.get("nextBreakpoint") or {}
-                    next_hint = (
-                        f" or reach {nb['requiredCdrPct']}% CDR ({nb['targetTicks']}t={nb['effectiveCdMs']}ms, cap {nb['effectiveCapPerSec']:.2f}/s)"
-                        if nb
-                        else ""
-                    )
-                    gap = {
-                        "category": "TriggerOverspeed",
-                        "severity": "HIGH",
-                        "message": (
-                            f"Trigger Overspeed ({disp}, {loc}): Attack rate ({src_aps:.2f}/s) "
-                            f"exceeds trigger cap ({tick['effectiveCapPerSec']:.2f}/s at {probe_cdr:g}% CDR, "
-                            f"{tick['ticks']}t = {tick['effectiveCdMs']}ms) — lower APS <= {tick['effectiveCapPerSec']:.2f}/s{next_hint}."
-                        ),
-                    }
-                    msg_cdr = probe_cdr
+                disp = m_trig.group(1) if m_trig else tkey
+                loc = m_trig.group(2) if (m_trig and m_trig.group(2)) else "-"
+                nb = tick.get("nextBreakpoint") or {}
+                next_hint = (
+                    f" or reach {nb['requiredCdrPct']}% CDR ({nb['targetTicks']}t={nb['effectiveCdMs']}ms, cap {nb['effectiveCapPerSec']:.2f}/s)"
+                    if nb
+                    else ""
+                )
+                gap = {
+                    "category": "TriggerOverspeed",
+                    "severity": "HIGH",
+                    "message": (
+                        f"Trigger Overspeed ({disp}, {loc}): Attack rate ({src_aps:.2f}/s) "
+                        f"exceeds trigger cap ({tick['effectiveCapPerSec']:.2f}/s at {probe_cdr:g}% CDR, "
+                        f"{tick['ticks']}t = {tick['effectiveCdMs']}ms) — lower APS <= {tick['effectiveCapPerSec']:.2f}/s{next_hint}."
+                    ),
+                }
+                msg_cdr = probe_cdr
 
         if tkey in seen_trig_idx:
             prev_idx = seen_trig_idx[tkey]

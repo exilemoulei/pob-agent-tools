@@ -202,7 +202,9 @@ def _assemble_diagnose_mechanics(
     except Exception:
         pass
 
-    agent_probe = _probe_agent_build(worker)
+    agent_probe = audit.get("agentProbe")
+    if not isinstance(agent_probe, dict):
+        agent_probe = _probe_agent_build(worker)
     trig_aps = _extract_trigger_attack_aps(
         worker, all_skills_res, items_raw_res, stats_full, agent_probe=agent_probe
     )
@@ -242,8 +244,27 @@ def _assemble_diagnose_mechanics(
         core_synergies.append(s)
     amulet_7th_link = list(build_mechanics.get("amulet7thLink") or [])
 
+    from .pitfalls_triggers import _OVERSPEED_TRIG_RE, canonical_trigger_key
+
+    evaluated_tkeys = {
+        canonical_trigger_key(str(t.get("name") or ""))
+        for t in (build_mechanics.get("triggers") or [])
+        if isinstance(t, dict)
+    } | {
+        canonical_trigger_key(str(c.get("triggerName") or ""))
+        for c in ((agent_probe or {}).get("triggerCliffs") or [])
+        if isinstance(c, dict)
+    }
+    audit_extra_trig = []
+    for ag in audit.get("healthIssues") or []:
+        if isinstance(ag, dict) and ag.get("category") == "TriggerOverspeed":
+            m_at = _OVERSPEED_TRIG_RE.match(str(ag.get("message") or ""))
+            at_key = canonical_trigger_key(m_at.group(1)) if m_at else ""
+            if not at_key or at_key not in evaluated_tkeys:
+                audit_extra_trig.append(ag)
+
     existing_gap_msgs = {str(g.get("message") or "") for g in gaps}
-    for mgap in (*diag_mech_gaps, *dead_sup_gaps, *probe_gaps):
+    for mgap in (*diag_mech_gaps, *audit_extra_trig, *dead_sup_gaps, *probe_gaps):
         if mgap["message"] not in existing_gap_msgs:
             existing_gap_msgs.add(mgap["message"])
             gaps.append(mgap)
@@ -269,7 +290,8 @@ def diagnose_build(
 
     top = max(1, int(top))
     summary = extract_summary(worker)
-    audit = _analyzer.audit_build(worker, keep=keep, attribution=True)
+    audit_kw = {"include_envelope": False} if "include_envelope" in (getattr(_analyzer.audit_build, "__kwdefaults__", None) or {}) else {}
+    audit = _analyzer.audit_build(worker, keep=keep, attribution=True, **audit_kw)
     items_info = inspect_items(worker, all_raw=True)
     with worker.lock:
         all_skills_res, cfg_res_diag, items_raw_res, tree_state_diag = _call_batch(

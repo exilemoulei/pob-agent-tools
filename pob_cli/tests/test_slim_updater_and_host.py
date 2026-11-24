@@ -510,14 +510,14 @@ def test_real_win_lua_host_win32_ffi_and_lazy_hooks(tmp_path: Path, monkeypatch:
     script = tmp_path / "verify_modules.lua"
     script.write_text(
         f"""
-local win32 = assert(loadfile({json.dumps((LUA_DIR / "win32_ffi.lua").as_posix())}))()
-local lazy = assert(loadfile({json.dumps((LUA_DIR / "lazy_hooks.lua").as_posix())}))()
+local win32 = assert(loadfile({json.dumps((LUA_DIR / "win32_ffi.lua").as_posix(), ensure_ascii=False)}))()
+local lazy = assert(loadfile({json.dumps((LUA_DIR / "lazy_hooks.lua").as_posix(), ensure_ascii=False)}))()
 
-local plat = win32.install({json.dumps(real_poe1.as_posix())})
+local plat = win32.install({json.dumps(real_poe1.as_posix(), ensure_ascii=False)})
 assert(plat.installed == true)
 assert(GetTime() >= 0)
 
-local sub = {json.dumps((sandbox / "nested_dir").as_posix())}
+local sub = {json.dumps((sandbox / "nested_dir").as_posix(), ensure_ascii=False)}
 assert(MakeDir(sub) == true)
 local tf = assert(io.open(sub .. "/hello.txt", "wb"))
 tf:write("abc123")
@@ -537,10 +537,10 @@ assert(Inflate(gz) == payload)
 assert(RemoveDir(sub, true) == true)
 
 -- Test lazy_hooks on synthetic fake_game dir
-local gdir = {json.dumps(fake_game.as_posix())}
+local gdir = {json.dumps(fake_game.as_posix(), ensure_ascii=False)}
 plat.chdir(gdir)
 package.path = gdir .. "/?.lua;" .. package.path
-lazy.install_pre_launch(gdir, {{ ondemand_tree_dir = {json.dumps(ondemand.as_posix())} }})
+lazy.install_pre_launch(gdir, {{ ondemand_tree_dir = {json.dumps(ondemand.as_posix(), ensure_ascii=False)} }})
 
 local flav = LoadModule("Data/FlavourText")
 assert(type(flav) == "table" and next(flav) == nil)
@@ -604,7 +604,7 @@ assert(missing_tree == nil)
 assert(cb_calls == 1)
 _G.__POB_ENSURE_TREE = orig_ensure
 
-local out = assert(io.open({json.dumps(out_json.as_posix())}, "wb"))
+local out = assert(io.open({json.dumps(out_json.as_posix(), ensure_ascii=False)}, "wb"))
 out:write("OK")
 out:close()
 """,

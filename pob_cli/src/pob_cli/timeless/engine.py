@@ -496,7 +496,14 @@ def search(
         estimate: dict[str, Any] | None = None
         if shortlist is not None:
             runner.calculate(shortlist)
-            estimate = {"calculated": len(results), "maxError": 0.0, "relative": True}
+            estimate = {
+                "calculated": len(results),
+                "shortlisted": True,
+                "groupsConsidered": len(shortlist),
+                "groupsTotal": len(groups),
+                "maxError": 0.0,
+                "relative": True,
+            }
         elif exact or not nodes or not additive:
             runner.calculate(all_sigs)
         else:

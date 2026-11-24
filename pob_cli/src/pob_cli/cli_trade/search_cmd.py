@@ -44,6 +44,7 @@ from .common import (
 )
 from .other_cmds import trade_group
 from .search_exec import (
+    _apply_cli_filters_to_auto_query,
     _build_candidates_from_rows,
     _execute_trade_api_query,
     _validate_search_inputs,
@@ -455,14 +456,21 @@ def cmd_trade_search(
         return
 
     pob_slot = pob_slot_for_slot(slot or "") if slot else None
-    if auto_query and dump_query:
+    auto_res: dict[str, Any] | None = None
+    if auto_query:
         auto_res = _try_auto_trade_query(
             pob_slot=pob_slot, slot=slot, target=target, rarity=rarity,
             allow_corrupted=allow_corrupted, league=league,
         )
-        if auto_res is not None:
-            _emit_json({"slot": slot, "autoQuery": True, **auto_res}, compact=compact, out_path=out_path, sanitize=True)
-            return
+        if auto_res is not None and isinstance(auto_res.get("query"), dict):
+            _apply_cli_filters_to_auto_query(
+                auto_res["query"], status=status, budget=budget, currency=currency,
+                max_age=max_age, ilvl_min=ilvl_min, open_prefix=open_prefix,
+                open_suffix=open_suffix, open_affix=open_affix,
+            )
+            if dump_query:
+                _emit_json({"slot": slot, "autoQuery": True, **auto_res}, compact=compact, out_path=out_path, sanitize=True)
+                return
     current, current_error, update_warning, build_label, resolved_category = _resolve_current_and_category(
         dump_query=dump_query, current_item_file=current_item_file, no_compare=no_compare,
         slot=slot, pob_slot=pob_slot, target=target, no_category=no_category, category=category,
@@ -476,6 +484,7 @@ def cmd_trade_search(
         bargain=bargain, search_sort=search_sort, sort_by=sort_by, open_prefix=open_prefix,
         open_suffix=open_suffix, open_affix=open_affix, allow_corrupted=allow_corrupted,
         bench_hint=bench_hint, fetch_limit=fetch_limit, compact=compact, out_path=out_path,
+        auto_query_body=auto_res["query"] if isinstance(auto_res, dict) and isinstance(auto_res.get("query"), dict) else None,
     )
     if fetched_ctx is None:
         return

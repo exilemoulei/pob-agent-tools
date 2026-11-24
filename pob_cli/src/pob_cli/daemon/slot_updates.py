@@ -214,17 +214,15 @@ def handle_set_lang_action(manager: DaemonManager, params: dict[str, Any]) -> di
     rt_dir = getattr(manager, "runtime_dir", None)
     raw_lang = params.get("lang")
     persisted_info: dict[str, Any] | None = None
-    if raw_lang is not None and str(raw_lang).strip():
-        norm = normalize_lang(str(raw_lang))
-        if params.get("persist", True):
-            persisted_info = set_active_lang(norm, runtime_dir=rt_dir)
-        target_lang = norm
-    else:
-        target_lang, _ = get_active_lang(rt_dir)
-
     updated_slots: dict[str, Any] = {}
-    if raw_lang is not None and str(raw_lang).strip():
-        with manager._reader_barrier():
+    barrier_fn = getattr(manager, "_exclusive_barrier", manager._reader_barrier)
+
+    with barrier_fn():
+        if raw_lang is not None and str(raw_lang).strip():
+            norm = normalize_lang(str(raw_lang))
+            if params.get("persist", True):
+                persisted_info = set_active_lang(norm, runtime_dir=rt_dir)
+            target_lang = norm
             with manager._lock:
                 workers_snap = list(manager._workers.items())
             for sname, w in workers_snap:
@@ -236,8 +234,9 @@ def handle_set_lang_action(manager: DaemonManager, params: dict[str, Any]) -> di
                             updated_slots[sname] = set_fn(target_lang)
                         except Exception as exc:
                             updated_slots[sname] = {"ok": False, "error": str(exc)}
-
-    eff_lang, eff_src = get_active_lang(rt_dir)
+        else:
+            target_lang, _ = get_active_lang(rt_dir)
+        eff_lang, eff_src = get_active_lang(rt_dir)
     out: dict[str, Any] = {
         "lang": eff_lang if raw_lang is None else target_lang,
         "effectiveLang": eff_lang,

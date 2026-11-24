@@ -423,17 +423,37 @@ def test_cli_trade_search_auto_query_dump_and_surrogate_k_floor(monkeypatch: pyt
 
     monkeypatch.setattr(cli_trade, "_daemon_call_safe", _fake_daemon)
     runner = CliRunner()
-    res = runner.invoke(cli.main, ["trade", "search", "--slot", "ring1", "--auto-query", "--dump-query"])
+    res = runner.invoke(
+        cli.main,
+        ["trade", "search", "--slot", "ring1", "--auto-query", "--dump-query", "--budget", "5", "--currency", "divine"],
+    )
     assert res.exit_code == 0, res.output
     payload = json.loads(res.output)
     assert payload["autoQuery"] is True
     assert payload["filters"] == 1
     assert payload["complexity"] == 69
+    assert payload["query"]["query"]["filters"]["trade_filters"]["filters"]["price"] == {"option": "divine", "max": 5.0}
     assert isinstance(payload["statLabels"], dict)
     assert payload["topFilters"][0]["id"] == "explicit.stat_1"
     assert "label" in payload["topFilters"][0]
     assert payload["slotConstraints"]["loadBearingAttrs"] == {"Str": 0, "Dex": 0, "Int": 0}
     assert calls[0][0] == "trade_generate_query"
+
+    # Live --auto-query (without --dump-query) must forward the PoB-generated query body to _execute_trade_api_query
+    seen_auto_body: list[Any] = []
+    from pob_cli.cli_trade import search_cmd as _sc
+
+    monkeypatch.setattr(_sc, "_resolve_current_and_category", lambda **_kw: (None, None, None, "slot:main", "accessory.ring"))
+    monkeypatch.setattr(
+        _sc,
+        "_execute_trade_api_query",
+        lambda *_a, **kw: seen_auto_body.append(kw.get("auto_query_body")) or None,
+    )
+    res_live = runner.invoke(cli.main, ["trade", "search", "--slot", "ring1", "--auto-query", "--budget", "5", "--currency", "divine"])
+    assert res_live.exit_code == 0, res_live.output
+    assert isinstance(seen_auto_body[0], dict)
+    assert seen_auto_body[0]["query"]["stats"][0]["type"] == "weight"
+    assert seen_auto_body[0]["query"]["filters"]["trade_filters"]["filters"]["price"] == {"option": "divine", "max": 5.0}
 
 
 def test_p1_1_exclude_periodic_reactive_triggers_and_p1_2_cospri_dedup() -> None:

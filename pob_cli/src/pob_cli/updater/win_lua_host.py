@@ -87,16 +87,18 @@ def _load_lua51_dll(game_dir: Path, dll_path: Path | None = None) -> tuple[ctype
 
     try:
         dll = ctypes.CDLL(str(target_dll))
-    except OSError as exc:
+        configured = _configure_lua_dll(dll)
+    except Exception as exc:
         if dll_dir_handle is not None:
             dll_dir_handle.close()
-        raise LuaHostError(f"Failed to load {target_dll}: {exc}") from exc
+        raise LuaHostError(f"Failed to load or bind {target_dll}: {exc}") from exc
 
-    return _configure_lua_dll(dll), dll_dir_handle
+    return configured, dll_dir_handle
 
 
 def _make_ensure_tree_callback(game_dir: Path) -> Any:
     """Create a plain C ABI callback `int(const char *tree_version)` for LuaJIT FFI."""
+    resolved_game_dir = Path(game_dir).resolve()
 
     @TREE_FETCH_CB
     def _cb(ver_raw: bytes | None) -> int:
@@ -108,7 +110,7 @@ def _make_ensure_tree_callback(game_dir: Path) -> Any:
         try:
             from .remote import ensure_tree_data_files
 
-            fetched = ensure_tree_data_files(game_dir, tree_ver)
+            fetched = ensure_tree_data_files(resolved_game_dir, tree_ver, timeout=8.0)
             return 1 if fetched else 0
         except Exception:
             return 0
@@ -194,7 +196,12 @@ def run_lua_script(
     if not runner_resolved.is_file():
         raise LuaHostError(f"Lua runner script not found at {runner_resolved}")
 
-    dll, dll_dir_handle = _load_lua51_dll(Path(game_dir), dll_path=dll_path)
+    game_dir_resolved = Path(game_dir).resolve()
+    norm_args = list(script_args)
+    if norm_args and Path(norm_args[0]) == Path(game_dir):
+        norm_args[0] = str(game_dir_resolved)
+
+    dll, dll_dir_handle = _load_lua51_dll(game_dir_resolved, dll_path=dll_path)
     state = dll.luaL_newstate()
     if not state:
         if dll_dir_handle is not None:
@@ -202,10 +209,10 @@ def run_lua_script(
         raise LuaHostError("luaL_newstate() returned NULL")
 
     # Keep callback reference alive for the full lua_State lifetime
-    ensure_tree_cb = _make_ensure_tree_callback(Path(game_dir))
+    ensure_tree_cb = _make_ensure_tree_callback(game_dir_resolved)
     try:
         dll.luaL_openlibs(state)
-        _populate_lua_globals(dll, state, runner_resolved, script_args, ensure_tree_cb)
+        _populate_lua_globals(dll, state, runner_resolved, norm_args, ensure_tree_cb)
 
         sys.stdout.flush()
         sys.stderr.flush()

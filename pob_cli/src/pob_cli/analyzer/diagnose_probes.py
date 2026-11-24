@@ -32,7 +32,7 @@ def _gaps_from_agent_probe(probe: dict[str, Any] | None) -> list[dict[str, str]]
     if not isinstance(probe, dict):
         return []
     gaps: list[dict[str, str]] = []
-    grouped_cliffs: dict[str, dict[str, Any]] = {}
+    grouped_cliffs: dict[tuple[Any, ...], dict[str, Any]] = {}
     for cliff in probe.get("triggerCliffs") or []:
         if not isinstance(cliff, dict) or not cliff.get("overspeedCliffExceeded"):
             continue
@@ -41,9 +41,15 @@ def _gaps_from_agent_probe(probe: dict[str, Any] | None) -> list[dict[str, str]]
         tkey = canonical_trigger_key(trig)
         if tkey in NON_APS_TRIGGER_KEYS:
             continue
-        bucket = grouped_cliffs.get(tkey)
+        bkey = (
+            tkey,
+            cliff.get("currentIcdrPct"),
+            round(_finite_float(cliff.get("sourceAps"), default=0.0), 2),
+            round(_finite_float(cliff.get("maxSafeAps"), default=0.0), 2),
+        )
+        bucket = grouped_cliffs.get(bkey)
         if bucket is None:
-            grouped_cliffs[tkey] = {"skills": [skill], "cliff": cliff, "trig": trig}
+            grouped_cliffs[bkey] = {"skills": [skill], "cliff": cliff, "trig": trig}
         elif skill not in bucket["skills"]:
             bucket["skills"].append(skill)
     for bucket in grouped_cliffs.values():
@@ -86,6 +92,11 @@ def _gaps_from_agent_probe(probe: dict[str, Any] | None) -> list[dict[str, str]]
     return gaps
 
 
+_ATK_COOLDOWN_TRIGGER_KEYS = frozenset(
+    {"cast on critical strike", "cospri's malice", "mjolner", "poet's pen"}
+)
+
+
 def _extract_trigger_attack_aps(
     worker: BridgeWorker,
     skills_res: dict[str, Any],
@@ -100,7 +111,7 @@ def _extract_trigger_attack_aps(
         for cliff in probe.get("triggerCliffs") or []:
             if isinstance(cliff, dict):
                 tkey = canonical_trigger_key(str(cliff.get("triggerName") or ""))
-                if tkey and tkey in NON_APS_TRIGGER_KEYS:
+                if tkey not in _ATK_COOLDOWN_TRIGGER_KEYS:
                     continue
                 src_aps = _finite_float(cliff.get("sourceAps"), default=0.0)
                 if src_aps > 0.0:

@@ -35,7 +35,7 @@ pob calc "<kw1>" ["<kw2>" ...] [--limit 20] [--no-breakdown] [--target <slug>] [
 
 # What-If Simulation (0-residue rollback by default) & Persistent Mutation (--apply)
 pob item try [--slot S] (--raw "<text>" | --file f) [--tooltip-only] [--apply]
-pob item edit --slot S [--replace-mod <old> <new>]... [--add-mod <ln>]... [--remove-mod <sub >]... [--apply]
+pob item edit --slot S [--replace-mod <old> <new>]... [--add-mod <ln>]... [--remove-mod <sub >]... [--allow-illegal-affixes] [--apply] # Enforces 3P/3S rare affix cap by default; --allow-illegal-affixes bypasses for synthetic tests
 pob item unequip --slot S [--apply]
 pob item db "<query>" [--type UNIQUE|RARE] [--slot S] [--index N] [--equip] [--with-tooltips] [--with-raw] [--apply] [--limit 15]
 pob item flask <1..5|all> <on|off> [--apply]

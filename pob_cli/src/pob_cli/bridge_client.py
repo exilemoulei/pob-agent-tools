@@ -216,6 +216,7 @@ class BridgeWorker:
                     target_code = self.last_good_code
 
                 if target_code:
+                    self._check_tree_version_mismatch(target_code)
                     build_loaded = (
                         ver_info["buildLoaded"]
                         if "buildLoaded" in ver_info

@@ -315,7 +315,7 @@ def ensure_gamedata_index(
 
     rt_dir = resolve_runtime_dir(runtime_dir)
     resolved_pob = resolve_pob_dir(pob_dir, rt_dir)
-    poe1_dir, zh_dir = _resolve_poe1_data_dirs(resolved_pob)
+    poe1_dir, zh_dir = _resolve_poe1_data_dirs(resolved_pob, runtime_dir=rt_dir)
     pob_version, data_version = detect_versions(poe1_dir, zh_dir)
 
     cache_dir = _shared_cache_dir(runtime_dir, pob_root=resolved_pob)

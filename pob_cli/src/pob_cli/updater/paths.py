@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from ..locale_cfg import _has_runtime_data_l0
 from .constants import LEGACY_SEED_DIRS, LEGACY_SEED_FILES, UpdateError
 
 
@@ -35,15 +36,7 @@ def detect_source_checkout_root() -> Path | None:
 
 def _has_runtime_data(path: Path) -> bool:
     """Return True if ``path`` contains initialized pob runtime state (ignoring binary-only ``bin/``)."""
-    try:
-        if not path.is_dir():
-            return False
-        for marker in ("engine", "daemon.json", "update_state.json", "cache"):
-            if (path / marker).exists():
-                return True
-        return any(path.glob("slot_*.json"))
-    except OSError:
-        return False
+    return _has_runtime_data_l0(path)
 
 
 def get_default_runtime_dir() -> Path:

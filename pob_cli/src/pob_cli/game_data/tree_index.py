@@ -330,7 +330,7 @@ def ensure_treedata_index(
     """Build (if missing/stale) and return `(db_path, tree_version)` for 0ms daemon-free passive tree queries."""
     rt_dir = resolve_runtime_dir(runtime_dir)
     resolved_pob = resolve_pob_dir(pob_dir, rt_dir)
-    poe1_dir, zh_dir = _resolve_poe1_data_dirs(resolved_pob)
+    poe1_dir, zh_dir = _resolve_poe1_data_dirs(resolved_pob, runtime_dir=rt_dir)
     tree_ver, tree_lua_path = _find_latest_tree_lua(poe1_dir)
 
     hasher = hashlib.blake2b(digest_size=4)
