@@ -13,6 +13,7 @@ import httpx
 
 from ..bridge_client import BridgeError, BridgeWorker
 from ..errors import DaemonRequestError
+from ..game_data import fold_han
 from ..guardrails import validate_url
 
 POB_SITE_USER_AGENT = "Path of Building/2.68.1"
@@ -240,6 +241,16 @@ def wrap_share_http_error(exc: httpx.HTTPError, url: str) -> DaemonRequestError:
     return DaemonRequestError(f"拉取构筑链接失败（{url}）：{exc}（如需代理请设置 POB_PROXY / HTTPS_PROXY）。")
 
 
+def _is_permanent_league(league: str) -> bool:
+    lg = fold_han(str(league or "")).strip().lower()
+    if not lg:
+        return True
+    if lg in _PERMANENT_LEAGUES:
+        return True
+    lg_norm = lg.replace("（", "(").replace("）", ")").replace(" ", "")
+    return lg_norm.startswith(("永久", "标准"))
+
+
 def sort_profile_characters(
     chars: list[dict[str, Any]],
     *,
@@ -258,8 +269,7 @@ def sort_profile_characters(
                 filtered = partial
 
     def _sort_key(c: dict[str, Any]) -> tuple[int, int, int, str]:
-        lg = str(c.get("league") or "").strip().lower()
-        is_perm = 1 if (not lg or lg in _PERMANENT_LEAGUES) else 0
+        is_perm = 1 if _is_permanent_league(str(c.get("league") or "")) else 0
         level = int(c.get("level") or 0)
         exp = int(c.get("experience") or 0)
         last_login = int(c.get("lastLoginTime") or 0)

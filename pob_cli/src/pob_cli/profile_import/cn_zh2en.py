@@ -9,11 +9,17 @@ from pathlib import Path
 from typing import Any
 
 from ..game_data import fold_han
+from .pob_xml_helpers import strip_poe_markup
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _PLACEHOLDER_RE = re.compile(r"\{(\d+)\}|#")
 _SKELETON_STRIP_RE = re.compile(r"[{}\d.+\-\s\u3000]")
 _S26_WEAPON_ENCHANT_RE = re.compile(r"^元素伤害(提高|降低)\s*\d+%$")
+_GEM_SUFFIX_RE = re.compile(r"(?:\(强辅\)|\(辅\)|强辅|辅助)$")
+_GEM_DOT_RE = re.compile(r"[·‧・•.]")
+_KNOWN_SPECIAL_SUPPORTS = frozenset(
+    {"Empower", "Enhance", "Enlighten", "Awakened Empower", "Awakened Enhance", "Awakened Enlighten"}
+)
 
 _CLASS_ZH_TO_EN: dict[str, str] = {
     "贵族": "Scion", "升华使徒": "Ascendant",
@@ -51,12 +57,21 @@ _ANOINT_REF_RE = re.compile(r"^配置\s*(.+)$")
 _BASE_FILES = ("items.json", "Items_Accessories.txt.json", "Items_Armour.txt.json", "Items_Flasks.txt.json", "Items_Jewels.txt.json", "Items_Weapons.txt.json", "Z-Item.json", "Z-Flask.json", "Z-Jewel.json", "Z-Addition.json", "Z-S28.json", "Z-S29.json", "Z-S30.json")
 _UNIQUE_FILES = ("uniques.json", "Uniques.txt.json", "Z-S28-Foulborn.json", "Z-S28.json", "Z-S29.json", "Z-S30.json", "Z-Addition.json")
 _GEM_FILES = ("gems.json", "Gems_data.txt.json", "Items_Gems.txt.json", "Z-Skills.json", "Z-Skills_Gems_Overview.json", "Z-Support_Gems_Overview.json", "Z-S28.json", "Z-S29.json", "Z-S30.json")
+_GEM_COLON_FILES = ("A-Skills2.json", "A-Skills1.json")
+_GEM_FALLBACK_FILES = ("A-1a.json",)
 _PASSIVE_FILES = ("passives.json", "passiveTree.json", "tree_dn.json", "A-Forbidden.json", "Tatto.json", "TattooPassives.json", "Z-Phrecia.json", "Z-S30-Pearl_of_Tsoatha-Passive_Tree.json")
 _STAT_FILES = ("stats.json", "statDescriptions.json", "ModMap.json", "A-Forbidden.json", "Z-S30.json", "Z-S30-Pearl_of_Tsoatha-Boots.json", "Z-S30-Pearl_of_Tsoatha-Gloves.json", "Z-S30-Pearl_of_Tsoatha-Helmet.json", "Z-S29.json", "Z-S28.json", "Z-S28-Foulborn.json", "Z-Addition.json", "Z-Other.json")
 
 
 def _norm_key(text: str) -> str:
     return fold_han(str(text or "")).strip().lower()
+
+
+def _norm_gem_key(text: str) -> str:
+    s = fold_han(str(text or "")).strip().lower()
+    s = s.replace("（", "(").replace("）", ")")
+    s = _GEM_DOT_RE.sub("·", s)
+    return re.sub(r"\s+", "", s)
 
 
 def _text_skeleton(text: str) -> str:
@@ -110,6 +125,7 @@ class Zh2EnDictionary:
         self.base_map: dict[str, str] = {}
         self.unique_map: dict[str, str] = {}
         self.gem_map: dict[str, str] = {}
+        self.support_gem_map: dict[str, str] = {}
         self.passive_map: dict[str, str] = {}
         self.stat_exact: dict[str, str] = {}
         self.stat_skeleton: dict[str, list[tuple[str, str]]] = {}
@@ -129,7 +145,7 @@ class Zh2EnDictionary:
         d = cls()
         d._ingest_exact(d.base_map, bases or {})
         d._ingest_exact(d.unique_map, uniques or {})
-        d._ingest_exact(d.gem_map, gems or {})
+        d._ingest_gems(gems or {})
         d._ingest_exact(d.passive_map, passives or {})
         d._ingest_stats(stats or {})
         return d
@@ -166,7 +182,17 @@ class Zh2EnDictionary:
         for fn in _UNIQUE_FILES:
             d._ingest_exact(d.unique_map, _load_entries(fn))
         for fn in _GEM_FILES:
-            d._ingest_exact(d.gem_map, _load_entries(fn))
+            d._ingest_gems(_load_entries(fn))
+        for fn in _GEM_COLON_FILES:
+            colon_raw = _load_entries(fn)
+            cleaned_colon = {
+                k.rstrip(":").strip(): v.rstrip(":：").strip()
+                for k, v in colon_raw.items()
+                if isinstance(k, str) and isinstance(v, str) and ":" in k and not k.startswith("from ")
+            }
+            d._ingest_gems(cleaned_colon, fallback=True)
+        for fn in _GEM_FALLBACK_FILES:
+            d._ingest_gems(_load_entries(fn), fallback=True)
         for fn in _PASSIVE_FILES:
             d._ingest_exact(d.passive_map, _load_entries(fn))
         for fn in _STAT_FILES:
@@ -182,6 +208,42 @@ class Zh2EnDictionary:
             k = _norm_key(zh)
             if k and k not in target:
                 target[k] = en.strip()
+
+    def _ingest_gems(self, entries: dict[str, str], *, fallback: bool = False) -> None:
+        for en, zh in entries.items():
+            if not isinstance(en, str) or not isinstance(zh, str):
+                continue
+            en_s = en.strip()
+            zh_s = zh.strip()
+            if not en_s or not zh_s or "\n" in zh_s or len(zh_s) > 40:
+                continue
+            if fallback and not (
+                en_s in _KNOWN_SPECIAL_SUPPORTS
+                or en_s.endswith(" Support")
+                or _GEM_SUFFIX_RE.search(_norm_gem_key(zh_s))
+                or en_s.startswith(("Vaal ", "Awakened "))
+            ):
+                continue
+            gk = _norm_gem_key(zh_s)
+            if not gk:
+                continue
+            if gk not in self.gem_map:
+                self.gem_map[gk] = en_s
+            is_sup_entry = (
+                en_s.endswith(" Support")
+                or en_s in _KNOWN_SPECIAL_SUPPORTS
+                or bool(_GEM_SUFFIX_RE.search(gk))
+            )
+            if is_sup_entry:
+                if gk not in self.support_gem_map:
+                    self.support_gem_map[gk] = en_s
+                # Do NOT let Awakened (`强辅`) overwrite non-Awakened stem
+                if not gk.endswith(("(强辅)", "强辅")):
+                    stem = _GEM_SUFFIX_RE.sub("", gk)
+                    if stem and stem not in self.support_gem_map:
+                        self.support_gem_map[stem] = en_s
+                    if stem and stem not in self.gem_map and not fallback:
+                        self.gem_map[stem] = en_s
 
     def _ingest_stats(self, entries: dict[str, str]) -> None:
         for en, zh in entries.items():
@@ -222,20 +284,29 @@ class Zh2EnDictionary:
         k = _norm_key(s)
         return self.unique_map.get(k) or self.base_map.get(k) or ""
 
-    def translate_gem(self, text: str) -> str:
+    def translate_gem(self, text: str, *, is_support: bool | None = None) -> str:
         s = str(text or "").strip()
         if not s or not _CJK_RE.search(s):
             return s
-        k = _norm_key(s)
-        if k in self.gem_map:
-            return self.gem_map[k]
-        # Handle CN `（辅）` / `辅助` suffix variants
-        for suffix in ("（辅）", "(辅)", "辅助"):
-            if s.endswith(suffix):
-                stem = s[: -len(suffix)].strip()
-                hit = self.gem_map.get(_norm_key(stem))
-                if hit:
-                    return hit if hit.endswith("Support") else f"{hit} Support"
+        gk = _norm_gem_key(s)
+        stem = _GEM_SUFFIX_RE.sub("", gk)
+        wants_support = is_support is True or stem != gk
+        if wants_support:
+            for cand in (gk, stem):
+                if cand and cand in self.support_gem_map:
+                    hit = self.support_gem_map[cand]
+                    return hit if (hit.endswith("Support") or hit in _KNOWN_SPECIAL_SUPPORTS) else f"{hit} Support"
+        if gk in self.gem_map:
+            return self.gem_map[gk]
+        if stem and stem != gk and stem in self.gem_map:
+            hit = self.gem_map[stem]
+            return hit if (hit.endswith("Support") or hit in _KNOWN_SPECIAL_SUPPORTS) else f"{hit} Support"
+        # Handle `觉醒·X` / `瓦尔·X` prefixes cleanly
+        for zh_pref, en_pref in (("觉醒·", "Awakened "), ("觉醒", "Awakened "), ("瓦尔·", "Vaal "), ("瓦尔", "Vaal ")):
+            if gk.startswith(zh_pref):
+                sub = self.translate_gem(gk[len(zh_pref) :], is_support=is_support)
+                if not _CJK_RE.search(sub):
+                    return sub if sub.startswith(en_pref) else f"{en_pref}{sub}"
         return s
 
     def translate_passive(self, text: str) -> str:
@@ -299,9 +370,16 @@ class Zh2EnDictionary:
         return s, False
 
 
+def _map_mod_entry_text(entry: Any, fn: Any) -> Any:
+    if isinstance(entry, str):
+        return fn(entry)
+    if isinstance(entry, dict) and isinstance(entry.get("description"), str):
+        return {**entry, "description": fn(entry["description"])}
+    return entry
+
+
 def _pre_handle_cn_item(item: dict[str, Any]) -> None:
     """Apply CN localization disambiguation fixes (from cn-poe-utils)."""
-    # 1. Scion Assassin collision on Forbidden Flame / Forbidden Flesh
     reqs = item.get("requirements") or []
     is_scion = any(
         isinstance(r, dict)
@@ -311,23 +389,31 @@ def _pre_handle_cn_item(item: dict[str, Any]) -> None:
     )
     if is_scion and isinstance(item.get("explicitMods"), list):
         item["explicitMods"] = [
-            re.sub(r"暗影$", "暗影（贵族）", str(m)) if isinstance(m, str) else m
+            _map_mod_entry_text(m, lambda txt: re.sub(r"暗影$", "暗影（贵族）", txt))
             for m in item["explicitMods"]
         ]
-    # 2. S26 weapon enchant local ele dmg collision
     if isinstance(item.get("enchantMods"), list):
         item["enchantMods"] = [
-            f"该武器的{m}" if isinstance(m, str) and _S26_WEAPON_ENCHANT_RE.match(m.strip()) else m
+            _map_mod_entry_text(m, lambda txt: f"该武器的{txt}" if _S26_WEAPON_ENCHANT_RE.match(txt.strip()) else txt)
             for m in item["enchantMods"]
         ]
 
 
-def _translate_gem_in_place(gem: dict[str, Any], dictionary: Zh2EnDictionary) -> None:
+def _translate_gem_in_place(
+    gem: dict[str, Any],
+    dictionary: Zh2EnDictionary,
+    warnings: list[str] | None = None,
+) -> None:
+    is_sup = bool(gem.get("support"))
     for field in ("baseType", "typeLine"):
         if isinstance(gem.get(field), str):
-            gem[field] = dictionary.translate_gem(gem[field])
+            raw_val = gem[field]
+            translated = dictionary.translate_gem(raw_val, is_support=is_sup)
+            gem[field] = translated
+            if warnings is not None and field == "baseType" and _CJK_RE.search(translated):
+                warnings.append(f"[CN-TRANSLATE-WARN] Gem: {raw_val}")
     if isinstance(gem.get("hybrid"), dict) and isinstance(gem["hybrid"].get("baseTypeName"), str):
-        gem["hybrid"]["baseTypeName"] = dictionary.translate_gem(gem["hybrid"]["baseTypeName"])
+        gem["hybrid"]["baseTypeName"] = dictionary.translate_gem(gem["hybrid"]["baseTypeName"], is_support=is_sup)
     for prop in gem.get("properties") or []:
         if isinstance(prop, dict) and isinstance(prop.get("name"), str):
             pn = fold_han(prop["name"]).strip()
@@ -339,7 +425,7 @@ def _translate_gem_in_place(gem: dict[str, Any], dictionary: Zh2EnDictionary) ->
         if m:
             lvl = m.group(1) or m.group(3) or "1"
             sup_zh = (m.group(2) or m.group(4) or "").strip()
-            sup_en = dictionary.translate_gem(sup_zh).removesuffix(" Support")
+            sup_en = dictionary.translate_gem(sup_zh, is_support=True).removesuffix(" Support")
             if not _CJK_RE.search(sup_en):
                 gem["builtInSupport"] = f"Supported by Level {lvl} {sup_en}"
 
@@ -385,16 +471,24 @@ def _translate_item_in_place(
         mods = item.get(mod_key)
         if not isinstance(mods, list):
             continue
-        new_mods: list[str] = []
+        new_mods: list[Any] = []
         for raw_mod in mods:
-            if not isinstance(raw_mod, str):
+            flags: dict[str, Any] = {}
+            if isinstance(raw_mod, str):
+                raw_text = raw_mod
+            elif isinstance(raw_mod, dict):
+                raw_text = str(raw_mod.get("description") or raw_mod.get("text") or "")
+                raw_flags = raw_mod.get("flags")
+                if isinstance(raw_flags, dict):
+                    flags = raw_flags
+            else:
                 continue
-            for sub_line in raw_mod.split("\n"):
-                sub = sub_line.strip()
+            for sub_line in raw_text.split("\n"):
+                sub = strip_poe_markup(sub_line)
                 if not sub:
                     continue
                 translated, ok = dictionary.translate_mod(sub)
-                new_mods.append(translated)
+                new_mods.append({"description": translated, "flags": flags} if flags else translated)
                 if not ok and _CJK_RE.search(translated):
                     warnings.append(f"[CN-TRANSLATE-WARN] {slot_label} ({base_en}): {sub}")
         item[mod_key] = new_mods
@@ -405,7 +499,7 @@ def _translate_item_in_place(
         if si.get("abyssJewel"):
             _translate_item_in_place(si, dictionary, warnings)
         else:
-            _translate_gem_in_place(si, dictionary)
+            _translate_gem_in_place(si, dictionary, warnings)
 
 
 def translate_cn_bundle(

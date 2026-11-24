@@ -12,6 +12,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from .pob_xml_helpers import apply_mod_flags, extract_mod_entries, pick_main_socket_group
+
 _POE1_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Scion", ("Ascendant",)),
     ("Marauder", ("Juggernaut", "Berserker", "Chieftain")),
@@ -46,7 +48,11 @@ _SLOT_MAP: dict[str, str] = {
     "Ring2": "Ring 2",
     "Ring3": "Ring 3",
     "Belt": "Belt",
+    "BrequelGrafts": "Graft 1",
+    "BrequelGrafts2": "Graft 2",
 }
+
+_CATALYST_PROP_RE = re.compile(r"^Quality \((.+?) Modifiers\)$", re.IGNORECASE)
 
 _INFLUENCE_LINES: tuple[tuple[str, str], ...] = (
     ("shaper", "Shaper Item"),
@@ -146,10 +152,37 @@ def _format_pob_item_text(item: dict[str, Any]) -> str:
     rarity = _RARITY_MAP.get(frame_type, "RARE")
     name = _ASCII_NAME_MAP.get(str(item.get("name") or "").strip(), str(item.get("name") or "").strip())
     raw_base = str(item.get("baseType") or item.get("typeLine") or "").strip()
+    if name:
+        raw_base = re.sub(r"^(?:Synthesised|Vestigial)\s+", "", raw_base)
     base_type = _ASCII_BASE_MAP.get(raw_base, raw_base)
     type_line = str(item.get("typeLine") or base_type).strip()
     for src, dst in _ASCII_BASE_MAP.items():
         type_line = type_line.replace(src, dst)
+
+    props: dict[str, str] = {}
+    catalyst_name: str | None = None
+    catalyst_qual: int | None = None
+    for p in item.get("properties") or []:
+        if isinstance(p, dict) and p.get("name"):
+            pname = str(p["name"]).strip()
+            vals = p.get("values") or []
+            v0 = str(vals[0][0]) if vals and isinstance(vals[0], list) and vals[0] else ""
+            props[pname] = v0
+            m_cat = _CATALYST_PROP_RE.match(pname)
+            if m_cat:
+                catalyst_name = m_cat.group(1).strip()
+                catalyst_qual = _parse_int(v0, 0)
+
+    if base_type == "Two-Toned Boots":
+        has_ev = bool(props.get("Evasion Rating"))
+        has_es = bool(props.get("Energy Shield"))
+        has_ar = bool(props.get("Armour"))
+        if has_ev and has_es and not has_ar:
+            base_type = "Two-Toned Boots (Evasion/Energy Shield)"
+        elif has_ar and has_ev and not has_es:
+            base_type = "Two-Toned Boots (Armour/Evasion)"
+        else:
+            base_type = "Two-Toned Boots (Armour/Energy Shield)"
 
     lines: list[str] = [f"Rarity: {rarity}"]
     if name:
@@ -157,13 +190,6 @@ def _format_pob_item_text(item: dict[str, Any]) -> str:
         lines.append(base_type or type_line)
     else:
         lines.append(type_line or base_type)
-
-    props: dict[str, str] = {}
-    for p in item.get("properties") or []:
-        if isinstance(p, dict) and p.get("name"):
-            vals = p.get("values") or []
-            v0 = str(vals[0][0]) if vals and isinstance(vals[0], list) and vals[0] else ""
-            props[str(p["name"]).strip()] = v0
 
     for prop_key, label in (
         ("Armour", "Armour"),
@@ -186,11 +212,18 @@ def _format_pob_item_text(item: dict[str, Any]) -> str:
         lines.append("Searing Exarch Item")
     if item.get("tangled") and not (isinstance(influences, dict) and influences.get("tangled")):
         lines.append("Eater of Worlds Item")
+    if item.get("synthesised"):
+        lines.append("Synthesised Item")
+    if item.get("fractured"):
+        lines.append("Fractured Item")
 
     if item.get("ilvl"):
         lines.append(f"Item Level: {int(item['ilvl'])}")
     if props.get("Quality"):
         lines.append(f"Quality: {_parse_int(props['Quality'])}")
+    if catalyst_name and catalyst_qual:
+        lines.append(f"Catalyst: {catalyst_name}")
+        lines.append(f"CatalystQuality: {catalyst_qual}")
 
     sock_str, abyss_count = _format_sockets(item.get("sockets"))
     if sock_str:
@@ -206,41 +239,50 @@ def _format_pob_item_text(item: dict[str, Any]) -> str:
             if vals and isinstance(vals[0], list) and vals[0]:
                 lines.append(f"Requires Class {vals[0][0]}")
 
-    def _flatten(key: str) -> list[str]:
-        raw = item.get(key)
-        if not isinstance(raw, list):
-            return []
-        out: list[str] = []
-        for entry in raw:
-            if isinstance(entry, str):
-                out.extend(s.strip() for s in entry.split("\n") if s.strip())
-        return out
+    enchants = extract_mod_entries(item.get("enchantMods"))
+    implicits = extract_mod_entries(item.get("implicitMods"))
+    explicits = extract_mod_entries(item.get("explicitMods"))
+    mutated = extract_mod_entries(item.get("mutatedMods"))
+    fractured = extract_mod_entries(item.get("fracturedMods"))
+    crafted = extract_mod_entries(item.get("craftedMods"))
+    scourge = extract_mod_entries(item.get("scourgeMods"))
+    crucible = extract_mod_entries(item.get("crucibleMods"))
 
-    enchants = _flatten("enchantMods")
-    implicits = _flatten("implicitMods")
-    explicits = _flatten("explicitMods")
-    mutated = _flatten("mutatedMods")
-    fractured = _flatten("fracturedMods")
-    crafted = _flatten("craftedMods")
-    crucible = _flatten("crucibleMods")
+    # Capture functional flavourText mods (e.g. "This item can be anointed by Cassia")
+    for ft in item.get("flavourText") or []:
+        if not isinstance(ft, str):
+            continue
+        for sub in ft.split("\n"):
+            m_br = re.search(r"\{([^}]+)\}", sub)
+            cand = (m_br.group(1) if m_br else sub).strip()
+            if "can be anointed by cassia" in cand.lower():
+                explicits.append((cand, {}))
 
     if base_type == "Energy Blade One Handed":
         implicits = []
-        explicits = [f"Has {abyss_count} Abyssal Sockets"] if abyss_count > 0 else []
+        explicits = [(f"Has {abyss_count} Abyssal Sockets", {})] if abyss_count > 0 else []
 
     lines.append(f"Implicits: {len(enchants) + len(implicits)}")
-    for m in enchants:
-        lines.append(f"{{crafted}}{m}")
-    lines.extend(implicits)
-    lines.extend(explicits)
-    for m in mutated:
-        lines.append(f"{{mutated}}{m}")
-    for m in fractured:
-        lines.append(f"{{fractured}}{m}")
-    for m in crafted:
-        lines.append(f"{{crafted}}{m}")
-    for m in crucible:
-        lines.append(f"{{crucible}}{m}")
+    for txt, flg in enchants:
+        lines.append(apply_mod_flags(txt, flg, forced_tag="crafted"))
+    for txt, flg in implicits:
+        lines.append(apply_mod_flags(txt, flg))
+    for txt, flg in explicits:
+        lines.append(apply_mod_flags(txt, flg))
+    for txt, flg in mutated:
+        lines.append(apply_mod_flags(txt, flg, forced_tag="mutated"))
+    for txt, flg in fractured:
+        lines.append(apply_mod_flags(txt, flg, forced_tag="fractured"))
+    for txt, flg in crafted:
+        lines.append(apply_mod_flags(txt, flg, forced_tag="crafted"))
+    for txt, flg in scourge:
+        lines.append(apply_mod_flags(txt, flg, forced_tag="scourge"))
+    for txt, flg in crucible:
+        lines.append(apply_mod_flags(txt, flg, forced_tag="crucible"))
+    if item.get("split"):
+        lines.append("Split")
+    if item.get("duplicated") or item.get("mirrored"):
+        lines.append("Mirrored")
     if item.get("corrupted"):
         lines.append("Corrupted")
     return "\n".join(lines)
@@ -296,7 +338,7 @@ def character_bundle_to_pob_xml(
     sec_asc_id = int(passives.get("alternate_ascendancy") or 0) if isinstance(passives.get("alternate_ascendancy"), int) else 0
 
     root = ET.Element("PathOfBuilding")
-    ET.SubElement(
+    build_el = ET.SubElement(
         root,
         "Build",
         {
@@ -316,6 +358,7 @@ def character_bundle_to_pob_xml(
     item_set_el = ET.SubElement(items_el, "ItemSet", {"id": "1", "useSecondWeaponSet": "false"})
 
     next_item_id = 1
+    skill_group_meta: list[tuple[int, str, list[tuple[str, bool]]]] = []
     for item in items_payload.get("items") or []:
         if not isinstance(item, dict):
             continue
@@ -364,10 +407,13 @@ def character_bundle_to_pob_xml(
                     skill_attrs["imbuedSupport"] = m_sup.group(2).strip()
                     break
             sk_el = ET.SubElement(skill_set_el, "Skill", skill_attrs)
+            grp_meta_gems: list[tuple[str, bool]] = []
             for g in grp_gems:
                 name_spec = _gem_name_spec(g)
                 glvl, gqual = _gem_level_quality(g)
                 is_vaal = name_spec.startswith("Vaal ")
+                is_sup = bool(g.get("support")) or str(g.get("baseType") or g.get("typeLine") or "").strip().endswith(" Support")
+                grp_meta_gems.append((name_spec, is_sup))
                 ET.SubElement(
                     sk_el,
                     "Gem",
@@ -381,9 +427,17 @@ def character_bundle_to_pob_xml(
                         "enableGlobal2": "true" if is_vaal else "false",
                     },
                 )
+            skill_group_meta.append((len(skill_group_meta) + 1, slot_name, grp_meta_gems))
 
-    # Passive tree, masteries, overrides, and socketed tree jewels
-    hashes = [str(int(h)) for h in (passives.get("hashes") or []) if isinstance(h, int)]
+    build_el.set("mainSocketGroup", str(pick_main_socket_group(skill_group_meta)))
+
+    # Passive tree (incl. cluster hashes_ex), masteries, overrides, and socketed tree jewels
+    hashes_all: list[str] = []
+    seen_h: set[int] = set()
+    for raw_h in list(passives.get("hashes") or []) + list(passives.get("hashes_ex") or []):
+        if isinstance(raw_h, int) and raw_h not in seen_h:
+            seen_h.add(raw_h)
+            hashes_all.append(str(raw_h))
     mastery_raw = passives.get("mastery_effects")
     mastery_parts: list[str] = []
     if isinstance(mastery_raw, dict):
@@ -399,8 +453,9 @@ def character_bundle_to_pob_xml(
             "classId": str(class_id),
             "ascendClassId": str(asc_id),
             "secondaryAscendClassId": str(sec_asc_id),
+            "clusterHashFormatVersion": "2",
             "masteryEffects": ",".join(mastery_parts),
-            "nodes": ",".join(hashes),
+            "nodes": ",".join(hashes_all),
         },
     )
     sockets_el = ET.SubElement(spec_el, "Sockets")

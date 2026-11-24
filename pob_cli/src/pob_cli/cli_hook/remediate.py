@@ -130,6 +130,13 @@ def _remediate_v2(
                     emit_cold_start_alert=False,
                 )
                 return format_diagnose_markdown(res)[:1200]
+            if reason_kind == "missing_compute" and source_hint and not _is_local_build_hint(source_hint):
+                # Never query an existing/unrelated daemon slot when the user supplied a remote URL not yet loaded.
+                return (
+                    f"目标构筑链接（`{source_hint}`）尚未在槽位 `{target_slot}` 加载成功；"
+                    f"请先执行 `pob diagnose \"{source_hint}\" --target {target_slot}` 或 `pob profile` 核验，"
+                    "切勿借用其他槽位或凭空估算 DPS/EHP。"
+                )
             res = call_daemon(
                 "summary",
                 {"target": target_slot},

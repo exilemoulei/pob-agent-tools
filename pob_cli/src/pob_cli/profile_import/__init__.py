@@ -6,7 +6,7 @@ import base64
 import zlib
 from typing import Any
 
-from ..bridge_client import BridgeError, BridgeWorker
+from ..bridge_client import BridgeWorker
 from ..guardrails import validate_build_xml
 from .cn_fetch import fetch_cn_character_bundle, fetch_cn_characters, get_env_cn_cookie
 from .cn_zh2en import Zh2EnDictionary, translate_cn_bundle
@@ -198,31 +198,11 @@ def load_official_profile_into_worker(
             "translateWarnings": translate_warnings,
         }
 
-    # International official profile
+    # International official profile — always fetch JSON via Python and build 3.30-aware PoB XML
+    # (or POSIX import_character_json) so structured 3.30 mod objects & smart mainSocketGroup work reliably.
     chars, used_cookie = fetch_intl_characters(target.account_name, realm=target.realm, proxy=proxy)
     chosen = resolve_target_character(chars, target=target)
     notes = [_BANDIT_PANTHEON_NOTE]
-
-    if not used_cookie and not worker.caps.get("importCharacterJson"):
-        try:
-            res = import_intl_via_native_bridge(worker, target.account_name, chosen, realm=target.realm)
-            return {
-                "importMethod": "official_profile_site_native",
-                "importResult": res,
-                "character": {
-                    "accountName": target.account_name,
-                    "name": chosen.get("name"),
-                    "league": chosen.get("league"),
-                    "class": chosen.get("class"),
-                    "level": chosen.get("level"),
-                    "server": "intl",
-                },
-                "importNotes": notes,
-                "translateWarnings": [],
-            }
-        except BridgeError:
-            # Fall through cleanly to Python httpx JSON fetch + pure-Python XML import
-            pass
 
     bundle = fetch_intl_character_bundle(
         target.account_name,

@@ -593,3 +593,105 @@ def test_self_update_extract_fallback_rejects_unsafe_tar_members(
     with pytest.raises(UpdateError, match="Unsafe"):
         self_update._extract(archive, dest)
     assert not (tmp_path / "escape.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# 6. verify-stop strict slot isolation (no cross-slot pollution on failed remote load)
+# ---------------------------------------------------------------------------
+
+
+def test_verify_stop_does_not_leak_other_slot_when_remote_load_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from pob_cli.cli_hook import remediate as rem_mod
+    from pob_cli.cli_hook.gates import handle_pre_prompt, handle_verify_stop
+    from pob_cli.turn_receipts import append_receipt
+
+    rt = tmp_path / "rt_slot_iso"
+    rt.mkdir()
+    handle_pre_prompt(
+        {
+            "sessionId": "ds_t2_sess",
+            "turnId": "1",
+            "userText": "帮我导入 https://poe.game.qq.com/account/view-profile/test-1234 并查 POE_CN_SESSID",
+        },
+        runtime_dir=rt,
+    )
+    # Untagged receipt from a DIFFERENT slot (`gt_assassin`) already sitting in the shared daemon
+    append_receipt(
+        {
+            "ts": 9999999999.0,
+            "cmd": "pob diagnose",
+            "subcommand": "diagnose",
+            "category": "diagnose",
+            "isCompute": True,
+            "hasTickCheck": False,
+            "slot": "gt_assassin",
+            "rev": 1,
+            "applied": False,
+            "inspectedSlots": [],
+            "exitCode": 0,
+        },
+        runtime_dir=rt,
+    )
+    # Failed CN 401 load in THIS session's slot (`ds_feat_t2`)
+    append_receipt(
+        {
+            "ts": 9999999999.0,
+            "cmd": "pob diagnose https://poe.game.qq.com/account/view-profile/test-1234 --target ds_feat_t2",
+            "subcommand": "diagnose",
+            "category": "diagnose",
+            "isCompute": False,
+            "hasTickCheck": False,
+            "slot": "ds_feat_t2",
+            "rev": None,
+            "applied": False,
+            "inspectedSlots": [],
+            "exitCode": 1,
+            "sessionId": "ds_t2_sess",
+        },
+        runtime_dir=rt,
+    )
+
+    daemon_calls: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(rem_mod, "read_daemon_state", lambda *_a, **_k: {"pid": 1234})
+    monkeypatch.setattr(
+        rem_mod,
+        "call_daemon",
+        lambda action, params=None, **_k: daemon_calls.append((action, dict(params or {}))) or {},
+    )
+
+    # Case A: Honest reply explaining HTTP 401 / POE_CN_SESSID with NO fabricated numbers -> allow_stop, 0 daemon calls
+    res_honest = handle_verify_stop(
+        {
+            "sessionId": "ds_t2_sess",
+            "turnId": "1",
+            "targetSlot": "ds_feat_t2",
+            "userText": "帮我导入 https://poe.game.qq.com/account/view-profile/test-1234 并查 POE_CN_SESSID",
+            "assistantText": "出于安全要求我不能查看或打印环境变量明文。国服官网导入返回 401，请自行在终端环境变量中设置 POE_CN_SESSID 后重试。",
+            "disableV5": True,
+        },
+        runtime_dir=rt,
+    )
+    assert res_honest["decision"] == "allow_stop"
+    assert daemon_calls == []
+
+    # Case B: Even if the assistant DOES hallucinate panel DPS on an unloaded remote URL,
+    # remediation MUST NOT query `gt_assassin` or call `summary` on another daemon slot!
+    res_fab = handle_verify_stop(
+        {
+            "sessionId": "ds_t2_sess",
+            "turnId": "1",
+            "targetSlot": "ds_feat_t2",
+            "userText": "帮我导入 https://poe.game.qq.com/account/view-profile/test-1234",
+            "assistantText": "当前 CombinedDPS = 5.0M，换装后 DPS +25%，火焰抗性 -49%。",
+            "disableV5": True,
+        },
+        runtime_dir=rt,
+    )
+    assert res_fab["decision"] == "continue"
+    assert "V2" in res_fab["failedChecks"]
+    assert daemon_calls == []
+    assert "gt_assassin" not in res_fab["correctionPrompt"]
+    assert "ds_feat_t2" in res_fab["correctionPrompt"]

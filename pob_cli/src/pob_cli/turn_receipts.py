@@ -372,9 +372,10 @@ def read_turn_receipts(
     since_ts: float,
     *,
     session_id: str | None = None,
+    slot_filter: str | None = None,
     runtime_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Read receipt entries with `ts >= since_ts`, scoped by `session_id` when tagged (fail-open)."""
+    """Read receipt entries with `ts >= since_ts`, scoped by `session_id` (and optional `slot_filter` for untagged rows)."""
     path = get_runtime_dir(runtime_dir) / RECEIPTS_FILENAME
     if not path.is_file():
         return []
@@ -385,6 +386,7 @@ def read_turn_receipts(
         return []
     threshold = float(since_ts)
     want_sess = str(session_id or "").strip()
+    want_slot = str(slot_filter or "").strip().lower()
     for ln in lines:
         s = ln.strip()
         if not s:
@@ -401,6 +403,10 @@ def read_turn_receipts(
         rec_sess = str(obj.get("sessionId") or "").strip()
         if want_sess and rec_sess and rec_sess != want_sess:
             continue
+        if want_sess and not rec_sess and want_slot:
+            rec_slot = str(obj.get("slot") or "").strip().lower()
+            if rec_slot and rec_slot != want_slot:
+                continue
         out.append(obj)
     return out
 
@@ -413,6 +419,7 @@ def summarize_turn_receipts(receipts: Sequence[dict[str, Any]]) -> dict[str, Any
     has_fresh_diagnose = False
     has_web_research = False
     attempted_web_research = False
+    attempted_build_load_failed = False
     inspected_slots: list[str] = []
     inspected_seen: set[str] = set()
     max_applied_rev: dict[str, int] = {}
@@ -431,6 +438,8 @@ def summarize_turn_receipts(receipts: Sequence[dict[str, Any]]) -> dict[str, Any
         if is_web:
             attempted_web_research = True
         if rec.get("exitCode", 0) != 0:
+            if subcmd in ("diagnose", "load", "profile"):
+                attempted_build_load_failed = True
             continue
         if is_web:
             has_web_research = True
@@ -472,6 +481,7 @@ def summarize_turn_receipts(receipts: Sequence[dict[str, Any]]) -> dict[str, Any
         "hasFreshDiagnose": has_fresh_diagnose,
         "hasWebResearch": has_web_research,
         "attemptedWebResearch": attempted_web_research,
+        "attemptedBuildLoadFailed": attempted_build_load_failed,
         "inspectedSlots": inspected_slots,
         "maxAppliedRevBySlot": max_applied_rev,
         "maxComputeRevBySlot": max_compute_rev,

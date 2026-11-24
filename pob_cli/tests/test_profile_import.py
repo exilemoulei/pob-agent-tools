@@ -362,3 +362,155 @@ def test_cli_profile_command_markdown_and_json(monkeypatch: pytest.MonkeyPatch) 
     parsed = json.loads(r_json.output)
     assert parsed["accountName"] == "alice#1234"
     assert parsed["characters"][0]["name"] == "HeroA"
+
+
+def test_330_structured_mod_dicts_markup_and_main_socket_group_selection() -> None:
+    # P0: 3.30 character-window/get-items returns dict mods `{description, flags}` + `[id|Display]` markup
+    # P2: smart mainSocketGroup chooses 6L active damage skill over 4L Helmet Shield Charge / 4L Boots Raise Spectre
+    bundle = {
+        "char": {"name": "ArcMaster", "league": "Covens", "class": "Assassin", "level": 89},
+        "passiveSkills": {"hashes": [100, 200], "hashes_ex": [65536, 65537], "mastery_effects": {}, "items": []},
+        "items": {
+            "character": {"name": "ArcMaster", "class": "Assassin", "level": 89},
+            "items": [
+                {
+                    "inventoryId": "Helm",
+                    "frameType": 2,
+                    "name": "Fast Helm",
+                    "baseType": "Hubris Circlet",
+                    "typeLine": "Hubris Circlet",
+                    "ilvl": 85,
+                    "sockets": [{"group": 0, "sColour": "R"}, {"group": 0, "sColour": "G"}],
+                    "explicitMods": [
+                        {"description": "+80 to maximum Life"},
+                        {"description": "12% increased Cooldown Recovery Rate", "flags": {"crafted": True}},
+                    ],
+                    "socketedItems": [
+                        {"baseType": "Shield Charge", "typeLine": "Shield Charge", "socket": 0, "support": False, "properties": [{"name": "Level", "values": [["20", 0]]}]},
+                        {"baseType": "Faster Attacks Support", "typeLine": "Faster Attacks Support", "socket": 1, "support": True, "properties": [{"name": "Level", "values": [["20", 0]]}]},
+                    ],
+                },
+                {
+                    "inventoryId": "Boots",
+                    "frameType": 2,
+                    "name": "Minion Boots",
+                    "baseType": "Warlock Boots",
+                    "typeLine": "Warlock Boots",
+                    "ilvl": 86,
+                    "sockets": [{"group": 0, "sColour": "B"}, {"group": 0, "sColour": "R"}, {"group": 0, "sColour": "B"}, {"group": 0, "sColour": "B"}],
+                    "implicitMods": [{"description": "7% increased Cooldown Recovery Rate"}],
+                    "explicitMods": [{"description": "+40% to Fire Resistance", "flags": {"fractured": True}}],
+                    "socketedItems": [
+                        {"baseType": "Raise Spectre", "typeLine": "Raise Spectre", "socket": 0, "support": False, "properties": [{"name": "Level", "values": [["21", 0]]}]},
+                        {"baseType": "Empower Support", "typeLine": "Empower Support", "socket": 1, "support": True, "properties": [{"name": "Level", "values": [["3", 0]]}]},
+                        {"baseType": "Minion Life Support", "typeLine": "Minion Life Support", "socket": 2, "support": True, "properties": [{"name": "Level", "values": [["20", 0]]}]},
+                        {"baseType": "Elemental Army Support", "typeLine": "Elemental Army Support", "socket": 3, "support": True, "properties": [{"name": "Level", "values": [["20", 0]]}]},
+                    ],
+                },
+                {
+                    "inventoryId": "Weapon",
+                    "frameType": 3,
+                    "name": "The Sword of Ages",
+                    "baseType": "Exquisite Blade",
+                    "typeLine": "Exquisite Blade",
+                    "ilvl": 86,
+                    "sockets": [{"group": 0, "sColour": "B"} for _ in range(6)],
+                    "enchantMods": ["Allocates [mana_rmc_regen_notable1878|Righteous Decree]"],
+                    "implicitMods": [{"description": "+50% to Global Critical Strike Multiplier"}],
+                    "explicitMods": [
+                        {"description": "Trigger level 20 [TemporalMirage::20|Temporal Mirage] on using a Movement Attack"},
+                        {"description": "+2 to Level of all Movement Skill Gems"},
+                    ],
+                    "socketedItems": [
+                        {"baseType": "Firestorm of Meteors", "typeLine": "Firestorm of Meteors", "socket": 0, "support": False, "properties": [{"name": "Level", "values": [["21", 0]]}]},
+                        {"baseType": "Archmage Support", "typeLine": "Archmage Support", "socket": 1, "support": True, "properties": [{"name": "Level", "values": [["21", 0]]}]},
+                        {"baseType": "Increased Critical Strikes Support", "typeLine": "Increased Critical Strikes Support", "socket": 2, "support": True, "properties": [{"name": "Level", "values": [["20", 0]]}]},
+                        {"baseType": "Increased Critical Damage Support", "typeLine": "Increased Critical Damage Support", "socket": 3, "support": True, "properties": [{"name": "Level", "values": [["20", 0]]}]},
+                        {"baseType": "Invert the Rules Support", "typeLine": "Invert the Rules Support", "socket": 4, "support": True, "properties": [{"name": "Level", "values": [["3", 0]]}]},
+                        {"baseType": "Greater Spell Cascade Support", "typeLine": "Greater Spell Cascade Support", "socket": 5, "support": True, "properties": [{"name": "Level", "values": [["3", 0]]}]},
+                    ],
+                },
+            ],
+        },
+    }
+    xml_text = character_bundle_to_pob_xml(bundle)
+    validate_build_xml(xml_text, expected_game="poe1")
+    root = ET.fromstring(xml_text)
+    build_el = root.find("Build")
+    assert build_el is not None
+    # Group #3 is the 6L Weapon Firestorm of Meteors (beats Helmet Shield Charge #1 & Boots 4L Spectre #2)
+    assert build_el.attrib["mainSocketGroup"] == "3"
+    spec_el = root.find(".//Spec")
+    assert spec_el is not None
+    assert spec_el.attrib.get("clusterHashFormatVersion") == "2"
+    assert "65536" in spec_el.attrib["nodes"]
+    all_item_text = "\n".join(el.text or "" for el in root.findall(".//Item"))
+    assert "+80 to maximum Life" in all_item_text
+    assert "{crafted}12% increased Cooldown Recovery Rate" in all_item_text
+    assert "{fractured}+40% to Fire Resistance" in all_item_text
+    assert "{crafted}Allocates Righteous Decree" in all_item_text
+    assert "Trigger level 20 Temporal Mirage on using a Movement Attack" in all_item_text
+    assert "Implicits: 2" in all_item_text
+
+
+def test_cn_330_dict_mods_gem_suffix_variants_and_permanent_league_sort() -> None:
+    # P2: CN permanent leagues (`永久`, `永久（独狼）`, `标准`) sort AFTER `S31赛季`, dirty `/characters1` parses cleanly
+    t_dirty = parse_profile_source(
+        "https://poe.game.qq.com/account/view-profile/%E6%B5%8B%E8%AF%95%E8%B4%A6%E5%8F%B7-3499/characters1",
+        realm="cn",
+    )
+    assert t_dirty.server == "cn"
+    assert t_dirty.account_name == "测试账号#3499"
+    ordered = sort_profile_characters(
+        [
+            {"name": "老号满级", "league": "永久", "level": 100},
+            {"name": "独狼永久", "league": "永久（独狼）", "level": 99},
+            {"name": "标准旧号", "league": "标准", "level": 98},
+            {"name": "新赛季号", "league": "S31赛季", "level": 96},
+        ]
+    )
+    assert ordered[0]["name"] == "新赛季号"
+
+    # P0 + P1: CN 3.30 dict mods + Empower `(辅)` / `辅助` / `(强辅)` gem translation + unknown gem warning
+    d = Zh2EnDictionary.from_entries(
+        bases={"Heavy Belt": "重革腰带"},
+        gems={
+            "Empower": "赋予辅助",
+            "Awakened Empower": "赋予（强辅）",
+            "Raise Spectre": "召唤灵体",
+        },
+        stats={"+{0} to Strength": "+{0} 力量", "+{0} to maximum Life": "+{0} 最大生命"},
+    )
+    assert d.translate_gem("赋予（辅）", is_support=True) == "Empower"
+    assert d.translate_gem("赋予（强辅）", is_support=True) == "Awakened Empower"
+
+    cn_bundle = {
+        "char": {"name": "火天帝", "league": "S31赛季", "class": "追猎者", "level": 96},
+        "passiveSkills": {"hashes": [10], "items": []},
+        "items": {
+            "items": [
+                {
+                    "inventoryId": "Belt",
+                    "frameType": 2,
+                    "name": "测试腰带",
+                    "baseType": "重革腰带",
+                    "typeLine": "重革腰带",
+                    "ilvl": 85,
+                    "sockets": [{"group": 0, "sColour": "B"}, {"group": 0, "sColour": "R"}, {"group": 0, "sColour": "B"}],
+                    "implicitMods": [{"description": "+35 力量"}],
+                    "explicitMods": [{"description": "+95 最大生命", "flags": {"crafted": True}}],
+                    "socketedItems": [
+                        {"baseType": "召唤灵体", "typeLine": "召唤灵体", "socket": 0, "support": False, "properties": [{"name": "等级", "values": [["21", 0]]}]},
+                        {"baseType": "赋予（辅）", "typeLine": "赋予（辅）", "socket": 1, "support": True, "properties": [{"name": "等级", "values": [["3", 0]]}]},
+                        {"baseType": "未知新辅助（辅）", "typeLine": "未知新辅助（辅）", "socket": 2, "support": True, "properties": [{"name": "等级", "values": [["3", 0]]}]},
+                    ],
+                }
+            ]
+        },
+    }
+    en_bundle, warns = translate_cn_bundle(cn_bundle, d)
+    xml_text = character_bundle_to_pob_xml(en_bundle)
+    assert "+35 to Strength" in xml_text
+    assert "{crafted}+95 to maximum Life" in xml_text
+    assert 'nameSpec="Empower"' in xml_text
+    assert any("[CN-TRANSLATE-WARN] Gem: 未知新辅助（辅）" in w for w in warns)

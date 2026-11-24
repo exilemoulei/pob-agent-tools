@@ -427,7 +427,13 @@ def handle_verify_stop(
         )
         return _allow_stop(stop_retries, advisory=advisory)
 
-    receipts = read_turn_receipts(turn_start_ts, session_id=session_id, runtime_dir=runtime_dir)
+    explicit_slot = str(req.get("targetSlot") or os.environ.get("POB_SLOT") or "").strip().lower()
+    receipts = read_turn_receipts(
+        turn_start_ts,
+        session_id=session_id,
+        slot_filter=explicit_slot or None,
+        runtime_dir=runtime_dir,
+    )
     summary = summarize_turn_receipts(receipts)
     failed_checks: list[str] = []
 
@@ -442,9 +448,17 @@ def handle_verify_stop(
     build_source_hint = src_hint_user or (state.get("buildSourceHint") if same_turn else None)
     panel_claims = detect_panel_or_delta_claims(assistant_text)
     v2_info: dict[str, Any] | None = None
-    target_slot = str(summary.get("lastSlot") or "main")
+    target_slot = str(
+        (summary.get("lastSlot") if summary.get("hasCompute") else None)
+        or explicit_slot
+        or summary.get("lastSlot")
+        or "main"
+    )
 
-    if has_build_src or panel_claims:
+    # If the model attempted an external build load/profile check that errored (e.g. 401/403/multi-char)
+    # and made ZERO fabricated panel claims, do not falsely fail V2 or query another slot.
+    honest_failed_load = bool(has_build_src and not panel_claims and summary.get("attemptedBuildLoadFailed"))
+    if (has_build_src or panel_claims) and not honest_failed_load:
         if not summary.get("hasCompute"):
             failed_checks.append("V2")
             v2_info = {
