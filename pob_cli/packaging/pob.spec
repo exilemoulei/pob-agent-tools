@@ -17,18 +17,9 @@ if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 entry_script = os.path.join(spec_dir, "pyinstaller_entry.py")
 
-_LUA_FILES = (
-    "headless_runner.lua",
-    "import_char_json.lua",
-    "zh_translate.lua",
-    "win32_ffi.lua",
-    "lazy_hooks.lua",
-    "timeless_prng.lua",
-    "timeless_mmap.lua",
-    "fast_calc_cow.lua",
-    "upstream_kernels.lua",
-    "agent_probes.lua",
-)
+# Every runner module, by glob: a hand-kept list silently dropped new modules and with them engine caps.
+_LUA_DIR = os.path.join(src_dir, "pob_cli", "lua")
+_LUA_FILES = sorted(name for name in os.listdir(_LUA_DIR) if name.endswith(".lua"))
 _DATA_FILES = (
     "bench_costs.json",
     "timeless_meta_3_30.lua.gz",
@@ -38,8 +29,12 @@ datas = collect_data_files("certifi") + [
     (os.path.join(src_dir, "pob_cli", "data", name), os.path.join("pob_cli", "data"))
     for name in _DATA_FILES
 ] + [
-    (os.path.join(src_dir, "pob_cli", "lua", name), os.path.join("pob_cli", "lua"))
+    (os.path.join(_LUA_DIR, name), os.path.join("pob_cli", "lua"))
     for name in _LUA_FILES
+] + [
+    # zh_translate.lua folds zh-rTW text to Simplified by reading these generated tables as text.
+    (os.path.join(src_dir, "pob_cli", "game_data", name), os.path.join("pob_cli", "game_data"))
+    for name in ("tables_han.py", "tables_tw.py")
 ]
 bundle_runtime = os.environ.get("POB_BUNDLE_RUNTIME", "").strip()
 if bundle_runtime:
