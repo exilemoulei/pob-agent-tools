@@ -148,7 +148,7 @@ It never blocks PoE1-legal terms: `Elemental Focus`, `Combat Focus`, `while Focu
 
 - `python pob_cli/scripts/check.py --fast` (under 3 s): `ruff` on `src`, `scripts`, `packaging` and `tests`, plus the AST checks `[file-budget]`, `[fn-budget]`, `[layer-dag]`, `[blocked-rpc]` and `[spec-sync]` (every lazy subcommand module exists and is bundled by `packaging/pob.spec`).
 - `python pob_cli/scripts/check.py --self-test`: five mutation checks in a temp dir proving each rule fires.
-- `python pob_cli/scripts/check.py`: the fast gate plus isolated `pytest`, with a ratchet on passed and skipped tests (`--min-passed N --max-skipped N`).
+- `python pob_cli/scripts/check.py`: the fast gate plus isolated `pytest`, with a ratchet on passed and skipped tests (`--min-passed N --max-skipped N`). Without those flags the skip budget follows what the machine can actually run: 25 with the legacy PobTools seed, 30 with a bootstrapped engine (Windows keeps its POSIX-only skips), 65 with no engine at all, which prints a line saying so. `engine.yml` always passes explicit counts, so CI keeps an exact ratchet.
 - Real-engine tests find an engine through `POB_ROOT`, `<repo>/.runtime/engine`, then `<repo>/PobTools[20261102]` (`pob_cli/tests/engine_paths.py`) and skip when there is none.
 
 ## CI and releases

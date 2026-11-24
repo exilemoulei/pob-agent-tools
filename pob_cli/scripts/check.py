@@ -26,7 +26,29 @@ if str(_SCRIPT_DIR) not in sys.path:
 from arch_lint import SKIP_COPY_DIRS, run_arch_lint  # noqa: E402
 
 MIN_PASSED_TESTS = 905
-MAX_SKIPPED_TESTS = 25  # Windows skips the 24 POSIX-only installer, archive and self-update tests
+# Skip budgets by what this machine can run. A gate that is red for everyone without an engine is
+# no gate: the defaults follow the tier this machine is actually in, and `engine.yml` still passes
+# explicit counts so CI keeps an exact ratchet.
+MAX_SKIPPED_TESTS = 25  # engine plus the legacy PobTools seed: the strict tier
+_MAX_SKIPPED_BOOTSTRAPPED = 30  # engine from `pob bootstrap`: Windows keeps its POSIX-only skips
+_MAX_SKIPPED_NO_ENGINE = 65  # no engine at all: every real-engine test skips
+
+
+def _engine_tier(repo_root: Path) -> tuple[str, int]:
+    """(tier name, max skipped tests) for this checkout: what the offline gate can really run."""
+    candidates = []
+    env_root = os.environ.get("POB_ROOT", "").strip()
+    if env_root:
+        candidates.append(Path(env_root))
+    candidates.append(repo_root / ".runtime" / "engine")
+    candidates.append(repo_root / "PobTools[20261102]")
+    for cand in candidates:
+        if (cand / "PoE1" / "Data" / "Gems.lua").is_file():
+            legacy = (repo_root / "PobTools[20261102]" / "PoE1" / "manifest.xml").is_file()
+            if legacy:
+                return "engine + legacy seed", MAX_SKIPPED_TESTS
+            return "bootstrapped engine", _MAX_SKIPPED_BOOTSTRAPPED
+    return "no engine", _MAX_SKIPPED_NO_ENGINE
 
 
 def _remove_tree_bottom_up(path: Path) -> None:
@@ -242,8 +264,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--self-test", action="store_true", help="Run mutation self-test in %%TEMP%%.")
     parser.add_argument("--root", type=Path, default=None, help="Override pob_cli root directory.")
     # Skips depend on the machine (legacy snapshot, Windows-only, pob-zh engine), so CI pins its own counts.
-    parser.add_argument("--min-passed", type=int, default=MIN_PASSED_TESTS, help="Minimum passed tests.")
-    parser.add_argument("--max-skipped", type=int, default=MAX_SKIPPED_TESTS, help="Maximum skipped tests.")
+    parser.add_argument(
+        "--min-passed",
+        type=int,
+        default=None,
+        help=f"Minimum passed tests (default: {MIN_PASSED_TESTS}).",
+    )
+    parser.add_argument(
+        "--max-skipped",
+        type=int,
+        default=None,
+        help="Maximum skipped tests (default: the budget of the tier this machine is in: "
+        f"{MAX_SKIPPED_TESTS} with the legacy seed, {_MAX_SKIPPED_BOOTSTRAPPED} with a bootstrapped "
+        f"engine, {_MAX_SKIPPED_NO_ENGINE} with no engine).",
+    )
     args = parser.parse_args(argv)
 
     pob_cli_root = (args.root or Path(__file__).resolve().parents[1]).resolve()
@@ -281,9 +315,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.fast:
         return 0
 
-    pytest_ok, pytest_msg = run_isolated_pytest(
-        pob_cli_root, min_passed=args.min_passed, max_skipped=args.max_skipped
-    )
+    min_passed = args.min_passed if args.min_passed is not None else MIN_PASSED_TESTS
+    max_skipped = args.max_skipped
+    if max_skipped is None:
+        tier, max_skipped = _engine_tier(pob_cli_root.parent)
+        print(
+            f"INFO: {tier}: offline gate allows up to {max_skipped} skipped tests"
+            + ("" if tier != "no engine" else " (run `pob bootstrap` to exercise the real-engine tests)")
+            + "."
+        )
+    pytest_ok, pytest_msg = run_isolated_pytest(pob_cli_root, min_passed=min_passed, max_skipped=max_skipped)
     total_elapsed = time.perf_counter() - t0
     if not pytest_ok:
         print(f"FAIL [pytest] isolated offline test gate failed in {total_elapsed:.2f}s | Fix: inspect failures below.")
