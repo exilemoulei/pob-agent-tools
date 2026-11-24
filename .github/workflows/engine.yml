@@ -245,10 +245,10 @@ jobs:
           pob trade convert --text $'Rarity: RARE\nDoom Hand\nSlink Gloves\nImplicits: 0\n+42% to Fire Resistance' --to cold --json
           pob stop --json
 
-      # Expected skips: 3 legacy 2.67.2 snapshot, 1 pob-zh UI labels, 1 slim timeless LUT zip, 2 Win32-only, 1 network.
+      # Expected skips: 3 legacy 2.67.2 snapshot, 1 slim timeless LUT zip, 3 Win32-only, 1 network.
       - name: Run full gate against the real engine
         env:
           POB_ROOT: ${{ runner.temp }}/pob-e2e-rt/engine
           POB_TEST_PERF_SLACK: ${{ matrix.perf_slack }}
         run: |
-          python3 pob_cli/scripts/check.py --min-passed 1200 --max-skipped 10
+          python3 pob_cli/scripts/check.py --min-passed 1300 --max-skipped 8
