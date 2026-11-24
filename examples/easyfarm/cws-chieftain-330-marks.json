@@ -1,0 +1,53 @@
+{
+  "name": "CWS Chieftain 3.30 - Cloak of Flame example",
+  "marks": [
+    {
+      "severity": "skip",
+      "statId": "map_player_no_regeneration",
+      "statPath": "Metadata/StatDescriptions/stat_descriptions.csd",
+      "reason": "This build has about 2963 Life regeneration per second; losing it breaks a primary sustain layer."
+    },
+    {
+      "severity": "skip",
+      "statId": "map_players_no_regeneration_including_es",
+      "statPath": "Metadata/StatDescriptions/stat_descriptions.csd",
+      "reason": "The build has no Energy Shield and relies heavily on Life regeneration."
+    },
+    {
+      "severity": "skip",
+      "statId": "map_player_life_and_es_recovery_speed_+%_final",
+      "statPath": "Metadata/StatDescriptions/stat_descriptions.csd",
+      "reason": "Less Life recovery rate sharply cuts the build's roughly 2963/s Life regeneration."
+    },
+    {
+      "severity": "skip",
+      "statId": "map_player_cannot_block",
+      "statPath": "Metadata/StatDescriptions/stat_descriptions.csd",
+      "reason": "The build's 91% attack and 90% spell block are core defensive layers."
+    },
+    {
+      "severity": "skip",
+      "statId": "map_player_cannot_block_attacks",
+      "statPath": "Metadata/StatDescriptions/stat_descriptions.csd",
+      "reason": "The build relies on 91% attack block; losing it exposes a much lower maximum hit."
+    },
+    {
+      "severity": "skip",
+      "statId": "map_player_cannot_block_spells",
+      "statPath": "Metadata/StatDescriptions/stat_descriptions.csd",
+      "reason": "The build relies on 90% spell block; losing it exposes a much lower maximum hit."
+    },
+    {
+      "severity": "skip",
+      "statId": "map_monsters_reflect_%_elemental_damage",
+      "statPath": "Metadata/StatDescriptions/stat_descriptions.csd",
+      "reason": "The CWS setup includes Fireball spell hits and no reflect immunity was verified in this PoB."
+    },
+    {
+      "severity": "caution",
+      "statId": "map_players_block_chance_+%",
+      "statPath": "Metadata/StatDescriptions/stat_descriptions.csd",
+      "reason": "Reduced block chance weakens the build's principal hit defence; avoid high rolls and combinations with added damage."
+    }
+  ]
+}

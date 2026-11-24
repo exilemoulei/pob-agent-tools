@@ -1,6 +1,7 @@
 """The EasyFarm scheme must not apply two classifications to one map stat."""
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -58,3 +59,21 @@ def test_broad_base_pattern_fails_instead_of_overlapping():
     base = easyfarm.read_base(easyfarm.DEFAULT_BASE)
     with pytest.raises(ValueError, match="Broad base pattern"):
         easyfarm.build_scheme(request(mark("map_boss_damage_foo")), base)
+
+
+def test_cws_example_builds_on_default_scheme_without_duplicate_marks():
+    example = SCRIPT.parents[3] / "examples/easyfarm/cws-chieftain-330-marks.json"
+    marks = json.loads(example.read_text(encoding="utf-8"))
+    base = easyfarm.read_base(easyfarm.DEFAULT_BASE)
+    scheme = easyfarm.build_scheme(marks, base)
+
+    generated = [rule for rule in scheme["rules"] if easyfarm._is_generated(rule)]
+    assert len(generated) == len(marks["marks"]) == 8
+    assert sum(rule["textFix"]["prefix"].startswith("[跳过]") for rule in generated) == 7
+    assert sum(rule["textFix"]["prefix"].startswith("[慎打]") for rule in generated) == 1
+    assert len(scheme["rules"]) == len(base["rules"]) + len(generated)
+    assert not any(
+        value.get("value") == "map_player_no_regeneration"
+        for rule in scheme["rules"][:len(base["rules"])]
+        for value in rule.get("matchValues", [])
+    )
