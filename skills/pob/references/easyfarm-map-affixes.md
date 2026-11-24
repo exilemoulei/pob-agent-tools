@@ -45,16 +45,16 @@ Run from the repository root with Python 3.10+.
 python skills/pob/references/easyfarm_map_affixes.py map-marks.json
 ```
 
-The default base is the adjacent `easyfarm-system-default-poe1.json` snapshot. The output is one new EasyFarm scheme that preserves the base version, rules and colors. Redirect stdout to save the import code. To continue from a user's existing scheme, pass its JSON file or exported share-code text as the base:
+The default base is the adjacent `easyfarm-system-default-poe1.json` snapshot. The output is one new EasyFarm scheme that preserves the base version, colours and all unrelated rules. Redirect stdout to save the import code. To continue from a user's existing scheme, pass its JSON file or exported share-code text as the base:
 
 ```text
 python skills/pob/references/easyfarm_map_affixes.py map-marks.json --base current-scheme.txt
 ```
 
-The generator replaces only its own previously generated map warning groups when a prior generated scheme is used as the base. It preserves all other rules and colors. Each new mark adds `[跳过]` or `[慎打]` as a plain prefix and preserves the existing color, placeholders, and skill links. Omit identifiers that also match unwanted variants of the same effect.
+For a selected exact stat ID already in a base affix group, the generator removes that ID from the old group and gives its original colour and text suffix to the dedicated warning rule. It leaves the other IDs in the group alone. When a prior generated scheme is the base, it restores the old entries before applying the new mark list, so removing a mark restores its old classification. Broad base patterns that also match a selected ID require a manual split; the generator stops instead of emitting overlapping rules. Each new mark adds `[跳过]` or `[慎打]` as a plain prefix and preserves placeholders and skill links. Omit identifiers that also match unwanted variants of the same effect.
 
 ## Check formatting before delivery
 
 Use a plain-text prefix for warning-only edits to CSD variants containing numeric placeholders such as `{0}` and `{0:+d}`. Keep the original template byte-for-byte after the prefix, including existing color tags. Preserve the variant selector and suffix (for example `#|-1` and `negate 1`). Do not add a color wrapper to the prefix or combine the edit with automatic tier recoloring. For each edited variant, check that stripping the new prefix yields the original text, substitute a representative numeric value, and check that the neighboring variants are untouched. An offline check does not establish that the game renders the line. Report the in-game verification status explicitly.
 
-Import the single new scheme in EasyFarm and preview its matches before applying. Check how base rules and the new map warnings combine on the same stat. If source validation fails, reload the current game resources and regenerate the preview. This workflow has no game-writing step or hook.
+Import the single new scheme in EasyFarm and preview its matches before applying. Check that reclassified IDs appear only under the new warning and retain their original colour. If source validation fails, reload the current game resources and regenerate the preview. This workflow has no game-writing step or hook.

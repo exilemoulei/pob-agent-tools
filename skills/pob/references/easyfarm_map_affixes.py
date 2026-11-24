@@ -2,6 +2,7 @@
 
 import argparse
 import base64
+import copy
 import gzip
 import json
 import re
@@ -37,6 +38,38 @@ def read_base(path):
     return base
 
 
+def _is_generated(rule):
+    remark = rule.get("remark", "")
+    return rule.get("type") == "affix" and isinstance(remark, str) and (
+        remark == GENERATED_RULE or remark.startswith(GENERATED_RULE + "|")
+    )
+
+
+def _backups(rule):
+    remark = rule["remark"]
+    if "|" not in remark:
+        return []  # Schemes made by the first version did not keep restoration data.
+    try:
+        return json.loads(base64.urlsafe_b64decode(remark.split("|", 1)[1]))
+    except (ValueError, TypeError) as exc:
+        raise ValueError("Invalid saved EasyFarm rule backup") from exc
+
+
+def _restore_original_rules(kept_rules, previous_rules):
+    # Undo removals in reverse order so match positions return to their original order.
+    for generated in reversed(previous_rules):
+        for backup in reversed(_backups(generated)):
+            found = [rule for rule in kept_rules if rule.get("type") == "affix"
+                     and rule.get("name") == backup["name"]]
+            if len(found) == 1:
+                matches = found[0]["matchValues"]
+                matches.insert(min(backup["matchIndex"], len(matches)), backup["match"])
+            elif not found and backup.get("rule"):
+                kept_rules.insert(min(backup["ruleIndex"], len(kept_rules)), backup["rule"])
+            else:
+                raise ValueError(f"Cannot restore original EasyFarm rule: {backup['name']}")
+
+
 def build_scheme(request, base):
     if not isinstance(request, dict):
         raise TypeError("Expected a JSON object")
@@ -46,7 +79,15 @@ def build_scheme(request, base):
     if not isinstance(marks, list) or not marks:
         raise ValueError("Expected at least one verified map modifier")
 
-    groups = {}
+    kept_rules = [
+        copy.deepcopy(rule) for rule in base["rules"]
+        if not _is_generated(rule)
+    ]
+    previous_rules = [
+        rule for rule in base["rules"] if _is_generated(rule)
+    ]
+    _restore_original_rules(kept_rules, previous_rules)
+    rules = []
     seen = set()
     for mark in marks:
         if not isinstance(mark, dict):
@@ -65,31 +106,80 @@ def build_scheme(request, base):
         if key in seen:
             raise ValueError(f"Duplicate map mark: {stat_id} in {path}")
         seen.add(key)
-        groups.setdefault((path, severity), []).append({
-            "value": rf"(?:^|\s){re.escape(stat_id)}(?:\s|$)",
-            "remark": reason.strip(),
-        })
+        match_value = rf"(?:^|\s){re.escape(stat_id)}(?:\s|$)"
+        style = None
+        backups = []
+        for old_rule in previous_rules:
+            if any(value.get("value") == match_value for value in old_rule.get("matchValues", [])):
+                old_prefix = old_rule.get("textFix", {}).get("prefix", "")
+                for warning_prefix in PREFIXES.values():
+                    if old_prefix.startswith(warning_prefix):
+                        old_prefix = old_prefix[len(warning_prefix):]
+                        break
+                style = (
+                    old_rule.get("colorMode", "none"),
+                    old_rule.get("colorId", ""),
+                    old_prefix,
+                    old_rule.get("textFix", {}).get("suffix", ""),
+                )
 
-    rules = [
-        {
+        for rule_index, old_rule in enumerate(kept_rules):
+            if (old_rule.get("type") != "affix" or old_rule.get("matchType") != "idLine"
+                    or not old_rule.get("enabled", True)):
+                continue
+            old_path = old_rule.get("statPath")
+            if old_path and old_path.lower() != path:
+                continue
+            matches = old_rule.get("matchValues", [])
+            for match_index, value in reversed(list(enumerate(matches))):
+                pattern = value.get("value", "")
+                if pattern == stat_id:
+                    if old_rule.get("colorMatchValues"):
+                        raise ValueError(f"Cannot preserve conditional colour for {stat_id}")
+                    text_fix = old_rule.get("textFix") or {}
+                    old_style = (
+                        old_rule.get("colorMode", "none"),
+                        old_rule.get("colorId", ""),
+                        text_fix.get("prefix", ""),
+                        text_fix.get("suffix", ""),
+                    )
+                    if style is not None and style != old_style:
+                        raise ValueError(f"Conflicting base styles for {stat_id}")
+                    style = old_style
+                    backups.append({
+                        "name": old_rule.get("name"),
+                        "ruleIndex": rule_index,
+                        "matchIndex": match_index,
+                        "match": copy.deepcopy(value),
+                        "rule": copy.deepcopy(old_rule) if len(matches) == 1 else None,
+                    })
+                    matches.pop(match_index)
+                else:
+                    try:
+                        overlaps = re.search(pattern, stat_id) is not None
+                    except re.error as exc:
+                        raise ValueError(f"Cannot inspect base pattern {pattern!r}: {exc}") from exc
+                    if overlaps:
+                        raise ValueError(
+                            f"Broad base pattern {pattern!r} also matches {stat_id}; split it manually"
+                        )
+        kept_rules = [rule for rule in kept_rules if rule.get("type") != "affix" or rule.get("matchValues")]
+        color_mode, color_id, old_prefix, old_suffix = style or ("none", "", "", "")
+        rules.append({
             "type": "affix",
-            "name": f"{PREFIXES[severity].strip()} {Path(path).stem}",
+            "name": f"{PREFIXES[severity].strip()} {stat_id}",
             "enabled": True,
             "matchType": "idLine",
-            "matchValues": matches,
+            "matchValues": [{"value": match_value, "remark": reason.strip()}],
             "colorMatchValues": [],
-            "textFix": {"prefix": PREFIXES[severity], "suffix": ""},
-            "colorMode": "none",
-            "colorId": "",
+            "textFix": {"prefix": PREFIXES[severity] + old_prefix, "suffix": old_suffix},
+            "colorMode": color_mode,
+            "colorId": color_id,
             "statPath": path,
-            "remark": GENERATED_RULE,
-        }
-        for (path, severity), matches in groups.items()
-    ]
-    kept_rules = [
-        rule for rule in base["rules"]
-        if not (rule.get("type") == "affix" and rule.get("remark") == GENERATED_RULE)
-    ]
+            "remark": GENERATED_RULE + "|" + base64.urlsafe_b64encode(
+                json.dumps(backups, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).decode("ascii"),
+        })
     return {
         **base,
         "id": str(uuid.uuid4()),
