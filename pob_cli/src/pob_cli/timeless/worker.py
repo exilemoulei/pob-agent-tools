@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import tempfile
@@ -16,6 +17,7 @@ from ..updater import (
     _download_pob_files_to_staging,
     fetch_pob_manifest_remote,
     get_shared_cache_dir,
+    verify_pob_sha1,
 )
 from .lut import (
     FLAT_TABLES,
@@ -157,20 +159,30 @@ def describe_worker(
         for node, opt in zip(socket_ids, socket_opts, strict=False)
         if isinstance(node, (int, float)) and int(node) > 0 and int(node) in allocated and int(node) not in charm_ids
     ]
-    prng_active = bool((getattr(worker, "caps", None) or {}).get("timelessPrng"))
+    prng_types = _prng_types(worker) if (getattr(worker, "caps", None) or {}).get("timelessPrng") else set()
+    rt = runtime_dir or getattr(worker, "runtime_dir", None)
     return {
         "jewels": [
             {
                 "name": name,
-                "nameLocal": _local_jewel_name(name, dialog_local),
+                "nameLocal": _local_jewel_name(name, dialog_local, rt),
                 "seeds": len(j["seeds"]),
                 "conquerors": list(j["conquerors"]),
-                "grouped": (name in FLAT_TABLES) or (prng_active and name in JEWEL_TYPE_IDS),
+                "grouped": (name in FLAT_TABLES) or (JEWEL_TYPE_IDS.get(name) in prng_types),
             }
             for name, j in jewels.items()
         ],
         "sockets": sockets,
     }
+
+
+def _prng_types(worker: Any) -> set[int]:
+    """Jewel types the engine's generator serves for the loaded build: the gate the search's grouping applies."""
+    try:
+        resp = worker.call("timeless_prng_types", {}, timeout=60)
+    except Exception:  # a host without this RPC: claim only what the flat tables can group
+        return set()
+    return {int(x) for x in ((resp or {}).get("types") or [])}
 
 
 def describe(
@@ -300,6 +312,21 @@ def _used_tree_nodes(worker: Any, state: dict[str, Any], xml: str, code: str = "
     return sorted(used)
 
 
+_MAPPING_REL = "data/timelessjeweldata/nodeindexmapping.lua"
+
+
+def lut_cache_dir(game_dir: Path, runtime_dir: Path | str | None = None) -> Path:
+    """Shared folder for fetched tables, keyed (as `lua/timeless_mmap.lua` does) by the SHA-1 of this PoB's
+    NodeIndexMapping.lua: a table read against another PoB version's node index gives wrong mods silently."""
+    mapping = Path(game_dir) / "Data" / "TimelessJewelData" / "NodeIndexMapping.lua"
+    try:
+        key = hashlib.sha1(mapping.read_bytes()).hexdigest()[:16]
+    except OSError as exc:
+        raise RuntimeError(f"cannot read {mapping} ({exc}); run `pob update`") from exc
+    rt = Path(runtime_dir) if runtime_dir else None
+    return get_shared_cache_dir(rt, pob_root=Path(game_dir).parent) / "timeless_lut" / key
+
+
 def ensure_lut_files(
     game_dir: Path,
     stem: str,
@@ -307,34 +334,40 @@ def ensure_lut_files(
     runtime_dir: Path | str | None = None,
     proxy: str | None = None,
     mirror: str | None = None,
-) -> Path | None:
-    """Ensure a single jewel's `.zip` / `.zip.part*` LUT exists locally or in shared cache.
+) -> Path:
+    """Folder holding `<stem>.zip` / `.zip.part*`: PoB's own, else `lut_cache_dir`, fetched there on demand.
 
-    Used only for fallback (`jewelType > 11` or tree-version mismatch on slim installs);
-    never writes into `game_dir` (safe for read-only seeds and ETag-304 slim installs).
+    Used only for fallback (`jewelType > 11`, a tree-version or PoB mismatch on slim installs); never writes
+    into `game_dir` (safe for read-only seeds and ETag-304 slim installs). A table is fetched only from a PoB
+    whose NodeIndexMapping.lua is the installed one. Raises RuntimeError saying why when none can be had.
     """
     data_dir = Path(game_dir) / "Data" / "TimelessJewelData"
     if (data_dir / f"{stem}.zip").is_file() or (data_dir / f"{stem}.zip.part0").is_file():
         return data_dir
 
-    rt = Path(runtime_dir) if runtime_dir else None
-    cache_dir = get_shared_cache_dir(rt, pob_root=Path(game_dir).parent) / "timeless_lut"
+    cache_dir = lut_cache_dir(game_dir, runtime_dir)
     if (cache_dir / f"{stem}.zip").is_file() or (
         (cache_dir / f"{stem}.zip.part0").is_file() and (cache_dir / f"{stem}.zip.complete").is_file()
     ):
         return cache_dir
 
     if os.environ.get("POB_OFFLINE", "").strip() == "1":
-        return None
+        raise RuntimeError(f"{stem} is not installed and POB_OFFLINE=1 rules out fetching it")
 
     status, manifest, _etag = fetch_pob_manifest_remote(proxy=proxy, mirror=mirror)
     if status != "ok" or manifest is None:
-        return None
+        raise RuntimeError(f"PoB's manifest could not be read to fetch {stem} ({status})")
+    all_entries = list(manifest.files.values() if isinstance(manifest.files, dict) else manifest.files)
+    mapping = next((e for e in all_entries if e.local_rel.replace("\\", "/").lower() == _MAPPING_REL), None)
+    if mapping is None or not verify_pob_sha1((data_dir / "NodeIndexMapping.lua").read_bytes(), mapping.sha1):
+        raise RuntimeError(
+            f"PoB {manifest.version} indexes its {stem} table differently from the installed PoB; "
+            "run `pob update` first"
+        )
     prefix = f"data/timelessjeweldata/{stem.lower()}.zip"
-    all_entries = manifest.files.values() if isinstance(manifest.files, dict) else manifest.files
     entries = [e for e in all_entries if e.local_rel.replace("\\", "/").lower().startswith(prefix)]
     if not entries:
-        return None
+        raise RuntimeError(f"PoB {manifest.version} ships no {stem} table")
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     has_parts = any(".part" in Path(e.local_rel).name.lower() for e in entries)

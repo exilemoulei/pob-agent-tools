@@ -18,7 +18,7 @@ from ..formatters import _parse_numeric_or_none
 from ..game_data import fold_han
 from ..guardrails import validate_engine_root
 from ..locale_cfg import current_lang
-from ..updater import get_shared_cache_dir, resolve_engine_root
+from ..updater import resolve_engine_root
 from .xml_helpers import (
     _ALLOCATES_RE as _ALLOCATES_RE,
 )
@@ -295,20 +295,19 @@ def load_table(
     *,
     runtime_dir: Path | str | None = None,
     cache_dir: Path | None = None,
+    missing_reason: str = "",
 ) -> bytes:
-    """Decompressed lookup table. Reads PoB's file (or shared timeless cache); never writes next to PoB."""
-    g_data = Path(game_dir) / "Data" / "TimelessJewelData"
-    raw, table_path = _read_lut_zip_or_parts(g_data, stem)
+    """Decompressed lookup table from PoB's folder, else from `cache_dir` (what `ensure_lut_files` returned).
+
+    Either may hold one `.zip` or PoB's split `.zip.part*` files. Never writes next to PoB. Raises
+    RuntimeError, with `missing_reason` (why fetching it failed), when neither holds the table.
+    `runtime_dir` is unused and kept for callers."""
+    raw, table_path = _read_lut_zip_or_parts(Path(game_dir) / "Data" / "TimelessJewelData", stem)
     if raw is None and cache_dir is not None:
         raw, table_path = _read_lut_zip_or_parts(Path(cache_dir), stem)
     if raw is None:
-        rt = Path(runtime_dir) if runtime_dir else None
-        c_dir = get_shared_cache_dir(rt, pob_root=Path(game_dir).parent) / "timeless_lut"
-        raw, _ = _read_lut_zip_or_parts(c_dir, stem)
-        if raw is not None:
-            table_path = c_dir / f"{stem}.zip"
-    if raw is None:
-        raw = (g_data / f"{stem}.zip").read_bytes()
+        why = f": {missing_reason}" if missing_reason else ""
+        raise RuntimeError(f"PoB's {stem} lookup table is neither installed nor in the timeless cache{why}")
     try:
         return zlib.decompress(raw)
     except zlib.error as exc:
@@ -422,6 +421,7 @@ def narrow_down(
         )
         if not open_sigs:
             return {
+                "method": "additiveFit",
                 "calculated": len(results),
                 "maxError": (math.exp(error) - 1.0) if use_log else error,
                 "relative": use_log,
@@ -433,8 +433,8 @@ def narrow_down(
         say(f"{len(results)} calculated; {max(0, len(open_sigs) - VERIFY_BATCH)} could still reach the top {top}")
 
 
-def _local_jewel_name(name: str, dialog_local: dict[str, str]) -> str:
-    lang = current_lang()
+def _local_jewel_name(name: str, dialog_local: dict[str, str], runtime_dir: Path | str | None = None) -> str:
+    lang = current_lang(Path(runtime_dir) if runtime_dir else None)
     if lang == "en":
         return name
     local = dialog_local.get(name)

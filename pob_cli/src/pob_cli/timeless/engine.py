@@ -248,6 +248,14 @@ def _group_via_prng(
     return groups, nodes, additive, seed0_sig
 
 
+def _fetch_lut(game_dir: Path, stem: str, runtime_dir: Path | str | None) -> tuple[Path | None, str]:
+    """`ensure_lut_files`, with the reason it failed kept for the error that follows (never swallowed)."""
+    try:
+        return ensure_lut_files(game_dir, stem, runtime_dir=runtime_dir), ""
+    except Exception as exc:
+        return None, str(exc).strip() or type(exc).__name__
+
+
 def _resolve_seed_groups(
     first: Engine,
     name: str,
@@ -260,26 +268,26 @@ def _resolve_seed_groups(
 ) -> tuple[dict[bytes, list[int]], list[int], bool, bytes, bool]:
     """Compute seed equivalence groups via PRNG RPC (preferred) or flat LUT / 1-per-seed fallback."""
     prng_active = bool((getattr(first.worker, "caps", None) or {}).get("timelessPrng"))
+    unsupported = False
     if prng_active:
         try:
             prng_grouped = _group_via_prng(first, name, socket, seeds, xml, code, game_dir)
-        except Exception:
+        except Exception:  # an RPC failure, not a verdict: the engine's generator may still serve calculations
             prng_grouped = None
             first.reset()
             if seeds:
                 first.stats(seeds[0])
+        else:
+            unsupported = prng_grouped is None
         if prng_grouped is not None:
             groups, nodes, additive, seed0_sig = prng_grouped
             return groups, nodes, additive, seed0_sig, True
     if name in FLAT_TABLES:
-        lut_dir: Path | None = None
-        if prng_active:
-            try:
-                lut_dir = ensure_lut_files(game_dir, FLAT_TABLES[name], runtime_dir=runtime_dir)
-            except Exception:
-                lut_dir = None
+        lut_dir, why = _fetch_lut(game_dir, FLAT_TABLES[name], runtime_dir)
         index = load_node_index(game_dir)
-        table = load_table(game_dir, FLAT_TABLES[name], runtime_dir=runtime_dir, cache_dir=lut_dir)
+        table = load_table(
+            game_dir, FLAT_TABLES[name], runtime_dir=runtime_dir, cache_dir=lut_dir, missing_reason=why
+        )
         if len(table) != len(index) * len(seeds):
             raise ValueError(f"{name} lookup table has an unexpected size for its seed range.")
         nodes = _seed_nodes(first, xml, index, code=code)
@@ -288,16 +296,16 @@ def _resolve_seed_groups(
         return groups, nodes, True, seed0_sig, False
     if prng_active:
         stem = LUT_STEMS.get(name, name.replace(" ", ""))
-        try:
-            ensure_lut_files(game_dir, stem, runtime_dir=runtime_dir)
-        except Exception:
-            pass
+        lut_dir, why = _fetch_lut(game_dir, stem, runtime_dir)
+        # the generator declined this jewel here, so every calculation reads the table: without it PoB would
+        # report the jewel as doing nothing
+        if lut_dir is None and unsupported:
+            raise RuntimeError(f"{name} needs PoB's {stem} lookup table on this build, and it is unavailable: {why}")
     groups = {str(seed).encode(): [seed] for seed in seeds}
     return groups, [], False, str(seeds[0]).encode(), False
 
 
-_PRNG_SHORTLIST_THRESHOLD = 200
-_MIN_PRNG_SHORTLIST_K = 50
+_MIN_PRNG_SHORTLIST = 200
 
 
 def _shortlist_non_additive_groups(
@@ -310,19 +318,23 @@ def _shortlist_non_additive_groups(
     seed0_sig: bytes,
     say: Callable[[str], None],
 ) -> list[bytes] | None:
-    """Shortlist top `K >= max(top*4, 50)` non-additive PRNG groups via PoB's weighted finder."""
+    """Up to `max(top*4, 200)` non-additive PRNG groups whose seeds PoB's timeless weight finder ranks highest.
+
+    The finder weighs mods, it does not calculate the build: this is a guess at where good seeds are, and a
+    real Glorious Vanity search was seen to leave its best seed out of a 200-group shortlist."""
     jtype = JEWEL_TYPE_IDS.get(name)
-    if jtype is None or len(groups) <= _PRNG_SHORTLIST_THRESHOLD:
+    target_k = max(top * 4, _MIN_PRNG_SHORTLIST)
+    if jtype is None or len(groups) <= target_k:
         return None
-    target_k = min(len(groups), max(top * 4, _MIN_PRNG_SHORTLIST_K))
-    fetch_top = min(sum(len(v) for v in groups.values()), max(target_k * 2, 120))
+    # several seeds share a group: ask for more seeds than groups wanted
+    fetch_top = min(sum(len(v) for v in groups.values()), target_k * 4)
     try:
         resp = first.worker.call(
             "timeless_prng_search",
             {"jewel": name, "jewelType": jtype, "socketId": socket, "stat": stat, "top": fetch_top},
             timeout=60.0,
         )
-    except Exception:
+    except Exception:  # no finder (or it failed): the caller calculates every group instead
         return None
     top_seeds = (resp or {}).get("topSeeds") if isinstance(resp, dict) else None
     if not top_seeds:
@@ -344,7 +356,7 @@ def _shortlist_non_additive_groups(
         return None
     if seed0_sig in groups and seed0_sig not in seen and len(selected) < target_k:
         selected.append(seed0_sig)
-    say(f"shortlisted {len(selected)} of {len(groups)} groups via timeless_prng_search; verifying in PoB")
+    say(f"shortlisted {len(selected)} of {len(groups)} groups with PoB's timeless weight finder; calculating them")
     return selected
 
 
@@ -363,7 +375,10 @@ def _build_search_outcomes(
     # The estimate only speaks for seeds at or above the value of the `top`-th best calculated group. What the
     # sample happened to hit below that is left out: it would read as a ranking and is not one.
     cutoff: int | float | str | None = None
-    if estimate and results:
+    if estimate and estimate.get("method") == "weightShortlist":
+        # the shortlist bounds nothing: no cutoff, and only the top rows of what was calculated
+        ranked = ranked[:top]
+    elif estimate and results:
         sorted_vals = sorted((s.get(stat) for s in results.values()), key=_stat_rank_key, reverse=True)
         cutoff_raw = sorted_vals[min(top, len(sorted_vals)) - 1]
         cutoff_key = _stat_rank_key(cutoff_raw)
@@ -396,7 +411,8 @@ def search(
     The jewel replaces whatever is in that socket, and other Historic jewels are taken out (`removed`);
     `baseline` is the build as loaded. With `exact` every group is calculated; otherwise large searches
     calculate a sample, estimate the rest, and calculate the estimated-best until none of the remaining is
-    estimated to reach the top `top` (see `narrow_down`).
+    estimated to reach the top `top` (see `narrow_down`), or, for non-additive generated groups, calculate
+    only the shortlist PoB's weight finder picks (no bound on what it misses).
     """
     import pob_cli.timeless as _tl
 
@@ -472,13 +488,16 @@ def search(
             precomputed[seed0_sig] = first_stats
 
         shortlist: list[bytes] | None = None
-        if used_prng and not additive and not exact and len(groups) > _PRNG_SHORTLIST_THRESHOLD:
+        if used_prng and not additive and not exact:
             shortlist = _shortlist_non_additive_groups(
                 first, name, socket, stat, top, groups, seed0_sig, say
             )
 
         target_count = len(shortlist) if shortlist is not None else len(groups)
-        default_w = 1 if (used_prng and (not exact or len(groups) <= _PRNG_SHORTLIST_THRESHOLD)) else default_workers()
+        # one engine suffices for the additive estimate and for a few hundred groups; a shortlist or a full
+        # sweep of many groups is spread like an exact search
+        one = used_prng and shortlist is None and ((additive and not exact) or len(groups) <= _MIN_PRNG_SHORTLIST)
+        default_w = 1 if one else default_workers()
         n_workers = max(1, min(workers if workers is not None else default_w, max(1, target_count)))
         results: dict[bytes, dict[str, Any]] = {}
         runner = _SeedBatchRunner(
@@ -504,12 +523,11 @@ def search(
         if shortlist is not None:
             runner.calculate(shortlist)
             estimate = {
+                "method": "weightShortlist",
                 "calculated": len(results),
-                "shortlisted": True,
-                "groupsConsidered": len(shortlist),
+                "shortlisted": len(shortlist),
                 "groupsTotal": len(groups),
-                "maxError": 0.0,
-                "relative": True,
+                "maxError": None,
             }
         elif exact or not nodes or not additive:
             runner.calculate(all_sigs)

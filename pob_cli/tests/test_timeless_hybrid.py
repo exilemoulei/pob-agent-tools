@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import importlib.util
 import random
 import zlib
@@ -134,6 +135,9 @@ def test_lua_timeless_modules_enforce_contracts_and_3_30_pitfalls() -> None:
     )
     assert "if ascName == nil then" in prng_src and "ASC_G.all_asc" in prng_src, (
         "Pitfall #3: readAbyssJewelLUT with nil ascendancyName must iterate all ascendancies"
+    )
+    assert "data.timelessJewelAdditions ~= META.additions_count then return false" in prng_src, (
+        "PRNG ids are offset by PoB's addition count: a different count must fall back to the LUT"
     )
     assert "if jt <= 6 then return true end" in prng_src and "PTYPE_CACHE[tv]" in prng_src, (
         "Legion/Heroic (1..6) must work on older tree versions (e.g. 3_29) with per-tree NODE_PTYPE cache"
@@ -359,6 +363,7 @@ def test_prng_describe_worker_marks_all_11_jewels_grouped(slim_game_dir: Path) -
         def __init__(self, gd: Path, prng: bool) -> None:
             self.game_dir = gd
             self.caps = {"timelessPrng": prng}
+            self.types = list(range(1, 12))
 
         def call_batch(self, calls: list[tuple[str, Any]], timeout: float = 60.0) -> list[dict[str, Any]]:
             return [
@@ -367,6 +372,10 @@ def test_prng_describe_worker_marks_all_11_jewels_grouped(slim_game_dir: Path) -
                 {"allocatedNodes": [9], "sockets": [{"nodeId": 9}]},
             ]
 
+        def call(self, method: str, params: dict[str, Any], timeout: float = 60.0) -> dict[str, Any]:
+            assert method == "timeless_prng_types"
+            return {"types": list(self.types)}
+
     info_prng = timeless.describe_worker(_PrngDescWorker(slim_game_dir, True))
     by_name = {j["name"]: j for j in info_prng["jewels"]}
     assert by_name["Lethal Pride"]["grouped"] is True
@@ -374,6 +383,14 @@ def test_prng_describe_worker_marks_all_11_jewels_grouped(slim_game_dir: Path) -
     assert by_name["Festering Vengeance"]["grouped"] is True
     assert by_name["Reclaimed Malevolence"]["grouped"] is True
     assert by_name["Future Relic"]["grouped"] is False  # jewelType > 11
+
+    # The engine's gate, not caps alone: on another tree the Abyss types 7..11 are not generated, so not grouped
+    other_tree = _PrngDescWorker(slim_game_dir, True)
+    other_tree.types = [1, 2, 3, 4, 5, 6]
+    by_name_tree = {j["name"]: j for j in timeless.describe_worker(other_tree)["jewels"]}
+    assert by_name_tree["Glorious Vanity"]["grouped"] is True
+    assert by_name_tree["Festering Vengeance"]["grouped"] is False
+    assert by_name_tree["Reclaimed Malevolence"]["grouped"] is False
 
     info_legacy = timeless.describe_worker(_PrngDescWorker(slim_game_dir, False))
     by_name_leg = {j["name"]: j for j in info_legacy["jewels"]}
@@ -387,11 +404,11 @@ def test_tree_mismatch_and_jeweltype_gt11_fallback_fetches_lut_into_cache(
     # Prepare NodeIndexMapping.lua (metadata present, .zip missing in slim game_dir)
     lut_dir = slim_game_dir / "Data" / "TimelessJewelData"
     lut_dir.mkdir(parents=True, exist_ok=True)
-    (lut_dir / "NodeIndexMapping.lua").write_text(
-        'nodeIDList["sizeNotable"] = 3\n'
-        + "".join(f"nodeIDList[{101 + i}] = {{ index = {i}, size = 1 }}\n" for i in range(3)),
-        encoding="utf-8",
+    mapping_text = 'nodeIDList["sizeNotable"] = 3\n' + "".join(
+        f"nodeIDList[{101 + i}] = {{ index = {i}, size = 1 }}\n" for i in range(3)
     )
+    (lut_dir / "NodeIndexMapping.lua").write_text(mapping_text, encoding="utf-8")
+    remote_mapping_sha1 = hashlib.sha1((lut_dir / "NodeIndexMapping.lua").read_bytes()).hexdigest()
 
     rt_dir = tmp_path / "rt"
     fake_table = zlib.compress(bytes([i % 3 for i in range(3 * 1000)]))
@@ -414,6 +431,14 @@ def test_tree_mismatch_and_jeweltype_gt11_fallback_fetches_lut_into_cache(
             runtime="win32",
             platform=None,
         )
+        e_map = ManifestFileEntry(
+            raw_name="Data/TimelessJewelData/NodeIndexMapping.lua",
+            local_rel="Data/TimelessJewelData/NodeIndexMapping.lua",
+            part="program",
+            sha1=remote_mapping_sha1,
+            runtime=None,
+            platform=None,
+        )
         return (
             "ok",
             PobManifest(
@@ -421,7 +446,7 @@ def test_tree_mismatch_and_jeweltype_gt11_fallback_fetches_lut_into_cache(
                 branch="master",
                 platform="win32",
                 sources={},
-                files={e_lp.local_rel: e_lp, e_fut.local_rel: e_fut},
+                files={e_lp.local_rel: e_lp, e_fut.local_rel: e_fut, e_map.local_rel: e_map},
                 raw_xml="<PoBVersion/>",
             ),
             '"etag-1"',
@@ -439,8 +464,8 @@ def test_tree_mismatch_and_jeweltype_gt11_fallback_fetches_lut_into_cache(
             out[Path("PoE1") / entry.local_rel] = p
         return out
 
-    monkeypatch.delenv("POB_OFFLINE", raising=False)
-    monkeypatch.delenv("POB_CACHE_DIR", raising=False)
+    for var in ("POB_OFFLINE", "POB_CACHE_DIR", "POB_ROOT", "POB_RUNTIME_DIR", "POB_HOME"):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(timeless_worker, "fetch_pob_manifest_remote", fake_manifest)
     monkeypatch.setattr(timeless_worker, "_download_pob_files_to_staging", fake_stage)
 
@@ -463,7 +488,9 @@ def test_tree_mismatch_and_jeweltype_gt11_fallback_fetches_lut_into_cache(
     (ext_rt / "cache" / "gamedata_3_30.sqlite").write_bytes(b"sqlite")
     monkeypatch.setenv("POB_ROOT", str(ext_rt / "engine"))
 
-    cache_lut = timeless_worker.get_shared_cache_dir(rt_dir, pob_root=slim_game_dir.parent) / "timeless_lut"
+    # Keyed by this PoB's NodeIndexMapping.lua, as lua/timeless_mmap.lua reads it
+    cache_lut = timeless_worker.lut_cache_dir(slim_game_dir, rt_dir)
+    assert cache_lut.parent.name == "timeless_lut" and cache_lut.name == remote_mapping_sha1[:16]
     res = timeless.search("CODE", "", 9, "Lethal Pride", workers=1, runtime_dir=rt_dir)
     assert fetched_stems == ["LethalPride.zip"]
     assert not (lut_dir / "LethalPride.zip").exists(), "Must NEVER write .zip into slim game_dir"
@@ -474,18 +501,35 @@ def test_tree_mismatch_and_jeweltype_gt11_fallback_fetches_lut_into_cache(
     res_future = timeless.search("CODE", "", 9, "Future Relic", workers=1, runtime_dir=rt_dir)
     assert "FutureRelic.zip.part0" in fetched_stems
     assert (cache_lut / "FutureRelic.zip.part0").is_file()
+    assert (cache_lut / "FutureRelic.zip.complete").is_file()
     assert res_future["seedCount"] == 5 and res_future["groupCount"] == 5
 
-    # Offline mode must not attempt network fetch
+    # A newer PoB whose node index differs: its table would be misread, so nothing is fetched
+    fetched_stems.clear()
+    remote_mapping_sha1 = "f" * 40
+    with pytest.raises(RuntimeError, match="indexes its BrutalRestraint table differently"):
+        timeless_worker.ensure_lut_files(slim_game_dir, "BrutalRestraint", runtime_dir=rt_dir)
+    assert fetched_stems == []
+
+    # Offline mode must not attempt network fetch, and the search says why the table is missing
     monkeypatch.setenv("POB_OFFLINE", "1")
-    assert timeless_worker.ensure_lut_files(slim_game_dir, "MissingJewel", runtime_dir=rt_dir) is None
+    with pytest.raises(RuntimeError, match="POB_OFFLINE=1"):
+        timeless_worker.ensure_lut_files(slim_game_dir, "MissingJewel", runtime_dir=rt_dir)
+    (cache_lut / "LethalPride.zip").unlink()
+    with pytest.raises(RuntimeError, match=r"LethalPride lookup table is neither installed .*POB_OFFLINE=1"):
+        timeless.search("CODE", "", 9, "Lethal Pride", workers=1, runtime_dir=rt_dir)
+    (cache_lut / "FutureRelic.zip.complete").unlink()  # parts without the marker may be half written
+    with pytest.raises(RuntimeError, match=r"Future Relic needs PoB's FutureRelic lookup table"):
+        timeless.search("CODE", "", 9, "Future Relic", workers=1, runtime_dir=rt_dir)
+    assert fetched_stems == []
     assert timeless_lut.JEWEL_TYPE_IDS["Reclaimed Malevolence"] == 11
 
 
 def test_prng_abyss_large_groups_shortlist_and_exact_parallel_workers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # 500 distinct Abyss groups (>200 threshold): non-exact shortlists K >= max(top*4, 50); --exact runs parallel
+    # 500 distinct Abyss groups: non-exact calculates a shortlist of K = max(top*4, 200) groups on parallel
+    # engines and claims no error bound for the rest; --exact calculates all of them
     gd = tmp_path / "slim_abyss"
     (gd / "Data" / "Uniques").mkdir(parents=True)
     (gd / "Data" / "Uniques" / "jewel.lua").write_text(
@@ -523,31 +567,115 @@ Historic
     _PrngFakeEngine.search_handler = lambda params: {
         "topSeeds": [{"seed": s, "total": float(s)} for s in sorted(seeds, reverse=True)[: int(params["top"])]]
     }
-    _PrngFakeEngine.value = lambda s: 1000.0 + float(s)
+    # The finder's weights put seed 599 first, but the build's real best seed (100) is outside its shortlist
+    _PrngFakeEngine.value = lambda s: 99999.0 if s == 100 else 1000.0 + float(s)
     monkeypatch.setattr(timeless, "Engine", _PrngFakeEngine)
+    monkeypatch.setattr(timeless.engine, "default_workers", lambda: 2)
 
-    # Non-exact: shortlists K = max(10 * 4, 50) = 50 groups in 1 worker instead of evaluating all 500
     res_fast = timeless.search("CODE", "", 9, "Festering Vengeance", top=10)
     assert set(res_fast.keys()) == EXPECTED_SEARCH_KEYS
-    assert res_fast["workers"] == 1
-    assert res_fast["calculated"] == 50
+    assert res_fast["workers"] == 2
+    assert res_fast["calculated"] == 200
     assert res_fast["estimate"] == {
-        "calculated": 50,
-        "shortlisted": True,
-        "groupsConsidered": 50,
+        "method": "weightShortlist",
+        "calculated": 200,
+        "shortlisted": 200,
         "groupsTotal": 500,
-        "maxError": 0.0,
-        "relative": True,
+        "maxError": None,
     }
-    assert res_fast["outcomes"][0]["seeds"] == [599]
+    assert res_fast["cutoff"] is None
     assert len(res_fast["outcomes"]) == 10
+    assert res_fast["outcomes"][0]["seeds"] == [599]
 
-    # --exact: skips shortlist, evaluates all 500 groups, and does NOT throttle workers to 1
-    monkeypatch.setattr(timeless.engine, "default_workers", lambda: 2)
+    from pob_cli.cli_timeless import _format_search_markdown
+
+    text = _format_search_markdown(res_fast, "CombinedDPS", 10)
+    assert "Shortlist: 200 of 500 seed groups" in text and "a better seed may exist" in text
+    assert "error allowed for" not in text
+
+    # --exact: skips the shortlist, calculates all 500 groups in parallel, and finds what the shortlist missed
     res_exact = timeless.search("CODE", "", 9, "Festering Vengeance", top=5, exact=True)
     assert res_exact["estimate"] is None
     assert res_exact["calculated"] == 500
     assert res_exact["workers"] == 2
-    assert res_exact["outcomes"][0]["seeds"] == [599]
+    assert res_exact["outcomes"][0]["seeds"] == [100]
+
+    # A small set (<= 200 groups) needs no shortlist: every group, one engine
+    seeds[:] = list(range(100, 250))
+    res_small = timeless.search("CODE", "", 9, "Festering Vengeance", top=10)
+    assert res_small["estimate"] is None and res_small["calculated"] == 150 and res_small["workers"] == 1
     _PrngFakeEngine.search_handler = None
 
+
+def test_update_timeless_meta_default_output_follows_tree_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = importlib.util.spec_from_file_location("update_timeless_meta", SCRIPTS_ROOT / "update_timeless_meta.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, "DATA_DIR", tmp_path / "data")
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    import json
+
+    for stem in ("alternate_tree_versions", "alternate_passive_skills", "alternate_passive_additions"):
+        (raw_dir / f"{stem}.json").write_text(json.dumps([]), encoding="utf-8")
+    pob_dir = tmp_path / "PoB"
+    (pob_dir / "TreeData" / "3_29").mkdir(parents=True)
+    (pob_dir / "TreeData" / "3_29" / "tree.lua").write_text(
+        'return { ["nodes"] = { ["root"] = { ["out"] = { "1" } } } }\n', encoding="utf-8"
+    )
+    assert mod.main(["--raw-meta-dir", str(raw_dir), "--pob-dir", str(pob_dir), "--tree-version", "3_29"]) == 0
+    assert (tmp_path / "data" / "timeless_meta_3_29.lua.gz").is_file()
+    assert not (tmp_path / "data" / "timeless_meta_3_30.lua.gz").exists()
+
+
+_MMAP_PROBE = """
+local M = dofile(arg[1])
+data = {
+    timelessJewelTypes = { "Glorious Vanity", "Lethal Pride", [7] = "Abyss Tecrod" },
+    timelessJewelSeedMin = { 100, 10000, [7] = 100 }, timelessJewelSeedMax = { 8000, 18000, [7] = 8000 },
+    nodeIDList = { size = 3, sizeNotable = 2, [11] = { index = 0, size = 50 }, [12] = { index = 1, size = 50 },
+        [13] = { index = 2, size = 50 } },
+}
+M.configure({ game_dir = arg[2], cache_dir = arg[2] .. "/nocache" })
+for _, jt in ipairs({ 7, 2, 1 }) do
+    print(jt, tostring(M.ensure_mapped(jt)), tostring(M.readLUT(10000, 11, jt)))
+end
+"""
+
+
+def _write_truncated_tables(lut_dir: Path) -> None:
+    lut_dir.mkdir(parents=True)
+    # ABYS header promising 3 sockets x 7901 seeds of records, then cut off after a few bytes
+    header = b"ABYS" + bytes([1, 7]) + (100).to_bytes(2, "little") + (8000).to_bytes(2, "little")
+    header += (1).to_bytes(2, "little") + bytes([3, 0]) + b"".join(n.to_bytes(2, "little") for n in (1, 2, 3))
+    (lut_dir / "AbyssTecrod.bin").write_bytes(header + bytes([2, 0, 0]))
+    (lut_dir / "LethalPride.bin").write_bytes(bytes(300))  # 2 notables x 8001 seeds expected
+    (lut_dir / "GloriousVanity.bin").write_bytes(bytes(1000))  # 3 nodes x 7901 seeds of sizes expected
+
+
+def test_truncated_lut_fails_cleanly_instead_of_crashing_luajit(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    from engine_paths import find_runnable_engine
+
+    eng = find_runnable_engine()
+    luajit = shutil.which("luajit") or (str(eng / "bin" / "luajit") if eng else None)
+    if not luajit or not Path(luajit).is_file():
+        pytest.skip("no LuaJIT (bootstrap an engine or put luajit on PATH)")
+    game = tmp_path / "game"
+    _write_truncated_tables(game / "Data" / "TimelessJewelData")
+    probe = tmp_path / "probe.lua"
+    probe.write_text(_MMAP_PROBE, encoding="utf-8")
+    proc = subprocess.run(
+        [luajit, str(probe), str(PKG_ROOT / "lua" / "timeless_mmap.lua"), str(game)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, (proc.returncode, proc.stderr)  # a segfault reads as -11 / 139
+    assert proc.stdout.split("\n")[:3] == ["7\tnil\tnil", "2\tnil\tnil", "1\tnil\tnil"]
+    assert proc.stderr.count("[timeless_mmap] skipped") == 3

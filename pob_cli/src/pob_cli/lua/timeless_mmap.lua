@@ -1,5 +1,5 @@
 -- Cross-platform zero-copy mmap fallback for PoB timeless jewel LUTs (Win32 MapViewOfFile + POSIX mmap)
--- plus shared Timeless PRNG RPC grouping & PoB FindTimelessJewel modal drivers.
+-- plus PRNG seed grouping and the PoB FindTimelessJewel driver.
 
 local ffi = require("ffi")
 local t_sort, t_concat, s_fmt = table.sort, table.concat, string.format
@@ -11,42 +11,44 @@ local kernel32 = nil
 
 if IS_WIN then
 	pcall(ffi.cdef, [[
-		int MultiByteToWideChar(unsigned int cp, unsigned long flags,
-			const char *mb, int cchMb, uint16_t *wc, int cchWc);
-		void *CreateFileW(const uint16_t *name, unsigned long access, unsigned long share,
-			void *sec, unsigned long disp, unsigned long flags, void *tmpl);
-		int GetFileSizeEx(void *hFile, int64_t *lpFileSize);
-		void *CreateFileMappingW(void *hFile, void *sec, unsigned long protect,
-			unsigned long maxHigh, unsigned long maxLow, const uint16_t *name);
-		void *MapViewOfFile(void *hMap, unsigned long access,
-			unsigned long offHigh, unsigned long offLow, size_t bytes);
-		int UnmapViewOfFile(const void *base);
-		int CloseHandle(void *hObj);
+		int MultiByteToWideChar(unsigned int, unsigned long, const char *, int, uint16_t *, int);
+		void *CreateFileW(const uint16_t *, unsigned long, unsigned long, void *, unsigned long, unsigned long, void *);
+		int GetFileSizeEx(void *, int64_t *);
+		void *CreateFileMappingW(void *, void *, unsigned long, unsigned long, unsigned long, const uint16_t *);
+		void *MapViewOfFile(void *, unsigned long, unsigned long, unsigned long, size_t);
+		int UnmapViewOfFile(const void *);
+		int CloseHandle(void *);
 	]])
 	local ok, lib = pcall(ffi.load, "kernel32")
 	if ok then kernel32 = lib end
 else
 	pcall(ffi.cdef, [[
-		int pob_tl_open(const char *path, int oflag) asm("open");
-		int64_t pob_tl_lseek(int fd, int64_t offset, int whence) asm("lseek");
-		void *pob_tl_mmap(void *addr, size_t len, int prot, int flags, int fd, int64_t offset) asm("mmap");
-		int pob_tl_munmap(void *addr, size_t len) asm("munmap");
-		int pob_tl_close(int fd) asm("close");
+		int pob_tl_open(const char *, int) asm("open");
+		int64_t pob_tl_lseek(int, int64_t, int) asm("lseek");
+		void *pob_tl_mmap(void *, size_t, int, int, int, int64_t) asm("mmap");
+		int pob_tl_munmap(void *, size_t) asm("munmap");
+		int pob_tl_close(int) asm("close");
 	]])
 end
 
-local INVALID_HANDLE = ffi.cast("void *", -1)
-local MAP_FAILED = ffi.cast("void *", -1)
+local MAP_FAILED = ffi.cast("void *", -1) -- also Win32's INVALID_HANDLE_VALUE
 
-local cfg = { game_dir = nil, cache_dir = nil }
-local mapped_cache = {}
-local gv_offsets_cache, gv_seed_size_cache = nil, nil
+local cfg, mapped_cache = {}, {}
+local gv_offsets_cache, gv_seed_size_cache, gv_end_cache, map_key
 
 local function utf8_to_wide(s)
 	local n = kernel32.MultiByteToWideChar(65001, 0, s, -1, nil, 0)
-	if n <= 0 then return nil end
-	local buf = ffi.new("uint16_t[?]", n)
-	return (kernel32.MultiByteToWideChar(65001, 0, s, -1, buf, n) > 0) and buf or nil
+	local buf = n > 0 and ffi.new("uint16_t[?]", n)
+	return buf and kernel32.MultiByteToWideChar(65001, 0, s, -1, buf, n) > 0 and buf or nil
+end
+
+local function as_view(raw_ptr, size, path, release)
+	local closed = false
+	local function cleanup() if not closed then closed = true; release() end end
+	return {
+		ptr = ffi.cast("const uint8_t *", raw_ptr), size = size, path = path,
+		_anchor = ffi.gc(ffi.new("uint8_t[1]"), cleanup), close = cleanup,
+	}
 end
 
 function M.map_file(path)
@@ -56,7 +58,7 @@ function M.map_file(path)
 		local wpath = utf8_to_wide(path)
 		if not wpath then return nil, "utf8 conversion failed" end
 		local hfile = kernel32.CreateFileW(wpath, 0x80000000, 0x00000001, nil, 3, 0x80, nil)
-		if hfile == nil or hfile == INVALID_HANDLE then return nil, "CreateFileW failed" end
+		if hfile == nil or hfile == MAP_FAILED then return nil, "CreateFileW failed" end
 		local fsize = ffi.new("int64_t[1]")
 		if kernel32.GetFileSizeEx(hfile, fsize) == 0 or fsize[0] <= 0 then
 			kernel32.CloseHandle(hfile); return nil, "empty or unreadable file"
@@ -68,16 +70,9 @@ function M.map_file(path)
 		if raw_ptr == nil then
 			kernel32.CloseHandle(hmap); kernel32.CloseHandle(hfile); return nil, "MapViewOfFile failed"
 		end
-		local closed = false
-		local function cleanup()
-			if closed then return end
-			closed = true
+		return as_view(raw_ptr, size, path, function()
 			kernel32.UnmapViewOfFile(raw_ptr); kernel32.CloseHandle(hmap); kernel32.CloseHandle(hfile)
-		end
-		return {
-			ptr = ffi.cast("const uint8_t *", raw_ptr), size = size, path = path,
-			_anchor = ffi.gc(ffi.new("uint8_t[1]"), cleanup), close = cleanup,
-		}
+		end)
 	end
 	local fd = ffi.C.pob_tl_open(path, 0)
 	if fd < 0 then return nil, "open failed" end
@@ -86,29 +81,18 @@ function M.map_file(path)
 	local raw_ptr = ffi.C.pob_tl_mmap(nil, fsize, 1, 2, fd, 0)
 	ffi.C.pob_tl_close(fd)
 	if raw_ptr == nil or raw_ptr == MAP_FAILED then return nil, "mmap failed" end
-	local closed = false
-	local function cleanup()
-		if closed then return end
-		closed = true
-		ffi.C.pob_tl_munmap(raw_ptr, fsize)
-	end
-	return {
-		ptr = ffi.cast("const uint8_t *", raw_ptr), size = fsize, path = path,
-		_anchor = ffi.gc(ffi.new("uint8_t[1]"), cleanup), close = cleanup,
-	}
+	return as_view(raw_ptr, fsize, path, function() ffi.C.pob_tl_munmap(raw_ptr, fsize) end)
 end
 
 function M.configure(opts)
 	opts = opts or {}
-	if opts.game_dir then cfg.game_dir = opts.game_dir end
-	if opts.cache_dir then cfg.cache_dir = opts.cache_dir end
+	cfg.game_dir, cfg.cache_dir = opts.game_dir or cfg.game_dir, opts.cache_dir or cfg.cache_dir
 end
 
 local function file_exists(path)
-	if not path then return false end
-	local f = io.open(path, "rb")
-	if f then f:close(); return true end
-	return false
+	local f = path and io.open(path, "rb")
+	if f then f:close() end
+	return f and true or false
 end
 
 local function resolve_game_dir()
@@ -119,53 +103,70 @@ local function resolve_game_dir()
 	return "."
 end
 
+-- Keyed by NodeIndexMapping.lua's SHA-1 like timeless/worker.py: a table read against another PoB's node index
+-- gives wrong mods silently.
 local function resolve_cache_dir()
-	if cfg.cache_dir and cfg.cache_dir ~= "" then return cfg.cache_dir end
-	local env_dir = os.getenv("POB_TIMELESS_CACHE_DIR") or os.getenv("POB_CACHE_DIR")
-	if env_dir and env_dir ~= "" then return env_dir .. "/timeless_lut" end
-	local rt = os.getenv("POB_RUNTIME_DIR")
-	if rt and rt ~= "" then return rt .. "/cache/timeless_lut" end
-	local tmp = os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"
-	if tmp and tmp ~= "" then return tmp:gsub("\\", "/") .. "/pob4agents_timeless_lut" end
-	return nil
+	if map_key == nil then
+		map_key = false
+		local f = io.open(resolve_game_dir() .. "/Data/TimelessJewelData/NodeIndexMapping.lua", "rb")
+		local raw = f and f:read("*a"); if f then f:close() end
+		local ok, sha1 = pcall(require, "sha1")
+		if raw and ok and type(sha1) == "table" and sha1.sha1 then map_key = sha1.sha1(raw):sub(1, 16) end
+	end
+	-- bridge_client sets POB_CACHE_DIR to the cache timeless/worker.py fills
+	local env_dir = os.getenv("POB_CACHE_DIR")
+	local base = cfg.cache_dir or (env_dir and env_dir ~= "" and env_dir .. "/timeless_lut")
+	return map_key and base and (base .. "/" .. map_key) or nil
 end
 
-local function active_tree_tag()
-	local ver = (main and main.modes and main.modes["BUILD"] and main.modes["BUILD"].spec
-		and main.modes["BUILD"].spec.treeVersion) or latestTreeVersion or "unknown"
-	return tostring(ver):gsub("[^%w_.-]", "_")
+local function mtime(path)
+	local h = type(NewFileSearch) == "function" and NewFileSearch(path)
+	return h and h:GetFileModifiedTime() or nil
 end
 
-local function read_compressed_lut(base_dir, stem)
-	local f = io.open(base_dir .. "/" .. stem .. ".zip", "rb")
-	if f then local raw = f:read("*a"); f:close(); if raw and #raw > 0 then return raw end end
-	local parts, idx = {}, 0
+-- mtime of the compressed table (0 if unknown, nil if none); fetched parts count once `.complete` exists.
+local function zip_mtime(dir, p, need_marker)
+	p = dir .. "/" .. p
+	if file_exists(p .. ".zip") then return mtime(p .. ".zip") or 0 end
+	if file_exists(p .. ".zip.part0") and (not need_marker or file_exists(p .. ".zip.complete")) then
+		return mtime(p .. ".zip.part*") or 0
+	end
+end
+
+-- As PoB's own loader decides: a .bin counts only when it is newer than its compressed source.
+local function fresh(bin, src_m)
+	if not file_exists(bin) then return false end
+	local bm = src_m and mtime(bin)
+	return not src_m or not bm or bm > src_m
+end
+
+local function read_compressed(p)
+	local parts, f = {}, io.open(p .. ".zip", "rb")
+	if f then local raw = f:read("*a"); f:close(); return (raw and #raw > 0) and raw or nil end
 	while true do
-		local pf = io.open(base_dir .. "/" .. stem .. ".zip.part" .. idx, "rb")
+		local pf = io.open(p .. ".zip.part" .. #parts, "rb")
 		if not pf then break end
-		parts[#parts + 1] = pf:read("*a"); pf:close(); idx = idx + 1
+		parts[#parts + 1] = pf:read("*a"); pf:close()
 	end
 	return (#parts > 0) and t_concat(parts) or nil
 end
 
 local function resolve_or_inflate_bin(stem)
-	local data_dir = resolve_game_dir() .. "/Data/TimelessJewelData"
-	local direct_bin = data_dir .. "/" .. stem .. ".bin"
-	if file_exists(direct_bin) then return direct_bin end
-	local cdir, tag = resolve_cache_dir(), active_tree_tag()
-	if cdir then
-		local cb = cdir .. "/" .. tag .. "_" .. stem .. ".bin"
-		if file_exists(cb) then return cb end
-		local pb = cdir .. "/" .. stem .. ".bin"
-		if file_exists(pb) then return pb end
-	end
-	local comp = (cdir and read_compressed_lut(cdir, stem)) or read_compressed_lut(data_dir, stem)
-	if not comp or type(Inflate) ~= "function" or not cdir then return nil end
+	local gdir, cdir = resolve_game_dir() .. "/Data/TimelessJewelData", resolve_cache_dir()
+	local gm = zip_mtime(gdir, stem, false)
+	if fresh(gdir .. "/" .. stem .. ".bin", gm) then return gdir .. "/" .. stem .. ".bin" end
+	if not cdir then return nil end
+	-- the installed PoB's own compressed table wins over a fetched one
+	local src_m, out_bin = gm or zip_mtime(cdir, stem, true), cdir .. "/" .. stem .. ".bin"
+	if fresh(out_bin, src_m) then return out_bin end
+	if not src_m or type(Inflate) ~= "function" then return nil end
+	local comp = read_compressed((gm and gdir or cdir) .. "/" .. stem)
+	if not comp then return nil end
 	if type(MakeDir) == "function" then pcall(MakeDir, cdir) end
 	local raw = Inflate(comp)
 	if not raw or #raw == 0 then return nil end
-	local out_bin = cdir .. "/" .. tag .. "_" .. stem .. ".bin"
-	local tmp_bin = out_bin .. "." .. tostring(math.floor((os.clock() * 1e6) % 1e9)) .. ".tmp"
+	-- per-process name: parallel engines never share a temp file
+	local tmp_bin = out_bin .. "." .. tostring({}):match("%x+$") .. ".tmp"
 	local wf = io.open(tmp_bin, "wb")
 	if not wf then return nil end
 	local ok_w = wf:write(raw)
@@ -176,24 +177,35 @@ local function resolve_or_inflate_bin(stem)
 	return out_bin
 end
 
+-- Walkers check `size` first: reading past a truncated mapping crashes LuaJIT instead of raising.
 local function read_u16(ptr, off) return ptr[off] + ptr[off + 1] * 256, off + 2 end
-local function skip_mod(ptr, off)
+local function skip_mod(ptr, off, size)
+	if off >= size then return nil end
 	local cnt = ptr[off]; off = off + 1
-	for _ = 1, cnt do off = off + 3 + ptr[off + 2] * 2 end
+	for _ = 1, cnt do
+		if off + 3 > size then return nil end
+		off = off + 3 + ptr[off + 2] * 2
+	end
+	return off <= size and off or nil
+end
+local function skip_sock(ptr, off, size)
+	if off >= size then return nil end
+	local cnt = ptr[off]; off = off + 1
+	for _ = 1, cnt do off = skip_mod(ptr, off + 2, size); if not off then return nil end end
 	return off
 end
-local function skip_sock(ptr, off)
-	local cnt = ptr[off]; off = off + 1
-	for _ = 1, cnt do off = skip_mod(ptr, off + 2) end
-	return off
+local function skip_asc(ptr, off, size)
+	if off >= size then return nil end
+	off = off + 1 + ptr[off] * 2
+	return off <= size and off or nil
 end
-local function skip_asc(ptr, off) return off + 1 + ptr[off] * 2 end
 
 local function convert_gid(jtype, lid)
 	local m = data and data.nodeIDList and data.nodeIDList.localIdToGlobalId
 	return (m and m[jtype] and m[jtype][lid] ~= nil) and m[jtype][lid] or lid
 end
 
+-- Only reached on records parse_abyss_index walked within bounds.
 local function read_abyss_mod(ptr, off, jtype)
 	local cnt, out = ptr[off], {}
 	off = off + 1
@@ -211,53 +223,49 @@ local function read_abyss_mod(ptr, off, jtype)
 end
 
 local function parse_abyss_index(view, jtype)
-	local ptr = view.ptr
-	if view.size < 14 then return nil end
+	local ptr, size = view.ptr, view.size
+	if size < 14 then return nil end
 	local fmt = ffi.string(ptr, 4)
 	if fmt ~= "ABYS" and fmt ~= "ABYN" then return nil end
 	local ver, stored_jt = ptr[4], ptr[5]
 	local smin, off = read_u16(ptr, 6)
 	local smax; smax, off = read_u16(ptr, off)
 	local sinc; sinc, off = read_u16(ptr, off)
-	if ver ~= 1 or stored_jt ~= jtype or sinc == 0 then return nil end
+	if ver ~= 1 or stored_jt ~= jtype or sinc == 0 or smax < smin or (smax - smin) % sinc ~= 0 then return nil end
 	local scnt = (smax - smin) / sinc + 1
 	local idx = {
-		format = fmt, seedMin = smin, seedMax = smax, seedInc = sinc, seedCount = scnt,
-		blockOffsets = {}, seedOffsets = {}, ascendancyOffsets = nil,
+		format = fmt, seedMin = smin, seedMax = smax, seedInc = sinc, seedCount = scnt, size = size,
+		blockOffsets = {}, seedOffsets = {},
 	}
+	local cnt, skip = nil, skip_mod
 	if fmt == "ABYS" then
-		local sock_cnt = ptr[off]; idx.abyssSize = ptr[off + 1]; off = off + 2
-		local sids = {}
-		for i = 1, sock_cnt do sids[i], off = read_u16(ptr, off) end
-		for i = 1, sock_cnt do
-			idx.blockOffsets[sids[i]] = off
-			for _ = 1, scnt do off = skip_sock(ptr, off) end
-		end
+		cnt, skip = ptr[off], skip_sock; off = off + 2
 	else
-		local ncnt; ncnt, off = read_u16(ptr, off)
-		local nids = {}
-		for i = 1, ncnt do nids[i], off = read_u16(ptr, off) end
-		for i = 1, ncnt do
-			idx.blockOffsets[nids[i]] = off
-			for _ = 1, scnt do off = skip_mod(ptr, off) end
-		end
-		if off + 6 <= view.size and ffi.string(ptr + off, 4) == "ASCS" then
-			off = off + 4
-			local acnt; acnt, off = read_u16(ptr, off)
-			idx.ascendancyOffsets = {}
-			for _ = 1, acnt do
-				local nlen = ptr[off]; off = off + 1
-				local aname = ffi.string(ptr + off, nlen); off = off + nlen
-				idx.ascendancyOffsets[aname] = off
-				for _ = 1, scnt do off = skip_asc(ptr, off) end
-			end
+		cnt, off = read_u16(ptr, off)
+	end
+	if off + cnt * 2 > size then return nil end
+	local ids = {}
+	for i = 1, cnt do ids[i], off = read_u16(ptr, off) end
+	for i = 1, cnt do
+		idx.blockOffsets[ids[i]] = off
+		for _ = 1, scnt do off = skip(ptr, off, size); if not off then return nil end end
+	end
+	if fmt == "ABYN" and off + 6 <= size and ffi.string(ptr + off, 4) == "ASCS" then
+		local acnt; acnt, off = read_u16(ptr, off + 4)
+		idx.ascendancyOffsets = {}
+		for _ = 1, acnt do
+			if off >= size or off + 1 + ptr[off] > size then return nil end
+			local nlen = ptr[off]
+			local aname = ffi.string(ptr + off + 1, nlen); off = off + 1 + nlen
+			idx.ascendancyOffsets[aname] = off
+			for _ = 1, scnt do off = skip_asc(ptr, off, size); if not off then return nil end end
 		end
 	end
 	return idx
 end
 
 local function build_gv_offsets()
-	if gv_offsets_cache then return gv_offsets_cache, gv_seed_size_cache end
+	if gv_offsets_cache then return gv_offsets_cache, gv_seed_size_cache, gv_end_cache end
 	local n_nodes = data.nodeIDList.size
 	local ss = data.timelessJewelSeedMax[1] - data.timelessJewelSeedMin[1] + 1
 	local by_idx = {}
@@ -266,70 +274,74 @@ local function build_gv_offsets()
 	end
 	local offs, cur = {}, n_nodes * ss
 	for i = 0, n_nodes - 1 do offs[i] = cur; cur = cur + (by_idx[i] or 0) end
-	gv_offsets_cache, gv_seed_size_cache = offs, ss
-	return offs, ss
+	gv_offsets_cache, gv_seed_size_cache, gv_end_cache = offs, ss, cur
+	return offs, ss, cur
 end
 
+-- nil when the table does not fit this PoB's data.
+local function check_table(entry, jtype)
+	local view, nl = entry.view, data.nodeIDList
+	local abyss = (jtype >= 7 and jtype <= 11) or (jtype > 11 and view.size >= 4 and ffi.string(view.ptr, 2) == "AB")
+	if abyss then
+		entry.abyss = parse_abyss_index(view, jtype)
+		return entry.abyss and entry or nil
+	end
+	if not nl then return nil end
+	if jtype == 1 then return (select(3, build_gv_offsets()) <= view.size) and entry or nil end
+	local smin, smax = data.timelessJewelSeedMin[jtype], data.timelessJewelSeedMax[jtype]
+	return (smin and smax and nl.sizeNotable * (smax - smin + 1) == view.size) and entry or nil
+end
+
+-- Indexed by NodeIndexMapping, not tree version: one mapping per type serves all trees.
 function M.ensure_mapped(jtype)
-	local mkey = active_tree_tag() .. ":" .. tostring(jtype)
-	local cached = mapped_cache[mkey]
+	local cached = mapped_cache[jtype]
 	if cached ~= nil then return cached or nil end
 	local jname = data and data.timelessJewelTypes and data.timelessJewelTypes[jtype]
-	if not jname then mapped_cache[mkey] = false; return nil end
-	local bin_path = resolve_or_inflate_bin(jname:gsub("%s+", ""))
-	if not bin_path then mapped_cache[mkey] = false; return nil end
-	local view = M.map_file(bin_path)
-	if not view then mapped_cache[mkey] = false; return nil end
-	local entry = { view = view, gv_node_pos = {}, abyss = parse_abyss_index(view, jtype) }
-	mapped_cache[mkey] = entry
+	if not jname then return nil end
+	-- absence is not cached: Python may fetch the table while this engine runs
+	local bin_path = resolve_or_inflate_bin((jname:gsub("%s+", "")))
+	if not bin_path then return nil end
+	local view, err = M.map_file(bin_path)
+	local entry = view and check_table({ view = view, gv_node_pos = {} }, jtype)
+	if not entry then
+		if view then view.close() end
+		io.stderr:write("[timeless_mmap] skipped " .. bin_path .. ": " .. (err or "malformed or truncated") .. "\n")
+	end
+	mapped_cache[jtype] = entry or false
 	return entry
 end
 
 function M.can_handle(jtype)
-	if not jtype or not data or not data.timelessJewelTypes or not data.timelessJewelTypes[jtype] then return false end
-	local mkey = active_tree_tag() .. ":" .. tostring(jtype)
-	if mapped_cache[mkey] then return true end
-	if mapped_cache[mkey] == false then return false end
-	local stem = data.timelessJewelTypes[jtype]:gsub("%s+", "")
-	local ddir = resolve_game_dir() .. "/Data/TimelessJewelData"
-	if file_exists(ddir .. "/" .. stem .. ".bin") then return true end
-	local cdir = resolve_cache_dir()
-	if not cdir then return false end
-	local tag = active_tree_tag()
-	return file_exists(cdir .. "/" .. tag .. "_" .. stem .. ".bin")
-		or file_exists(cdir .. "/" .. stem .. ".bin")
-		or file_exists(cdir .. "/" .. stem .. ".zip") or file_exists(cdir .. "/" .. stem .. ".zip.part0")
-		or file_exists(ddir .. "/" .. stem .. ".zip") or file_exists(ddir .. "/" .. stem .. ".zip.part0")
+	return jtype ~= nil and M.ensure_mapped(jtype) ~= nil
 end
 
 function M.readLUT(seed, nodeID, jtype, probe_only)
 	if probe_only then return M.can_handle(jtype) end
 	local entry = M.ensure_mapped(jtype)
 	if not entry then return nil end
-	local ptr, vsz, rseed = entry.view.ptr, entry.view.size, (jtype == 5) and (seed / 20) or seed
+	local ptr, rseed = entry.view.ptr, (jtype == 5) and (seed / 20) or seed
 	local smin, smax = data.timelessJewelSeedMin[jtype], data.timelessJewelSeedMax[jtype]
-	if not smin or not smax or rseed < smin or rseed > smax then return {} end
+	if not smin or not smax or rseed < smin or rseed > smax or rseed % 1 ~= 0 then return {} end
 	local soff, ssize = rseed - smin, smax - smin + 1
 	local nidx = data.nodeIDList[nodeID] and data.nodeIDList[nodeID].index or nil
 	if not nidx then return {} end
 	if jtype == 1 then
+		if nidx >= data.nodeIDList.size then return {} end
 		local gv_offs, gv_ss = build_gv_offsets()
 		local pt = entry.gv_node_pos[nidx]
 		if not pt then
-			local sz_base, cur = nidx * gv_ss, gv_offs[nidx]
-			if not cur or sz_base + gv_ss > vsz then return nil end
 			pt = {}
+			local sz_base, cur = nidx * gv_ss, gv_offs[nidx]
 			for s = 0, gv_ss - 1 do pt[s + 1] = cur; cur = cur + ptr[sz_base + s] end
+			if cur > entry.view.size then return {} end
 			entry.gv_node_pos[nidx] = pt
 		end
 		local dlen, base, res = ptr[nidx * gv_ss + soff], pt[soff + 1], {}
-		if not base or base + dlen > vsz then return nil end
 		for i = 0, dlen - 1 do res[i + 1] = ptr[base + i] end
 		if dlen == 2 or dlen == 3 then res[1] = convert_gid(jtype, res[1])
 		elseif dlen == 6 or dlen == 8 then for i = 1, dlen / 2 do res[i] = convert_gid(jtype, res[i]) end end
 		return res
-	elseif nidx <= data.nodeIDList.sizeNotable then
-		if nidx * ssize + soff >= vsz then return nil end
+	elseif nidx < data.nodeIDList.sizeNotable then
 		return { convert_gid(jtype, ptr[nidx * ssize + soff]) }
 	end
 	return {}
@@ -339,9 +351,8 @@ local function get_seed_offs(abyss, ptr, key, boff, skip_fn)
 	if not boff then return nil end
 	local offs = abyss.seedOffsets[key]
 	if not offs then
-		offs = {}
-		local cur = boff
-		for i = 1, abyss.seedCount do offs[i] = cur; cur = skip_fn(ptr, cur) end
+		offs = {}; local cur = boff
+		for i = 1, abyss.seedCount do offs[i] = cur; cur = skip_fn(ptr, cur, abyss.size) end
 		abyss.seedOffsets[key] = offs
 	end
 	return offs
@@ -391,7 +402,7 @@ function M.close_all()
 		if type(e) == "table" and e.view then e.view.close() end
 		mapped_cache[k] = nil
 	end
-	gv_offsets_cache, gv_seed_size_cache = nil, nil
+	gv_offsets_cache, gv_seed_size_cache, gv_end_cache = nil, nil, nil
 end
 
 local function encode_node_sig(prng, nid, seed, jt, ab)
@@ -495,7 +506,7 @@ function M.group_hashes(prng, params, jt)
 		end
 		nodes = {}; for nid in pairs(hit) do nodes[#nodes + 1] = nid end; t_sort(nodes)
 	end
-	return { supported = true, jewelType = jt, additive = additive, nodes = nodes, seedCount = scnt, groupCount = #gorder, groups = gorder }
+	return { supported = true, jewelType = jt, additive = additive, nodes = nodes, seedCount = scnt, groups = gorder }
 end
 
 function M.run_finder_modal(params, resolve_jt)
@@ -505,12 +516,8 @@ function M.run_finder_modal(params, resolve_jt)
 	local jtype = (resolve_jt and resolve_jt(params)) or tonumber(params.jewelType or params.jewel_type_id) or 2
 	local target_socket = tonumber(params.socketId or params.socket)
 	local use_filter, top_n, target_stat = (params.socketFilter ~= false), tonumber(params.top) or 15, params.stat or "CombinedDPS"
-	build.timelessData = {
-		jewelType = {}, conquerorType = {}, devotionVariant1 = 1, devotionVariant2 = 1,
-		jewelSocket = {}, fallbackWeightMode = {}, searchList = "", searchListFallback = "",
-		searchResults = {}, sharedResults = {},
-	}
-	local t0 = (type(GetTime) == "function") and GetTime() or 0
+	build.timelessData = { jewelType = {}, conquerorType = {}, devotionVariant1 = 1, devotionVariant2 = 1,
+		jewelSocket = {}, fallbackWeightMode = {}, searchList = "", searchListFallback = "", searchResults = {}, sharedResults = {} }
 	build.treeTab:FindTimelessJewel()
 	local popup = main.popups and main.popups[#main.popups]
 	assert(popup and popup.controls, "FindTimelessJewel popup not created")
@@ -538,26 +545,14 @@ function M.run_finder_modal(params, resolve_jt)
 		ctrl.fallbackWeightsButton.onClick(); ctrl.searchButton.onClick()
 		local raw_res, top_seeds = build.timelessData.searchResults or {}, {}
 		for i = 1, math.min(top_n, #raw_res) do
-			top_seeds[i] = { seed = raw_res[i].seed, total = raw_res[i].total, label = raw_res[i].label }
+			top_seeds[i] = { seed = raw_res[i].seed, total = raw_res[i].total }
 		end
-		local chosen = ctrl.socketSelect.list[chosen_idx]
-		return {
-			jewelType = jtype,
-			jewelName = ctrl.jewelSelect.list[jtype] and ctrl.jewelSelect.list[jtype].label or tostring(jtype),
-			socketId = chosen.id, socketLabel = chosen.label, socketFilter = eff_filter,
-			allocatedNotablesInRadius = build.treeTab.allocatedNodesInRadiusCount or 0,
-			matchedSeeds = #raw_res, topSeeds = top_seeds,
-			totalMs = ((type(GetTime) == "function") and GetTime() or 0) - t0,
-		}
+		return { jewelType = jtype, socketId = ctrl.socketSelect.list[chosen_idx].id, socketFilter = eff_filter,
+			matchedSeeds = #raw_res, topSeeds = top_seeds }
 	end)
 	if main.ClosePopup then pcall(main.ClosePopup, main) end
 	if not ok then error(res) end
 	return res
-end
-
-function M.install_post_launch(opts)
-	M.configure(opts)
-	return true
 end
 
 return M

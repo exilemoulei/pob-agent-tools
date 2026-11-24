@@ -23,7 +23,7 @@ if str(_SRC_DIR) not in sys.path:
 from pob_cli.updater import resolve_engine_root  # noqa: E402
 
 DEFAULT_TREE_VERSION = "3_30"
-DEFAULT_OUTPUT = _SRC_DIR / "pob_cli" / "data" / "timeless_meta_3_30.lua.gz"
+DATA_DIR = _SRC_DIR / "pob_cli" / "data"
 MAX_JEWEL_TYPE = 11
 
 
@@ -175,10 +175,13 @@ def generate_timeless_meta(
     *,
     pob_dir: Path | None = None,
     tree_version: str = DEFAULT_TREE_VERSION,
-    output_path: Path = DEFAULT_OUTPUT,
+    output_path: Path | None = None,
     out_lua: Path | None = None,
 ) -> dict[str, Any]:
-    """Build and write `timeless_meta_<ver>.lua.gz` from raw GGG datc64 JSONs + PoB tree.lua."""
+    """Build and write `timeless_meta_<ver>.lua.gz` (default: in the package's data/) from raw GGG datc64
+    JSONs + PoB tree.lua."""
+    if output_path is None:
+        output_path = DATA_DIR / f"timeless_meta_{tree_version}.lua.gz"
     game_dir = _resolve_game_dir(pob_dir)
     versions_raw = _load_json_table(raw_meta_dir, "alternate_tree_versions")
     skills_raw = _load_json_table(raw_meta_dir, "alternate_passive_skills")
@@ -233,8 +236,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=DEFAULT_OUTPUT,
-        help="Output .lua.gz path (default: pob_cli/src/pob_cli/data/timeless_meta_3_30.lua.gz).",
+        default=None,
+        help="Output .lua.gz path (default: pob_cli/src/pob_cli/data/timeless_meta_<tree-version>.lua.gz).",
     )
     parser.add_argument(
         "--out-lua",

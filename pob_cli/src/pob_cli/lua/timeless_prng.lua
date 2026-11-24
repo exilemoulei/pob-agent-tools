@@ -507,6 +507,8 @@ end
 
 local function can_use_prng(jt)
 	if not META or not jt or jt < 1 or jt > 11 or not META.versions[jt] then return false end
+	-- generated ids are offset by the addition count: a PoB with another count would get every id shifted
+	if not data or data.timelessJewelAdditions ~= META.additions_count then return false end
 	if jt <= 6 then return true end
 	return active_tree_ver() == (META.tree_version or "3_30")
 end
@@ -532,6 +534,12 @@ M.rpc_handlers = {
 		end
 		local mmap = assert(load_sibling_mmap(), "timeless_mmap unavailable")
 		return mmap.group_hashes(M, params, jt)
+	end,
+	-- the gate `timeless_prng_group_hashes` applies, for `pob timeless list`
+	timeless_prng_types = function()
+		local types = {}
+		for jt = 1, 11 do if can_use_prng(jt) and ensure_tree_graphs(jt >= 7) then types[#types + 1] = jt end end
+		return { types = types }
 	end,
 	timeless_prng_search = function(params)
 		local mmap = assert(load_sibling_mmap(), "timeless_mmap unavailable")

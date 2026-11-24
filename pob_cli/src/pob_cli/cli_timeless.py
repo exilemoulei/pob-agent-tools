@@ -165,7 +165,12 @@ def _format_search_markdown(res: dict[str, Any], stat: str, top: int) -> str:
             "the game allows one Historic jewel."
         )
 
-    if est:
+    if est and est.get("method") == "weightShortlist":
+        lines.append(
+            f"\n> Shortlist: {calculated:,} of {group_count:,} seed groups, picked by PoB's timeless weight finder, "
+            "were calculated; the rest were not, so a better seed may exist. `--exact` calculates all."
+        )
+    elif est:
         max_err = est.get("maxError")
         if isinstance(max_err, (int, float)) and not isinstance(max_err, bool) and math.isfinite(max_err):
             err_text = f"{max_err * 100:.2f}%" if est.get("relative") else f"{max_err:.3g}"
