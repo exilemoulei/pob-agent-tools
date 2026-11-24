@@ -319,6 +319,9 @@ class BridgeWorker:
         params: dict[str, Any] | None,
         result: dict[str, Any],
     ) -> None:
+        if method in ("set_translate", "set_locale"):
+            # tree_data carries translated names (nameZh), so a language switch must refetch it.
+            self._tree_data_cache.clear()
         if method == "set_translate":
             if isinstance(result.get("enabled"), bool):
                 self.translate_enabled = result["enabled"]

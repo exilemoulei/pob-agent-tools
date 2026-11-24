@@ -167,3 +167,35 @@ def test_build_on_omitted_tree_version(tmp_path: Path, monkeypatch: pytest.Monke
         assert (eng / "PoE1" / "TreeData" / "3_19" / "tree.lua").is_file()
     finally:
         w.stop()
+
+
+@needs_engine
+@pytest.mark.skipif(not has_zh_data(ENGINE), reason="engine has no Chinese dictionaries")
+def test_tree_names_follow_every_locale_switch(worker: BridgeWorker) -> None:
+    # bridge.lua caches tree_data per ":en"/":zh" only; zh-CN and zh-TW must not share it.
+    from pob_cli.bridge_protocol import apply_worker_locale
+
+    if not worker.caps.get("localeSwitch"):
+        pytest.skip("engine has no set_locale")
+    tw_dir = ENGINE / "Data" / "poe1" / "zh-rTW"
+    if not tw_dir.is_dir() or not (ENGINE / "Data" / "poe1" / "zh-rCN").is_dir():
+        pytest.skip("engine lacks one of zh-rCN / zh-rTW")
+
+    def socket_name() -> tuple[str, str]:
+        node = worker.get_cached_tree_data()["nodes"]["36634"]
+        return str(node.get("name")), str(node.get("nameZh"))
+
+    try:
+        seen: dict[str, tuple[str, str]] = {}
+        for lang in ("zh-CN", "zh-TW", "en", "zh-CN"):
+            with worker.lock:
+                apply_worker_locale(worker, lang)
+            seen[lang + ("#2" if lang in seen else "")] = socket_name()
+        en_name = seen["en"][0]
+        assert seen["en"][1] == en_name
+        assert seen["zh-CN"][1] != en_name and seen["zh-TW"][1] != en_name
+        assert seen["zh-CN"][1] != seen["zh-TW"][1]
+        assert seen["zh-CN#2"] == seen["zh-CN"]
+    finally:
+        with worker.lock:
+            apply_worker_locale(worker, "zh-CN")

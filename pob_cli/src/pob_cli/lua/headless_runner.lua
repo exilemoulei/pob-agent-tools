@@ -260,7 +260,7 @@ else
 	end
 end
 
--- JSON serialization matching PobTools headless_bridge.cpp
+-- JSON matching headless_bridge.cpp
 local ESC = { ['"'] = '\\"', ['\\'] = '\\\\', ['\b'] = '\\b', ['\f'] = '\\f', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
 local function jstr(s) return '"' .. s:gsub('[%z\1-\31\\"]', function(c) return ESC[c] or string.format("\\u%04x", c:byte()) end) .. '"' end
 local function is_arr(t)
@@ -385,13 +385,13 @@ function require(nm) if nm == "lcurl.safe" or nm == "lcurl" then return nil end;
 
 -- PobTools bridge host hooks
 local bridge_dispatcher = nil
-function PobToolsBridgeSetDispatcher(fn) if type(fn) ~= "function" then error("PobToolsBridgeSetDispatcher expects a function") end; bridge_dispatcher = fn end
+function PobToolsBridgeSetDispatcher(fn) if type(fn) ~= "function" then error("PobToolsBridgeSetDispatcher expects a function") end; bridge_dispatcher = fn; PobToolsBridgeRawDispatch = fn end
 function PobToolsBridgeEmit(ev, d) send_event(ev, d) end
 function PobToolsHeadless() return true end
 function PobToolsGame() return os.getenv("POB_GAME") or "poe1" end
 function PobToolsLogError(tag, msg) log_stderr("[" .. tostring(tag) .. "] " .. tostring(msg)) end
 
--- Pre-launch hooks -> Boot Launch.lua -> Post-launch hooks -> Mount bridge.lua
+-- Pre-launch hooks -> Launch.lua -> post-launch hooks -> bridge.lua
 local lazy_hooks_mod = nil
 do
 	local lh = load_ext("lazy_hooks.lua")
