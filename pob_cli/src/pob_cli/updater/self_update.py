@@ -194,6 +194,10 @@ def _validate_tar_members(archive_name: str, members: list[tarfile.TarInfo], des
         member.mode &= 0o777
 
 
+def _supports_tar_data_filter() -> bool:
+    return getattr(tarfile, "data_filter", None) is not None
+
+
 def _extract(archive: Path, dest: Path) -> None:
     dest_resolved = dest.resolve()
     if archive.name.endswith(".zip"):
@@ -204,7 +208,7 @@ def _extract(archive: Path, dest: Path) -> None:
             zf.extractall(dest)
         return
     with tarfile.open(archive, "r:gz") as tf:
-        if getattr(tarfile, "data_filter", None) is not None:
+        if _supports_tar_data_filter():
             tf.extractall(dest, filter="data")
             return
         members = tf.getmembers()

@@ -547,7 +547,7 @@ def test_self_update_extract_fallback_without_data_filter_unpacks_valid_tar(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(tarfile, "data_filter", None, raising=False)
+    monkeypatch.setattr(self_update, "_supports_tar_data_filter", lambda: False)
     archive = _make_tar_gz(
         tmp_path / "release.tar.gz",
         [
@@ -580,7 +580,7 @@ def test_self_update_extract_fallback_rejects_unsafe_tar_members(
     tmp_path: Path,
     bad_entry: tuple[str, str, bytes, str],
 ) -> None:
-    monkeypatch.setattr(tarfile, "data_filter", None, raising=False)
+    monkeypatch.setattr(self_update, "_supports_tar_data_filter", lambda: False)
     label, name, typ, linkname = bad_entry
     info = tarfile.TarInfo(name)
     info.type = typ

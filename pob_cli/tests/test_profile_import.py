@@ -461,6 +461,9 @@ def test_cn_330_dict_mods_gem_suffix_variants_and_permanent_league_sort() -> Non
     )
     assert t_dirty.server == "cn"
     assert t_dirty.account_name == "测试账号#3499"
+    # Spoofed lookalike host must NOT be treated as poe.game.qq.com
+    t_spoof = parse_profile_source("https://poe.game.qq.com.evil.example/account/view-profile/foo-1234")
+    assert t_spoof.server != "cn"
     ordered = sort_profile_characters(
         [
             {"name": "老号满级", "league": "永久", "level": 100},

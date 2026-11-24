@@ -86,8 +86,10 @@ def parse_profile_source(
     eff_realm = (realm or "").strip().lower()
     qs_char: str | None = None
     qs_realm: str | None = None
+    parsed_host = ""
     if raw.startswith(("http://", "https://")):
         parsed = urllib.parse.urlparse(raw)
+        parsed_host = (parsed.hostname or "").lower()
         qs = urllib.parse.parse_qs(parsed.query)
         qs_char = (qs.get("characterName") or qs.get("character") or [None])[0]
         qs_realm = (qs.get("realm") or [None])[0]
@@ -98,9 +100,10 @@ def parse_profile_source(
     eff_league = (league or "").strip() or None
 
     m_cn = CN_PROFILE_RE.match(raw)
-    if m_cn or eff_realm == "cn" or raw.lower().startswith("https://poe.game.qq.com"):
+    is_cn_host = parsed_host == "poe.game.qq.com"
+    if m_cn or eff_realm == "cn" or is_cn_host:
         acc = normalize_account_name(m_cn.group("account")) if m_cn else normalize_account_name(raw)
-        if raw.lower().startswith("https://poe.game.qq.com") and not m_cn:
+        if is_cn_host and not m_cn:
             acc = ""
         return ProfileTarget(
             server="cn",
