@@ -452,7 +452,18 @@ def test_tree_mismatch_and_jeweltype_gt11_fallback_fetches_lut_into_cache(
     _PrngFakeEngine.value = lambda s: 1000.0 + (s % 3)
     monkeypatch.setattr(timeless, "Engine", _PrngFakeEngine)
 
-    cache_lut = timeless_worker.get_shared_cache_dir(rt_dir) / "timeless_lut"
+    # Simulate CI real-engine env where POB_ROOT points to a bootstrapped engine with an active sibling cache/
+    ext_rt = tmp_path / "ci_gate_rt"
+    (ext_rt / "engine" / "PoE1").mkdir(parents=True)
+    (ext_rt / "engine" / "PoE1" / "lua51.dll").write_bytes(b"dll")
+    (ext_rt / "engine" / "PoE1" / "zlib1.dll").write_bytes(b"zlib")
+    (ext_rt / "engine" / "Data" / "bridge").mkdir(parents=True)
+    (ext_rt / "engine" / "Data" / "bridge" / "bridge.lua").write_text("-- bridge\n", encoding="utf-8")
+    (ext_rt / "cache").mkdir(parents=True)
+    (ext_rt / "cache" / "gamedata_3_30.sqlite").write_bytes(b"sqlite")
+    monkeypatch.setenv("POB_ROOT", str(ext_rt / "engine"))
+
+    cache_lut = timeless_worker.get_shared_cache_dir(rt_dir, pob_root=slim_game_dir.parent) / "timeless_lut"
     res = timeless.search("CODE", "", 9, "Lethal Pride", workers=1, runtime_dir=rt_dir)
     assert fetched_stems == ["LethalPride.zip"]
     assert not (lut_dir / "LethalPride.zip").exists(), "Must NEVER write .zip into slim game_dir"

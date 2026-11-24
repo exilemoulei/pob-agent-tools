@@ -306,7 +306,7 @@ function M.readLUT(seed, nodeID, jtype, probe_only)
 	if probe_only then return M.can_handle(jtype) end
 	local entry = M.ensure_mapped(jtype)
 	if not entry then return nil end
-	local ptr, rseed = entry.view.ptr, (jtype == 5) and (seed / 20) or seed
+	local ptr, vsz, rseed = entry.view.ptr, entry.view.size, (jtype == 5) and (seed / 20) or seed
 	local smin, smax = data.timelessJewelSeedMin[jtype], data.timelessJewelSeedMax[jtype]
 	if not smin or not smax or rseed < smin or rseed > smax then return {} end
 	local soff, ssize = rseed - smin, smax - smin + 1
@@ -316,17 +316,20 @@ function M.readLUT(seed, nodeID, jtype, probe_only)
 		local gv_offs, gv_ss = build_gv_offsets()
 		local pt = entry.gv_node_pos[nidx]
 		if not pt then
-			pt = {}
 			local sz_base, cur = nidx * gv_ss, gv_offs[nidx]
+			if not cur or sz_base + gv_ss > vsz then return nil end
+			pt = {}
 			for s = 0, gv_ss - 1 do pt[s + 1] = cur; cur = cur + ptr[sz_base + s] end
 			entry.gv_node_pos[nidx] = pt
 		end
 		local dlen, base, res = ptr[nidx * gv_ss + soff], pt[soff + 1], {}
+		if not base or base + dlen > vsz then return nil end
 		for i = 0, dlen - 1 do res[i + 1] = ptr[base + i] end
 		if dlen == 2 or dlen == 3 then res[1] = convert_gid(jtype, res[1])
 		elseif dlen == 6 or dlen == 8 then for i = 1, dlen / 2 do res[i] = convert_gid(jtype, res[i]) end end
 		return res
 	elseif nidx <= data.nodeIDList.sizeNotable then
+		if nidx * ssize + soff >= vsz then return nil end
 		return { convert_gid(jtype, ptr[nidx * ssize + soff]) }
 	end
 	return {}

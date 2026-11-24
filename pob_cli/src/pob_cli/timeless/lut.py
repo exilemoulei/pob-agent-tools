@@ -261,14 +261,23 @@ def load_node_index(game_dir: Path) -> dict[int, int]:
     return {node: row for node, row in rows.items() if row < n_notable}
 
 
-def load_table(game_dir: Path, stem: str, *, runtime_dir: Path | str | None = None) -> bytes:
+def load_table(
+    game_dir: Path,
+    stem: str,
+    *,
+    runtime_dir: Path | str | None = None,
+    cache_dir: Path | None = None,
+) -> bytes:
     """Decompressed lookup table. Reads PoB's file (or shared timeless cache); never writes next to PoB."""
     table_path = Path(game_dir) / "Data" / "TimelessJewelData" / f"{stem}.zip"
     if not table_path.is_file():
-        rt = Path(runtime_dir) if runtime_dir else None
-        cached = get_shared_cache_dir(rt, pob_root=Path(game_dir).parent) / "timeless_lut" / f"{stem}.zip"
-        if cached.is_file():
-            table_path = cached
+        if cache_dir is not None and (Path(cache_dir) / f"{stem}.zip").is_file():
+            table_path = Path(cache_dir) / f"{stem}.zip"
+        else:
+            rt = Path(runtime_dir) if runtime_dir else None
+            cached = get_shared_cache_dir(rt, pob_root=Path(game_dir).parent) / "timeless_lut" / f"{stem}.zip"
+            if cached.is_file():
+                table_path = cached
     try:
         return zlib.decompress(table_path.read_bytes())
     except zlib.error as exc:

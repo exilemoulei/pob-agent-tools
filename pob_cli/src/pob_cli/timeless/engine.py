@@ -271,13 +271,14 @@ def _resolve_seed_groups(
             groups, nodes, additive, seed0_sig = prng_grouped
             return groups, nodes, additive, seed0_sig, True
     if name in FLAT_TABLES:
+        lut_dir: Path | None = None
         if prng_active:
             try:
-                ensure_lut_files(game_dir, FLAT_TABLES[name], runtime_dir=runtime_dir)
+                lut_dir = ensure_lut_files(game_dir, FLAT_TABLES[name], runtime_dir=runtime_dir)
             except Exception:
-                pass
+                lut_dir = None
         index = load_node_index(game_dir)
-        table = load_table(game_dir, FLAT_TABLES[name], runtime_dir=runtime_dir)
+        table = load_table(game_dir, FLAT_TABLES[name], runtime_dir=runtime_dir, cache_dir=lut_dir)
         if len(table) != len(index) * len(seeds):
             raise ValueError(f"{name} lookup table has an unexpected size for its seed range.")
         nodes = _seed_nodes(first, xml, index, code=code)
