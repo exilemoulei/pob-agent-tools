@@ -26,7 +26,7 @@ Releases are cut by bumping `__version__` in `pob_cli/src/pob_cli/__init__.py` a
 
 ## Layout
 
-- `pob_cli/src/pob_cli/`: the package, five layers that import only downward. L0 foundation (`errors`, `ticks`, `os_util`, `compat`, `json_io`, `guardrails/`); L1 engine and data sources (`updater/`, `bridge_client`, `importers`, `game_data/`, `external_data/`, `poedb_client/`, `turn_receipts`); L2 domain (`analyzer/`, `mutators/`, `snapshot`, `comparator/`, `formatters/`, `bench/`, `trade_*`, `timeless/`); L3 `daemon/`; L4 the `cli*` entry points. The full table is in the architecture guide.
+- `pob_cli/src/pob_cli/`: the package, five layers that import only downward. L0 foundation (`errors`, `ticks`, `os_util`, `compat`, `json_io`, `guardrails/`); L1 engine and data sources (`updater/`, `bridge_client`, `importers`, `profile_import/`, `game_data/`, `external_data/`, `poedb_client/`, `turn_receipts`); L2 domain (`analyzer/`, `mutators/`, `snapshot`, `comparator/`, `formatters/`, `bench/`, `trade_*`, `timeless/`); L3 `daemon/`; L4 the `cli*` entry points. The full table is in the architecture guide.
 - `pob_cli/src/pob_cli/data/`, `lua/`: bundled `bench_costs.json` and `headless_runner.lua` (the macOS/Linux engine host).
 - `pob_cli/tests/`: pytest. `engine_paths.py` finds a real engine; `support.py` holds helpers for timing and network-failure tests.
 - `pob_cli/scripts/`: `check.py` and `arch_lint.py` (the gate) and the generators.
@@ -41,7 +41,7 @@ Releases are cut by bumping `__version__` in `pob_cli/src/pob_cli/__init__.py` a
 ## Hard rules
 
 - **PoE1 only, and the guardrails stay.** `guardrails/` blocks PoE2 builds, URLs, terms and commands on purpose, because agents mix the two games up. Never weaken it, and never let it block a PoE1-legal term (the list is in the architecture guide).
-- **Engine and network red lines.** Never commit the PobTools pack (1 GB, with unlicensed data). Never run stock LuaJIT on PoB >= 2.68 (its `+=` syntax fails there). Never call `api.github.com`, the PoE `character-window` API, or get past Cloudflare on poe.ninja. Trade is read-only, and `POESESSID` / `POE_COOKIE` live only in the environment, never in arguments, logs or git.
+- **Engine and network red lines.** Never commit the PobTools pack (1 GB, with unlicensed data). Never run stock LuaJIT on PoB >= 2.68 (its `+=` syntax fails there). Never call `api.github.com` or get past Cloudflare on poe.ninja. Official profile import (`pob profile` / `pob load` / `pob diagnose`) reads public `pathofexile.com/character-window/*` without cookies (using env `POESESSID`/`POE_COOKIE` only for private profiles) and `poe.game.qq.com` using env `POE_CN_SESSID`/`POE_CN_COOKIE`. Trade is read-only, and `POESESSID` / `POE_COOKIE` / `POE_CN_SESSID` / `POE_CN_COOKIE` live only in the environment, never in arguments, logs or git.
 - **Layers and budgets.** Imports only point down (L4 -> L0), with no cycles; files stay at or under 650 lines and 24,000 bytes, functions at or under 200 lines. Split a module before it hits the limit rather than raising it; `check.py --fast` fails otherwise.
 
 ## Conventions

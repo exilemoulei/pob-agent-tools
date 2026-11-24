@@ -471,11 +471,31 @@ class DaemonManager:
             slot_lock = self._get_slot_lock(target)
             with slot_lock:
                 worker = self._get_worker_in_barrier(target)
+                drift_warn: str | None = None
+                if (
+                    target == "main"
+                    and action not in ("load", "new_build", "diagnose")
+                    and not getattr(worker, "last_good_code", None)
+                ):
+                    with self._lock:
+                        loaded_others = sorted(
+                            name
+                            for name, other in self._workers.items()
+                            if name != "main" and getattr(other, "last_good_code", None)
+                        )
+                    if loaded_others:
+                        drift_warn = (
+                            f"[WARN] Target slot 'main' has no loaded build, while named slot(s) "
+                            f"{', '.join(loaded_others)} are loaded. Pass `--target {loaded_others[0]}` "
+                            "if you intended to inspect or mutate that build."
+                        )
                 res_slot = self._dispatch_slot(action, params, worker)
                 if action in ("load", "undo", "redo") or (
                     isinstance(res_slot, dict) and res_slot.get("applied") is True
                 ):
                     self._bump_worker_rev(worker)
+                if drift_warn and isinstance(res_slot, dict):
+                    res_slot.setdefault("slotDriftWarning", drift_warn)
                 if action in _STATE_META_ACTIONS:
                     return self._attach_state_meta(res_slot, worker)
                 return res_slot

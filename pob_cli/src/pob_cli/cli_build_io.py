@@ -78,24 +78,90 @@ def cmd_new(
     _emit_text("### New Build Created\n" + render_table(["Field", "Value"], rows), out_path=out_path)
 
 
+@click.command("profile")
+@click.argument("source", required=False, default=None)
+@click.option(
+    "--realm",
+    type=click.Choice(["pc", "xbox", "sony", "cn"], case_sensitive=False),
+    default=None,
+    help="Target realm (`pc`, `xbox`, `sony` for international, or `cn` for poe.game.qq.com).",
+)
+@click.option("--league", "league", default=None, help="Optional league name filter.")
+@click.option("--proxy", "proxy", default=None, help="Optional HTTP/SOCKS proxy URL.")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
+@_output_options
+def cmd_profile(
+    source: str | None,
+    realm: str | None,
+    league: str | None,
+    proxy: str | None,
+    as_json: bool,
+    compact: bool,
+    out_path: str | None,
+) -> None:
+    """List characters on an official PoE1 profile URL or Account#1234 (0 engine startup; supports Intl & CN)."""
+    from .errors import CrossGameHallucinationError, DaemonRequestError
+    from .profile_import import fetch_profile_listing
+
+    try:
+        res = fetch_profile_listing(source, realm=realm, league=league, proxy=proxy)
+    except CrossGameHallucinationError:
+        raise
+    except DaemonRequestError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        payload = {k: v for k, v in res.items() if k != "markdown"}
+        _emit_json(payload, compact=compact, out_path=out_path, sanitize=False)
+        return
+    _emit_text(str(res.get("markdown") or ""), out_path=out_path)
+
+
 @click.command("load")
-@click.argument("source")
+@click.argument("source", required=False, default=None)
+@click.option("--char", "char_name", default=None, help="Character name to import from an official profile URL.")
+@click.option("--league", "league", default=None, help="Optional league filter for official profile import.")
+@click.option(
+    "--realm",
+    type=click.Choice(["pc", "xbox", "sony", "cn"], case_sensitive=False),
+    default=None,
+    help="Official profile realm (`pc`, `xbox`, `sony`, or `cn` for poe.game.qq.com).",
+)
 @_target_option(allow_slot_alias=True)
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @_output_options
-def cmd_load(source: str, target: str, as_json: bool, compact: bool, out_path: str | None) -> None:
-    """Load a build from local .xml/.txt file (or @file), share URL (pobb.in/poedb/poe.ninja/...), or Base64 code."""
+def cmd_load(
+    source: str | None,
+    char_name: str | None,
+    league: str | None,
+    realm: str | None,
+    target: str,
+    as_json: bool,
+    compact: bool,
+    out_path: str | None,
+) -> None:
+    """Load a build from local .xml/.txt file (or @file), share/profile URL (pobb.in/poe.ninja/pathofexile.com/poe.game.qq.com), or Base64 code."""
     from .daemon import emit_stderr_update_alert
     from .errors import CrossGameHallucinationError
     from .formatters import render_table, strip_pob_escapes
     from .updater import load_update_state
 
+    if not source and (realm or "").lower() != "cn":
+        raise click.UsageError("Missing argument 'SOURCE' (provide a file/URL/code, or pass `--realm cn`).")
+
     params: dict[str, Any] = {"target": target}
-    resolved_src, resolved_xml_code = _prepare_load_source(source)
-    if resolved_xml_code is not None:
-        params["xml_code"] = resolved_xml_code
-    else:
-        params["source"] = resolved_src
+    if char_name and char_name.strip():
+        params["char_name"] = char_name.strip()
+    if league and league.strip():
+        params["league"] = league.strip()
+    if realm and realm.strip():
+        params["realm"] = realm.strip().lower()
+    if source:
+        resolved_src, resolved_xml_code = _prepare_load_source(source)
+        if resolved_xml_code is not None:
+            params["xml_code"] = resolved_xml_code
+        else:
+            params["source"] = resolved_src
 
     try:
         res = invoke_daemon("load", params)
@@ -151,6 +217,15 @@ def cmd_load(source: str, target: str, as_json: bool, compact: bool, out_path: s
         ["Active Skill", _dd_label(main_sk)],
     ]
     body = render_table(["Field", "Value"], rows)
+    extra_notes = [str(n) for n in (res.get("importNotes") or []) if n]
+    extra_warns = [str(w) for w in (res.get("translateWarnings") or []) if w]
+    if extra_notes or extra_warns:
+        tail = ["", "#### Import Notes"]
+        tail.extend(f"- {n}" for n in extra_notes)
+        tail.extend(f"- {w}" for w in extra_warns[:20])
+        if len(extra_warns) > 20:
+            tail.append(f"- ... ({len(extra_warns) - 20} more untranslated CN mods)")
+        body = body + "\n" + "\n".join(tail)
     _emit_text(_prepend_warning(body, res), out_path=out_path)
 
 
@@ -276,5 +351,5 @@ def cmd_redo(target: str, as_json: bool, compact: bool, out_path: str | None) ->
 
 
 def register_build_io_commands(group: click.Group) -> None:
-    for cmd in (cmd_new, cmd_load, cmd_save, cmd_export_code, cmd_switch_main, cmd_undo, cmd_redo):
+    for cmd in (cmd_profile, cmd_new, cmd_load, cmd_save, cmd_export_code, cmd_switch_main, cmd_undo, cmd_redo):
         group.add_command(cmd)

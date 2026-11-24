@@ -169,7 +169,8 @@ pob update --proxy http://127.0.0.1:7890        # 更新引擎，并刷新已加
 | `POB_GITHUB_MIRROR` | GitHub 下载镜像前缀（加速 `bootstrap` / `update`）。日常的版本检查走镜像；真要替换文件时，哈希清单优先直连 GitHub 读取，连不上才用镜像给的那份，此时引擎文件的可信度等同于该镜像 |
 | `POB_OFFLINE` | 设为 `1` 时跳过启动期与定时 GitHub 更新检查（等价于全局 `--offline`） |
 | `POB_HOOK_DISABLE_V5` | 设为 `1` 时关闭 `verify-stop` 的 V5 联网机制核验闸门（独立于 `POB_OFFLINE`） |
-| `POESESSID` / `POE_COOKIE` | 官方交易接口返回 401/403 时可按需设置；请只通过环境变量提供，不要写进命令参数或日志 |
+| `POESESSID` / `POE_COOKIE` | 官方交易接口返回 401/403 或导入**私密**国际服官网角色时按需设置（公开国际服资料无需 Cookie）；仅限环境变量，严禁写入命令参数或日志 |
+| `POE_CN_SESSID` / `POE_CN_COOKIE` | 导入国服官网（`poe.game.qq.com`）角色时按需设置；仅限环境变量，严禁写入命令参数或日志 |
 
 ---
 
@@ -202,13 +203,16 @@ pob stop
 
 ### 导入、创建和导出构筑
 
-`pob load` 支持本地 `.xml` / `.txt` 文件（直接传路径或 `@path`）、原始 Base64 分享码，以及 `pobb.in`、`poedb.tw/pob`、`poe.ninja/pob`、`maxroll.gg/poe/pob`、`pob.codes`、`pastebin.com`、`pastebinp.com`、`rentry.co` 这 8 个分享站。`poe.ninja` 角色主页链接也能直接导入：
+`pob load` 支持本地 `.xml` / `.txt` 文件（直接传路径或 `@path`）、原始 Base64 分享码、`pobb.in`、`poedb.tw/pob`、`poe.ninja/pob`、`maxroll.gg/poe/pob`、`pob.codes`、`pastebin.com`、`pastebinp.com`、`rentry.co` 这 8 个分享站、`poe.ninja` 角色主页链接，以及国际服（`pathofexile.com/account/view-profile/...`，公开资料免 Cookie）与国服（`poe.game.qq.com/account/view-profile/...`，需环境变量 `POE_CN_SESSID` 并自动用本地 3.30 词典转英文导入）官网角色链接；`pob profile` 可不启引擎先列出账号角色：
 
 ```powershell
 # 1. 将构筑导入默认的 main 槽位
 pob load "https://poedb.tw/pob/AWqOLSSmyG"
 pob load "@builds/my_chieftain.xml"
 pob load "https://poe.ninja/poe1/builds/mirage/character/AccountName-1234/CharName"
+pob profile "https://www.pathofexile.com/account/view-profile/AccountName-1234"
+pob load "https://www.pathofexile.com/account/view-profile/AccountName-1234" --char "CharName"
+pob diagnose "https://poe.game.qq.com/account/view-profile/CnAccount-1234" --char "角色名" -q "哪里可以提升？"
 
 # 2. 用 --target 管理其他构筑，例如用于对比的 ref、用于试配的 exp1
 pob load "https://pobb.in/xxxxxx" --target ref

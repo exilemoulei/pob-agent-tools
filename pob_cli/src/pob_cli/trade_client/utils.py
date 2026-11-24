@@ -13,6 +13,9 @@ from urllib.parse import quote
 
 import httpx
 
+from ..guardrails import redact as redact
+from ..guardrails.redact import _COOKIE_SECRET_RE as _COOKIE_SECRET_RE
+from ..guardrails.redact import _HEX_TOKEN_RE as _HEX_TOKEN_RE
 from ..json_io import atomic_write_json as _atomic_write_json  # noqa: F401  (re-exported)
 from ..os_util import _is_lockfile_stale as _is_lockfile_stale_generic
 from ..os_util import _is_pid_alive as _is_pid_alive
@@ -33,8 +36,6 @@ _POLICY_ALIASES: dict[str, str] = {
     "data": "trade-data-request-limit",
 }
 
-_COOKIE_SECRET_RE = re.compile(r"\b(?:POESESSID|cf_clearance)=[^;\s]+", re.IGNORECASE)
-_HEX_TOKEN_RE = re.compile(r"\b[0-9a-fA-F]{16,}\b")
 _RULE_STATE_HEADER_RE = re.compile(r"^x-rate-limit-([a-z0-9_-]+)-state$")
 
 _SKIP_LEAGUE_RE = re.compile(
@@ -97,16 +98,8 @@ class NoResults(TradeError):
 
 
 # ---------------------------------------------------------------------------
-# Redaction, env-only cookie, atomic write, and cross-process lockfile helpers
+# Env-only cookie, atomic write, and cross-process lockfile helpers
 # ---------------------------------------------------------------------------
-
-
-def redact(text: str) -> str:
-    """Remove cookie secrets and >=16-char hex tokens from user-facing text."""
-    if not text:
-        return ""
-    cleaned = _COOKIE_SECRET_RE.sub("[redacted]", text)
-    return _HEX_TOKEN_RE.sub("[redacted]", cleaned)
 
 
 def _normalize_cookie(raw: str | None) -> str | None:

@@ -902,6 +902,16 @@ if not ok_bridge then
 	os.exit(1)
 end
 
+local RUNNER_DIR = ((debug.getinfo(1, "S") and debug.getinfo(1, "S").source) or ""):match("^@?(.*)[/\\][^/\\]+$") or "."
+local import_char_json_fn = nil
+do
+	local chunk = loadfile(RUNNER_DIR .. "/import_char_json.lua")
+	if chunk then
+		local ok_mod, mod_fn = pcall(chunk)
+		if ok_mod and type(mod_fn) == "function" then import_char_json_fn = mod_fn end
+	end
+end
+
 -- ---------------------------------------------------------------------------
 -- Blocking NDJSON stdin/stdout RPC loop
 -- ---------------------------------------------------------------------------
@@ -929,7 +939,15 @@ while true do
 				local params = req.params
 				if type(params) ~= "table" then params = {} end
 				local ok, res = xpcall(function()
-					return bridge_dispatcher(method, params)
+					if method == "import_character_json" and import_char_json_fn then
+						return import_char_json_fn(params, bridge_dispatcher)
+					end
+					local out = bridge_dispatcher(method, params)
+					if method == "version" and type(out) == "table" and import_char_json_fn then
+						if type(out.caps) ~= "table" then out.caps = {} end
+						out.caps.importCharacterJson = true
+					end
+					return out
 				end, debug.traceback)
 				if ok then
 					send_result(id, res)

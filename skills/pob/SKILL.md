@@ -16,6 +16,8 @@ description: Path of Exile 1 (PoE1 3.30, 流放之路1) build diagnosis, headles
 - **A. Single-build question** (1 step):
   ```powershell
   pob diagnose @build.xml -q "<player question>" [--keep SPEC]... [--top 5]
+  pob profile "https://www.pathofexile.com/account/view-profile/<Acc-1234>" [--realm pc|cn] [--league L] # 0-engine char list (public intl needs NO POESESSID; CN uses env POE_CN_SESSID)
+  pob diagnose "https://www.pathofexile.com/account/view-profile/<Acc-1234>" --char "<name>" -q "<question>" # Official Intl/CN profile import (never print/inspect POESESSID/env vars in shell; check `pob status`)
   ```
   Returns Pinnacle audit, hard gaps, dead/anti-synergy supports, `0.033s` trigger/CoC overspeed & CwC checks, Low-Life/CI/EB bricks, Ascendancy/Bloodline node stats, all skill groups/gear/jewels, 3.30 fact cards, top upgrades (with caveats), and grounded question traps. Do NOT waste extra calls re-running `skills`/`items`/`tree` unless inspecting one raw item or `calc` formula!
 - **B. Dual-build A/B comparison** (1 step):

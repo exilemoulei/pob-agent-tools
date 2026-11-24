@@ -169,7 +169,8 @@ Common environment variables:
 | `POB_GITHUB_MIRROR` | Mirror prefix for GitHub downloads during `bootstrap` and `update`. The routine version check goes through the mirror. Before files are replaced, the hash lists are read from GitHub itself, and the mirror's copy is used only when GitHub cannot be reached; the engine files are then only as trustworthy as the mirror |
 | `POB_OFFLINE` | Set to `1` to skip startup and scheduled GitHub update checks; equivalent to global `--offline` |
 | `POB_HOOK_DISABLE_V5` | Set to `1` to disable the Gate 3 V5 web-research verification gate (independent of `POB_OFFLINE`) |
-| `POESESSID` / `POE_COOKIE` | Optional when the official trade API returns 401/403; provide them only as environment variables, never as CLI arguments or log entries |
+| `POESESSID` / `POE_COOKIE` | Optional when the official trade API returns 401/403 or importing a **private** international official profile (public profiles need no cookie); environment variable only, never in CLI arguments or logs |
+| `POE_CN_SESSID` / `POE_CN_COOKIE` | Optional when importing a CN official profile (`poe.game.qq.com`); environment variable only, never in CLI arguments or logs |
 
 ---
 
@@ -202,13 +203,16 @@ pob stop
 
 ### Import, create, and export builds
 
-`pob load` accepts local `.xml` / `.txt` files (direct paths or `@path`), raw Base64 share codes, and links from eight share sites: `pobb.in`, `poedb.tw/pob`, `poe.ninja/pob`, `maxroll.gg/poe/pob`, `pob.codes`, `pastebin.com`, `pastebinp.com`, and `rentry.co`. It can also import a `poe.ninja` character page URL:
+`pob load` accepts local `.xml` / `.txt` files (direct paths or `@path`), raw Base64 share codes, links from eight share sites (`pobb.in`, `poedb.tw/pob`, `poe.ninja/pob`, `maxroll.gg/poe/pob`, `pob.codes`, `pastebin.com`, `pastebinp.com`, `rentry.co`), `poe.ninja` character page URLs, and official PoE1 profile links on `pathofexile.com/account/view-profile/...` (public profiles require no cookie) or `poe.game.qq.com/account/view-profile/...` (uses env `POE_CN_SESSID` and translates Chinese character JSON with the local 3.30 dictionary). Use `pob profile` to list an account's characters without starting the engine:
 
 ```powershell
 # 1. Import a build into the default main slot
 pob load "https://poedb.tw/pob/AWqOLSSmyG"
 pob load "@builds/my_chieftain.xml"
 pob load "https://poe.ninja/poe1/builds/mirage/character/AccountName-1234/CharName"
+pob profile "https://www.pathofexile.com/account/view-profile/AccountName-1234"
+pob load "https://www.pathofexile.com/account/view-profile/AccountName-1234" --char "CharName"
+pob diagnose "https://poe.game.qq.com/account/view-profile/CnAccount-1234" --char "CharName" -q "How can I upgrade?"
 
 # 2. Use --target for other builds, such as ref for comparison or exp1 for experiments
 pob load "https://pobb.in/xxxxxx" --target ref

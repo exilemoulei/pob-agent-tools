@@ -10,10 +10,11 @@ Every subcommand with its flags, in one place. For when to use which, start with
 pob serve [--offline] [--proxy <url>] [--port N] [--runtime-dir <dir>]                 # Foreground persistent daemon (use IsDaemon:true in job-reaped shells)
 pob bootstrap [--proxy <url>] [--mirror <url>] [--no-zh] [--from-dir <dir>] [--json]   # Install/seed managed engine (PobTools-zh + PoB master)
 pob update [--check] [--force] [--proxy <url>] [--mirror <url>] [--offline] [--json]   # Incremental SHA1 update (hot-reloads live daemon slots)
-pob status [--json]                                                                    # Daemon PID, PoB/PobTools/Data versions, updateStatus, all named slots
+pob status [--json]                                                                    # Daemon PID, PoB/PobTools/Data versions, boolean Auth env status, updateStatus, all named slots
 pob self-update [--check] [--version X.Y.Z] [--proxy <url>] [--mirror <url>] [--json]  # Update pob itself (standalone builds; signed release only); --check reports latest + the update command for this install; network/disk/swap failure exits 5
+pob profile [ACCOUNT_OR_URL] [--realm pc|xbox|sony|cn] [--league L] [--proxy U] [--json] # 0-engine official profile character list (pathofexile.com public no-cookie, or poe.game.qq.com via env POE_CN_SESSID)
 pob new [--class C] [--asc A] [--secondary-asc S] [--level N] [--target <slug>] [--json]
-pob load "<url|code|@path.xml>" [--target <slug>] [--json]                             # XML, Base64, 8 share sites, or poe.ninja char URL
+pob load [SOURCE] [--char "<name>"] [--league L] [--realm pc|xbox|sony|cn] [--target <slug>] [--json] # XML, Base64, 8 share sites, poe.ninja char URL, or official Intl/CN profile URL
 pob save <out.xml> | pob export-code [--target <slug>] [--json]                        # Export XML (CLI disk write, R11) or Base64 code
 pob switch-main [--spec S] [--skill-group G] [--skill N] [--part N] [--item-set I] [--skill-set S] [--config-set C] [--loadout L]
 pob undo | pob redo | pob stop [--json]
@@ -21,7 +22,7 @@ pob undo | pob redo | pob stop [--json]
 # Read-Only Inspection, Grounding, Hook Guardrails & One-Shot Diagnosis
 pob ground "<prompt_text>" [--limit 8] [--json]                                        # <15ms daemon-free 3.30 entity cards + PoE2/patch trap alerts
 pob hook <pre-prompt|pre-tool|verify-stop> [--protocol raw|agy|claude]                 # Stdin/stdout JSON lifecycle guardrails (grounding + [MECHANICS-RESEARCH-REQUIRED], shell pre-tool deny/rewrite, stop V1..V5 + auto-remediation)
-pob diagnose [SOURCE] [-c|--compare REF] [-q|--ask "<text>"] [--keep <spec>]... [--top 5] [--no-rank] [--target <slug>] [--ref-target <slug>] [--json] # One-shot: [Env (NOT PoE2) | rev=N] + Pinnacle audit + gaps/bricks/dead-supports/triggers + 3.30 cards + upgrades (or dual-build 3-baseline compare)
+pob diagnose [SOURCE] [-c|--compare REF] [-q|--ask "<text>"] [--char "<name>"] [--league L] [--realm pc|xbox|sony|cn] [--keep <spec>]... [--top 5] [--no-rank] [--target <slug>] [--ref-target <slug>] [--json] # One-shot: [Env (NOT PoE2) | rev=N] + Pinnacle audit + gaps/bricks/dead-supports/triggers + 3.30 cards + upgrades (or dual-build 3-baseline compare)
 pob summary [--target <slug>] [--json]                                                 # [Env | rev=N] + Offence (Hit/DoT/FullDPS/Minion*), Defence (EHP/MaxHit/Res), Warnings
 pob audit [--keep <spec>]... [--no-attribution] [--target <slug>] [--json]             # [Env | rev=N] + Hard gaps + 4-dim water audit -> Pinnacle (per-item PoB attribution; --keep var|Flask N|flasks|gem|customMods|party)
 pob config list [--all] [--search "<sub >"] [--with-options] [--target <slug>] [--json] # Active/filtered ConfigTab vars + raw customMods

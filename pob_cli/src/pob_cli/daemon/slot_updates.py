@@ -7,6 +7,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
+from ..guardrails import get_auth_env_status
 from ..updater import (
     is_valid_engine_dir,
     resolve_engine_root,
@@ -212,6 +213,7 @@ def build_status_payload(manager: DaemonManager) -> dict[str, Any]:
             "idleSec": round(time.time() - manager.last_active_ts, 1),
             "engineDir": pob_dir_str,
             "updateStatus": upd_copy,
+            "auth": get_auth_env_status(),
             "main": main_entry,
             "ref": ref_entry,
             "slots": slots_status,

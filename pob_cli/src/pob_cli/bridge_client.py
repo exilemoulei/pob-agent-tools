@@ -149,6 +149,11 @@ class BridgeWorker:
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             proc_env = os.environ.copy()
             proc_env.update(extra_env)
+            # Mirror POB_PROXY into HTTPS_PROXY/HTTP_PROXY so Windows pob-zh.exe lcurl honors it.
+            pob_proxy = proc_env.get("POB_PROXY", "").strip()
+            if pob_proxy:
+                proc_env.setdefault("HTTPS_PROXY", pob_proxy)
+                proc_env.setdefault("HTTP_PROXY", pob_proxy)
             try:
                 self._proc = subprocess.Popen(
                     cmd,
@@ -488,7 +493,19 @@ class BridgeWorker:
     ) -> dict[str, Any]:
         """Thread-safe RPC call with automatic timeout selection, dynamic R2, and import_code deadlock healing."""
         if timeout is None:
-            timeout = 30.0 if method in {"import_from_url", "node_power", "gem_search"} else 15.0
+            timeout = (
+                30.0
+                if method
+                in {
+                    "import_from_url",
+                    "fetch_characters",
+                    "import_account_character",
+                    "import_character_json",
+                    "node_power",
+                    "gem_search",
+                }
+                else 15.0
+            )
         with self._lock:
             if method == "import_code":
                 code = str((params or {}).get("code") or "")

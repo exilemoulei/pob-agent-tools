@@ -42,6 +42,13 @@ def _op_config(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int
     if reset_list is not None and not isinstance(reset_list, list):
         raise ValueError(f"Batch op 'config' at step {idx} expects 'reset' to be a JSON list.")
     pairs = list((set_map or {}).items())
+    raw_assign = op.get("assignments")
+    if isinstance(raw_assign, dict):
+        pairs.extend(raw_assign.items())
+    elif isinstance(raw_assign, list):
+        for item in raw_assign:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                pairs.append((item[0], item[1]))
     for var in reset_list or []:
         pairs.append((var, "reset"))
     cm = op.get("customMods") if "customMods" in op else op.get("custom_mods")
@@ -57,7 +64,9 @@ def _op_config(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int
 
 
 def _op_flask(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
-    f_sel = op.get("index", "all")
+    f_sel = op.get("index")
+    if f_sel is None:
+        f_sel = op.get("flask_index") if "flask_index" in op else op.get("flaskIndex", "all")
     act = bool(op.get("active", True))
     slots = _parse_flask_slots(f_sel)
     _call_batch(w, [("set_slot_active", {"slotName": s_name, "active": act}) for s_name in slots])
@@ -139,7 +148,7 @@ def _op_item_edit(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: 
 def _op_unequip(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
     slot_query = str(op.get("slot") or op.get("slotName") or "").strip()
     if not slot_query:
-        raw_kind = str(op.get("op") or op.get("type") or "unequip")
+        raw_kind = str(op.get("op") or op.get("type") or op.get("action") or "unequip")
         raise ValueError(f"Batch op '{raw_kind}' at step {idx} requires 'slot'.")
     check_input(slot_query, scope=GuardrailScope.SLOT, expected_game="poe1")
     resolved_slot = _resolve_slot_from_items(cache.get_items(), slot_query)
@@ -288,32 +297,106 @@ def _op_switch_main(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx
     return {"step": idx, "op": "switch_main", "changes": sw_res["changes"]}
 
 
+_SKILL_SUB_ACTIONS = frozenset({"set", "add", "remove", "rm"})
+_BATCH_OP_EXAMPLE = (
+    '[{"op":"config","set":{"enemyIsBoss":"Uber"}},'
+    '{"op":"skill_add","group":"main","gem":"Empower","level":4},'
+    '{"op":"tree","allocate":["12345"]}]'
+)
+
+
+def _dispatch_skill_op(
+    w: BridgeWorker,
+    op: dict[str, Any],
+    cache: _BatchCache,
+    idx: int,
+    *,
+    default_action: str | None = None,
+) -> dict[str, Any]:
+    norm = dict(op)
+    raw_act = str(norm.get("action") or "").strip().lower()
+    sub_action = raw_act if raw_act in _SKILL_SUB_ACTIONS else default_action
+    if sub_action is not None:
+        norm["action"] = "remove" if sub_action == "rm" else sub_action
+    elif raw_act:
+        norm.pop("action", None)
+
+    if sub_action == "add":
+        if not (norm.get("addGem") or norm.get("add_gem")):
+            gem_name = norm.pop("gem", None) or norm.get("name")
+            if gem_name is None or not str(gem_name).strip():
+                raise ValueError(f"Batch op 'skill_add' at step {idx} requires 'gem' or 'addGem'.")
+            norm["addGem"] = str(gem_name).strip()
+    elif sub_action in ("remove", "rm"):
+        if "removeGem" not in norm and "remove_gem" not in norm:
+            gem_sel = norm.pop("gem", None)
+            if gem_sel is None:
+                gem_sel = norm.get("index")
+            if gem_sel is None:
+                raise ValueError(f"Batch op 'skill_rm' at step {idx} requires 'gem' or 'removeGem'.")
+            norm["removeGem"] = gem_sel
+    elif sub_action == "set":
+        if norm.get("gem") is None and norm.get("index") is not None and not (
+            norm.get("addGem") or norm.get("add_gem") or "removeGem" in norm or "remove_gem" in norm
+        ):
+            norm["gem"] = norm["index"]
+
+    return _op_skill(w, norm, cache, idx)
+
+
+def _op_skill_dispatch(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
+    return _dispatch_skill_op(w, op, cache, idx, default_action=None)
+
+
+def _op_skill_set(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
+    return _dispatch_skill_op(w, op, cache, idx, default_action="set")
+
+
+def _op_skill_add(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
+    return _dispatch_skill_op(w, op, cache, idx, default_action="add")
+
+
+def _op_skill_rm(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
+    return _dispatch_skill_op(w, op, cache, idx, default_action="remove")
+
+
 _BATCH_OP_HANDLERS: dict[str, _BatchOpHandler] = {
     "config": _op_config,
+    "config_set": _op_config,
     "flask": _op_flask,
+    "item_flask": _op_flask,
     "item": _op_item,
+    "item_try": _op_item,
     "item_db": _op_item_db,
     "item_edit": _op_item_edit,
     "unequip": _op_unequip,
     "item_unequip": _op_unequip,
     "unequip_slot": _op_unequip,
     "anoint": _op_anoint,
+    "item_anoint": _op_anoint,
     "tree": _op_tree,
+    "tree_change": _op_tree,
     "tree_reset": _op_tree_reset,
     "reset_tree": _op_tree_reset,
     "import_tree_url": _op_import_tree_url,
     "new_build": _op_new_build,
     "set_level": _op_set_level,
     "set_class": _op_set_class,
+    "tree_set_class": _op_set_class,
     "switch_main": _op_switch_main,
     "add_group": _op_add_group,
     "new_group": _op_add_group,
+    "skill_new_group": _op_add_group,
     "delete_group": _op_delete_group,
     "rm_group": _op_delete_group,
     "remove_group": _op_delete_group,
     "set_group": _op_set_group,
     "replace_group": _op_replace_group,
-    "skill": _op_skill,
+    "skill_replace_group": _op_replace_group,
+    "skill": _op_skill_dispatch,
+    "skill_set": _op_skill_set,
+    "skill_add": _op_skill_add,
+    "skill_rm": _op_skill_rm,
 }
 
 
@@ -327,10 +410,13 @@ def _execute_batch_ops(
     for idx, op in enumerate(ops, start=1):
         if not isinstance(op, dict):
             raise ValueError(f"Batch op at step {idx} must be a JSON object.")
-        raw_kind = str(op.get("op") or op.get("type") or "").strip().lower()
+        raw_kind = str(op.get("op") or op.get("type") or op.get("action") or "").strip().lower()
         kind = raw_kind.replace("-", "_")
         handler = _BATCH_OP_HANDLERS.get(kind)
         if handler is None:
-            raise ValueError(f"Unsupported batch op type '{raw_kind}' at step {idx}.")
+            raise ValueError(
+                f"Unsupported batch op type '{raw_kind}' at step {idx}. "
+                f"Example valid ops: {_BATCH_OP_EXAMPLE}"
+            )
         step_results.append(handler(w, op, cache, idx))
     return step_results

@@ -13,7 +13,7 @@ from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
-from .guardrails import normalize_equipment_slot
+from .guardrails import normalize_equipment_slot, redact_secrets
 from .updater.paths import get_runtime_dir
 
 RECEIPTS_FILENAME = "turn_receipts.jsonl"
@@ -132,10 +132,10 @@ def _receipt_slot(raw: str) -> str | None:
 
 def classify_cli_args(raw_args: Sequence[str]) -> dict[str, Any]:
     """Classify CLI argv into receipt metadata without side effects."""
-    # The ledger is a plain file: a proxy or mirror URL can carry a password (http://user:pass@host).
-    # Masked here, before anything is derived, so no receipt field can carry one.
-    args = [_URL_USERINFO_RE.sub(r"\g<1>***@", str(a)) for a in raw_args if a is not None]
-    cmd_str = " ".join(args)[:240]
+    # The ledger is a plain file: a proxy or mirror URL can carry a password (http://user:pass@host),
+    # and CLI args can accidentally contain cookies/tokens. Scrub before deriving any receipt fields.
+    args = [redact_secrets(_URL_USERINFO_RE.sub(r"\g<1>***@", str(a))) for a in raw_args if a is not None]
+    cmd_str = redact_secrets(" ".join(args))[:240]
 
     if not args or any(tok in _HELP_VERSION_FLAGS for tok in args):
         return {

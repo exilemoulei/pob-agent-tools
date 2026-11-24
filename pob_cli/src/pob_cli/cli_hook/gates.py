@@ -90,6 +90,35 @@ _OUT_OR_REDIRECT_RE = re.compile(
     re.IGNORECASE,
 )
 _STRIP_JSON_FLAGS_RE = re.compile(r"(?:^|\s)--(?:json|compact)(?=\s|$)")
+_SECRET_FILE_RE = re.compile(
+    r"(?:^|[/\\\"'\s])(?:daemon\.json|oauth_token\.json|Settings\.xml)(?:$|[\"'`\s;,|&)>])",
+    re.IGNORECASE,
+)
+_SECRET_ENV_NAME_RE = re.compile(
+    r"\b(?:POESESSID|POE_COOKIE|POE_CN_SESSID|POE_CN_COOKIE)\b",
+    re.IGNORECASE,
+)
+_ENV_DUMP_RE = re.compile(
+    r"(?:\b(?:get-childitem|gci|dir|ls|get-item|gi|get-content|gc|cat)\b[^\n;|&]*\benv:"
+    r"|\bprintenv\b"
+    r"|\bos\.environ\b"
+    r"|\bprocess\.env\b"
+    r"|\[(?:System\.)?Environment\]::GetEnvironmentVariables?\b"
+    r"|\bexport\s+-p\b)",
+    re.IGNORECASE,
+)
+_STANDALONE_ENV_SET_RE = re.compile(
+    r"(?:^|(?:&&|\|\||[;|&]|(?:\bcmd(?:\.exe)?\s+/[ck]|\b(?:ba|z|da)?sh\s+-\w*c|\b(?:pwsh|powershell)(?:\.exe)?\s+-(?:c|command)))\s*[\"']?)"
+    r"\s*(?:"
+    r"env(?=\s*(?:$|[;|&>\"'`])|\s+-)"
+    r"|set(?=\s*(?:$|[;|&>\"'`])|\s+[A-Za-z_][A-Za-z0-9_]*(?:\s|$|[;|&>\"'`]))"
+    r")",
+    re.IGNORECASE,
+)
+_NO_SECRET_ENV_DUMP_REASON = (
+    "禁止读取敏感凭据文件（daemon.json / oauth_token.json / Settings.xml）或打印环境变量/会话凭据（NO_SECRET_ENV_DUMP）。"
+    "请运行 `pob status` 查看纯布尔认证状态（set/unset），切勿回显或打印任何凭据值。"
+)
 
 _POB_HELP_QUICK_REF = (
     "禁止运行 pob --help 浪费步数（NO_POB_HELP）。核心命令速查：\n"
@@ -253,12 +282,21 @@ def _deny_tool(rule_id: str, reason: str) -> dict[str, Any]:
     return {"decision": "deny", "ruleId": rule_id, "reason": reason, "rewrittenCommand": None}
 
 
+def _is_secret_env_dump_cmd(cmd: str) -> bool:
+    return bool(
+        _SECRET_ENV_NAME_RE.search(cmd)
+        or _ENV_DUMP_RE.search(cmd)
+        or _STANDALONE_ENV_SET_RE.search(cmd)
+        or _SECRET_FILE_RE.search(cmd)
+    )
+
+
 def handle_pre_tool(
     req: dict[str, Any],
     *,
     runtime_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Gate 2: enforce deterministic pre-tool rules (shell + file/grep engine-Lua guards)."""
+    """Gate 2: enforce deterministic pre-tool rules (shell + file/grep engine-Lua & secret guards)."""
     tool_name = str(req.get("toolName") or "").strip().lower()
     if tool_name in _FILE_INSPECT_TOOLS:
         cand_paths: list[str] = []
@@ -269,6 +307,8 @@ def handle_pre_tool(
             v = req.get(k)
             if isinstance(v, str) and v.strip():
                 cand_paths.append(v.strip())
+        if any(_SECRET_FILE_RE.search(p) for p in cand_paths):
+            return _deny_tool("NO_SECRET_ENV_DUMP", _NO_SECRET_ENV_DUMP_REASON)
         if any(_RAW_LUA_PATH_RE.search(p) or _RAW_ENGINE_DIR_RE.search(p) for p in cand_paths):
             return _deny_tool(
                 "NO_RAW_ENGINE_LUA",
@@ -282,6 +322,10 @@ def handle_pre_tool(
     cmd = str(req.get("commandLine") or "").strip()
     if not cmd:
         return _allow_tool()
+
+    # Rule 0: NO_SECRET_ENV_DUMP
+    if _is_secret_env_dump_cmd(cmd):
+        return _deny_tool("NO_SECRET_ENV_DUMP", _NO_SECRET_ENV_DUMP_REASON)
 
     # Rule 1: NO_RAW_ENGINE_LUA
     if _RAW_LUA_READER_RE.search(cmd) and (_RAW_LUA_PATH_RE.search(cmd) or _RAW_ENGINE_DIR_RE.search(cmd)):

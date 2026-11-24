@@ -287,6 +287,14 @@ URL_GATE_RULES: tuple[UrlGateRule, ...] = (
         counterpart_hint="Use `pob2 trade` for PoE2 `/trade2/`, or `/trade/` (`pob trade`) for PoE1.",
     ),
     UrlGateRule(
+        rule_id="URL_POE2_OFFICIAL_SITE",
+        belongs_to="poe2",
+        pattern=re.compile(r"^(?:https?://)?(?:[a-z0-9-]+\.)?pathofexile2\.com(?=[/?#:]|$)", re.IGNORECASE),
+        label="pathofexile2.com (PoE2 Official Site)",
+        counterpart_hint="Use `pob2` for PoE2 links, or `https://www.pathofexile.com/...` (`pob`) for PoE1.",
+        url_rewriter=(r"(?i)\bpathofexile2\.com\b", "pathofexile.com"),
+    ),
+    UrlGateRule(
         rule_id="URL_POE2_WIKI",
         belongs_to="poe2",
         pattern=re.compile(r"^(?:https?://)?(?:www\.)?poe2wiki\.net(?=[/?#:]|$)", re.IGNORECASE),

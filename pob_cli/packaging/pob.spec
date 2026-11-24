@@ -20,6 +20,7 @@ entry_script = os.path.join(spec_dir, "pyinstaller_entry.py")
 datas = collect_data_files("certifi") + [
     (os.path.join(src_dir, "pob_cli", "data", "bench_costs.json"), os.path.join("pob_cli", "data")),
     (os.path.join(src_dir, "pob_cli", "lua", "headless_runner.lua"), os.path.join("pob_cli", "lua")),
+    (os.path.join(src_dir, "pob_cli", "lua", "import_char_json.lua"), os.path.join("pob_cli", "lua")),
 ]
 bundle_runtime = os.environ.get("POB_BUNDLE_RUNTIME", "").strip()
 if bundle_runtime:

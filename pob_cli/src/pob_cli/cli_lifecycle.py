@@ -289,6 +289,7 @@ def cmd_status(as_json: bool, compact: bool, out_path: str | None) -> None:
     """Show daemon status, engine versions, update state, and loaded builds across slots."""
     from .daemon import emit_stderr_update_alert
     from .formatters import render_table
+    from .guardrails import get_auth_env_status
 
     res = invoke_daemon("status")
     upd = res.get("updateStatus") or {}
@@ -341,11 +342,19 @@ def cmd_status(as_json: bool, compact: bool, out_path: str | None) -> None:
             ]
         )
 
+    raw_auth = res.get("auth")
+    auth = raw_auth if isinstance(raw_auth, dict) else get_auth_env_status()
+    auth_line = (
+        f"Auth: POESESSID={'set' if auth.get('poesessid') else 'unset'}, "
+        f"POE_COOKIE={'set' if auth.get('poeCookie') else 'unset'}, "
+        f"POE_CN_SESSID={'set' if auth.get('poeCnSessid') else 'unset'}, "
+        f"POE_CN_COOKIE={'set' if auth.get('poeCnCookie') else 'unset'}\n"
+    )
     header = (
         f"Daemon PID: `{res.get('pid')}` | Uptime: `{res.get('uptimeSec')}s` | "
         f"PoB: `{pob_ver}` | PobTools: `{tools_ver}` | Data: `{data_ver}` | Update: `{upd_state}`\n"
     )
-    body = header + render_table(["Slot", "State", "Class", "Ascendancy", "Level", "Undo/Redo"], rows)
+    body = header + auth_line + render_table(["Slot", "State", "Class", "Ascendancy", "Level", "Undo/Redo"], rows)
     _emit_text(_prepend_warning(body, res), out_path=out_path)
 
 

@@ -22,8 +22,8 @@ pob <command>  (L4 cli*.py)
 
 | Layer | Modules | Role |
 |---|---|---|
-| L0 | `errors.py`, `ticks.py`, `os_util.py`, `compat.py`, `json_io.py`, `guardrails/` (incl. `reply_patterns.py`, `reply_scanner.py`) | Foundation and static rules: error types, tick math, process/lockfile helpers, signature-compat/UTF-8 helpers, fail-safe JSON I/O, PoE2 guardrails, reply scanning for hooks |
-| L1 | `updater/`, `bridge_protocol.py`, `bridge_client.py`, `importers.py`, `game_data/`, `external_data/`, `poedb_client/`, `turn_receipts.py` | Engine runtime and data sources: engine install and updates, the bridge to the engine, build import, local game data, poe.ninja / wiki / PoEDB clients, the hook receipt ledger |
+| L0 | `errors.py`, `ticks.py`, `os_util.py`, `compat.py`, `json_io.py`, `guardrails/` (incl. `redact.py`, `reply_patterns.py`, `reply_scanner.py`) | Foundation and static rules: error types, tick math, process/lockfile helpers, signature-compat/UTF-8 helpers, fail-safe JSON I/O, secret redaction, PoE2 guardrails, reply scanning for hooks |
+| L1 | `updater/`, `bridge_protocol.py`, `bridge_client.py`, `importers.py`, `profile_import/`, `game_data/`, `external_data/`, `poedb_client/`, `turn_receipts.py` | Engine runtime and data sources: engine install and updates, the bridge to the engine, build import, official Intl/CN profile import & ZH->EN translation, local game data, poe.ninja / wiki / PoEDB clients, the hook receipt ledger |
 | L2 | `formatters/`, `snapshot.py`, `analyzer/`, `mutators/`, `comparator/`, `bench/`, `item_inspect.py`, `trade_craft.py`, `trade_item/`, `trade_client/`, `trade_query/`, `trade_eval/`, `timeless/` | Domain core: rendering, what-if transactions, audits, build edits, comparison, crafting bench, trade, timeless jewels |
 | L3 | `daemon/` | The daemon server and its client |
 | L4 | `cli.py`, `cli_common.py`, `cli_lifecycle.py`, `cli_build_io.py`, `cli_inspect.py`, `cli_inspect_parts.py`, `cli_mutate_items.py`, `cli_mutate.py`, `cli_optimize.py`, `cli_self_update.py`, `cli_data_render.py`, `cli_data.py`, `cli_trade/`, `cli_timeless.py`, `cli_hook/` | Command-line entry points |
@@ -61,7 +61,8 @@ Runtime state in `<POB_RUNTIME_DIR>/`: `daemon.json`, `update_state.json`, `slot
 | `POB_LEGACY_DIR` | Read-only legacy PobTools seed |
 | `POB_LOCALE` | Engine UI locale for `pob-zh.exe` (default `zh-rTW`, see below) |
 | `POB_HOOK_DISABLE_RECEIPTS=1`, `POB_HOOK_DISABLE_V5=1`, `POB_HOOK_SESSION_ID` | Hook receipts, the V5 research gate, and per-session isolation |
-| `POESESSID` / `POE_COOKIE` | Trade only, after a 401/403; environment only |
+| `POESESSID` / `POE_COOKIE` | Trade (after 401/403) and private international official profiles; environment only, never printed or passed as args |
+| `POE_CN_SESSID` / `POE_CN_COOKIE` | CN official server (`poe.game.qq.com`) character import; environment only, never printed or passed as args |
 | `POB_TEST_PERF_SLACK` | Tests only: multiplies timing budgets on slow CI runners |
 
 ## Chinese locales
@@ -110,8 +111,9 @@ Runtime state in `<POB_RUNTIME_DIR>/`: `daemon.json`, `update_state.json`, `slot
 
 ### External APIs (`R6`, `R7`)
 
-- Never call `www.pathofexile.com/character-window/*` (Cloudflare 403) or get past Cloudflare Turnstile on `poe.ninja/poe1/builds/*` HTML.
-- poe.ninja character import tries the `Name-1234` hyphen form first (the `#` form only after a 404) and resolves `overview` from `build-index-state` / `index-state`.
+- Public international official profiles (`www.pathofexile.com/account/view-profile/...` -> `character-window/get-*`) are queried with `Path of Building` User-Agent and no cookies (falling back to env `POESESSID`/`POE_COOKIE` only on 401/403 private profiles); Windows uses native `bridge.lua` site import when public, POSIX uses `lua/import_char_json.lua` (`import_character_json` RPC), and private/CN profiles fall back to pure-Python PoB XML (`profile_import/pob_xml.py`) + `import_code`.
+- CN server profiles (`poe.game.qq.com`) use `POST` form requests with env `POE_CN_SESSID`/`POE_CN_COOKIE`, pure-Python ZH->EN translation against local `PobTools-zh` `Data/poe1/zh-rCN/` dictionaries (`profile_import/cn_zh2en.py`), and surface any unmatched Chinese mod lines as `[CN-TRANSLATE-WARN]`.
+- Never bypass Cloudflare Turnstile on `poe.ninja/poe1/builds/*` HTML. poe.ninja character import tries the `Name-1234` hyphen form first (the `#` form only after a 404) and resolves `overview` from `build-index-state` / `index-state`.
 
 ### Trade and bench (`R13`)
 

@@ -19,6 +19,7 @@ _NEGATION_EXEMPT_RE = re.compile(
     r"已经没了|没了|早已移除|已删除|已删|"
     r"不可得|已绝版|无法(?:再)?获取|打不到|掉不了|买不到|刷不到|(?:属于|已是)遗产|不再掉落|不再存在|"
     r"别挂|别连|别带|别堆|别在|不要挂|不要连|不要带|不要堆|"
+    r"(?:别|不要|切勿|勿|千万别|绝对别|一定别)(?:把|升|点|拉|给|去|误|选|装|插|凑|买)|"
     r"(?:是|属于|仅在|只在)[^\n。；;]{0,12}\bpoe2\b|\bpoe2\s*(?:专属|独有|特有|机制|资源)|"
     r"=\s*0\s*(?:收益|效果|作用|提升)|0\s*(?:收益|效果|作用|提升)|零收益|零效果|毫无(?:收益|效果|作用)|"
     r"天生上限\s*3|自然上限\s*3|上限为?\s*3\s*级?|永远到不了|到不了\s*20|"
@@ -220,6 +221,8 @@ _BUILD_SOURCE_PATTERNS = (
     re.compile(r"https?://(?:www\.)?pobb\.in/[A-Za-z0-9_-]+", re.IGNORECASE),
     re.compile(r"https?://(?:www\.)?poe\.ninja/(?:poe1|builds|pob)/[^\s\"'<>]+", re.IGNORECASE),
     re.compile(r"https?://(?:api\.)?pob\.codes/[^\s\"'<>]+", re.IGNORECASE),
+    re.compile(r"https?://(?:www\.)?pathofexile\.com/account/view-profile/[^\s\"'<>]+", re.IGNORECASE),
+    re.compile(r"https?://poe\.game\.qq\.com/account/view-profile/[^\s\"'<>]+", re.IGNORECASE),
     re.compile(r"(?:[A-Za-z]:[/\\]|(?:\.\.?[/\\]))[^\s\"'<>：,，。；;？?！!)\]}”’」』》]+?\.(?:xml|code)(?=\s|$|[：:,，。；;、？?！!)\]}”\"’'」』》])", re.IGNORECASE),
 )
 _BUILD_BASE64_RE = re.compile(r"(?<![A-Za-z0-9+/_=-])e[NJ][A-Za-z0-9+/_=-]{78,}(?![A-Za-z0-9+/_=-])")

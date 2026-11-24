@@ -24,6 +24,7 @@ LAYER_MAP: dict[str, int] = {
     "bridge_protocol": 1,
     "bridge_client": 1,
     "importers": 1,
+    "profile_import": 1,
     "game_data": 1,
     "external_data": 1,
     "poedb_client": 1,

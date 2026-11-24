@@ -121,7 +121,14 @@ def _h_load(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[s
     from ..importers import load_build_into_worker
 
     try:
-        load_res = load_build_into_worker(w, source=params.get("source"), xml_code=params.get("xml_code"))
+        load_res = load_build_into_worker(
+            w,
+            source=params.get("source"),
+            xml_code=params.get("xml_code"),
+            char_name=params.get("char_name"),
+            league=params.get("league"),
+            realm=params.get("realm"),
+        )
     except CrossGameHallucinationError:
         raise
     except Exception as exc:
@@ -186,8 +193,16 @@ def _h_diagnose(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> di
 
     src = params.get("source")
     xml_code = params.get("xml_code")
-    if src or xml_code:
-        load_build_into_worker(w, source=src, xml_code=xml_code)
+    load_meta: dict[str, Any] = {}
+    if src or xml_code or (params.get("realm") and str(params.get("realm")).lower() == "cn"):
+        load_meta = load_build_into_worker(
+            w,
+            source=src,
+            xml_code=xml_code,
+            char_name=params.get("char_name"),
+            league=params.get("league"),
+            realm=params.get("realm"),
+        )
         m._bump_worker_rev(w)
     top_val = int(params["top"]) if params.get("top") is not None else 5
     diag_res = diagnose_build(
@@ -200,6 +215,13 @@ def _h_diagnose(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> di
         runtime_dir=m.runtime_dir,
         target=normalize_slot_name(params.get("target") or getattr(w, "slot_name", None)),
     )
+    if isinstance(diag_res, dict):
+        if load_meta.get("importNotes"):
+            diag_res["importNotes"] = load_meta["importNotes"]
+        if load_meta.get("translateWarnings"):
+            diag_res["translateWarnings"] = load_meta["translateWarnings"]
+        if load_meta.get("character"):
+            diag_res["character"] = load_meta["character"]
     return m._attach_warning_if_degraded(diag_res)
 
 
