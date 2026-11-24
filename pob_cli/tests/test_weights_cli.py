@@ -7,7 +7,12 @@ from click.testing import CliRunner
 
 import pob_cli.cli as cli_mod
 from pob_cli.cli import main
-from pob_cli.cli_weights import DEFAULT_PROBES, build_weight_variants, compute_weights
+from pob_cli.cli_weights import (
+    DEFAULT_PROBES,
+    build_weight_variants,
+    compute_weights,
+    format_weights_markdown,
+)
 
 
 def test_build_weight_variants_appends_custom_mod() -> None:
@@ -31,6 +36,14 @@ def test_compute_weights_sorts_and_keeps_unverified_rows() -> None:
     assert w["weights"][1]["ehpPct"] == 10.0
     assert w["weights"][2]["dpsDelta"] is None  # unverified stays None, never 0
     assert w["weights"][3]["error"] == "boom"
+
+
+def test_format_weights_keeps_table_rows_intact() -> None:
+    w = {"weights": [{"mod": "a|b", "ok": False, "error": "lua error: x|y\nstack traceback:\n\t[C]: in ?"}]}
+    md = format_weights_markdown(w, target="main")
+    row = next(ln for ln in md.splitlines() if ln.startswith("| a"))
+    assert row == "| a\\|b | error: lua error: x\\|y | - |"
+    assert "stack traceback" not in md
 
 
 def test_cmd_weights_calls_sweep_with_probes(monkeypatch: Any) -> None:

@@ -392,6 +392,10 @@ pob rank-nodes --stat TotalEHP --max-dist 4 --top 10
 pob rank-gems --group main --slot 5 --field FullDPS --top 10
 pob rank-gems --group main --add-link --field CombinedDPS --top 10
 
+# Probe each mod line alone (16 defaults; --mod replaces) for its PoB-verified DPS / EHP gain
+pob weights --scenario Pinnacle
+pob weights --mod "+1 to Level of all Skill Gems" --mod "20% increased Area of Effect"
+
 # 3. Compare original panels, aligned combat conditions, and dewatered Pinnacle results
 pob compare "https://pobb.in/ReferenceBuildCode"
 

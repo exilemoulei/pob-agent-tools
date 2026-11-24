@@ -390,6 +390,10 @@ pob rank-nodes --stat TotalEHP --max-dist 4 --top 10
 pob rank-gems --group main --slot 5 --field FullDPS --top 10
 pob rank-gems --group main --add-link --field CombinedDPS --top 10
 
+# 逐条试加词缀（默认 16 条，--mod 可自订），查看每条带来的 DPS / 有效生命收益
+pob weights --scenario Pinnacle
+pob weights --mod "+1 to Level of all Skill Gems" --mod "20% increased Area of Effect"
+
 # 3. 比较原面板、统一战斗条件后的面板，以及去水后的巅峰首领面板
 pob compare "https://pobb.in/ReferenceBuildCode"
 

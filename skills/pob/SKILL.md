@@ -40,6 +40,7 @@ description: Path of Exile 1 (PoE1 3.30, 流放之路1) build diagnosis, headles
 pob summary | pob audit [--keep SPEC] | pob calc "<kw1>" ["<kw2>" ...] [--no-breakdown]
 pob items [--slot "Ring 1"|"#1"] [--all --raw] | pob skills [--group main] | pob config list [--all]
 pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--max-dist 5] | pob rank-gems [--group main] [--slot N|--add-link]
+pob weights [--mod "<ln>"]... [--scenario Pinnacle] [--keep SPEC]   # PoB-verified ΔDPS/ΔEHP per probe mod (16 defaults; --mod replaces)
 pob item inspect (--slot S | --raw "<txt>" | --file f) [--want "<stat>"]... | pob item try --slot S --raw "<txt>" [--apply] | pob item edit --slot S --add-mod "<ln>" [--apply] | pob item anoint --notable "<N>"
 pob skill add|set|rm --group main ... [--apply] | pob tree change --allocate <id> [--deallocate <id>] [--apply]
 pob config set <k>=<v> [--custom-mods "<txt>"] [--apply] | pob batch --json-ops '[...]' | pob sweep --scenario Pinnacle --json-variants '[...]'

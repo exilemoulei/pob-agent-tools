@@ -85,6 +85,12 @@ def _fmt(d: float | None, pct: float | None) -> str:
     return f"{d:+,.0f}" + (f" ({pct:+.2f}%)" if pct is not None else "")
 
 
+def _cell(v: Any) -> str:
+    # Lua tracebacks are multi-line and mod text may hold '|': either breaks the table row.
+    lines = str(v or "").splitlines()
+    return (lines[0] if lines else "").replace("|", "\\|")
+
+
 def format_weights_markdown(w: dict[str, Any], *, target: str) -> str:
     def _base(v: float | None) -> str:
         return f"{v:,.0f}" if v is not None else "-"
@@ -99,10 +105,11 @@ def format_weights_markdown(w: dict[str, Any], *, target: str) -> str:
         "|---|---|---|",
     ]
     for r in w["weights"]:
+        mod = _cell(r["mod"])
         if not r["ok"]:
-            lines.append(f"| {r['mod']} | error: {r.get('error')} | - |")
+            lines.append(f"| {mod} | error: {_cell(r.get('error'))} | - |")
             continue
-        lines.append(f"| {r['mod']} | {_fmt(r['dpsDelta'], r['dpsPct'])} | {_fmt(r['ehpDelta'], r['ehpPct'])} |")
+        lines.append(f"| {mod} | {_fmt(r['dpsDelta'], r['dpsPct'])} | {_fmt(r['ehpDelta'], r['ehpPct'])} |")
     lines.append("")
     lines.append("> Δ = 0 may mean the mod has no effect on this build or PoB could not parse the line.")
     warn = restore_warning(w.get("restoreCheck"))
