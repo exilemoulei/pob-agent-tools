@@ -493,7 +493,9 @@ def test_real_win_lua_host_win32_ffi_and_lazy_hooks(tmp_path: Path, monkeypatch:
     (fake_game / "Data" / "Crucible.lua").write_text('return { modA = "crucible_val" }\n', encoding="utf-8")
     (fake_game / "Data" / "ModScourge.lua").write_text('return { scA = "scourge_val" }\n', encoding="utf-8")
     (fake_game / "Modules" / "Data.lua").write_text(
-        "data = { itemMods = { Item = {}, Scourge = LoadModule('Data/ModScourge') } }\nreturn data\n",
+        "data = { itemMods = { Item = {}, Scourge = LoadModule('Data/ModScourge') } }\n"
+        "for k, v in pairs(data.itemMods.Scourge) do data.itemMods.Item[k] = v end\n"
+        "return data\n",
         encoding="utf-8",
     )
     (fake_game / "Modules" / "StatDescriber.lua").write_text(
@@ -566,15 +568,14 @@ local real_lines = desc({{ some_other = 1 }}, "skill_stat_descriptions")
 assert(real_lines[1] == "REAL:skill_stat_descriptions")
 assert(lazy.stats.hook_stat_desc_real_loads == 1)
 
+-- PoB walks these with pairs(), which a lazy proxy would hide on LuaJIT 5.1
 local cruc = LoadModule("Data/Crucible")
-assert(lazy.stats.hook_crucible_deferred == 1 and lazy.stats.hook_crucible_real_loads == 0)
-assert(cruc.modA == "crucible_val")
-assert(lazy.stats.hook_crucible_real_loads == 1)
+local cruc_keys = 0
+for _ in pairs(cruc) do cruc_keys = cruc_keys + 1 end
+assert(cruc_keys == 1 and cruc.modA == "crucible_val")
 
 LoadModule("Modules/Data")
-assert(lazy.stats.hook_scourge_deferred == 1 and lazy.stats.hook_scourge_real_loads == 0)
-assert(data.itemMods.Item.scA == "scourge_val")
-assert(lazy.stats.hook_scourge_real_loads == 1)
+assert(rawget(data.itemMods.Item, "scA") == "scourge_val")
 
 LoadModule("Modules/Main")
 main:Init()

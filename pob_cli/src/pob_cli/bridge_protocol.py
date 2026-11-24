@@ -43,6 +43,9 @@ _TREE_VERSION_ATTR_RE = re.compile(r'treeVersion=["\']([^"\']+)["\']')
 _TREE_VERSION_NUM_RE = re.compile(r"^(\d+)_(\d+)")
 _FAILED_TREE_STAGE: dict[tuple[str, str], float] = {}
 _TREE_STAGE_RETRY_COOLDOWN_SEC = 60.0
+# Staging runs under the worker lock before `import_code` (15 s RPC timeout; the CLI waits 150 s).
+_TREE_STAGE_PER_VERSION_SEC = 8.0
+_TREE_STAGE_TOTAL_BUDGET_SEC = 12.0
 
 
 class BridgeError(RuntimeError):
@@ -106,42 +109,71 @@ def _get_local_tree_versions(game_dir: Path) -> tuple[set[str], tuple[int, int] 
     return names, max_tuple, max_str
 
 
+def _tree_stage_error(tv: str, missing: list[str], reason: str) -> BridgeError:
+    shown = ", ".join(missing[:3]) + (", ..." if len(missing) > 3 else "")
+    return BridgeError(
+        f"This build uses passive tree version '{tv}', whose data is not installed ({shown}), "
+        f"and it could not be fetched: {reason}. Run pob online (without --offline / "
+        "POB_OFFLINE=1; behind a proxy set POB_PROXY or HTTPS_PROXY) so it downloads the "
+        "tree on demand, or run `pob update` if the engine itself is damaged."
+    )
+
+
 def stage_missing_tree_versions(code: str, game_dir: Path) -> list[str]:
-    """Pre-stage omitted legacy `TreeData/<ver>/` files before `import_code`, with 60s negative caching."""
-    if os.environ.get("POB_OFFLINE") == "1" or not (Path(game_dir) / "manifest.xml").is_file():
+    """Fetch the `TreeData/<ver>/` files a build needs that the slim engine left out.
+
+    A version counts as present only when every manifest file for it is there and verified.
+    All versions share one time budget below the import RPC's own timeout, and a version that
+    failed is not retried for a minute. Raises `BridgeError` with a fix-it hint when a needed
+    version cannot be installed, instead of letting PoB fail on a missing `tree.lua`.
+    """
+    if not (Path(game_dir) / "manifest.xml").is_file():
         return []
     xml_text = _decode_share_code_xml(code)
     if not xml_text:
         return []
-    requested = _extract_xml_tree_versions(xml_text)
+    requested = list(dict.fromkeys(_extract_xml_tree_versions(xml_text)))
     if not requested:
         return []
-    local_names, max_tuple, _ = _get_local_tree_versions(game_dir)
+    from .updater.constants import UpdateError
+    from .updater.remote import ensure_tree_data_files, missing_tree_data_files
+
     gdir_key = str(Path(game_dir))
-    now = time.monotonic()
+    deadline = time.monotonic() + _TREE_STAGE_TOTAL_BUDGET_SEC
     staged: list[str] = []
     for tv in requested:
-        if tv in local_names:
+        try:
+            missing = missing_tree_data_files(Path(game_dir), tv)
+        except (UpdateError, OSError, ValueError):
+            continue  # unknown or malformed version: PoB reports it itself
+        if not missing:
             continue
-        parsed = _parse_tree_version_tuple(tv)
-        if parsed is not None and max_tuple is not None and parsed > max_tuple:
-            continue
+        if os.environ.get("POB_OFFLINE") == "1":
+            raise _tree_stage_error(tv, missing, "POB_OFFLINE=1 is set")
         ckey = (gdir_key, tv)
         last_fail = _FAILED_TREE_STAGE.get(ckey)
-        if last_fail is not None and (now - last_fail) < _TREE_STAGE_RETRY_COOLDOWN_SEC:
-            continue
+        if last_fail is not None and (time.monotonic() - last_fail) < _TREE_STAGE_RETRY_COOLDOWN_SEC:
+            raise _tree_stage_error(tv, missing, "a download failed less than a minute ago")
+        remaining = deadline - time.monotonic()
+        if remaining < 1.0:
+            raise _tree_stage_error(tv, missing, "the download time budget ran out")
         try:
-            from .updater.remote import ensure_tree_data_files
-
-            if ensure_tree_data_files(Path(game_dir), tv, timeout=8.0):
-                local_names.add(tv)
-                _FAILED_TREE_STAGE.pop(ckey, None)
-                staged.append(tv)
-            else:
-                _FAILED_TREE_STAGE[ckey] = time.monotonic()
-        except Exception:
+            ensure_tree_data_files(Path(game_dir), tv, timeout=min(_TREE_STAGE_PER_VERSION_SEC, remaining))
+        except Exception as exc:
             _FAILED_TREE_STAGE[ckey] = time.monotonic()
+            raise _tree_stage_error(tv, missing, str(exc) or type(exc).__name__) from exc
+        _FAILED_TREE_STAGE.pop(ckey, None)
+        staged.append(tv)
     return staged
+
+
+def stage_tree_versions_hint(code: str, game_dir: Path) -> str | None:
+    """`stage_missing_tree_versions`, returning its failure as a message for the caller."""
+    try:
+        stage_missing_tree_versions(code, game_dir)
+    except BridgeError as exc:
+        return str(exc)
+    return None
 
 
 def check_tree_version_mismatch(code: str, game_dir: Path, pob_version: str | None) -> str | None:

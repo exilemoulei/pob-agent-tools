@@ -26,7 +26,7 @@ from .bridge_protocol import (
     format_rpc_error,
     read_slot_state,
     restore_build_on_start,
-    stage_missing_tree_versions,
+    stage_tree_versions_hint,
     stderr_drain_loop,
     stdout_reader_loop,
     validate_import_xml_guardrail,
@@ -226,7 +226,7 @@ class BridgeWorker:
                     target_code = self.last_good_code
 
                 if target_code:
-                    stage_missing_tree_versions(target_code, self.game_dir)
+                    stage_tree_versions_hint(target_code, self.game_dir)  # a failed restore falls back cleanly
                     build_loaded = (
                         ver_info["buildLoaded"]
                         if "buildLoaded" in ver_info
@@ -427,14 +427,15 @@ class BridgeWorker:
                 if method == "import_code":
                     code_str = str(params.get("code") or "")
                     validate_import_xml_guardrail(code_str)
-                    tv_mismatch = self._check_tree_version_mismatch(code_str)
+                    tv_mismatch = self._check_tree_version_mismatch(code_str) or stage_tree_versions_hint(
+                        code_str, self.game_dir
+                    )
                     if tv_mismatch:
                         err_msg = f"RPC 'import_code' failed: {tv_mismatch}"
                         if raise_on_error:
                             raise BridgeError(err_msg)
                         pre_errors[idx] = err_msg
                         continue
-                    stage_missing_tree_versions(code_str, self.game_dir)
 
                 self._req_counter += 1
                 req_id = self._req_counter
@@ -536,10 +537,9 @@ class BridgeWorker:
             if method == "import_code":
                 code = str((params or {}).get("code") or "")
                 validate_import_xml_guardrail(code)
-                tv_mismatch = self._check_tree_version_mismatch(code)
+                tv_mismatch = self._check_tree_version_mismatch(code) or stage_tree_versions_hint(code, self.game_dir)
                 if tv_mismatch:
                     raise BridgeError(f"RPC 'import_code' failed: {tv_mismatch}")
-                stage_missing_tree_versions(code, self.game_dir)
                 try:
                     return self._raw_call_unlocked(method, params, timeout=timeout)
                 except BridgeError as exc:

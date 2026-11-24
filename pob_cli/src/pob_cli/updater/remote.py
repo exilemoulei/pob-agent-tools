@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -386,6 +387,69 @@ def _download_and_stage_release_zip(
     )
 
 
+_MANIFEST_CACHE: dict[str, tuple[tuple[int, int], PobManifest]] = {}
+_VERIFIED_CACHE: dict[tuple[str, int, int, str], bool] = {}
+_CACHE_LOCK = threading.Lock()
+
+
+def _full_manifest(manifest_path: Path) -> PobManifest:
+    """`manifest.xml` parsed with `slim=False`, cached until the file changes."""
+    st = manifest_path.stat()
+    stamp = (st.st_mtime_ns, st.st_size)
+    key = str(manifest_path)
+    with _CACHE_LOCK:
+        hit = _MANIFEST_CACHE.get(key)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    manifest = parse_pob_manifest(manifest_path.read_text(encoding="utf-8", errors="replace"), slim=False)
+    with _CACHE_LOCK:
+        _MANIFEST_CACHE[key] = (stamp, manifest)
+    return manifest
+
+
+def _is_current(dst: Path, sha1: str) -> bool:
+    """Whether `dst` matches its manifest SHA-1, cached per (size, mtime).
+
+    Always the newline-tolerant check: PoB's own updater writes text files with the platform's
+    line endings, so most `TreeData/*/tree.lua` fail a raw SHA-1 although they are intact.
+    """
+    try:
+        st = dst.stat()
+    except OSError:
+        return False
+    key = (str(dst), st.st_size, st.st_mtime_ns, sha1.lower())
+    with _CACHE_LOCK:
+        hit = _VERIFIED_CACHE.get(key)
+    if hit is None:
+        try:
+            hit = bool(_pkg().verify_pob_sha1(dst.read_bytes(), sha1))
+        except OSError:
+            return False
+        with _CACHE_LOCK:
+            _VERIFIED_CACHE[key] = hit
+    return hit
+
+
+def _plan_manifest_subset(
+    poe1: Path, predicate: Callable[[ManifestFileEntry], bool], target_root: Path
+) -> tuple[PobManifest | None, list[Path], list[ManifestFileEntry]]:
+    manifest_path = poe1 / "manifest.xml"
+    if not manifest_path.is_file():
+        return None, [], []
+    manifest = _full_manifest(manifest_path)
+    ready: list[Path] = []
+    to_fetch: list[ManifestFileEntry] = []
+    for entry in manifest.files.values():
+        if not predicate(entry):
+            continue
+        dst = target_root / entry.local_rel
+        if _is_current(dst, entry.sha1):
+            ready.append(dst)
+        else:
+            to_fetch.append(entry)
+    return manifest, ready, to_fetch
+
+
 def fetch_pob_manifest_subset(
     poe1_dir: Path,
     predicate: Callable[[ManifestFileEntry], bool],
@@ -400,89 +464,82 @@ def fetch_pob_manifest_subset(
 
     Parses `manifest.xml` with `slim=False` so skipped optional assets (legacy `TreeData/<ver>/`
     or single-jewel `Data/TimelessJewelData/*.zip*`) can be materialized on demand without
-    leaving a full ~500 MiB install on disk.
+    leaving a full ~500 MiB install on disk. All or nothing: every file lands in a staging folder
+    first and is renamed into place only once all of them downloaded and verified, so a timeout
+    never leaves half a tree version behind.
     """
     poe1 = Path(poe1_dir)
-    manifest_path = poe1 / "manifest.xml"
-    if not manifest_path.is_file():
-        return []
-    manifest = parse_pob_manifest(manifest_path.read_text(encoding="utf-8", errors="replace"), slim=False)
     target_root = Path(dest_dir) if dest_dir is not None else poe1
-
-    pkg = _pkg()
-    verify_fn = pkg.verify_pob_sha1
-    matched = [e for e in manifest.files.values() if predicate(e)]
-    if not matched:
-        return []
-
-    to_fetch: list[ManifestFileEntry] = []
-    ready: list[Path] = []
-    for entry in matched:
-        dst = target_root / entry.local_rel
-        if dst.is_file():
-            try:
-                is_text = entry.local_rel.lower().endswith((".lua", ".xml", ".json", ".txt"))
-                if dst.stat().st_size > 2_097_152 and not is_text:
-                    h = hashlib.sha1()
-                    with dst.open("rb") as fh:
-                        while chunk := fh.read(65536):
-                            h.update(chunk)
-                    valid = h.hexdigest().lower() == entry.sha1.lower()
-                else:
-                    valid = bool(verify_fn(dst.read_bytes(), entry.sha1))
-                if valid:
-                    ready.append(dst)
-                    continue
-            except OSError:
-                pass
-        to_fetch.append(entry)
-
-    if not to_fetch:
+    manifest, ready, to_fetch = _plan_manifest_subset(poe1, predicate, target_root)
+    if manifest is None or not to_fetch:
         return ready
     if os.environ.get("POB_OFFLINE") == "1":
         raise UpdateError("POB_OFFLINE=1: cannot fetch missing optional PoB assets on demand")
 
-    deadline = (
-        (time.monotonic() + float(timeout))
-        if isinstance(timeout, (int, float)) and timeout > 0
-        else None
-    )
+    pkg = _pkg()
+    verify_fn = pkg.verify_pob_sha1
+    has_budget = isinstance(timeout, (int, float)) and timeout > 0
+    deadline = (time.monotonic() + float(timeout)) if has_budget else None
     eff_timeout = _to_httpx_timeout(
-        min(5.0, float(timeout))
-        if isinstance(timeout, (int, float)) and timeout > 0
-        else (_ASSET_TIMEOUT_SPEC if timeout is None else timeout)
+        min(5.0, float(timeout)) if has_budget else (_ASSET_TIMEOUT_SPEC if timeout is None else timeout)
     )
-    with pkg._make_http_client(
-        timeout=eff_timeout,
-        proxy=proxy,
-        follow_redirects=True,
-        max_connections=max(max_workers, 4),
-    ) as client:
+    target_root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".pob-stage-", dir=target_root))
+    try:
+        with pkg._make_http_client(
+            timeout=eff_timeout,
+            proxy=proxy,
+            follow_redirects=True,
+            max_connections=max(max_workers, 4),
+        ) as client:
 
-        def _fetch_one(entry: ManifestFileEntry) -> Path:
-            url = build_manifest_file_url(manifest, entry, mirror=mirror)
-            data = _download_bytes_with_retry(client, url, retries=ASSET_MAX_RETRIES, deadline=deadline)
-            if not verify_fn(data, entry.sha1):
-                raise UpdateError(
-                    f"SHA1 mismatch for '{entry.local_rel}': expected {entry.sha1}, "
-                    f"got {hashlib.sha1(data).hexdigest()}"
-                )
-            dst = target_root / entry.local_rel
+            def _fetch_one(entry: ManifestFileEntry) -> tuple[Path, Path]:
+                url = build_manifest_file_url(manifest, entry, mirror=mirror)
+                data = _download_bytes_with_retry(client, url, retries=ASSET_MAX_RETRIES, deadline=deadline)
+                if not verify_fn(data, entry.sha1):
+                    raise UpdateError(
+                        f"SHA1 mismatch for '{entry.local_rel}': expected {entry.sha1}, "
+                        f"got {hashlib.sha1(data).hexdigest()}"
+                    )
+                staged = staging / entry.local_rel
+                staged.parent.mkdir(parents=True, exist_ok=True)
+                staged.write_bytes(data)
+                return staged, target_root / entry.local_rel
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(to_fetch))) as pool:
+                moves = [f.result() for f in [pool.submit(_fetch_one, e) for e in to_fetch]]
+        for staged, dst in moves:
             dst.parent.mkdir(parents=True, exist_ok=True)
-            tmp = dst.with_name(f".{dst.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-            try:
-                tmp.write_bytes(data)
-                os.replace(tmp, dst)
-            except Exception:
-                tmp.unlink(missing_ok=True)
-                raise
-            return dst
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(to_fetch))) as pool:
-            for fut in concurrent.futures.as_completed([pool.submit(_fetch_one, e) for e in to_fetch]):
-                ready.append(fut.result())
-
+            os.replace(staged, dst)
+            ready.append(dst)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     return ready
+
+
+def _tree_version_predicate(tree_version: str) -> Callable[[ManifestFileEntry], bool]:
+    ver = tree_version.strip()
+    if not ver or not _SAFE_TREE_VER_RE.match(ver):
+        raise UpdateError(f"Invalid tree_version: {tree_version!r}")
+    prefix = f"treedata/{ver.lower()}/"
+
+    def _want(entry: ManifestFileEntry) -> bool:
+        low = entry.local_rel.replace("\\", "/").lower()
+        return low.startswith(prefix) and low.endswith(".lua")
+
+    return _want
+
+
+def missing_tree_data_files(poe1_dir: Path, tree_version: str) -> list[str]:
+    """Manifest paths of `TreeData/<tree_version>/` that are absent or fail their SHA-1.
+
+    A tree version counts as installed only when every file the manifest lists for it is, not
+    when its folder exists: the slim engine keeps `TreeData/3_19/Assets.lua` without `tree.lua`.
+    Empty when the manifest does not know the version (or there is no manifest).
+    """
+    poe1 = Path(poe1_dir)
+    _, _, to_fetch = _plan_manifest_subset(poe1, _tree_version_predicate(tree_version), poe1)
+    return [e.local_rel for e in to_fetch]
 
 
 def ensure_tree_data_files(

@@ -200,11 +200,12 @@ else
 		ZLIB.deflateEnd(s); return table.concat(out)
 	end
 
-	function Inflate(data)
+	-- wbits is internal: raw deflate is retried as on Windows (the Python guardrail accepts it)
+	function Inflate(data, wbits)
 		if type(data) ~= "string" then return nil, "Inflate: expected string" end
 		if #data == 0 then return "" end
 		local s = ffi.new("z_stream")
-		local rc = ZLIB.inflateInit2_(s, 47, ZVER, ZSZ)
+		local rc = ZLIB.inflateInit2_(s, wbits or 47, ZVER, ZSZ)
 		if rc ~= 0 then return nil, "inflateInit2 failed: " .. tostring(rc) end
 		s.next_in, s.avail_in = ffi.cast("const unsigned char *", data), #data
 		local buf, out = ffi.new("unsigned char[?]", 65536), {}
@@ -213,7 +214,8 @@ else
 			rc = ZLIB.inflate(s, 0)
 			local n = 65536 - tonumber(s.avail_out)
 			if n > 0 then out[#out + 1] = ffi.string(buf, n) end
-			if rc == 1 then break elseif rc ~= 0 then ZLIB.inflateEnd(s); return nil, "inflate failed: " .. tostring(rc) end
+			if rc == 1 then break elseif rc ~= 0 then ZLIB.inflateEnd(s)
+				if not wbits then return Inflate(data, -15) end; return nil, "inflate failed: " .. tostring(rc) end
 			if tonumber(s.avail_in) == 0 and n == 0 then ZLIB.inflateEnd(s); return nil, "inflate truncated input" end
 		end
 		ZLIB.inflateEnd(s); return table.concat(out)
@@ -429,6 +431,8 @@ do
 		if ok and res ~= false then CAPS.localeSwitch = true; register_handlers(zt.rpc_handlers)
 		elseif not ok then log_stderr("[zh_translate] " .. tostring(res)) end
 	end
+	local zr = load_ext("zh_reverse.lua")
+	if type(zr) == "table" and pcall(zr.install, engine_root) then CAPS.zhReverse = true end
 end
 
 if BRIDGE_PATH == "" then BRIDGE_PATH = engine_root .. "/Data/bridge/bridge.lua" end

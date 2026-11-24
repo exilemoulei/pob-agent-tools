@@ -3,8 +3,10 @@
 --   1. Pearl of Tsoatha fast-path avoiding 258k-line stat_descriptions.lua at boot.
 --   2. Data/FlavourText -> {} skip.
 --   3. Defer Main.lua LoadItems uniqueDB/rareDB/visceraDB coroutine (drainable on demand via ensure_item_dbs).
---   4. Lazy metatable proxies for Data/Crucible and Data/ModScourge.
---   5. Optional .ljbc bytecode loader + on-demand TreeData fallback resolver.
+--   4. Optional .ljbc bytecode loader + on-demand TreeData fallback resolver.
+-- Data/Crucible and Data/ModScourge load eagerly: PoB walks both with pairs() (Data.lua builds
+-- itemMods.Item from Scourge, ItemsTab lists data.crucible), LuaJIT 5.1 has no __pairs, so a lazy
+-- proxy looked empty, and together they cost about 10 ms.
 
 local M = {}
 
@@ -38,10 +40,6 @@ M.stats = {
 	hook_stat_desc_real_loads = 0,
 	hook_item_dbs_skipped = 0,
 	hook_item_dbs_drained = 0,
-	hook_crucible_deferred = 0,
-	hook_crucible_real_loads = 0,
-	hook_scourge_deferred = 0,
-	hook_scourge_real_loads = 0,
 	tree_fallback_hits = 0,
 }
 
@@ -82,7 +80,6 @@ function M.install_pre_launch(game_dir, opts)
 	local skip_flavour = (not disable_all) and opt_enabled(opts, "skip_flavour_text", true)
 	local lazy_stat_desc = (not disable_all) and opt_enabled(opts, "lazy_stat_descriptions", true)
 	local skip_item_dbs = (not disable_all) and opt_enabled(opts, "skip_item_dbs", true)
-	local lazy_legacy_mods = (not disable_all) and opt_enabled(opts, "lazy_legacy_mods", true)
 	local bytecode_mode = opt_enabled(opts, "bytecode_mode", os.getenv("POB_BYTECODE_MODE") == "1")
 
 	local gdir = strip_trailing_slash(tostring(game_dir or "."))
@@ -102,6 +99,14 @@ function M.install_pre_launch(game_dir, opts)
 			return true
 		end
 		return false
+	end
+
+	local function wall_seconds()
+		if type(GetTime) == "function" then
+			local ok, ms = pcall(GetTime)
+			if ok and type(ms) == "number" then return ms / 1000 end
+		end
+		return os.time()
 	end
 
 	local attempted_trees, in_flight = {}, {}
@@ -135,8 +140,9 @@ function M.install_pre_launch(game_dir, opts)
 				return resolved
 			end
 		end
-		-- 3. Native host Python callback (_G.__POB_ENSURE_TREE) with 5s retry backoff on failure
-		local now = os.clock()
+		-- 3. Native host Python callback (_G.__POB_ENSURE_TREE) with 5s retry backoff on failure.
+		-- Wall time: os.clock() is CPU time, which barely moves while the host waits on the network.
+		local now = wall_seconds()
 		local last_ts = attempted_trees[tree_ver]
 		if not in_flight[tree_ver] and (not last_ts or (now - last_ts) >= 5.0) and type(_G.__POB_ENSURE_TREE) == "function" then
 			in_flight[tree_ver], attempted_trees[tree_ver] = true, now
@@ -255,22 +261,6 @@ function M.install_pre_launch(game_dir, opts)
 		return func(...)
 	end
 
-	local function make_lazy_table(mod_name, stat_key_real)
-		local real_tbl = nil
-		local function ensure()
-			if not real_tbl then
-				M.stats[stat_key_real] = M.stats[stat_key_real] + 1
-				real_tbl = raw_load_module(mod_name)
-			end
-			return real_tbl
-		end
-		return setmetatable({}, {
-			__index = function(_, k)
-				return ensure()[k]
-			end,
-		})
-	end
-
 	-- Exact Pearl of Tsoatha fast-path avoiding 258k-line Data/StatDescriptions/stat_descriptions.lua
 	local function make_lazy_stat_describer()
 		local real_describer = nil
@@ -340,26 +330,8 @@ function M.install_pre_launch(game_dir, opts)
 		if lazy_stat_desc and norm == "Modules/StatDescriber" then
 			return make_lazy_stat_describer()
 		end
-		if lazy_legacy_mods and norm == "Data/Crucible" then
-			M.stats.hook_crucible_deferred = M.stats.hook_crucible_deferred + 1
-			return make_lazy_table("Data/Crucible", "hook_crucible_real_loads")
-		end
-		if lazy_legacy_mods and norm == "Data/ModScourge" then
-			M.stats.hook_scourge_deferred = M.stats.hook_scourge_deferred + 1
-			return make_lazy_table("Data/ModScourge", "hook_scourge_real_loads")
-		end
 
 		local res = { raw_load_module(norm, ...) }
-
-		if lazy_legacy_mods and norm == "Modules/Data" and data and data.itemMods and data.itemMods.Item then
-			if not getmetatable(data.itemMods.Item) then
-				setmetatable(data.itemMods.Item, {
-					__index = function(_, k)
-						return data.itemMods.Scourge[k]
-					end,
-				})
-			end
-		end
 
 		if skip_item_dbs and norm == "Modules/Main" and main and main.Init then
 			local orig_init = main.Init
