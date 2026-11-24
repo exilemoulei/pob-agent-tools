@@ -698,9 +698,11 @@ Implicits: 0
         return base64.urlsafe_b64encode(zlib.compress(xml_str.encode("utf-8"), 9)).decode("ascii")
 
     with tempfile.TemporaryDirectory() as td:
-        w = BridgeWorker(slot_name="test", runtime_dir=Path(td))
-        w.start(restore_code="")
+        w = BridgeWorker(slot_name="test", pob_dir=eng, runtime_dir=Path(td))
         try:
+            w.start(restore_code="")
+            if not (w.caps.get("agentProbes") and w.caps.get("tradeAutoQuery")):
+                pytest.skip("Engine does not advertise agentProbes + tradeAutoQuery extensions")
             # P1-1: Arcane Cloak (Automation) produces ZERO TriggerCliff / TriggerOverspeed gaps
             w.call("import_code", {"code": _encode_xml(b5_like_xml), "mode": "replace"})
             d_b5 = analyzer.diagnose_build(w, no_rank=True)

@@ -165,9 +165,14 @@ local function resolve_or_inflate_bin(stem)
 	local raw = Inflate(comp)
 	if not raw or #raw == 0 then return nil end
 	local out_bin = cdir .. "/" .. tag .. "_" .. stem .. ".bin"
-	local wf = io.open(out_bin, "wb")
+	local tmp_bin = out_bin .. "." .. tostring(math.floor((os.clock() * 1e6) % 1e9)) .. ".tmp"
+	local wf = io.open(tmp_bin, "wb")
 	if not wf then return nil end
-	wf:write(raw); wf:close()
+	local ok_w = wf:write(raw)
+	local ok_c = wf:close()
+	if not ok_w or not ok_c then os.remove(tmp_bin); return nil end
+	os.remove(out_bin)
+	if not os.rename(tmp_bin, out_bin) then os.remove(tmp_bin); return file_exists(out_bin) and out_bin or nil end
 	return out_bin
 end
 
@@ -266,23 +271,25 @@ local function build_gv_offsets()
 end
 
 function M.ensure_mapped(jtype)
-	local cached = mapped_cache[jtype]
+	local mkey = active_tree_tag() .. ":" .. tostring(jtype)
+	local cached = mapped_cache[mkey]
 	if cached ~= nil then return cached or nil end
 	local jname = data and data.timelessJewelTypes and data.timelessJewelTypes[jtype]
-	if not jname then mapped_cache[jtype] = false; return nil end
+	if not jname then mapped_cache[mkey] = false; return nil end
 	local bin_path = resolve_or_inflate_bin(jname:gsub("%s+", ""))
-	if not bin_path then mapped_cache[jtype] = false; return nil end
+	if not bin_path then mapped_cache[mkey] = false; return nil end
 	local view = M.map_file(bin_path)
-	if not view then mapped_cache[jtype] = false; return nil end
+	if not view then mapped_cache[mkey] = false; return nil end
 	local entry = { view = view, gv_node_pos = {}, abyss = parse_abyss_index(view, jtype) }
-	mapped_cache[jtype] = entry
+	mapped_cache[mkey] = entry
 	return entry
 end
 
 function M.can_handle(jtype)
 	if not jtype or not data or not data.timelessJewelTypes or not data.timelessJewelTypes[jtype] then return false end
-	if mapped_cache[jtype] then return true end
-	if mapped_cache[jtype] == false then return false end
+	local mkey = active_tree_tag() .. ":" .. tostring(jtype)
+	if mapped_cache[mkey] then return true end
+	if mapped_cache[mkey] == false then return false end
 	local stem = data.timelessJewelTypes[jtype]:gsub("%s+", "")
 	local ddir = resolve_game_dir() .. "/Data/TimelessJewelData"
 	if file_exists(ddir .. "/" .. stem .. ".bin") then return true end

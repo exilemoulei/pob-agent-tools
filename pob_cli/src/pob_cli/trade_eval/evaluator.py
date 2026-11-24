@@ -263,24 +263,10 @@ def _is_complex_trade_item(raw_text: str, slot_name: str | None) -> bool:
 
 
 def _digest_from_direct_calc(worker: Any, before_digest: dict[str, Any]) -> dict[str, Any]:
-    """Capture fresh stats via `direct_calc` (C1) while preserving digest schema."""
-    res = worker.call("direct_calc", {})
-    stats = res.get("stats", {}) if isinstance(res, dict) else {}
-    primary_dps_key = str(before_digest.get("primaryDpsKey") or "CombinedDPS")
-    if _finite_float(stats.get("FullDPS")) > 0.0:
-        primary_dps_key = "FullDPS"
-    elif _finite_float(stats.get("MinionCombinedDPS")) > _finite_float(stats.get("CombinedDPS")):
-        primary_dps_key = "MinionCombinedDPS"
-    return {
-        "stats": stats,
-        "warnings": list(before_digest.get("warnings") or []),
-        "buildInfo": dict(before_digest.get("buildInfo") or {}),
-        "buildHeader": dict(before_digest.get("buildHeader") or {}),
-        "primaryDpsKey": primary_dps_key,
-        "primaryDps": _json_safe_stat(stats.get(primary_dps_key)),
-        "totalEhp": _json_safe_stat(stats.get("TotalEHP")),
-        "life": _json_safe_stat(stats.get("Life")),
-    }
+    """Capture fresh stats, passive points, and warnings via `capture_direct_digest` (C1)."""
+    from ..snapshot import capture_direct_digest
+
+    return capture_direct_digest(worker, base_digest=before_digest)
 
 
 def _prefilter_raw_items_for_eval(
@@ -327,9 +313,33 @@ def _eval_trade_items_cow(
     """Evaluate candidates using `cow_snapshot`/`cow_restore` (C2c) and optional `direct_calc` (C1)."""
     from ..snapshot import capture_digest, diff_digest
 
-    snap_id = str(worker.call("cow_snapshot", {})["snapId"])
+    orig_proc = getattr(worker, "_proc", None)
+    fallback_code: str | None = getattr(worker, "last_good_code", None)
+    snap_id: str | None = str(worker.call("cow_snapshot", {})["snapId"])
     results: list[dict[str, Any]] = []
     total_items = len(items)
+
+    def _restore_base(*, drop: bool) -> None:
+        nonlocal snap_id, orig_proc
+        cur_proc = getattr(worker, "_proc", None)
+        if snap_id is not None and cur_proc is orig_proc:
+            try:
+                worker.call("cow_restore", {"snapId": snap_id, "drop": drop})
+                if drop:
+                    snap_id = None
+                return
+            except Exception:
+                snap_id = None
+        snap_id = None
+        if fallback_code is not None:
+            worker.call("import_code", {"code": fallback_code, "mode": "replace"})
+            if not drop and (getattr(worker, "caps", None) or {}).get("cowSnapshot"):
+                try:
+                    orig_proc = getattr(worker, "_proc", None)
+                    snap_id = str(worker.call("cow_snapshot", {})["snapId"])
+                except Exception:
+                    snap_id = None
+
     try:
         for pos, entry in enumerate(items):
             item_id = entry.get("id")
@@ -366,9 +376,9 @@ def _eval_trade_items_cow(
             except Exception as exc:
                 results.append({"id": item_id, "ok": False, "error": str(exc)})
             if pos < total_items - 1:
-                worker.call("cow_restore", {"snapId": snap_id, "drop": False})
+                _restore_base(drop=False)
     finally:
-        worker.call("cow_restore", {"snapId": snap_id, "drop": True})
+        _restore_base(drop=True)
     return results
 
 

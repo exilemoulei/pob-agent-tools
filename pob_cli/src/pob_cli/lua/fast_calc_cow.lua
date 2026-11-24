@@ -56,7 +56,8 @@ local function sanitize(v)
 	if vt == "number" then
 		return (v ~= v and "nan") or (v == m_huge and "inf") or (v == -m_huge and "-inf") or v
 	end
-	return (vt == "boolean" or vt == "string") and v or nil
+	if vt == "boolean" or vt == "string" then return v end
+	return nil
 end
 
 local function has_full_dps_skills(b)
@@ -248,8 +249,9 @@ local function rebuild_cluster_graphs(spec, snap)
 		sync_alloc_nodes(spec, snap.allocNodes)
 		spec:BuildClusterJewelGraphs()
 		sync_alloc_nodes(spec, snap.allocNodes)
-		if keys_eq(spec.allocNodes, snap.allocNodes) and keys_eq(spec.subGraphs or {}, snap.subKeys) then break end
+		if keys_eq(spec.allocNodes, snap.allocNodes) and keys_eq(spec.subGraphs or {}, snap.subKeys) then return end
 	end
+	if not keys_eq(spec.allocNodes, snap.allocNodes) then error("Cluster jewel graph restore incomplete", 0) end
 end
 
 local function restore_spec(b, snap, j_dirty)

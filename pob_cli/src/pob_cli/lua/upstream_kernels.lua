@@ -492,12 +492,18 @@ local function postprocess_trade_query(tqg, captured_query, params)
 		end
 	end
 
+	local has_misc = (captured_query.filters and captured_query.filters.misc_filters) and 3 or 0
+	local max_first = math.max(1, math.floor((160 - 62 - has_misc) / 4) - extra_filters)
+	while #final_filters > max_first do
+		local drop = final_filters[#final_filters]
+		final_filters[#final_filters] = nil
+		if drop and drop.id then stat_labels[drop.id] = nil end
+	end
 	local top_filters = {}
-	for i = 1, math.min(15, #kept) do
+	for i = 1, math.min(15, #final_filters) do
 		local fid = kept[i].entry.id
 		top_filters[i] = { id = fid, label = stat_labels[fid], weight = kept[i].weight }
 	end
-	local has_misc = (captured_query.filters and captured_query.filters.misc_filters) and 3 or 0
 	local complexity = 54 + 4 + 4 + has_misc + 4 * (#final_filters + extra_filters)
 	local min_weight = (stat_group and stat_group.value and stat_group.value.min) or 0
 	return dkjson.encode(captured_query), #final_filters, complexity, min_weight, top_filters, stat_labels

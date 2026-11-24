@@ -239,31 +239,19 @@ def _validate_item_edit_affixes(
 
     has_add = any(c.get("action") == "add" for c in touched_add_or_rep)
     added_crafted = any("{crafted}" in str(c.get("after") or "").lower() for c in touched_add_or_rep)
+    before_multimod = "can have up to 3 crafted modifiers" in before_raw.lower()
     item_label = f"'{slot_name}' [{after_item.display_name}]"
     has_multimod = any("can have up to 3 crafted modifiers" in m.raw.lower() for m in after_item.mods)
     max_crafted = 3 if has_multimod else 1
+    check_crafted = added_crafted or (before_multimod and not has_multimod)
 
     try:
-        before_rep = item_inspect.inspect_item(
-            before_raw, slot=slot_name, pob_dir=pob_dir, runtime_dir=runtime_dir, include_suggestions=False
-        )
         after_rep = item_inspect.inspect_item(
             after_raw, slot=slot_name, pob_dir=pob_dir, runtime_dir=runtime_dir, include_suggestions=False
         )
     except (FileNotFoundError, RuntimeError):
-        cap = item_inspect._base_affix_capacity(
-            after_item.rarity, frozenset(), item_inspect._item_class(after_raw), slot_name
-        )
-        explicit_mods = [m for m in after_item.mods if m.kind in ("explicit", "crafted", "fractured")]
-        total_cap = cap["prefix"] + cap["suffix"]
-        if len(explicit_mods) > total_cap:
-            raise DaemonRequestError(
-                f"Cannot edit Rare item on {item_label}: {len(explicit_mods)} explicit modifiers exceed capacity "
-                f"({cap['prefix']}/{cap['prefix']} prefixes, {cap['suffix']}/{cap['suffix']} suffixes; max {total_cap}). "
-                "Remove or replace an existing affix first."
-            ) from None
         crafted_lines = [m.raw for m in after_item.mods if m.kind == "crafted"]
-        if added_crafted and len(crafted_lines) > max_crafted:
+        if check_crafted and len(crafted_lines) > max_crafted:
             raise DaemonRequestError(
                 f"Cannot edit Rare item on {item_label}: {len(crafted_lines)} crafted modifiers exceed limit ({max_crafted}). "
                 "Remove or replace the existing {crafted} modifier first."
@@ -292,27 +280,35 @@ def _validate_item_edit_affixes(
         else:
             still_unmatched.append(line)
 
-    before_cnt = dict(before_rep["counts"])
-    if before_rep["unmatched"]:
-        try:
-            b_global = item_inspect.classify_mod_affix_types(
-                list(before_rep["unmatched"]), pob_dir=pob_dir, runtime_dir=runtime_dir
-            )
-        except (FileNotFoundError, RuntimeError):
-            b_global = {}
-        for line in before_rep["unmatched"]:
-            sides = b_global.get(line, set())
-            if len(sides) == 1:
-                before_cnt[next(iter(sides))] += 1
-
     p_cnt, s_cnt = eff_counts["prefix"], eff_counts["suffix"]
     p_cap, s_cap = cap["prefix"], cap["suffix"]
+    total_after = p_cnt + s_cnt + len(still_unmatched)
+    may_overflow = (p_cnt > p_cap) or (s_cnt > s_cap) or (total_after > p_cap + s_cap)
+
+    before_rep: dict[str, Any] = {"affixes": [], "counts": {"prefix": 0, "suffix": 0}, "unmatched": []}
+    before_cnt = {"prefix": 0, "suffix": 0}
+    if may_overflow:
+        try:
+            before_rep = item_inspect.inspect_item(
+                before_raw, slot=slot_name, pob_dir=pob_dir, runtime_dir=runtime_dir, include_suggestions=False
+            )
+            before_cnt = dict(before_rep["counts"])
+            if before_rep["unmatched"]:
+                b_global = item_inspect.classify_mod_affix_types(
+                    list(before_rep["unmatched"]), pob_dir=pob_dir, runtime_dir=runtime_dir
+                )
+                for line in before_rep["unmatched"]:
+                    sides = b_global.get(line, set())
+                    if len(sides) == 1:
+                        before_cnt[next(iter(sides))] += 1
+        except (FileNotFoundError, RuntimeError):
+            pass
+
     p_over = p_cnt > p_cap and (has_add or p_cnt > before_cnt["prefix"])
     s_over = s_cnt > s_cap and (has_add or s_cnt > before_cnt["suffix"])
     overflow_side = p_over or s_over
     if overflow_side and _can_rebalance_ambiguous(after_affixes, eff_counts, cap):
         overflow_side = False
-    total_after = p_cnt + s_cnt + len(still_unmatched)
     total_overflow = total_after > p_cap + s_cap and (has_add or total_after > sum(before_cnt.values()))
 
     if overflow_side or total_overflow:
@@ -362,7 +358,7 @@ def _validate_item_edit_affixes(
 
     crafted_affix_cnt = sum(1 for a in after_affixes if a.get("source") == "Bench")
     unmatched_crafted = [m.raw for m in after_item.mods if m.kind == "crafted" and m.raw in after_unmatched]
-    if added_crafted and crafted_affix_cnt + len(unmatched_crafted) > max_crafted:
+    if check_crafted and crafted_affix_cnt + len(unmatched_crafted) > max_crafted:
         raise DaemonRequestError(
             f"Cannot edit Rare item on {item_label}: {crafted_affix_cnt + len(unmatched_crafted)} crafted modifiers "
             f"exceed limit ({max_crafted}). Remove or replace the existing {{crafted}} modifier first "
@@ -400,7 +396,7 @@ def _apply_edit_item_mods_in_place(
         after_raw,
         slot_name=resolved_slot,
         changes=changes,
-        pob_dir=getattr(w, "pob_dir", None),
+        pob_dir=getattr(w, "pob_root", None) or getattr(w, "pob_dir", None),
         runtime_dir=getattr(w, "runtime_dir", None),
     )
     res = w.call("add_item", {"raw": after_raw, "slotName": resolved_slot, "equip": True})
@@ -451,7 +447,7 @@ def edit_item_mods(
                 after_raw,
                 slot_name=resolved_slot,
                 changes=changes,
-                pob_dir=getattr(worker, "pob_dir", None),
+                pob_dir=getattr(worker, "pob_root", None) or getattr(worker, "pob_dir", None),
                 runtime_dir=getattr(worker, "runtime_dir", None),
             )
 

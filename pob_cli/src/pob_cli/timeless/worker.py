@@ -318,8 +318,10 @@ def ensure_lut_files(
         return data_dir
 
     rt = Path(runtime_dir) if runtime_dir else None
-    cache_dir = get_shared_cache_dir(rt) / "timeless_lut"
-    if (cache_dir / f"{stem}.zip").is_file() or (cache_dir / f"{stem}.zip.part0").is_file():
+    cache_dir = get_shared_cache_dir(rt, pob_root=Path(game_dir).parent) / "timeless_lut"
+    if (cache_dir / f"{stem}.zip").is_file() or (
+        (cache_dir / f"{stem}.zip.part0").is_file() and (cache_dir / f"{stem}.zip.complete").is_file()
+    ):
         return cache_dir
 
     if os.environ.get("POB_OFFLINE", "").strip() == "1":
@@ -335,6 +337,10 @@ def ensure_lut_files(
         return None
 
     cache_dir.mkdir(parents=True, exist_ok=True)
+    has_parts = any(".part" in Path(e.local_rel).name.lower() for e in entries)
+    complete_marker = cache_dir / f"{stem}.zip.complete"
+    if has_parts:
+        complete_marker.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="pob_lut_stage_") as stage_str:
         staged = _download_pob_files_to_staging(
             manifest, entries, Path(stage_str), proxy=proxy, mirror=mirror, max_workers=4
@@ -344,6 +350,8 @@ def ensure_lut_files(
             tmp_dst = cache_dir / f".{src_path.name}.{os.getpid()}.tmp"
             shutil.copy2(src_path, tmp_dst)
             os.replace(tmp_dst, dst)
+    if has_parts:
+        complete_marker.write_text("ok\n", encoding="utf-8")
     return cache_dir
 
 

@@ -6,138 +6,96 @@ import math
 from collections.abc import Callable
 from typing import Any
 
-from .bridge_client import MAX_UNDO_STEPS, BridgeWorker
-from .errors import DaemonRequestError
-from .formatters import _parse_numeric_or_none, fmt_delta, fmt_num, strip_pob_escapes
+from ..bridge_client import MAX_UNDO_STEPS, BridgeWorker
+from ..errors import DaemonRequestError
+from ..formatters import _parse_numeric_or_none, fmt_delta, fmt_num, strip_pob_escapes
+from .helpers import (
+    _DEFENCE_SUMMARY_KEYS,
+    _OFFENCE_SUMMARY_KEYS,
+    CORE_STAT_KEYS,
+    _call_batch,
+    _extract_points_used,
+    _finite_float,
+    _json_safe_stat,
+    _safe_min_ele_max_hit,
+    _stat_float,
+)
 
-CORE_STAT_KEYS: list[tuple[str, str, str]] = [
-    ("FullDPS", "Full DPS", ""),
-    ("CombinedDPS", "Combined DPS", ""),
-    ("TotalDPS", "Hit DPS", ""),
-    ("TotalDotDPS", "DoT DPS", ""),
-    ("MinionCombinedDPS", "Minion Combined DPS", ""),
-    ("MinionTotalDPS", "Minion Hit DPS", ""),
-    ("AverageDamage", "Average Hit", ""),
-    ("Speed", "Attack/Cast Rate", "/s"),
-    ("CritChance", "Crit Chance", "%"),
-    ("CritMultiplier", "Crit Multiplier", "x"),
-    ("HitChance", "Hit Chance", "%"),
-    ("ManaCost", "Mana Cost", ""),
-    ("TotalEHP", "Effective HP (TotalEHP)", ""),
-    ("Life", "Maximum Life", ""),
-    ("LifeUnreserved", "Unreserved Life", ""),
-    ("Mana", "Maximum Mana", ""),
-    ("ManaUnreserved", "Unreserved Mana", ""),
-    ("EnergyShield", "Energy Shield", ""),
-    ("Ward", "Ward", ""),
-    ("Armour", "Armour", ""),
-    ("Evasion", "Evasion", ""),
-    ("PhysicalMaximumHitTaken", "Phys Max Hit", ""),
-    ("FireMaximumHitTaken", "Fire Max Hit", ""),
-    ("ColdMaximumHitTaken", "Cold Max Hit", ""),
-    ("LightningMaximumHitTaken", "Lightning Max Hit", ""),
-    ("ChaosMaximumHitTaken", "Chaos Max Hit", ""),
-    ("FireResist", "Fire Resist", "%"),
-    ("ColdResist", "Cold Resist", "%"),
-    ("LightningResist", "Lightning Resist", "%"),
-    ("ChaosResist", "Chaos Resist", "%"),
-    ("EffectiveSpellSuppressionChance", "Spell Suppression", "%"),
-    ("EffectiveBlockChance", "Block Chance", "%"),
-    ("EffectiveSpellBlockChance", "Spell Block", "%"),
-    ("LifeRegenRecovery", "Net Life Regen", "/s"),
-    ("ManaRegenRecovery", "Net Mana Regen", "/s"),
-    ("Str", "Strength", ""),
-    ("Dex", "Dexterity", ""),
-    ("Int", "Intelligence", ""),
+__all__ = [
+    "CORE_STAT_KEYS",
+    "BuildSnapshot",
+    "_call_batch",
+    "_extract_points_used",
+    "_finite_float",
+    "_json_safe_stat",
+    "_safe_min_ele_max_hit",
+    "_stat_float",
+    "capture_digest",
+    "capture_direct_digest",
+    "compact_digest_summary",
+    "diff_digest",
+    "digest_from_stats",
+    "drop_snapshot",
+    "redo_build",
+    "restore_snapshot",
+    "run_mutation",
+    "supports_cow_snapshot",
+    "supports_direct_calc",
+    "take_snapshot",
+    "undo_build",
+    "verify_cow_restored",
+    "worker_caps",
 ]
 
 
-def _call_batch(
-    worker: Any,
-    calls: list[tuple[str, dict[str, Any] | None]],
-    *,
-    timeout: float = 30.0,
-    raise_on_error: bool = True,
-) -> list[dict[str, Any]]:
-    if not calls:
-        return []
-    batch_fn = getattr(worker, "call_batch", None)
-    if callable(batch_fn):
-        return batch_fn(calls, timeout=timeout, raise_on_error=raise_on_error)
-    results: list[dict[str, Any]] = []
-    for method, params in calls:
-        if raise_on_error:
-            results.append(worker.call(method, params or {}))
-        else:
-            try:
-                results.append(worker.call(method, params or {}))
-            except Exception as exc:
-                results.append({"ok": False, "_error": str(exc), "error": str(exc)})
-    return results
-
-
-def _stat_float(val: Any) -> float:
-    parsed = _parse_numeric_or_none(val)
-    return 0.0 if (parsed is None or math.isnan(parsed)) else parsed
-
-
-def _finite_float(val: Any, default: float = 0.0) -> float:
-    parsed = _parse_numeric_or_none(val)
-    return default if (parsed is None or not math.isfinite(parsed)) else float(parsed)
-
-
-def _json_safe_stat(val: Any) -> float | str:
-    if val is None:
-        return 0.0
-    parsed = _parse_numeric_or_none(val)
-    if parsed is None:
-        return str(val) if isinstance(val, str) and val.strip() else 0.0
-    return parsed if math.isfinite(parsed) else fmt_num(parsed)
-
-
-def _safe_min_ele_max_hit(stats: dict[str, Any]) -> float | str | None:
-    vals: list[float] = []
-    for key in ("FireMaximumHitTaken", "ColdMaximumHitTaken", "LightningMaximumHitTaken"):
-        raw = stats.get(key)
-        if raw is None:
-            continue
-        parsed = _parse_numeric_or_none(raw)
-        if parsed is None or math.isnan(parsed):
-            continue
-        vals.append(parsed)
-    if not vals:
-        return None
-    m = min(vals)
-    return m if math.isfinite(m) else fmt_num(m)
-
-
 class BuildSnapshot:
-    __slots__ = ("kind", "token")
+    """Opaque build checkpoint backed by Lua CoW (`cow_snapshot`) or lossless `export_code`."""
 
-    def __init__(self, kind: str, token: str) -> None:
+    __slots__ = ("fallback_code", "kind", "proc_tag", "token")
+
+    def __init__(
+        self,
+        kind: str,
+        token: str,
+        *,
+        fallback_code: str | None = None,
+        proc_tag: Any = None,
+    ) -> None:
         self.kind = kind
         self.token = token
+        self.fallback_code = fallback_code
+        self.proc_tag = proc_tag
 
 
 def worker_caps(worker: Any) -> dict[str, Any]:
+    """Safely return a worker's capability dict (empty when a test FakeWorker lacks `.caps`)."""
     caps = getattr(worker, "caps", None)
     return caps if isinstance(caps, dict) else {}
 
 
 def supports_cow_snapshot(worker: Any) -> bool:
+    """Return True when the worker advertises `cowSnapshot` (C2c Lua CoW rollback)."""
     return bool(worker_caps(worker).get("cowSnapshot"))
 
 
 def supports_direct_calc(worker: Any) -> bool:
+    """Return True when the worker advertises `directCalc` (C1 single-pass direct calc)."""
     return bool(worker_caps(worker).get("directCalc"))
 
 
 def take_snapshot(worker: Any, *, prefer_cow: bool = True) -> BuildSnapshot:
+    """Take a Lua CoW snapshot when advertised, otherwise fall back to `export_code`."""
     if prefer_cow and supports_cow_snapshot(worker):
+        proc_tag = getattr(worker, "_proc", None)
         res = worker.call("cow_snapshot", {})
         snap_id = res.get("snapId") if isinstance(res, dict) else None
         if isinstance(snap_id, str) and snap_id:
-            return BuildSnapshot("cow", snap_id)
+            return BuildSnapshot(
+                "cow",
+                snap_id,
+                fallback_code=getattr(worker, "last_good_code", None),
+                proc_tag=proc_tag,
+            )
     return BuildSnapshot("code", str(worker.call("export_code", {})["code"]))
 
 
@@ -148,36 +106,33 @@ def restore_snapshot(
     drop: bool = False,
     rebuild: bool = True,
 ) -> None:
+    """Restore a `BuildSnapshot` (CoW or `import_code`), falling back cleanly if subprocess restarted."""
     if snap.kind == "cow":
-        params: dict[str, Any] = {"snapId": snap.token}
-        if drop:
-            params["drop"] = True
-        if not rebuild:
-            params["rebuild"] = False
-        worker.call("cow_restore", params)
-        return
+        cur_proc = getattr(worker, "_proc", None)
+        if cur_proc is snap.proc_tag:
+            params: dict[str, Any] = {"snapId": snap.token}
+            if drop:
+                params["drop"] = True
+            if not rebuild:
+                params["rebuild"] = False
+            worker.call("cow_restore", params)
+            return
+        if snap.fallback_code:
+            worker.call("import_code", {"code": snap.fallback_code, "mode": "replace"})
+            return
     worker.call("import_code", {"code": snap.token, "mode": "replace"})
 
 
 def drop_snapshot(worker: Any, snap: BuildSnapshot | None) -> None:
+    """Best-effort release of a Lua CoW snapshot (no-op for `export_code` or restarted subprocess)."""
     if snap is None or snap.kind != "cow":
+        return
+    if getattr(worker, "_proc", None) is not snap.proc_tag:
         return
     try:
         worker.call("cow_drop", {"snapId": snap.token})
     except Exception:
         pass
-
-
-def _extract_points_used(info: Any = None, stats: Any = None, pts: Any = None) -> int | None:
-    raw: Any = pts.get("used") if isinstance(pts, dict) else None
-    if raw is None and isinstance(info, dict) and isinstance(info.get("points"), dict):
-        raw = info["points"].get("used")
-    if raw is None and isinstance(stats, dict):
-        raw = stats.get("pointsUsed")
-    if raw is None or isinstance(raw, bool):
-        return None
-    parsed = _parse_numeric_or_none(raw)
-    return int(parsed) if (parsed is not None and math.isfinite(parsed)) else None
 
 
 def digest_from_stats(
@@ -222,7 +177,11 @@ def capture_direct_digest(
     skip_ehp: bool = False,
     base_digest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Capture a build digest via single-pass `direct_calc` when supported, else `capture_digest`."""
+    """Capture a build digest via single-pass `direct_calc` when supported, else `capture_digest`.
+
+    Note: when `skip_ehp=True` (offence-only fast mode), Lua omits `RefreshStatList()` so
+    `warnings` is empty (`[]`); full `skip_ehp=False` calls populate `warnings` as usual.
+    """
     if not supports_direct_calc(worker):
         return capture_digest(worker)
     with worker.lock:
@@ -294,7 +253,7 @@ def verify_cow_restored(worker: Any, before_digest: dict[str, Any]) -> dict[str,
                 after_pts = _extract_points_used(aux, pts=aux.get("points") if isinstance(aux, dict) else None)
                 if after_pts is not None:
                     break
-        if after_pts is not None and after_pts != before_pts:
+        if after_pts is None or after_pts != before_pts:
             differing.append("pointsUsed")
     if differing:
         differing.sort()
@@ -330,19 +289,6 @@ def capture_digest(worker: BridgeWorker) -> dict[str, Any]:
         build_info=info_dict,
         build_header=header_res if isinstance(header_res, dict) else {},
     )
-
-
-_OFFENCE_SUMMARY_KEYS = (
-    "FullDPS", "CombinedDPS", "TotalDPS", "TotalDotDPS", "MinionCombinedDPS", "MinionTotalDPS",
-    "AverageDamage", "Speed", "CritChance", "CritMultiplier", "HitChance", "ManaCost",
-)
-_DEFENCE_SUMMARY_KEYS = (
-    "TotalEHP", "Life", "LifeUnreserved", "Mana", "ManaUnreserved", "EnergyShield", "Ward",
-    "Armour", "Evasion", "PhysicalMaximumHitTaken", "FireMaximumHitTaken", "ColdMaximumHitTaken",
-    "LightningMaximumHitTaken", "ChaosMaximumHitTaken", "FireResist", "ColdResist",
-    "LightningResist", "ChaosResist", "EffectiveSpellSuppressionChance", "EffectiveBlockChance",
-    "EffectiveSpellBlockChance", "LifeRegenRecovery", "ManaRegenRecovery",
-)
 
 
 def compact_digest_summary(digest: dict[str, Any]) -> dict[str, Any]:
@@ -489,7 +435,13 @@ def run_mutation(
     with worker.lock:
         prev_last_good = getattr(worker, "last_good_code", None)
         snap = take_snapshot(worker, prefer_cow=not apply)
-        digest_before = capture_digest(worker)
+        try:
+            digest_before = capture_digest(worker)
+        except Exception:
+            drop_snapshot(worker, snap)
+            if hasattr(worker, "last_good_code"):
+                worker.last_good_code = prev_last_good
+            raise
 
         try:
             action_detail = mutate_fn(worker)

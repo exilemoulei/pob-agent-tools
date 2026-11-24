@@ -222,22 +222,22 @@ def run_matrix(
             baseline_snap_id: str | None = None
             pinnacle_snap_id: str | None = None
             baseline_code: str | None = None
-            if use_cow:
-                baseline_snap_id = str(worker.call("cow_snapshot", {})["snapId"])
-            else:
-                baseline_code = worker.call("export_code", {})["code"]
-            baseline_digest: dict[str, Any] | None = (
-                None if first_is_unmutated_original else capture_digest(worker)
-            )
+            baseline_digest: dict[str, Any] | None = None
             results: list[dict[str, Any]] = []
             first_digest: dict[str, Any] | None = None
-
             pinnacle_code: str | None = None
             pinnacle_stripped: dict[str, list[str]] | None = None
             worker_state = "original"
             ever_mutated = False
 
             try:
+                if use_cow:
+                    baseline_snap_id = str(worker.call("cow_snapshot", {})["snapId"])
+                else:
+                    baseline_code = worker.call("export_code", {})["code"]
+                baseline_digest = (
+                    None if first_is_unmutated_original else capture_digest(worker)
+                )
                 for idx, plan in enumerate(parsed_plans):
                     needs_pinnacle = plan["base"] in ("Pinnacle", "Uber")
                     has_pinnacle_cache = (pinnacle_snap_id is not None) if use_cow else (pinnacle_code is not None)
@@ -339,12 +339,9 @@ def run_matrix(
             if not ever_mutated:
                 restore_check: dict[str, Any] = {"verified": True, "detail": "build was not mutated"}
             elif use_cow:
-                after_restore = capture_digest(worker)
-                restore_check = {
-                    "verified": after_restore.get("primaryDps") == (baseline_digest or {}).get("primaryDps")
-                    and after_restore.get("totalEhp") == (baseline_digest or {}).get("totalEhp"),
-                    "detail": "cow_restore verified",
-                }
+                from ..snapshot import verify_cow_restored
+
+                restore_check = verify_cow_restored(worker, baseline_digest or {})
             else:
                 restore_check = verify_restored(worker, baseline_code or "", baseline_digest or {})
 

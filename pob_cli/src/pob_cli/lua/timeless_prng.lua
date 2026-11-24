@@ -321,7 +321,8 @@ function M.eval_node(nid, seed, jtype)
 		if ver.not_w >= 100 then rep = true
 		elseif ver.not_w == 0 then rep = false
 		else reset_pair(nid, rseed); rep = df(101) < ver.not_w end
-	else rep = (pt == 1) and ver.sa_rep or ver.sn_rep end
+	elseif pt == 1 then rep = ver.sa_rep
+	else rep = ver.sn_rep end
 
 	local bmin, bmax = ver.min_sn, ver.max_sn
 	if pt == 1 then bmin, bmax = ver.min_sa, ver.max_sa

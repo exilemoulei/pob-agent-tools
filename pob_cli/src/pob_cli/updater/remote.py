@@ -180,16 +180,24 @@ def _download_bytes_with_retry(
     client: httpx.Client,
     url: str,
     retries: int = ASSET_MAX_RETRIES,
+    *,
+    deadline: float | None = None,
 ) -> bytes:
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            resp = client.get(url)
+            req_kw: dict[str, Any] = {}
+            if deadline is not None:
+                rem = deadline - time.monotonic()
+                if rem <= 0.05:
+                    raise UpdateError(f"Timed out fetching '{url}' within budget")
+                req_kw["timeout"] = _to_httpx_timeout(min(5.0, max(0.5, rem)))
+            resp = client.get(url, **req_kw)
             resp.raise_for_status()
             return resp.content
         except Exception as exc:
             last_exc = exc
-            if attempt >= retries:
+            if attempt >= retries or (deadline is not None and (time.monotonic() + 0.35) >= deadline):
                 raise
             time.sleep(0.25)
     assert last_exc is not None
@@ -433,8 +441,16 @@ def fetch_pob_manifest_subset(
     if os.environ.get("POB_OFFLINE") == "1":
         raise UpdateError("POB_OFFLINE=1: cannot fetch missing optional PoB assets on demand")
 
-    eff_timeout = _to_httpx_timeout(_ASSET_TIMEOUT_SPEC if timeout is None else timeout)
-    retries = 0 if timeout is not None else ASSET_MAX_RETRIES
+    deadline = (
+        (time.monotonic() + float(timeout))
+        if isinstance(timeout, (int, float)) and timeout > 0
+        else None
+    )
+    eff_timeout = _to_httpx_timeout(
+        min(5.0, float(timeout))
+        if isinstance(timeout, (int, float)) and timeout > 0
+        else (_ASSET_TIMEOUT_SPEC if timeout is None else timeout)
+    )
     with pkg._make_http_client(
         timeout=eff_timeout,
         proxy=proxy,
@@ -444,7 +460,7 @@ def fetch_pob_manifest_subset(
 
         def _fetch_one(entry: ManifestFileEntry) -> Path:
             url = build_manifest_file_url(manifest, entry, mirror=mirror)
-            data = _download_bytes_with_retry(client, url, retries=retries)
+            data = _download_bytes_with_retry(client, url, retries=ASSET_MAX_RETRIES, deadline=deadline)
             if not verify_fn(data, entry.sha1):
                 raise UpdateError(
                     f"SHA1 mismatch for '{entry.local_rel}': expected {entry.sha1}, "

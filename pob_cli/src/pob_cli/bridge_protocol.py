@@ -41,6 +41,8 @@ FORBIDDEN_METHODS: dict[str, str] = {
 
 _TREE_VERSION_ATTR_RE = re.compile(r'treeVersion=["\']([^"\']+)["\']')
 _TREE_VERSION_NUM_RE = re.compile(r"^(\d+)_(\d+)")
+_FAILED_TREE_STAGE: dict[tuple[str, str], float] = {}
+_TREE_STAGE_RETRY_COOLDOWN_SEC = 60.0
 
 
 class BridgeError(RuntimeError):
@@ -103,6 +105,44 @@ def _get_local_tree_versions(game_dir: Path) -> tuple[set[str], tuple[int, int] 
     return names, max_tuple, max_str
 
 
+def stage_missing_tree_versions(code: str, game_dir: Path) -> list[str]:
+    """Pre-stage omitted legacy `TreeData/<ver>/` files before `import_code`, with 60s negative caching."""
+    if os.environ.get("POB_OFFLINE") == "1" or not (Path(game_dir) / "manifest.xml").is_file():
+        return []
+    xml_text = _decode_share_code_xml(code)
+    if not xml_text:
+        return []
+    requested = _extract_xml_tree_versions(xml_text)
+    if not requested:
+        return []
+    local_names, max_tuple, _ = _get_local_tree_versions(game_dir)
+    gdir_key = str(Path(game_dir))
+    now = time.monotonic()
+    staged: list[str] = []
+    for tv in requested:
+        if tv in local_names:
+            continue
+        parsed = _parse_tree_version_tuple(tv)
+        if parsed is not None and max_tuple is not None and parsed > max_tuple:
+            continue
+        ckey = (gdir_key, tv)
+        last_fail = _FAILED_TREE_STAGE.get(ckey)
+        if last_fail is not None and (now - last_fail) < _TREE_STAGE_RETRY_COOLDOWN_SEC:
+            continue
+        try:
+            from .updater.remote import ensure_tree_data_files
+
+            if ensure_tree_data_files(Path(game_dir), tv, timeout=8.0):
+                local_names.add(tv)
+                _FAILED_TREE_STAGE.pop(ckey, None)
+                staged.append(tv)
+            else:
+                _FAILED_TREE_STAGE[ckey] = time.monotonic()
+        except Exception:
+            _FAILED_TREE_STAGE[ckey] = time.monotonic()
+    return staged
+
+
 def check_tree_version_mismatch(code: str, game_dir: Path, pob_version: str | None) -> str | None:
     """Return an actionable mismatch message if code declares a treeVersion newer than local TreeData."""
     xml_text = _decode_share_code_xml(code)
@@ -126,14 +166,6 @@ def check_tree_version_mismatch(code: str, game_dir: Path, pob_version: str | No
                 "Run `pob update` (or set HTTPS_PROXY / POB_PROXY and run "
                 "`pob update --proxy http://127.0.0.1:<port>`) to update the local engine."
             )
-        if os.environ.get("POB_OFFLINE") != "1" and (Path(game_dir) / "manifest.xml").is_file():
-            try:
-                from .updater.remote import ensure_tree_data_files
-
-                if ensure_tree_data_files(Path(game_dir), tv, timeout=10.0):
-                    local_names.add(tv)
-            except Exception:
-                pass
     return None
 
 

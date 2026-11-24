@@ -249,15 +249,23 @@ def _apply_cli_filters_to_auto_query(
     open_prefix: bool = False,
     open_suffix: bool = False,
     open_affix: bool = False,
+    category: str | None = None,
+    search_sort: str | None = None,
+    allow_corrupted: bool | None = None,
+    extra_stat_groups: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Overlay CLI price/status/indexed/ilvl/open-affix constraints onto a PoB-generated query."""
+    """Overlay CLI price/status/category/sort/stat/open-affix constraints onto a PoB-generated query."""
     inner = parsed.setdefault("query", {}) if "query" in parsed else parsed
     if status:
         inner["status"] = {"option": status.strip().lower()}
     filters = inner.setdefault("filters", {})
+    if category:
+        filters.setdefault("type_filters", {}).setdefault("filters", {})["category"] = {"option": category}
     if ilvl_min > 0:
-        tf = filters.setdefault("type_filters", {}).setdefault("filters", {})
-        tf["ilvl"] = {"min": ilvl_min}
+        filters.setdefault("type_filters", {}).setdefault("filters", {})["ilvl"] = {"min": ilvl_min}
+    if allow_corrupted is False:
+        mf = filters.setdefault("misc_filters", {}).setdefault("filters", {})
+        mf.setdefault("corrupted", {"option": "false"})
     trade_f: dict[str, Any] = {}
     if budget is not None and budget > 0:
         curr_norm = (currency or "").strip().lower()
@@ -268,6 +276,8 @@ def _apply_cli_filters_to_auto_query(
             trade_f["indexed"] = {"option": window}
     if trade_f:
         filters.setdefault("trade_filters", {}).setdefault("filters", {}).update(trade_f)
+    if extra_stat_groups:
+        inner.setdefault("stats", []).extend(extra_stat_groups)
     pseudo: list[dict[str, Any]] = []
     if open_prefix:
         pseudo.append({"id": OPEN_PREFIX_ID, "value": {"min": 1}, "disabled": False})
@@ -277,6 +287,12 @@ def _apply_cli_filters_to_auto_query(
         pseudo.append({"id": OPEN_AFFIX_ID, "value": {"min": 1}, "disabled": False})
     if pseudo:
         inner.setdefault("stats", []).append({"type": "and", "filters": pseudo})
+    if search_sort and "query" in parsed:
+        s_norm = search_sort.strip().lower()
+        if s_norm in ("asc", "desc"):
+            parsed["sort"] = {"price": s_norm}
+        elif s_norm in ("sum", "weight"):
+            parsed["sort"] = {"statgroup.0": "desc"}
     return parsed
 
 
@@ -312,6 +328,7 @@ def _execute_trade_api_query(
     compact: bool,
     out_path: str | None,
     auto_query_body: dict[str, Any] | None = None,
+    max_fetch_cap: int = 20,
 ) -> dict[str, Any] | None:
     import pob_cli.cli_trade as _ct
 
@@ -381,11 +398,25 @@ def _execute_trade_api_query(
                 "pseudo_filters": pseudo_filters or None,
                 "allow_corrupted": allow_corrupted,
             }
-            query = (
-                auto_query_body
-                if isinstance(auto_query_body, dict)
-                else build_query(**query_args, max_age_hours=max_age)
-            )
+            built_manual = build_query(**query_args, max_age_hours=max_age)
+            if isinstance(auto_query_body, dict):
+                extra_groups = list((built_manual.get("query") or {}).get("stats") or [])
+                if pseudo_filters and extra_groups and extra_groups[-1].get("filters") == list(pseudo_filters):
+                    extra_groups.pop()
+                query = _apply_cli_filters_to_auto_query(
+                    dict(auto_query_body),
+                    status=status,
+                    budget=budget,
+                    currency=currency,
+                    max_age=max_age,
+                    ilvl_min=ilvl_min,
+                    category=resolved_category,
+                    search_sort=search_sort if search_sort != "asc" else None,
+                    allow_corrupted=False if (plan.conversions and not allow_corrupted) else None,
+                    extra_stat_groups=extra_groups or None,
+                )
+            else:
+                query = built_manual
         except ValueError as exc:
             _err_utf8(str(exc))
             ctx.exit(1)
@@ -417,6 +448,7 @@ def _execute_trade_api_query(
                 search_sort=search_sort,
                 sort_by=sort_by,
                 proxy=proxy,
+                max_fetch_cap=max_fetch_cap,
             )
         except TradeError as exc:
             _trade_error(ctx, exc)

@@ -261,7 +261,10 @@ def _resolve_seed_groups(
     """Compute seed equivalence groups via PRNG RPC (preferred) or flat LUT / 1-per-seed fallback."""
     prng_active = bool((getattr(first.worker, "caps", None) or {}).get("timelessPrng"))
     if prng_active:
-        prng_grouped = _group_via_prng(first, name, socket, seeds, xml, code, game_dir)
+        try:
+            prng_grouped = _group_via_prng(first, name, socket, seeds, xml, code, game_dir)
+        except Exception:
+            prng_grouped = None
         if prng_grouped is not None:
             groups, nodes, additive, seed0_sig = prng_grouped
             return groups, nodes, additive, seed0_sig, True

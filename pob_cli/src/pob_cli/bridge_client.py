@@ -25,6 +25,7 @@ from .bridge_protocol import (
     format_rpc_error,
     read_slot_state,
     restore_build_on_start,
+    stage_missing_tree_versions,
     stderr_drain_loop,
     stdout_reader_loop,
     validate_import_xml_guardrail,
@@ -36,6 +37,7 @@ from .updater import (
     build_engine_command,
     detect_source_checkout_root,
     get_runtime_dir,
+    get_shared_cache_dir,
     resolve_engine_root,
 )
 
@@ -153,6 +155,13 @@ class BridgeWorker:
             proc_env = os.environ.copy()
             proc_env.update(extra_env)
             proc_env["POB_LANG"] = active_lang
+            try:
+                proc_env.setdefault(
+                    "POB_CACHE_DIR",
+                    str(get_shared_cache_dir(self.runtime_dir, pob_root=self.pob_root)),
+                )
+            except Exception:
+                pass
             # Mirror POB_PROXY into HTTPS_PROXY/HTTP_PROXY so Windows pob-zh.exe lcurl honors it.
             pob_proxy = proc_env.get("POB_PROXY", "").strip()
             if pob_proxy:
@@ -216,7 +225,7 @@ class BridgeWorker:
                     target_code = self.last_good_code
 
                 if target_code:
-                    self._check_tree_version_mismatch(target_code)
+                    stage_missing_tree_versions(target_code, self.game_dir)
                     build_loaded = (
                         ver_info["buildLoaded"]
                         if "buildLoaded" in ver_info
@@ -424,6 +433,7 @@ class BridgeWorker:
                             raise BridgeError(err_msg)
                         pre_errors[idx] = err_msg
                         continue
+                    stage_missing_tree_versions(code_str, self.game_dir)
 
                 self._req_counter += 1
                 req_id = self._req_counter
@@ -528,6 +538,7 @@ class BridgeWorker:
                 tv_mismatch = self._check_tree_version_mismatch(code)
                 if tv_mismatch:
                     raise BridgeError(f"RPC 'import_code' failed: {tv_mismatch}")
+                stage_missing_tree_versions(code, self.game_dir)
                 try:
                     return self._raw_call_unlocked(method, params, timeout=timeout)
                 except BridgeError as exc:

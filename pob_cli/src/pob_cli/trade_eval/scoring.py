@@ -447,7 +447,7 @@ def extract_item_surrogate_features(item: Item) -> dict[str, float]:
         elif "critical strike multiplier" in tmpl:
             _add("crit_multi", val)
         elif "attack speed" in tmpl or "cast speed" in tmpl:
-            _add("inc_speed", val)
+            _add("inc_speed", -val if "reduced" in tmpl else val)
         elif "to level of" in tmpl and "gem" in tmpl:
             _add("gem_level", val)
         elif "penetrates" in tmpl and "resistance" in tmpl:
@@ -519,6 +519,9 @@ def prefilter_candidates_with_surrogate(
     """Pre-filter candidates using linear `grad Build` weights with a hard `K >= 50` floor (Rule P3)."""
     effective_k = max(MIN_SURROGATE_PREFILTER_K, int(top_k))
     if not grad_weights or len(candidates) <= effective_k:
+        return list(candidates)
+    raw_w = grad_weights.get("weights") if isinstance(grad_weights.get("weights"), dict) else grad_weights
+    if not isinstance(raw_w, dict) or not raw_w:
         return list(candidates)
     scored = [
         (score_candidate_surrogate(cand.item, grad_weights), idx, cand)

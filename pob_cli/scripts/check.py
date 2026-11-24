@@ -202,7 +202,7 @@ def run_self_test(pob_cli_root: Path) -> int:
             (
                 "blocked-rpc",
                 "blocked-rpc (save_build_as)",
-                pkg / "snapshot.py",
+                pkg / "snapshot" / "__init__.py",
                 '\n\ndef _selftest_blocked_rpc(worker: object) -> None:\n'
                 '    worker.call("save_build_as", {})  # type: ignore[attr-defined]\n',
             ),

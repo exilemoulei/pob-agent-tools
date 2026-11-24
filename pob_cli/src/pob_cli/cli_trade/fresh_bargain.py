@@ -102,11 +102,12 @@ def _fetch_with_fresh_and_market(
     search_sort: str,
     sort_by: str,
     proxy: str | None,
+    max_fetch_cap: int = 20,
 ) -> dict[str, Any]:
     """Execute trade search + optional fresh filtering/fallback, chaos rates, and bargain baseline."""
     import pob_cli.cli_trade as _ct
 
-    want = max(0, min(fetch_limit, 20))
+    want = max(0, min(fetch_limit, max(20, min(max_fetch_cap, 100))))
     rows: list[dict[str, Any]] = []
     query_id = ""
     total = 0

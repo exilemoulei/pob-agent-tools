@@ -492,27 +492,26 @@ def live_cow_worker():
     if POB_DIR is None:
         pytest.skip("No runnable PoB engine found")
     worker = BridgeWorker(slot_name="test", pob_dir=POB_DIR)
-    worker.start()
-    if not (supports_cow_snapshot(worker) and supports_direct_calc(worker)):
-        worker.stop()
-        pytest.skip("Engine does not advertise cowSnapshot/directCalc capabilities")
-
-    lc = worker.call("list_classes", {})
-    witch = next(c for c in lc["classes"] if c["name"] == "Witch")
-    worker.call("set_class", {"classId": witch["id"]})
-    elem = next(a for a in witch["ascendancies"] if a["name"] == "Elementalist")
-    worker.call("set_ascendancy", {"ascendClassId": elem["id"]})
-    worker.call("add_group", {"label": "Main Fireball"})
-    worker.call("add_gem", {"group": 1, "nameSpec": "Fireball", "level": 20, "quality": 20, "enabled": True})
-    worker.call("set_build_field", {"field": "mainSocketGroup", "value": 1})
-    ring_raw = "\n".join([
-        "Rarity: RARE", "Cow Test Ring", "Ruby Ring", "Item Level: 84", "Implicits: 1",
-        "+30% to Fire Resistance", "+75 to maximum Life", "+40% to Cold Resistance",
-    ])
-    worker.call("add_item", {"raw": ring_raw, "slotName": "Ring 1", "equip": True})
-    worker.call("set_config", {"var": "usePowerCharges", "value": True})
-    worker.update_checkpoint()
     try:
+        worker.start()
+        if not (supports_cow_snapshot(worker) and supports_direct_calc(worker)):
+            pytest.skip("Engine does not advertise cowSnapshot/directCalc capabilities")
+
+        lc = worker.call("list_classes", {})
+        witch = next(c for c in lc["classes"] if c["name"] == "Witch")
+        worker.call("set_class", {"classId": witch["id"]})
+        elem = next(a for a in witch["ascendancies"] if a["name"] == "Elementalist")
+        worker.call("set_ascendancy", {"ascendClassId": elem["id"]})
+        worker.call("add_group", {"label": "Main Fireball"})
+        worker.call("add_gem", {"group": 1, "nameSpec": "Fireball", "level": 20, "quality": 20, "enabled": True})
+        worker.call("set_build_field", {"field": "mainSocketGroup", "value": 1})
+        ring_raw = "\n".join([
+            "Rarity: RARE", "Cow Test Ring", "Ruby Ring", "Item Level: 84", "Implicits: 1",
+            "+30% to Fire Resistance", "+75 to maximum Life", "+40% to Cold Resistance",
+        ])
+        worker.call("add_item", {"raw": ring_raw, "slotName": "Ring 1", "equip": True})
+        worker.call("set_config", {"var": "usePowerCharges", "value": True})
+        worker.update_checkpoint()
         yield worker
     finally:
         worker.stop()
