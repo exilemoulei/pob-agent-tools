@@ -36,6 +36,7 @@ _COMPUTE_SINGLE_CMDS = frozenset(
         "borrow",
         "rank-nodes",
         "respec",
+        "weights",
         "rank-gems",
     }
 )

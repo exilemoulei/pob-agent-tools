@@ -217,6 +217,9 @@ class TestTurnReceiptsL1:
         assert c_status["isCompute"] is False
         assert c_status["hasTickCheck"] is False
 
+        for cmd in (["weights", "--preset", "jewels"], ["respec"], ["rank-nodes", "--refund"]):
+            assert classify_cli_args(cmd)["isCompute"] is True, cmd
+
         c_inspect = classify_cli_args(["item", "inspect", "--slot", "左戒指"])
         assert c_inspect["isCompute"] is False
         assert c_inspect["inspectedSlots"] == ["Ring 1"]
