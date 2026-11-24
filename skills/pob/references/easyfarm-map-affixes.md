@@ -45,6 +45,16 @@ Run from the repository root with Python 3.10+.
 python skills/pob/references/easyfarm_map_affixes.py map-marks.json
 ```
 
-The output is one EasyFarm import code. Redirect stdout to a text file if requested. The code contains only affix rules for the selected paths and stat IDs. Each mark adds `[跳过]` or `[慎打]` as a plain prefix and preserves the existing color, placeholders, and skill links. Omit identifiers that also match unwanted variants of the same effect.
+The default base is the adjacent `easyfarm-system-default-poe1.json` snapshot. The output is one new EasyFarm scheme that preserves the base version, rules and colors. Redirect stdout to save the import code. To continue from a user's existing scheme, pass its JSON file or exported share-code text as the base:
 
-Import as a separate scheme in EasyFarm and preview its matches before applying. If source validation fails, reload the current game resources and regenerate the preview. This workflow has no game-writing step or hook.
+```text
+python skills/pob/references/easyfarm_map_affixes.py map-marks.json --base current-scheme.txt
+```
+
+The generator replaces only its own previously generated map warning groups when a prior generated scheme is used as the base. It preserves all other rules and colors. Each new mark adds `[跳过]` or `[慎打]` as a plain prefix and preserves the existing color, placeholders, and skill links. Omit identifiers that also match unwanted variants of the same effect.
+
+## Check formatting before delivery
+
+Use a plain-text prefix for warning-only edits to CSD variants containing numeric placeholders such as `{0}` and `{0:+d}`. Keep the original template byte-for-byte after the prefix, including existing color tags. Preserve the variant selector and suffix (for example `#|-1` and `negate 1`). Do not add a color wrapper to the prefix or combine the edit with automatic tier recoloring. For each edited variant, check that stripping the new prefix yields the original text, substitute a representative numeric value, and check that the neighboring variants are untouched. An offline check does not establish that the game renders the line. Report the in-game verification status explicitly.
+
+Import the single new scheme in EasyFarm and preview its matches before applying. Check how base rules and the new map warnings combine on the same stat. If source validation fails, reload the current game resources and regenerate the preview. This workflow has no game-writing step or hook.

@@ -1,4 +1,4 @@
-"""Encode verified PoE1 map warnings as a standalone EasyFarm scheme."""
+"""Merge verified PoE1 map warnings into an EasyFarm scheme and encode it."""
 
 import argparse
 import base64
@@ -8,8 +8,11 @@ import re
 import sys
 import time
 import uuid
+import zlib
 from pathlib import Path
 
+DEFAULT_BASE = Path(__file__).with_name("easyfarm-system-default-poe1.json")
+GENERATED_RULE = "pob4agents:map-affix-warning"
 PREFIXES = {"skip": "[\u8df3\u8fc7] ", "caution": "[\u614e\u6253] "}
 STAT_PATHS = {
     f"metadata/statdescriptions/{name}.csd"
@@ -18,7 +21,23 @@ STAT_PATHS = {
 STAT_ID = re.compile(r"map_[a-z0-9_+%]+")
 
 
-def build_scheme(request):
+def read_base(path):
+    raw = path.read_text(encoding="utf-8-sig").strip()
+    if not raw.startswith("{"):
+        raw = gzip.decompress(base64.b64decode(raw, validate=True)).decode("utf-8")
+    base = json.loads(raw)
+    if not isinstance(base, dict):
+        raise TypeError("Expected an EasyFarm scheme object")
+    for key in ("rules", "essentialColours"):
+        entries = base.get(key)
+        if not isinstance(entries, list) or any(not isinstance(item, dict) for item in entries):
+            raise ValueError(f"Expected EasyFarm {key} to be a list of objects")
+    if type(base.get("version")) is not int or base["version"] < 1:
+        raise ValueError("Expected a positive EasyFarm scheme version")
+    return base
+
+
+def build_scheme(request, base):
     if not isinstance(request, dict):
         raise TypeError("Expected a JSON object")
     name, marks = request.get("name"), request.get("marks")
@@ -63,29 +82,34 @@ def build_scheme(request):
             "colorMode": "none",
             "colorId": "",
             "statPath": path,
-            "remark": "",
+            "remark": GENERATED_RULE,
         }
         for (path, severity), matches in groups.items()
     ]
+    kept_rules = [
+        rule for rule in base["rules"]
+        if not (rule.get("type") == "affix" and rule.get("remark") == GENERATED_RULE)
+    ]
     return {
+        **base,
         "id": str(uuid.uuid4()),
         "name": name.strip(),
         "description": "PoE1 build-specific map modifier warnings",
         "author": "pob4agents",
-        "version": 1,
         "createdAt": int(time.time() * 1000),
-        "rules": rules,
-        "essentialColours": [],
+        "rules": kept_rules + rules,
     }
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="JSON with verified map modifier marks")
+    parser.add_argument("--base", type=Path, default=DEFAULT_BASE, help="EasyFarm JSON or share code")
     args = parser.parse_args()
     try:
-        scheme = build_scheme(json.loads(args.input.read_text(encoding="utf-8-sig")))
-    except (TypeError, ValueError, OSError) as exc:
+        request = json.loads(args.input.read_text(encoding="utf-8-sig"))
+        scheme = build_scheme(request, read_base(args.base))
+    except (TypeError, ValueError, OSError, EOFError, zlib.error) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     data = json.dumps(scheme, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
