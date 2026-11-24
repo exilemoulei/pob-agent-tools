@@ -95,6 +95,25 @@ def _gaps_from_agent_probe(probe: dict[str, Any] | None) -> list[dict[str, str]]
 _ATK_COOLDOWN_TRIGGER_KEYS = frozenset(
     {"cast on critical strike", "cospri's malice", "mjolner", "poet's pen"}
 )
+# Item triggers fire from whichever attack the build uses, so their cliff need not sit in the main group.
+_ITEM_ATK_TRIGGER_KEYS = frozenset({"cospri's malice", "mjolner", "poet's pen"})
+
+
+def _main_trigger_cliff_aps(probe: dict[str, Any]) -> float | None:
+    """Source APS of the main group's attack-trigger cliff; None when no cliff belongs to it."""
+    item_aps: float | None = None
+    for cliff in probe.get("triggerCliffs") or []:
+        if not isinstance(cliff, dict):
+            continue
+        tkey = canonical_trigger_key(str(cliff.get("triggerName") or ""))
+        src_aps = _finite_float(cliff.get("sourceAps"), default=0.0)
+        if tkey not in _ATK_COOLDOWN_TRIGGER_KEYS or src_aps <= 0.0:
+            continue
+        if cliff.get("mainGroup") is True:
+            return src_aps
+        if tkey in _ITEM_ATK_TRIGGER_KEYS and item_aps is None:
+            item_aps = src_aps
+    return item_aps
 
 
 def _extract_trigger_attack_aps(
@@ -108,14 +127,9 @@ def _extract_trigger_attack_aps(
     """Measure the real PoB Attack Rate (`Speed`) of the trigger attack in CoC/Cospri/Mjolner/Poet's Pen setups."""
     probe = agent_probe if agent_probe is not None else _probe_agent_build(worker)
     if isinstance(probe, dict):
-        for cliff in probe.get("triggerCliffs") or []:
-            if isinstance(cliff, dict):
-                tkey = canonical_trigger_key(str(cliff.get("triggerName") or ""))
-                if tkey not in _ATK_COOLDOWN_TRIGGER_KEYS:
-                    continue
-                src_aps = _finite_float(cliff.get("sourceAps"), default=0.0)
-                if src_aps > 0.0:
-                    return src_aps
+        probe_aps = _main_trigger_cliff_aps(probe)
+        if probe_aps is not None:
+            return probe_aps
 
     groups = skills_res.get("groups") or []
     main_idx = skills_res.get("mainSocketGroup")

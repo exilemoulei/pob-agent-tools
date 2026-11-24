@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import threading
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,9 @@ from pob_cli.trade_eval.scoring import (
 from pob_cli.trade_item import parse_item_text
 
 LUA_DIR = Path(__file__).resolve().parents[1] / "src" / "pob_cli" / "lua"
+# What the fake's export_code hands out: a real share code, so callers must decode it.
+_FAKE_BUILD_XML = '<PathOfBuilding><Build level="95" className="Shadow"/></PathOfBuilding>'
+_FAKE_SHARE_CODE = base64.urlsafe_b64encode(zlib.compress(_FAKE_BUILD_XML.encode("utf-8"), 9)).decode("ascii")
 
 
 class _CapsFakeWorker:
@@ -147,7 +152,7 @@ class _CapsFakeWorker:
                     self._cur_dps = 550_000.0
             return {"ok": True}
         if method == "export_code":
-            return {"code": "SNAP_CODE_1"}
+            return {"code": _FAKE_SHARE_CODE}
         if method == "import_code":
             self._cur_dps = self._base_dps
             return {"ok": True}
@@ -203,6 +208,8 @@ class _CapsFakeWorker:
                         "maxSafeAps": 7.575,
                         "extraIcdrPctNeeded": 14,
                         "overspeedCliffExceeded": True,
+                        "linkedTriggeredSpells": 1,
+                        "mainGroup": True,
                     }
                 ],
             }
@@ -227,14 +234,19 @@ class _CapsFakeWorker:
                 },
             }
         if method == "power_diff_attribution":
+            # PoB's CompareTab:ImportBuild needs the decoded XML of the other build.
+            if p.get("compareXml") != _FAKE_BUILD_XML:
+                raise RuntimeError(f"power_diff_attribution got compareXml={p.get('compareXml')!r}")
+            # Category labels as CompareTab.lua's ComparePowerBuilder writes them.
             return {
                 "stat": p.get("stat") or "CombinedDPS",
-                "totalDiffs": 2,
+                "totalDiffs": 3,
                 "diffs": [
-                    {"category": "Items", "name": "Amulet", "impact": 180_000.0, "impactPct": 18.0},
+                    {"category": "Item", "name": "Amulet", "impact": 180_000.0, "impactPct": 18.0},
                     {"category": "Tree", "name": "Heartseeker", "impact": 60_000.0, "impactPct": 6.0},
+                    {"category": "Skill gem", "name": "Ice Nova", "impact": 20_000.0, "impactPct": 2.0},
                 ],
-                "byCategory": {"Items": 1, "Tree": 1},
+                "byCategory": {"Item": 1, "Tree": 1, "Skill gem": 1},
             }
         raise AssertionError(f"Unexpected RPC call: {method}({p})")
 
@@ -332,7 +344,8 @@ def test_comparator_power_attribution_and_cluster_node_ranking() -> None:
     mw = _CapsFakeWorker(caps={"powerAttribution": True})
     rw = _CapsFakeWorker(caps={"powerAttribution": True})
     res = comparator.compare_builds(mw, rw)
-    assert res["powerAttribution"]["byCategory"] == {"Items": 1, "Tree": 1}
+    assert res["powerAttribution"]["byCategory"] == {"Item": 1, "Tree": 1, "Skill gem": 1}
+    assert "powerAttributionError" not in res
     assert any(m == "power_diff_attribution" for m, _ in mw.calls)
     assert not any(m.startswith("compare_") for m, _ in mw.calls)
 
@@ -560,12 +573,26 @@ def test_p1_1_exclude_periodic_reactive_triggers_and_p1_2_cospri_dedup() -> None
             }
         ]
     }
-    deduped = deduplicate_trigger_gaps([stale_0_cdr, accurate_32_cdr], probe_cospri_2spell)
+    # Two spells share Cospri's trigger, so the safe rate doubles (10.10/s): 5.46 APS is no overspeed.
+    assert deduplicate_trigger_gaps([stale_0_cdr, accurate_32_cdr], probe_cospri_2spell) == []
+    assert deduplicate_trigger_gaps([stale_0_cdr], probe_cospri_2spell) == []
+
+    # One spell (probe without a verdict field): the probe's 32% CDR replaces the stale 0% numbers.
+    probe_cospri_1spell = {
+        "triggerCliffs": [
+            {
+                **{k: v for k, v in probe_cospri_2spell["triggerCliffs"][0].items() if k != "overspeedCliffExceeded"},
+                "linkedTriggeredSpells": 1,
+                "maxSafeAps": 5.05,
+            }
+        ]
+    }
+    deduped = deduplicate_trigger_gaps([stale_0_cdr, accurate_32_cdr], probe_cospri_1spell)
     assert len(deduped) == 1
     assert "32% CDR" in deduped[0]["message"] and "5.05/s" in deduped[0]["message"]
 
     # Even if pitfalls only had 0% CDR (unparsed CDR source), agent_probe's 32% CDR upgrades it cleanly
-    upgraded = deduplicate_trigger_gaps([stale_0_cdr], probe_cospri_2spell)
+    upgraded = deduplicate_trigger_gaps([stale_0_cdr], probe_cospri_1spell)
     assert len(upgraded) == 1
     assert "32% CDR" in upgraded[0]["message"] and "5.05/s" in upgraded[0]["message"]
 
@@ -718,7 +745,8 @@ Implicits: 0
             assert tq_amu["complexity"] <= 160
             assert tq_amu["complexityWithinLimit"] is True
             q_parsed = json.loads(tq_amu["queryJson"])
-            w_filters = q_parsed["stats"][0]["filters"]
+            assert q_parsed["sort"] == {"statgroup.0": "desc"}
+            w_filters = q_parsed["query"]["stats"][0]["filters"]
             assert len(w_filters) == tq_amu["filters"]
             weights_list = [abs(f["value"]["weight"]) for f in w_filters]
             assert weights_list == sorted(weights_list, reverse=True)
@@ -749,14 +777,21 @@ Implicits: 0
             assert dumped["topFilters"][0]["label"]
             assert dumped["slotConstraints"]["isLoadBearing"] is True
 
-            # P1-2: Cospri's Malice overspeed appears ONCE with accurate 32% CDR / cap 5.05 numbers
-            w.call("import_code", {"code": _encode_xml(b2_like_xml), "mode": "replace"})
-            d_b2 = analyzer.diagnose_build(w, no_rank=True)
-            cospri_gaps = [
-                g
-                for g in d_b2["healthGaps"]
-                if g["category"] in ("TriggerOverspeed", "TriggerCliff") and "Cospri" in g["message"]
-            ]
+            def _cospri_gaps(xml: str) -> list[dict[str, Any]]:
+                w.call("import_code", {"code": _encode_xml(xml), "mode": "replace"})
+                return [
+                    g
+                    for g in analyzer.diagnose_build(w, no_rank=True)["healthGaps"]
+                    if g["category"] in ("TriggerOverspeed", "TriggerCliff") and "Cospri" in g["message"]
+                ]
+
+            # P1-2: two socketed spells each keep their own 0.25 s cooldown, so 5.46 APS stays
+            # under the 2 x 5.05/s safe rate and nothing may be reported.
+            assert _cospri_gaps(b2_like_xml) == []
+            # One spell: the overspeed appears ONCE with the accurate 32% CDR / cap 5.05 numbers.
+            frostbite = '      <Gem nameSpec="Frostbite" skillId="Frostbite" level="20" quality="20" enabled="true"/>\n'
+            assert frostbite in b2_like_xml
+            cospri_gaps = _cospri_gaps(b2_like_xml.replace(frostbite, ""))
             assert len(cospri_gaps) == 1
             assert "32% CDR" in cospri_gaps[0]["message"]
             assert "5.05" in cospri_gaps[0]["message"]

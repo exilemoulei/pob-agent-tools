@@ -109,8 +109,11 @@ def deduplicate_trigger_gaps(
             probe_cdr = _finite_float(cliff_info.get("currentIcdrPct"), default=-1.0)
             b_cd = _finite_float(cliff_info.get("baseActionCd"), default=0.25)
             src_aps = _finite_float(cliff_info.get("sourceAps"), default=0.0)
-            if probe_cdr > msg_cdr and b_cd > 0.0 and src_aps > 0.0:
-                tick = compute_server_tick_cooldown(b_cd, probe_cdr, aps=src_aps)
+            # At equal CDR the probe still wins: it also knows how many spells share the trigger.
+            if probe_cdr >= msg_cdr and b_cd > 0.0 and src_aps > 0.0:
+                # Each linked spell has its own cooldown, so N spells multiply the safe rate by N.
+                spells = max(1, int(_finite_float(cliff_info.get("linkedTriggeredSpells"), default=1.0)))
+                tick = compute_server_tick_cooldown(b_cd, probe_cdr, aps=src_aps, triggered_spells=spells)
                 if not tick.get("overspeed"):
                     continue
                 disp = m_trig.group(1) if m_trig else tkey

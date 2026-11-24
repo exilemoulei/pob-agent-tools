@@ -519,7 +519,9 @@ local function postprocess_trade_query(tqg, captured_query, params)
 	end
 	local complexity = 54 + 4 + 4 + has_misc + 4 * (#final_filters + extra_filters)
 	local min_weight = (stat_group and stat_group.value and stat_group.value.min) or 0
-	return dkjson.encode(captured_query), #final_filters, complexity, min_weight, top_filters, stat_labels
+	-- Same body as TradeQuery.lua's "Find best" search; the CLI re-fits it after adding its filters.
+	local body = { query = captured_query, sort = { ["statgroup.0"] = "desc" } }
+	return dkjson.encode(body), #final_filters, complexity, min_weight, top_filters, stat_labels
 end
 
 local function handle_trade_generate_query(params)

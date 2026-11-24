@@ -6,7 +6,7 @@ import copy
 import statistics
 from typing import Any
 
-from ..trade_client import MAX_FETCH_IDS, NoResults, TradeError
+from ..trade_client import MAX_FETCH_IDS, MAX_FETCH_MANY, NoResults, TradeError
 from ..trade_eval import listing_age_hours
 from ..trade_query import build_query
 from .common import _price_of
@@ -75,11 +75,6 @@ def _search_rows(
     ids = [str(item) for item in found.get("result") or []]
     total = int(found.get("total") or len(ids))
     if max_age is None:
-        if want > 20 and callable(getattr(client, "fetch", None)):
-            rows: list[dict[str, Any]] = []
-            for start in range(0, min(len(ids), want, 100), MAX_FETCH_IDS):
-                rows.extend(client.fetch(ids[start : start + MAX_FETCH_IDS], query_id))
-            return query_id, total, rows[:want], len(rows)
         rows = client.fetch_many(ids, query_id, limit=want)
         return query_id, total, rows, len(rows)
     rows, fetched = _fetch_fresh(client, ids, query_id, want=want, max_age=max_age)
@@ -118,13 +113,12 @@ def _fetch_with_fresh_and_market(
     search_sort: str,
     sort_by: str,
     proxy: str | None,
-    max_fetch_cap: int = 20,
     has_auto_query: bool = False,
 ) -> dict[str, Any]:
     """Execute trade search + optional fresh filtering/fallback, chaos rates, and bargain baseline."""
     import pob_cli.cli_trade as _ct
 
-    want = max(0, min(fetch_limit, max(20, min(max_fetch_cap, 100))))
+    want = max(0, min(fetch_limit, MAX_FETCH_MANY))
     rows: list[dict[str, Any]] = []
     query_id = ""
     total = 0
@@ -158,8 +152,8 @@ def _fetch_with_fresh_and_market(
     market_note = ""
     if bargain is not None:
         market_total = total
-        is_price_asc = search_sort == "asc" and (not has_auto_query or (query.get("sort") or {}) == {"price": "asc"})
-        if (max_age is None or stale_fallback) and is_price_asc and want >= 10:
+        # Read the body's sort: an --auto-query search sorts by weighted sum unless told otherwise.
+        if (max_age is None or stale_fallback) and query.get("sort") == {"price": "asc"} and want >= 10:
             cheapest = rows[:10]  # this search already is "cheapest first, any age"
         else:
             try:

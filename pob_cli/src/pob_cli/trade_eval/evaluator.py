@@ -281,7 +281,8 @@ def _prefilter_raw_items_for_eval(
     if len(items) <= effective_k:
         return items
     grad = compute_grad_weights(worker)
-    if not grad:
+    # Without weights every score is 0 and the cut would keep the first K unranked.
+    if not grad or not isinstance(grad.get("weights"), dict) or not grad["weights"]:
         return items
     from ..trade_item import parse_item_text
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any
 
@@ -15,13 +16,14 @@ from ..trade_client import TradeError, seller_url
 from ..trade_eval import Candidate, compare_items, score_deltas, verify_candidates_batch
 from ..trade_item import build_item_text, convert_item_text, parse_item_text, sanitize_text, trade_mod_tiers
 from ..trade_query import (
-    INDEXED_WINDOWS,
     OPEN_AFFIX_ID,
     OPEN_PREFIX_ID,
     OPEN_SUFFIX_ID,
     build_query,
     plan_stats,
 )
+from ..trade_query.auto_query import apply_cli_filters_to_auto_query as _apply_cli_filters_to_auto_query
+from ..trade_query.auto_query import fit_complexity, wrap_auto_query
 from ..updater import format_stderr_update_alert
 from .common import (
     _conversion_payload,
@@ -238,64 +240,6 @@ def _collect_bench_options(
     return bench_options
 
 
-def _apply_cli_filters_to_auto_query(
-    parsed: dict[str, Any],
-    *,
-    status: str = "available",
-    budget: float | None = None,
-    currency: str | None = "chaos_equiv",
-    max_age: float | None = None,
-    ilvl_min: int = 0,
-    open_prefix: bool = False,
-    open_suffix: bool = False,
-    open_affix: bool = False,
-    category: str | None = None,
-    search_sort: str | None = None,
-    allow_corrupted: bool | None = None,
-    extra_stat_groups: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Overlay CLI price/status/category/sort/stat/open-affix constraints onto a PoB-generated query."""
-    inner = parsed.setdefault("query", {}) if "query" in parsed else parsed
-    if status:
-        inner["status"] = {"option": status.strip().lower()}
-    filters = inner.setdefault("filters", {})
-    if category:
-        filters.setdefault("type_filters", {}).setdefault("filters", {})["category"] = {"option": category}
-    if ilvl_min > 0:
-        filters.setdefault("type_filters", {}).setdefault("filters", {})["ilvl"] = {"min": ilvl_min}
-    if allow_corrupted is False:
-        mf = filters.setdefault("misc_filters", {}).setdefault("filters", {})
-        mf.setdefault("corrupted", {"option": "false"})
-    trade_f: dict[str, Any] = {}
-    if budget is not None and budget > 0:
-        curr_norm = (currency or "").strip().lower()
-        trade_f["price"] = {"max": budget} if curr_norm in ("", "chaos_equiv", "equiv") else {"option": curr_norm, "max": budget}
-    if max_age is not None and max_age > 0:
-        window = next((opt for hours, opt in INDEXED_WINDOWS if max_age <= hours), None)
-        if window:
-            trade_f["indexed"] = {"option": window}
-    if trade_f:
-        filters.setdefault("trade_filters", {}).setdefault("filters", {}).update(trade_f)
-    if extra_stat_groups:
-        inner.setdefault("stats", []).extend(extra_stat_groups)
-    pseudo: list[dict[str, Any]] = []
-    if open_prefix:
-        pseudo.append({"id": OPEN_PREFIX_ID, "value": {"min": 1}, "disabled": False})
-    if open_suffix:
-        pseudo.append({"id": OPEN_SUFFIX_ID, "value": {"min": 1}, "disabled": False})
-    if open_affix and not (open_prefix or open_suffix):
-        pseudo.append({"id": OPEN_AFFIX_ID, "value": {"min": 1}, "disabled": False})
-    if pseudo:
-        inner.setdefault("stats", []).append({"type": "and", "filters": pseudo})
-    if search_sort and "query" in parsed:
-        s_norm = search_sort.strip().lower()
-        if s_norm in ("asc", "desc"):
-            parsed["sort"] = {"price": s_norm}
-        elif s_norm in ("sum", "weight"):
-            parsed["sort"] = {"statgroup.0": "desc"}
-    return parsed
-
-
 def _execute_trade_api_query(
     ctx: click.Context,
     *,
@@ -328,7 +272,6 @@ def _execute_trade_api_query(
     compact: bool,
     out_path: str | None,
     auto_query_body: dict[str, Any] | None = None,
-    max_fetch_cap: int = 20,
 ) -> dict[str, Any] | None:
     import pob_cli.cli_trade as _ct
 
@@ -399,6 +342,7 @@ def _execute_trade_api_query(
                 "allow_corrupted": allow_corrupted,
             }
             is_auto = isinstance(auto_query_body, dict)
+            auto_complexity: int | None = None
             manual_args = (
                 {**query_args, "search_sort": "asc"}
                 if (is_auto and str(search_sort).startswith("sum"))
@@ -410,7 +354,7 @@ def _execute_trade_api_query(
                 if pseudo_filters and extra_groups and extra_groups[-1].get("filters") == list(pseudo_filters):
                     extra_groups.pop()
                 query = _apply_cli_filters_to_auto_query(
-                    dict(auto_query_body),
+                    wrap_auto_query(copy.deepcopy(auto_query_body)),
                     status=status,
                     budget=budget,
                     currency=currency,
@@ -428,6 +372,8 @@ def _execute_trade_api_query(
                     merged_stats = (query.get("query") or {}).get("stats") or []
                     if not any(isinstance(g, dict) and g.get("type") == "weight" for g in merged_stats):
                         raise ValueError("--search-sort sum requires at least one weighted stat group.")
+                # The manual groups and filters above count too; trim generated filters to fit.
+                auto_complexity, _dropped = fit_complexity(query)
             else:
                 query = built_manual
         except ValueError as exc:
@@ -446,6 +392,9 @@ def _execute_trade_api_query(
                 "benchOptions": bench_options,
                 "query": query,
             }
+            if is_auto:
+                payload["autoQuery"] = True
+                payload["complexity"] = auto_complexity
             _emit_json(payload, compact=compact, out_path=out_path, sanitize=True)
             return None
 
@@ -461,7 +410,6 @@ def _execute_trade_api_query(
                 search_sort=search_sort,
                 sort_by=sort_by,
                 proxy=proxy,
-                max_fetch_cap=max_fetch_cap,
                 has_auto_query=isinstance(auto_query_body, dict),
             )
         except TradeError as exc:

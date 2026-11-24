@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -241,14 +242,46 @@ def _build_compare_structural_diffs(
     return tree_diff, skill_diff, slot_comparison
 
 
+# The CLI waits 150 s for `pob compare`; the margin covers the reply.
+COMPARE_BUDGET_S = 140.0
+# With less left, attribution would likely time out, and a timeout restarts the worker.
+_MIN_ATTRIBUTION_S = 15.0
+
+
+def _power_attribution(
+    main_worker: BridgeWorker, ref_snap: str, stat: str, remaining_s: float
+) -> tuple[dict[str, Any] | None, str | None]:
+    """`power_diff_attribution` within the time left: (result, error)."""
+    if remaining_s < _MIN_ATTRIBUTION_S:
+        return None, f"skipped: only {max(0.0, remaining_s):.0f}s of the compare budget left"
+    try:
+        ref_xml = ref_snap if ref_snap.lstrip().startswith("<") else share_code_to_xml(ref_snap)
+    except Exception:
+        ref_xml = ref_snap
+    try:
+        with main_worker.lock:
+            res = main_worker.call(
+                "power_diff_attribution",
+                {"compareXml": ref_xml, "stat": stat},
+                timeout=min(60.0, remaining_s),
+            )
+    except Exception as exc:
+        return None, f"failed: {str(exc)[:200]}"
+    if isinstance(res, dict) and not res.get("_error"):
+        return res, None
+    return None, f"failed: {str(res.get('_error') if isinstance(res, dict) else res)[:200]}"
+
+
 def compare_builds(
     main_worker: BridgeWorker,
     ref_worker: BridgeWorker,
     *,
     ref_source: str | None = None,
     ref_xml_code: str | None = None,
+    budget_s: float = COMPARE_BUDGET_S,
 ) -> dict[str, Any]:
     """Compare `main` build vs `ref` build across 3 baselines + tree, skill, and item diffs."""
+    started = time.monotonic()
     if ref_source or ref_xml_code:
         load_build_into_worker(ref_worker, source=ref_source, xml_code=ref_xml_code)
 
@@ -348,22 +381,14 @@ def compare_builds(
     )
 
     power_attribution: dict[str, Any] | None = None
+    attribution_error: str | None = None
     if (getattr(main_worker, "caps", None) or {}).get("powerAttribution") and ref_snap:
-        try:
-            ref_xml_str = ref_snap if ref_snap.lstrip().startswith("<") else share_code_to_xml(ref_snap)
-        except Exception:
-            ref_xml_str = ref_snap
-        try:
-            with main_worker.lock:
-                attr_res = main_worker.call(
-                    "power_diff_attribution",
-                    {"compareXml": ref_xml_str, "stat": main_orig.get("primaryDpsKey") or "CombinedDPS"},
-                    timeout=60.0,
-                )
-            if isinstance(attr_res, dict) and not attr_res.get("_error"):
-                power_attribution = attr_res
-        except Exception:
-            power_attribution = None
+        power_attribution, attribution_error = _power_attribution(
+            main_worker,
+            ref_snap,
+            main_orig.get("primaryDpsKey") or "CombinedDPS",
+            budget_s - (time.monotonic() - started),
+        )
 
     out_cmp: dict[str, Any] = {
         "mainBuildInfo": main_orig["buildInfo"],
@@ -383,6 +408,8 @@ def compare_builds(
     }
     if power_attribution is not None:
         out_cmp["powerAttribution"] = power_attribution
+    if attribution_error:
+        out_cmp["powerAttributionError"] = attribution_error
     return out_cmp
 
 

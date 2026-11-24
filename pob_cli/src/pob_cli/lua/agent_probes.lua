@@ -127,13 +127,14 @@ end
 local function analyze_trigger_cliffs(env)
 	local cliffs, seen, group_count, group_drv = {}, {}, {}, {}
 	local out = env.player.output or {}
-	local tick_t = (data and data.misc and data.misc.ServerTickTime) or 0.033
-	local tick_r = (data and data.misc and data.misc.ServerTickRate) or (1 / tick_t)
+	local misc = data and data.misc or {}
+	local tick_t = misc.ServerTickTime or 0.033
+	local tick_r = misc.ServerTickRate or (1 / tick_t)
 	local list = env.player.activeSkillList or {}
 	for _, sk in ipairs(list) do
 		if sk.socketGroup and not (sk.skillFlags and sk.skillFlags.disable) then
 			if sk.triggeredBy then
-				local nt = norm_trig(sk.triggeredBy.grantedEffect and sk.triggeredBy.grantedEffect.name)
+				local nt = norm_trig((sk.triggeredBy.grantedEffect or {}).name)
 				if not is_excl(sk, nt) then
 					local gk = tostring(sk.socketGroup) .. ":" .. nt
 					group_count[gk] = (group_count[gk] or 0) + 1
@@ -145,7 +146,8 @@ local function analyze_trigger_cliffs(env)
 	end
 	local cache = GlobalCache and GlobalCache.cachedData and (GlobalCache.cachedData[env.mode] or GlobalCache.cachedData["MAIN"])
 	local function drv_sp(sk, mode)
-		if mode == "chan" and sk.skillData and (sk.skillData.triggerTime or 0) > 0 then return 1 / sk.skillData.triggerTime end
+		local tt = (sk.skillData or {}).triggerTime or 0
+		if mode == "chan" and tt > 0 then return 1 / tt end
 		if cache and type(cacheSkillUUID) == "function" then
 			local e = cache[cacheSkillUUID(sk, env)]
 			local sp = e and (e.HitSpeed or e.Speed)
@@ -177,7 +179,7 @@ local function analyze_trigger_cliffs(env)
 		if skill.triggeredBy and not (skill.skillFlags and skill.skillFlags.disable) then
 			local ge = skill.activeEffect and skill.activeEffect.grantedEffect
 			local sname = (ge and ge.name) or "TriggeredSkill"
-			local tname = (skill.triggeredBy.grantedEffect and skill.triggeredBy.grantedEffect.name) or "Trigger"
+			local tname = (skill.triggeredBy.grantedEffect or {}).name or "Trigger"
 			local nt = norm_trig(tname)
 			local key = tostring(skill.socketGroup) .. ":" .. sname
 			if not seen[key] and not is_excl(skill, nt) and (CROSS_TRIG[nt] or LINKED_TRIG[nt] ~= nil or group_drv[skill.socketGroup]) then
@@ -185,22 +187,31 @@ local function analyze_trigger_cliffs(env)
 				local lv = skill.triggeredBy.level or 1
 				local levels = skill.triggeredBy.grantedEffect and skill.triggeredBy.grantedEffect.levels
 				local trig_cd = (levels and levels[lv] and levels[lv].cooldown) or 0
-				local sk_cd = (skill.skillData and skill.skillData.cooldown) or 0
-				local icdr = calcLib.mod(skill.skillModList, skill.skillCfg, "CooldownRecovery") or 1
-				local add_cd = skill.skillModList:Sum("BASE", skill.skillCfg, "CooldownRecovery") or 0
-				local cd_ov = skill.skillModList:Override(skill.skillCfg, "CooldownRecovery")
-				local add_cast = skill.skillModList:Flag(skill.skillCfg, "SpellCastTimeAddedToCooldownIfTriggered") and ((ge and ge.castTime) or 0) or 0
+				local mods, cfg, sd = skill.skillModList, skill.skillCfg, skill.skillData or {}
+				local sk_cd = sd.cooldown or 0
+				local icdr = calcLib.mod(mods, cfg, "CooldownRecovery") or 1
+				local add_cd = mods:Sum("BASE", cfg, "CooldownRecovery") or 0
+				local cd_ov = mods:Override(cfg, "CooldownRecovery")
+				local add_cast = 0
+				if mods:Flag(cfg, "SpellCastTimeAddedToCooldownIfTriggered") then -- processAddedCastTime
+					add_cast = (sd.castTimeOverride or (ge and ge.castTime) or 1)
+						/ round((1 + mods:Sum("INC", cfg, "Speed") / 100) * mods:More(cfg, "Speed"), 2)
+				end
 				local act_cd = cd_ov or math.max(trig_cd + add_cast, sk_cd + add_cd)
 				if act_cd > 0 then
-					local eff_cd = cd_ov or (act_cd / icdr)
+					local trig_adj, sk_adj = (trig_cd + add_cast) / icdr, (sk_cd + add_cd) / icdr
+					local function tick_up(v, ign) return ign and v or math.ceil(v * tick_r) / tick_r end
+					local eff_cd = cd_ov or math.max(trig_adj, sk_adj)
 					local cur_t = math.ceil(eff_cd * tick_r)
-					local tick_cd = cur_t / tick_r
+					-- CalcTriggers tick-rounds each side unless it ignores the tick rate.
+					local tick_cd = cd_ov and tick_up(cd_ov) or math.max(tick_up(trig_adj, skill.triggeredBy.ignoresTickRate),
+						tick_up(sk_adj, sd.ignoresTickRate or (sd.storedUses or 0) > 1))
 					local cap = 1 / tick_cd
 					local nxt_t = math.max(1, cur_t - 1)
 					local nxt_cd = nxt_t / tick_r
 					local cur_icdr = math.floor((icdr - 1) * 100 + 0.5)
 					local ext_icdr, tot_icdr = nil, nil
-					if not cd_ov and cur_t > 1 then
+					if not cd_ov and cur_t > 1 and tick_cd * tick_r > cur_t - 1e-6 then
 						tot_icdr = math.ceil((act_cd / nxt_cd - 1) * 100)
 						while math.ceil((act_cd / (1 + tot_icdr / 100)) * tick_r) >= cur_t do tot_icdr = tot_icdr + 1 end
 						ext_icdr = tot_icdr - cur_icdr
@@ -216,8 +227,9 @@ local function analyze_trigger_cliffs(env)
 						totalIcdrPctNeeded = tot_icdr, extraIcdrPctNeeded = ext_icdr,
 						linkedTriggeredSpells = linked, sourceAps = src_aps, maxSafeAps = max_aps,
 						apsHeadroom = max_aps - src_aps, overspeedCliffExceeded = src_aps > max_aps,
+						mainGroup = skill.socketGroup == env.player.mainSkill.socketGroup,
 						reportedSkillTriggerRate = (skill == env.player.mainSkill) and out.SkillTriggerRate
-							or (skill.skillData and skill.skillData.triggerRate) or nil,
+							or sd.triggerRate,
 					}
 				end
 			end
@@ -232,7 +244,7 @@ local function handle_agent_probe_build(_params)
 	local output = (env and env.player and env.player.output) or {}
 	local mod_db = env.player.modDB
 	local resist_slack, res_total, res_cap, res_inc = {}, {}, {}, {}
-	local max_cap = (data and data.misc and data.misc.MaxResistCap) or 90
+	local max_cap = (data and data.misc or {}).MaxResistCap or 90
 	for _, elem in ipairs(RESISTS) do
 		local is_ele = elem ~= "Chaos"
 		local cap = mod_db:Override(nil, elem .. "ResistMax")
@@ -242,12 +254,11 @@ local function handle_agent_probe_build(_params)
 		res_inc[elem] = math.max(calcLib.mod(mod_db, nil, elem .. "Resist", is_ele and "ElementalResist" or nil), 0)
 		resist_slack[elem] = { final = output[elem .. "Resist"] or 0, total = tot, cap = res_cap[elem], overcapSlack = tot - res_cap[elem] }
 	end
-	local attr_cur = { Str = output.Str or 0, Dex = output.Dex or 0, Int = output.Int or 0 }
-	local attr_req = { Str = output.ReqStr or 0, Dex = output.ReqDex or 0, Int = output.ReqInt or 0 }
-	local attr_slack, attr_scale = {}, {}
+	local attr_cur, attr_slack, attr_sum = {}, {}, {}
 	for _, a in ipairs(ATTRS) do
-		attr_slack[a] = { current = attr_cur[a], required = attr_req[a], slack = attr_cur[a] - attr_req[a] }
-		attr_scale[a] = math.max(calcLib.mod(mod_db, nil, a), 0.01)
+		local cur, req = output[a] or 0, output["Req" .. a] or 0
+		attr_cur[a], attr_slack[a] = cur, { current = cur, required = req, slack = cur - req }
+		attr_sum[a] = { mod_db:Sum("BASE", nil, a), mod_db:Sum("INC", nil, a), mod_db:More(nil, a) }
 	end
 	local resource_slack = {
 		life = output.Life or 0, lifeUnreserved = output.LifeUnreserved or 0, lifeUnreservedPct = output.LifeUnreservedPercent or 0,
@@ -266,8 +277,9 @@ local function handle_agent_probe_build(_params)
 			local b_attr, i_attr, b_res, b_res_max = sum_item_attr_res(item, (slot_obj and slot_obj.slotNum) or 1, mod_db)
 			local new_attr, bricked = {}, {}
 			for _, a in ipairs(ATTRS) do
-				local post_scale = math.max(attr_scale[a] - (i_attr[a] / 100), 0)
-				new_attr[a] = math.floor(math.max(0, (attr_cur[a] / attr_scale[a]) - b_attr[a]) * post_scale + 1e-6)
+				-- As CalcPerform: max(round(BASE * (1 + INC/100) * MORE), 0)
+				local s = attr_sum[a]
+				new_attr[a] = math.max(round((s[1] - b_attr[a]) * (1 + (s[2] - i_attr[a]) / 100) * s[3]), 0)
 			end
 			if not ignore_req then
 				for _, req in ipairs(req_table) do
@@ -358,11 +370,16 @@ local function handle_eval_scenario_envelope(_params)
 			build.skillsTab.socketGroupList[g.gi].gemList[g.gemi].enabled = grd_on
 		end
 	end
-	local function restore_all()
+	local function reset_cfg(overlay)
 		for k in pairs(cfg_input) do cfg_input[k] = nil end
 		for k, v in pairs(saved_cfg) do cfg_input[k] = v end
+		for k, v in pairs(overlay or {}) do cfg_input[k] = v end
+	end
+	local function restore_all()
+		reset_cfg()
 		for i, st in pairs(saved_flasks) do
-			if items_tab.slots["Flask " .. i] then items_tab.slots["Flask " .. i].active = st end
+			local slot = items_tab.slots["Flask " .. i]
+			if slot then slot.active = st end
 		end
 		for _, g in ipairs(saved_guards) do
 			build.skillsTab.socketGroupList[g.gi].gemList[g.gemi].enabled = g.enabled
@@ -375,9 +392,7 @@ local function handle_eval_scenario_envelope(_params)
 	local ok, err = pcall(function()
 		for _, sc in ipairs(ENVELOPE_SCENARIOS) do
 			local ts = now_ms()
-			for k in pairs(cfg_input) do cfg_input[k] = nil end
-			for k, v in pairs(saved_cfg) do cfg_input[k] = v end
-			for k, v in pairs(sc.overlay) do cfg_input[k] = v end
+			reset_cfg(sc.overlay)
 			set_flasks_guards(sc.flasks, sc.guards)
 			build.configTab:BuildModList()
 			local out = (calcs.buildOutput(build, "MAIN").player.output) or {}
@@ -451,13 +466,12 @@ local function handle_compute_grad_build(params)
 	local main_env = build.calcsTab.mainEnv
 	local main_skill = main_env and main_env.player and main_env.player.mainSkill
 	local is_minion = (main_env and main_env.minion ~= nil) or (main_skill and main_skill.skillFlags and main_skill.skillFlags.minion) or false
-	local ehp_weight = tonumber(params.ehpWeight or params.ehp_weight) or 0.5
-	local dims = (params.includeResists == true or params.include_resists == true) and ALL_DIMS or CORE_DIMS
+	local ehp_weight = tonumber(params.ehpWeight) or 0.5
+	local dims = params.includeResists == true and ALL_DIMS or CORE_DIMS
 	local t0 = now_ms()
 	local calc_func, calc_base = calcs.getMiscCalculator(build)
 	local base_dps, dps_key = primary_dps(calc_base)
-	local req_stat = params.stat
-	local target_stat = (type(req_stat) == "string" and req_stat ~= "") and req_stat or dps_key
+	local target_stat = (type(params.stat) == "string" and params.stat ~= "") and params.stat or dps_key
 	local use_full_dps = (target_stat == "FullDPS") or (dps_key == "FullDPS")
 	local base_ehp = calc_base.TotalEHP or 1
 	local base_stat = (target_stat == dps_key) and base_dps or (calc_base[target_stat] or base_dps)
