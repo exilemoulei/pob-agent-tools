@@ -84,14 +84,18 @@ def supports_direct_calc(worker: Any) -> bool:
     return bool(worker_caps(worker).get("directCalc"))
 
 
-def take_snapshot(worker: Any, *, prefer_cow: bool = True) -> BuildSnapshot:
-    """Take a Lua CoW snapshot when advertised, otherwise fall back to `export_code`."""
+def take_snapshot(worker: Any, *, prefer_cow: bool = True, fresh_fallback: bool = False) -> BuildSnapshot:
+    """Take a Lua CoW snapshot when advertised, otherwise fall back to `export_code`.
+
+    The CoW fallback code is the worker's checkpoint, which only matches the live build when nothing
+    has been mutated since it; callers snapshotting an already mutated build pass `fresh_fallback`.
+    """
     if prefer_cow and supports_cow_snapshot(worker):
         proc_tag = getattr(worker, "_proc", None)
         res = worker.call("cow_snapshot", {})
         snap_id = res.get("snapId") if isinstance(res, dict) else None
         if isinstance(snap_id, str) and snap_id:
-            fb_code = getattr(worker, "last_good_code", None)
+            fb_code = None if fresh_fallback else getattr(worker, "last_good_code", None)
             if not fb_code:
                 try:
                     fb_code = str((worker.call("export_code", {}) or {}).get("code") or "") or None

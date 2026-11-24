@@ -9,7 +9,17 @@ from typing import Any
 from ..analyzer import dewater_build_in_place, verify_restored
 from ..bridge_client import BridgeWorker
 from ..mutators import _apply_config_in_place
-from ..snapshot import _call_batch, capture_digest, compact_digest_summary, diff_digest
+from ..snapshot import (
+    BuildSnapshot,
+    _call_batch,
+    capture_digest,
+    compact_digest_summary,
+    diff_digest,
+    drop_snapshot,
+    restore_snapshot,
+    take_snapshot,
+    verify_cow_restored,
+)
 
 DEFAULT_MATRIX_SCENARIOS: list[str] = ["Original", "Pinnacle", "Uber", "FlasksOff"]
 
@@ -219,38 +229,33 @@ def run_matrix(
         caps = getattr(worker, "caps", None) or {}
         use_cow = bool(caps.get("cowSnapshot"))
         try:
-            baseline_snap_id: str | None = None
-            pinnacle_snap_id: str | None = None
-            baseline_code: str | None = None
+            baseline_snap: BuildSnapshot | None = None
+            pinnacle_snap: BuildSnapshot | None = None
+            restore_notes: list[str] = []
             baseline_digest: dict[str, Any] | None = None
             results: list[dict[str, Any]] = []
             first_digest: dict[str, Any] | None = None
-            pinnacle_code: str | None = None
             pinnacle_stripped: dict[str, list[str]] | None = None
             worker_state = "original"
             ever_mutated = False
 
             try:
-                if use_cow:
-                    baseline_snap_id = str(worker.call("cow_snapshot", {})["snapId"])
-                else:
-                    baseline_code = worker.call("export_code", {})["code"]
+                baseline_snap = take_snapshot(worker, prefer_cow=use_cow)
                 baseline_digest = (
                     None if first_is_unmutated_original else capture_digest(worker)
                 )
                 for idx, plan in enumerate(parsed_plans):
                     needs_pinnacle = plan["base"] in ("Pinnacle", "Uber")
-                    has_pinnacle_cache = (pinnacle_snap_id is not None) if use_cow else (pinnacle_code is not None)
+                    has_pinnacle_cache = pinnacle_snap is not None
                     want_base = "pinnacle" if (needs_pinnacle and has_pinnacle_cache) else "original"
 
                     if worker_state != want_base:
                         worker_state = "dirty"
-                        if use_cow:
-                            target_snap = pinnacle_snap_id if want_base == "pinnacle" else baseline_snap_id
-                            worker.call("cow_restore", {"snapId": target_snap, "drop": False})
-                        else:
-                            target_code = pinnacle_code if want_base == "pinnacle" else baseline_code
-                            worker.call("import_code", {"code": target_code, "mode": "replace"})
+                        target = pinnacle_snap if want_base == "pinnacle" else baseline_snap
+                        assert target is not None
+                        note = restore_snapshot(worker, target)
+                        if note:
+                            restore_notes.append(note)
                         worker_state = want_base
 
                     has_post_mutations = _plan_has_post_base_mutations(plan)
@@ -260,10 +265,8 @@ def run_matrix(
                         ever_mutated = True
                         pinnacle_stripped = dewater_build_in_place(worker, keep=keep)
                         if pinnacle_count >= 2:
-                            if use_cow:
-                                pinnacle_snap_id = str(worker.call("cow_snapshot", {})["snapId"])
-                            else:
-                                pinnacle_code = worker.call("export_code", {})["code"]
+                            # The build is dewatered here, so the checkpoint is not a valid fallback.
+                            pinnacle_snap = take_snapshot(worker, prefer_cow=use_cow, fresh_fallback=True)
                             if not has_post_mutations:
                                 worker_state = "pinnacle"
                         applied_info = _comp._apply_matrix_scenario_in_place(
@@ -322,28 +325,24 @@ def run_matrix(
                         }
                     )
             finally:
-                if use_cow:
-                    if pinnacle_snap_id is not None:
-                        try:
-                            worker.call("cow_drop", {"snapId": pinnacle_snap_id})
-                        except Exception:
-                            pass
-                    if baseline_snap_id is not None:
-                        if worker_state != "original":
-                            worker.call("cow_restore", {"snapId": baseline_snap_id, "drop": True})
-                        else:
-                            worker.call("cow_drop", {"snapId": baseline_snap_id})
-                elif worker_state != "original":
-                    worker.call("import_code", {"code": baseline_code, "mode": "replace"})
+                drop_snapshot(worker, pinnacle_snap)
+                if baseline_snap is not None:
+                    if worker_state != "original":
+                        note = restore_snapshot(worker, baseline_snap, drop=True)
+                        if note:
+                            restore_notes.append(note)
+                    else:
+                        drop_snapshot(worker, baseline_snap)
 
             if not ever_mutated:
                 restore_check: dict[str, Any] = {"verified": True, "detail": "build was not mutated"}
-            elif use_cow:
-                from ..snapshot import verify_cow_restored
-
+            elif baseline_snap is not None and baseline_snap.kind == "cow":
                 restore_check = verify_cow_restored(worker, baseline_digest or {})
             else:
-                restore_check = verify_restored(worker, baseline_code or "", baseline_digest or {})
+                code = baseline_snap.token if baseline_snap is not None else ""
+                restore_check = verify_restored(worker, code, baseline_digest or {})
+            if restore_notes:
+                restore_check = {**restore_check, "fallback": restore_notes}
 
             scenario_envelope: dict[str, Any] | None = None
             if caps.get("agentProbes"):
