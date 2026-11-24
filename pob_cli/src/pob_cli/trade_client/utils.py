@@ -6,17 +6,17 @@ import json
 import math
 import os
 import re
-import sys
-import tempfile
-import threading
-import time
-import uuid
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 import httpx
+
+from ..importers import _atomic_write_json as _atomic_write_json
+from ..os_util import _is_lockfile_stale as _is_lockfile_stale_generic
+from ..os_util import _is_pid_alive as _is_pid_alive
+from ..os_util import _try_break_stale_lock as _try_break_stale_lockfile  # noqa: F401  (re-exported)
 
 BASE_URL = "https://www.pathofexile.com"
 STATS_TTL_SECONDS = 7 * 24 * 3600
@@ -162,114 +162,9 @@ def _quote(value: str) -> str:
     return quote(str(value), safe="")
 
 
-def _atomic_write_json(path: Path, payload: Any) -> None:
-    """Atomically write JSON to ``path`` via a sibling temp file + ``os.replace`` with Windows retry."""
-    tmp_path: Path | None = None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            dir=str(path.parent),
-        )
-        tmp_path = Path(tmp_name)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False)
-        for attempt in range(3):
-            try:
-                os.replace(tmp_path, path)
-                tmp_path = None
-                break
-            except PermissionError:
-                if attempt < 2:
-                    time.sleep(0.02 * (attempt + 1))
-    except OSError:
-        pass
-    finally:
-        if tmp_path is not None:
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-
-def _is_pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if pid == os.getpid():
-        return True
-    if sys.platform == "win32":
-        if pid > 0xFFFFFFFF:
-            return False
-        try:
-            import ctypes
-
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            open_process = kernel32.OpenProcess
-            open_process.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-            open_process.restype = ctypes.c_void_p
-            get_exit_code = kernel32.GetExitCodeProcess
-            get_exit_code.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
-            get_exit_code.restype = ctypes.c_int
-            close_handle = kernel32.CloseHandle
-            close_handle.argtypes = [ctypes.c_void_p]
-            close_handle.restype = ctypes.c_int
-
-            handle = open_process(0x1000, 0, int(pid))
-            if not handle:
-                return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED -> alive
-            try:
-                exit_code = ctypes.c_ulong(0)
-                if get_exit_code(handle, ctypes.byref(exit_code)):
-                    return int(exit_code.value) == 259  # STILL_ACTIVE
-                return False
-            finally:
-                close_handle(handle)
-        except Exception:
-            return True
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except (OSError, OverflowError):
-        return False
-
-
 def _is_lockfile_stale(lock_path: Path, *, stale_sec: float = 15.0) -> bool:
-    try:
-        st = lock_path.stat()
-    except (OSError, OverflowError):
-        return False
-    if (time.time() - st.st_mtime) > stale_sec:
-        return True
-    try:
-        payload = json.loads(lock_path.read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            ts = payload.get("ts")
-            if isinstance(ts, (int, float)) and (time.time() - float(ts)) > stale_sec:
-                return True
-            pid = int(payload.get("pid") or 0)
-            if pid > 0 and pid != os.getpid() and not _is_pid_alive(pid):
-                return True
-    except Exception:
-        pass
-    return False
-
-
-def _try_break_stale_lockfile(lock_path: Path) -> bool:
-    trash = lock_path.parent / f".{lock_path.name}.stale.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}"
-    try:
-        os.replace(lock_path, trash)
-    except (OSError, OverflowError):
-        return False
-    try:
-        trash.unlink(missing_ok=True)
-    except OSError:
-        pass
-    return True
+    """Trade rate-limit lock variant (15s default); logic lives in os_util (L0)."""
+    return _is_lockfile_stale_generic(lock_path, stale_sec=stale_sec)
 
 
 def _release_lockfile(lock_path: Path, owner_token: str) -> None:

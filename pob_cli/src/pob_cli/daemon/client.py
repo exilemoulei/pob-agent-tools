@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import CrossGameHallucinationError, DaemonRequestError, LegacyPatchTrapError
+from ..json_io import read_json_dict
 from ..updater import STATE_BOOTSTRAP_MISSING, load_update_state
 from .runtime import (
     _CREATE_BREAKAWAY_FROM_JOB,
@@ -29,25 +30,11 @@ from .runtime import (
 
 
 def read_daemon_state(runtime_dir: Path | None = None) -> dict[str, Any] | None:
-    state_file = _daemon_state_file(runtime_dir)
-    if not state_file.exists():
-        return None
-    try:
-        data = json.loads(state_file.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
+    return read_json_dict(_daemon_state_file(runtime_dir))
 
 
 def _read_boot_error(runtime_dir: Path | None = None) -> dict[str, Any] | None:
-    err_file = _daemon_boot_error_file(runtime_dir)
-    if not err_file.exists():
-        return None
-    try:
-        data = json.loads(err_file.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
+    return read_json_dict(_daemon_boot_error_file(runtime_dir))
 
 
 def _http_post_rpc(

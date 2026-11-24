@@ -1,0 +1,117 @@
+"""OS process liveness, stale lockfile detection, and stale-lock reclaim (L0 pure module).
+
+Single canonical implementations shared by game_data (SQLite build locks),
+trade_client (rate-limit state locks), and the daemon runtime. All helpers are
+best-effort and fail safe: they never raise on malformed lock payloads or
+unsupported platforms.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import threading
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
+_ERROR_ACCESS_DENIED = 5
+
+_kernel32: Any = None
+
+
+def _get_kernel32() -> Any:
+    """Cached kernel32 handle with OpenProcess/GetExitCodeProcess/CloseHandle signatures bound."""
+    global _kernel32
+    if _kernel32 is None:
+        import ctypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        k32.OpenProcess.restype = ctypes.c_void_p
+        k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        k32.GetExitCodeProcess.restype = ctypes.c_int
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        k32.CloseHandle.restype = ctypes.c_int
+        _kernel32 = k32
+    return _kernel32
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Fast (<1ms) OS-native process liveness probe to avoid 2s stale loopback TCP timeouts.
+
+    Rejects non-int/bool/non-positive PIDs; on Windows treats ERROR_ACCESS_DENIED as
+    alive (process exists under higher privilege); on POSIX uses ``os.kill(pid, 0)``.
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    if sys.platform == "win32":
+        if pid > 0xFFFFFFFF:
+            return False
+        import ctypes
+
+        k32 = _get_kernel32()
+        handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+        if not handle:
+            err = ctypes.get_last_error()
+            return err == _ERROR_ACCESS_DENIED
+        try:
+            exit_code = ctypes.c_uint32(0)
+            if not k32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return int(exit_code.value) == _STILL_ACTIVE
+        finally:
+            k32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, OverflowError):
+        return False
+
+
+def _is_lockfile_stale(lock_path: Path, *, stale_sec: float) -> bool:
+    """True when a JSON lockfile is older than ``stale_sec`` (mtime or payload ``ts``) or its owner PID is dead.
+
+    Locks owned by the current process are never considered stale via PID (callers
+    reclaim same-PID leaked locks through the mtime/ts path instead).
+    """
+    try:
+        st = lock_path.stat()
+    except (OSError, OverflowError):
+        return False
+    if (time.time() - st.st_mtime) > stale_sec:
+        return True
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            ts = payload.get("ts")
+            if isinstance(ts, (int, float)) and (time.time() - float(ts)) > stale_sec:
+                return True
+            pid = int(payload.get("pid") or 0)
+            if pid > 0 and pid != os.getpid() and not _is_pid_alive(pid):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _try_break_stale_lock(lock_path: Path) -> bool:
+    """Atomically claim a stale lockfile via rename before unlinking so peers never delete a fresh lock."""
+    trash = lock_path.parent / f".{lock_path.name}.stale.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}"
+    try:
+        os.replace(lock_path, trash)
+    except (OSError, OverflowError):
+        return False
+    try:
+        trash.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return True

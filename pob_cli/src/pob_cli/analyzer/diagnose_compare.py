@@ -184,23 +184,20 @@ def diagnose_compare_builds(
     from ..comparator import _run_worker_pair, compare_builds
     from ..importers import load_build_into_worker
 
-    def _load_main() -> None:
-        if source or xml_code:
-            load_build_into_worker(main_worker, source=source, xml_code=xml_code)
-            if hasattr(main_worker, "bump_rev"):
-                main_worker.bump_rev()
-                if hasattr(main_worker, "save_slot_state"):
-                    main_worker.save_slot_state()
+    def _load_into(worker: Any, src: str | None, code: str | None) -> None:
+        if src or code:
+            load_build_into_worker(worker, source=src, xml_code=code)
+            if hasattr(worker, "bump_rev"):
+                worker.bump_rev()
+                if hasattr(worker, "save_slot_state"):
+                    worker.save_slot_state()
 
-    def _load_ref() -> None:
-        if compare_source or compare_xml_code:
-            load_build_into_worker(ref_worker, source=compare_source, xml_code=compare_xml_code)
-            if hasattr(ref_worker, "bump_rev"):
-                ref_worker.bump_rev()
-                if hasattr(ref_worker, "save_slot_state"):
-                    ref_worker.save_slot_state()
-
-    _run_worker_pair(main_worker, ref_worker, _load_main, _load_ref)
+    _run_worker_pair(
+        main_worker,
+        ref_worker,
+        lambda: _load_into(main_worker, source, xml_code),
+        lambda: _load_into(ref_worker, compare_source, compare_xml_code),
+    )
     comparison = compare_builds(main_worker, ref_worker)
 
     def _diag_a() -> dict[str, Any]:

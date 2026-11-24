@@ -464,6 +464,21 @@ def cmd_item_charm_trap(raw_args: tuple[str, ...]) -> None:
 @click.argument("raw_args", nargs=-1, type=click.UNPROCESSED)
 def cmd_item_instill_trap(raw_args: tuple[str, ...]) -> None:
     """Intentional reverse guardrail trap for PoE2 `item instill` invocations in `pob`."""
+    _raise_instill_trap(
+        raw_args,
+        trigger_prefix="pob item instill",
+        remediation=(
+            "In PoE1, anoint amulets/rings with Blight Oils (`圣油`/`涂油`) via `pob item anoint`, "
+            "or run `pob2 item instill` for PoE2 builds."
+        ),
+        rule_id="CLI_TRAP_ITEM_INSTILL_IN_POB1",
+    )
+
+
+def _raise_instill_trap(
+    raw_args: tuple[str, ...], *, trigger_prefix: str, remediation: str, rule_id: str
+) -> None:
+    """Shared body of the `item instill` / `instill` PoE2 reverse guardrail traps."""
     from .errors import CrossGameHallucinationError
 
     slot_val = _extract_trap_opt(raw_args, ("--slot",))
@@ -473,14 +488,11 @@ def cmd_item_instill_trap(raw_args: tuple[str, ...]) -> None:
     raise CrossGameHallucinationError(
         game="poe1",
         detected_game="poe2",
-        trigger=" ".join(["pob item instill", *raw_args]).strip(),
+        trigger=" ".join([trigger_prefix, *raw_args]).strip(),
         error="Amulet Instilling (`涂灌` with Delirium Distilled/Liquid Emotions) is a PoE2 mechanic.",
-        remediation=(
-            "In PoE1, anoint amulets/rings with Blight Oils (`圣油`/`涂油`) via `pob item anoint`, "
-            "or run `pob2 item instill` for PoE2 builds."
-        ),
+        remediation=remediation,
         equivalent_command=f"pob item anoint {slot_part}{notable_part}".strip(),
-        rule_id="CLI_TRAP_ITEM_INSTILL_IN_POB1",
+        rule_id=rule_id,
     )
 
 
@@ -524,22 +536,13 @@ def cmd_rune_trap(raw_args: tuple[str, ...]) -> None:
 @click.argument("raw_args", nargs=-1, type=click.UNPROCESSED)
 def cmd_instill_trap(raw_args: tuple[str, ...]) -> None:
     """Intentional reverse guardrail trap for PoE2 `instill` invocations in `pob`."""
-    from .errors import CrossGameHallucinationError
-
-    slot_val = _extract_trap_opt(raw_args, ("--slot",))
-    notable_val = _extract_trap_opt(raw_args, ("--notable",))
-    slot_part = f"--slot {slot_val} " if slot_val else ""
-    notable_part = f'--notable "{notable_val}"' if notable_val else '--notable "<name>"'
-    raise CrossGameHallucinationError(
-        game="poe1",
-        detected_game="poe2",
-        trigger=" ".join(["pob instill", *raw_args]).strip(),
-        error="Amulet Instilling (`涂灌` with Delirium Distilled/Liquid Emotions) is a PoE2 mechanic.",
+    _raise_instill_trap(
+        raw_args,
+        trigger_prefix="pob instill",
         remediation=(
             "In PoE1, anoint items with Blight Oils (`圣油`/`涂油`) via `pob item anoint`, "
             "or run `pob2 item instill` for PoE2."
         ),
-        equivalent_command=f"pob item anoint {slot_part}{notable_part}".strip(),
         rule_id="CLI_TRAP_INSTILL_IN_POB1",
     )
 

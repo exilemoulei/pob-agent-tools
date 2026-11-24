@@ -6,12 +6,12 @@ import hashlib
 import json
 import os
 import re
-import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
 from .. import updater as _updater
+from ..os_util import _is_pid_alive as _is_pid_alive
 from ..updater import detect_source_checkout_root, get_runtime_dir
 from .constants import (
     _MANIFEST_VER_CACHE,
@@ -22,53 +22,6 @@ from .constants import (
 def _sqlite_ro_uri(db_path: Path) -> str:
     """Build a properly percent-encoded read-only SQLite file URI."""
     return f"{db_path.resolve().as_uri()}?mode=ro"
-
-
-def _is_pid_alive(pid: int) -> bool:
-    """Best-effort OS check whether process ``pid`` is currently alive."""
-    if pid <= 0:
-        return False
-    if pid == os.getpid():
-        return True
-    if sys.platform == "win32":
-        if pid > 0xFFFFFFFF:
-            return False
-        try:
-            import ctypes
-
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            open_process = kernel32.OpenProcess
-            open_process.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-            open_process.restype = ctypes.c_void_p
-            get_exit_code = kernel32.GetExitCodeProcess
-            get_exit_code.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
-            get_exit_code.restype = ctypes.c_int
-            close_handle = kernel32.CloseHandle
-            close_handle.argtypes = [ctypes.c_void_p]
-            close_handle.restype = ctypes.c_int
-
-            handle = open_process(0x1000, 0, int(pid))
-            if not handle:
-                # ERROR_ACCESS_DENIED (5): process exists under higher privilege
-                return ctypes.get_last_error() == 5
-            try:
-                exit_code = ctypes.c_ulong(0)
-                if get_exit_code(handle, ctypes.byref(exit_code)):
-                    return int(exit_code.value) == 259  # STILL_ACTIVE
-                return False
-            finally:
-                close_handle(handle)
-        except Exception:
-            return True
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except (OSError, OverflowError):
-        return False
 
 
 def resolve_runtime_dir(runtime_dir: Path | None = None) -> Path:

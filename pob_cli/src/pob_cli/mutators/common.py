@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import re
 import unicodedata
 from collections.abc import Iterable
@@ -10,6 +9,7 @@ from typing import Any
 
 from .. import game_data as _game_data
 from ..bridge_client import BridgeWorker
+from ..compat import call_compat as _call_compat  # noqa: F401  (re-exported for batch_sweep)
 from ..formatters import strip_pob_escapes
 from ..guardrails import normalize_equipment_slot
 
@@ -367,16 +367,6 @@ def _resolve_slot_from_items(items_res: dict[str, Any], slot_query: str) -> str:
     raise ValueError(f"Equipment slot '{slot_query}' not found.")
 
 
-def _call_compat(fn: Any, *args: Any, **kwargs: Any) -> Any:
-    """Call `fn` forwarding only keyword arguments accepted by its signature."""
-    try:
-        sig = inspect.signature(fn)
-    except (TypeError, ValueError):
-        return fn(*args, **kwargs)
-    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-        return fn(*args, **kwargs)
-    filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
-    return fn(*args, **filtered)
 
 
 def _normalize_keep_list(keep: Iterable[str] | str | None) -> list[str]:

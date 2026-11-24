@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 from typing import Any
 
 import click
 
+from ..cli_common import _default_target as _default_target_slot  # noqa: F401  (re-exported for trade cmds)
+from ..cli_common import _SlotSlugType as _TargetSlotType
+from ..compat import ensure_utf8
 from ..daemon import BootstrapMissingError
 from ..errors import CrossGameHallucinationError
 from ..formatters import render_update_warning
@@ -25,47 +27,21 @@ SLOT_HINT = (
     "sceptre, staff, flask1..5, jewel"
 )
 
-_TARGET_SLUG_RE = re.compile(r"^[a-zA-Z0-9._-]{1,48}$")
 _PSEUDO_SUM_RE = re.compile(r"^\s*Sum:\s*([+-]?\d+(?:\.\d+)?)", re.IGNORECASE)
-
-
-class _TargetSlotType(click.ParamType):
-    name = "slot"
-
-    def convert(self, value: Any, param: Any, ctx: Any) -> str:
-        s = str(value or "").strip()
-        if s in (".", "..") or not _TARGET_SLUG_RE.match(s):
-            self.fail(
-                f"Invalid build slot slug {value!r}; expected 1-48 chars of [a-zA-Z0-9._-] (not '.' or '..').",
-                param,
-                ctx,
-            )
-        return s.lower()
 
 
 _TARGET_SLOT_TYPE = _TargetSlotType()
 
 
-def _default_target_slot() -> str:
-    val = (os.environ.get("POB_SLOT") or "main").strip()
-    return (val or "main").lower()
-
-
 def _echo_utf8(text: str) -> None:
     """Write UTF-8 safely to stdout on Windows consoles."""
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    ensure_utf8(sys.stdout)
     click.echo(text)
 
 
 def _err_utf8(text: str) -> None:
     """Write UTF-8 safely to stderr on Windows consoles."""
-    try:
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    ensure_utf8(sys.stderr)
     click.echo(text, err=True)
 
 

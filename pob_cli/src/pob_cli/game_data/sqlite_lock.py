@@ -10,8 +10,10 @@ import time
 import uuid
 from pathlib import Path
 
+from ..os_util import _is_lockfile_stale
+from ..os_util import _try_break_stale_lock as _try_break_stale_lock
 from .constants import SCHEMA_VERSION
-from .paths import _is_pid_alive, _sqlite_ro_uri
+from .paths import _sqlite_ro_uri
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
@@ -147,38 +149,8 @@ def _is_index_valid(db_path: Path, pob_version: str, data_version: str) -> bool:
 
 
 def _is_build_lock_stale(lock_path: Path, *, stale_sec: float = 60.0) -> bool:
-    try:
-        st = lock_path.stat()
-    except (OSError, OverflowError):
-        return False
-    if (time.time() - st.st_mtime) > stale_sec:
-        return True
-    try:
-        payload = json.loads(lock_path.read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            ts = payload.get("ts")
-            if isinstance(ts, (int, float)) and (time.time() - float(ts)) > stale_sec:
-                return True
-            pid = int(payload.get("pid") or 0)
-            if pid > 0 and pid != os.getpid() and not _is_pid_alive(pid):
-                return True
-    except Exception:
-        pass
-    return False
-
-
-def _try_break_stale_lock(lock_path: Path) -> bool:
-    """Atomically claim a stale lockfile via rename before unlinking so peers never delete a fresh lock."""
-    trash = lock_path.parent / f".{lock_path.name}.stale.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}"
-    try:
-        os.replace(lock_path, trash)
-    except (OSError, OverflowError):
-        return False
-    try:
-        trash.unlink(missing_ok=True)
-    except OSError:
-        pass
-    return True
+    """SQLite build-lock variant (60s default); logic lives in os_util (L0)."""
+    return _is_lockfile_stale(lock_path, stale_sec=stale_sec)
 
 
 def _release_build_lock(lock_path: Path, owner_token: str) -> None:

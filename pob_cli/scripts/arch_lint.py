@@ -15,6 +15,9 @@ LAYER_MAP: dict[str, int] = {
     "__init__": 0,
     "errors": 0,
     "ticks": 0,
+    "os_util": 0,
+    "compat": 0,
+    "json_io": 0,
     "guardrails": 0,
     # L1: engine runtime, bridge, importers, and data sources
     "updater": 1,

@@ -238,25 +238,32 @@ def cmd_switch_main(
         _emit_text(format_mutation_report("Switch Active Selection", res), out_path=out_path)
 
 
-@click.command("undo")
-@_target_option(allow_slot_alias=True)
-@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
-@_output_options
-def cmd_undo(target: str, as_json: bool, compact: bool, out_path: str | None) -> None:
-    """Undo the last `--apply` mutation."""
+def _run_undo_redo(
+    action: str, target: str, as_json: bool, compact: bool, out_path: str | None
+) -> None:
+    """Shared body of `pob undo` / `pob redo` (action is the daemon RPC name, e.g. 'Undo')."""
     from .formatters import render_table
 
-    res = invoke_daemon("undo", {"target": target})
+    res = invoke_daemon(action.lower(), {"target": target})
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)
         return
     deltas = res.get("diff", {}).get("deltas", [])
     rows = [[d["label"], d["beforeStr"], d["afterStr"], d["deltaStr"]] for d in deltas]
     body = (
-        f"### Undo Applied (Undo depth: `{res.get('undoDepth')}`, Redo depth: `{res.get('redoDepth')}`)\n"
-        + render_table(["Stat", "Before Undo", "After Undo", "Delta"], rows)
+        f"### {action} Applied (Undo depth: `{res.get('undoDepth')}`, Redo depth: `{res.get('redoDepth')}`)\n"
+        + render_table(["Stat", f"Before {action}", f"After {action}", "Delta"], rows)
     )
     _emit_text(body, out_path=out_path)
+
+
+@click.command("undo")
+@_target_option(allow_slot_alias=True)
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
+@_output_options
+def cmd_undo(target: str, as_json: bool, compact: bool, out_path: str | None) -> None:
+    """Undo the last `--apply` mutation."""
+    _run_undo_redo("Undo", target, as_json, compact, out_path)
 
 
 @click.command("redo")
@@ -265,19 +272,7 @@ def cmd_undo(target: str, as_json: bool, compact: bool, out_path: str | None) ->
 @_output_options
 def cmd_redo(target: str, as_json: bool, compact: bool, out_path: str | None) -> None:
     """Redo the last undone mutation."""
-    from .formatters import render_table
-
-    res = invoke_daemon("redo", {"target": target})
-    if as_json:
-        _emit_json(res, compact=compact, out_path=out_path)
-        return
-    deltas = res.get("diff", {}).get("deltas", [])
-    rows = [[d["label"], d["beforeStr"], d["afterStr"], d["deltaStr"]] for d in deltas]
-    body = (
-        f"### Redo Applied (Undo depth: `{res.get('undoDepth')}`, Redo depth: `{res.get('redoDepth')}`)\n"
-        + render_table(["Stat", "Before Redo", "After Redo", "Delta"], rows)
-    )
-    _emit_text(body, out_path=out_path)
+    _run_undo_redo("Redo", target, as_json, compact, out_path)
 
 
 def register_build_io_commands(group: click.Group) -> None:

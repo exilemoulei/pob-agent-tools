@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from enum import StrEnum
 from typing import Any
 
+from ..compat import ensure_utf8
 from ..errors import HallucinationWarning
 
 GAME_ID = "poe1"
@@ -63,10 +64,7 @@ def _tls_emitted_keys() -> set[tuple[str, str]]:
 
 
 def _write_stderr_line(msg: str) -> None:
-    try:
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    ensure_utf8(sys.stderr)
     try:
         sys.stderr.write(msg + "\n")
         sys.stderr.flush()

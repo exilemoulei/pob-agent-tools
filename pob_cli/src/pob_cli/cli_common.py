@@ -9,6 +9,9 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
+from .compat import call_compat as _call_with_supported_kwargs  # noqa: F401  (re-exported for CLI cmds)
+from .compat import ensure_utf8
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -245,19 +248,13 @@ def _resolve_output_flags(compact: bool = False, out_path: str | Path | None = N
 
 def _echo_utf8(text: str) -> None:
     """Write UTF-8 safely to stdout on Windows consoles."""
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    ensure_utf8(sys.stdout)
     click.echo(text)
 
 
 def _echo_stderr_utf8(text: str) -> None:
     """Write UTF-8 safely to stderr on Windows consoles."""
-    try:
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    ensure_utf8(sys.stderr)
     click.echo(text, err=True)
 
 
@@ -406,18 +403,6 @@ def _prepend_active_guardrail_warnings(body: str) -> str:
     return "\n".join(lines) + "\n\n" + body
 
 
-def _call_with_supported_kwargs(fn: Any, *args: Any, **kwargs: Any) -> Any:
-    import inspect
-
-    try:
-        sig = inspect.signature(fn)
-    except (TypeError, ValueError):
-        return fn(*args, **kwargs)
-    has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-    if has_var_kw:
-        return fn(*args, **kwargs)
-    filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
-    return fn(*args, **filtered)
 
 
 def _prepare_load_source(source: str) -> tuple[str | None, str | None]:

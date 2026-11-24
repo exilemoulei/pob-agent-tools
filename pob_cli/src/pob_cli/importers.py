@@ -112,8 +112,13 @@ def _get_cache_dir(runtime_dir: Path | None = None) -> Path:
     return _shared_cache_dir(runtime_dir)
 
 
-def _atomic_write_json(path: Path, payload: Any, *, ensure_ascii: bool = True) -> None:
-    """Atomically write JSON to ``path`` via sibling temp file + ``os.replace`` with Windows retry."""
+def _atomic_write_json(path: Path, payload: Any, *, ensure_ascii: bool = False) -> None:
+    """Atomically write UTF-8 JSON to ``path`` via sibling temp file + ``os.replace`` with Windows retry.
+
+    Single canonical implementation shared by importers, trade_client, poedb_client,
+    and external_data caches. Defaults to ``ensure_ascii=False`` so CJK text stays
+    readable on disk; pass ``ensure_ascii=True`` only when ASCII-escaped output is required.
+    """
     tmp_path: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

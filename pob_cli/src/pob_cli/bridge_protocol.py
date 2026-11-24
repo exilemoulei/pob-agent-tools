@@ -14,6 +14,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .json_io import read_json_dict as read_slot_state  # noqa: F401  (re-exported for bridge_client)
+
 MAX_UNDO_STEPS = 30
 
 # Hardcoded red-line RPC blocklist (R1, R3, R4, R7, R11; R2 sidebar_breakdown is checked dynamically via caps)
@@ -194,15 +196,6 @@ def write_slot_state(
         pass
 
 
-def read_slot_state(state_path: Path) -> dict[str, Any] | None:
-    """Load persisted slot state JSON if present and valid."""
-    if not state_path.exists():
-        return None
-    try:
-        data = json.loads(state_path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
 
 
 def stdout_reader_loop(

@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-import inspect
 import os
 import re
 import sys
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from ..bridge_client import RUNTIME_DIR
+from ..compat import call_compat as _call_compat  # noqa: F401  (re-exported for daemon package)
+from ..compat import ensure_utf8
 from ..errors import BootstrapMissingError as BootstrapMissingError
+from ..os_util import _get_kernel32 as _get_kernel32
+from ..os_util import _is_pid_alive as _is_pid_alive
 from ..updater import format_stderr_update_alert, get_runtime_dir, load_update_state
 
 GAME_ID = "poe1"
@@ -23,13 +25,10 @@ UPDATE_RECHECK_INTERVAL_SEC = 1800.0  # 30 minutes
 
 _SLOT_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]{1,48}$")
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-_STILL_ACTIVE = 259
 _ERROR_ACCESS_DENIED = 5
 
 _stderr_alert_emitted = False
 _stderr_alert_checked_at: float | None = None
-_kernel32: Any = None
 
 
 def normalize_slot_name(slot: str | None) -> str:
@@ -79,54 +78,6 @@ def _is_offline_env() -> bool:
     return val in ("1", "true", "yes", "on")
 
 
-def _get_kernel32() -> Any:
-    global _kernel32
-    if _kernel32 is None:
-        import ctypes
-
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-        k32.OpenProcess.restype = ctypes.c_void_p
-        k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
-        k32.GetExitCodeProcess.restype = ctypes.c_int
-        k32.CloseHandle.argtypes = [ctypes.c_void_p]
-        k32.CloseHandle.restype = ctypes.c_int
-        _kernel32 = k32
-    return _kernel32
-
-
-def _is_pid_alive(pid: int) -> bool:
-    """Fast (<1ms) OS-native process liveness probe to avoid 2s stale loopback TCP timeouts."""
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-        return False
-    if sys.platform == "win32":
-        if pid > 0xFFFFFFFF:
-            return False
-        import ctypes
-
-        k32 = _get_kernel32()
-        handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
-        if not handle:
-            err = ctypes.get_last_error()
-            return err == _ERROR_ACCESS_DENIED
-        try:
-            exit_code = ctypes.c_uint32(0)
-            if not k32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                return False
-            return int(exit_code.value) == _STILL_ACTIVE
-        finally:
-            k32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except (OSError, OverflowError):
-        return False
-
-
 def reset_stderr_alert_flag() -> None:
     """Reset the per-process stderr update alert deduplication flag (used by tests)."""
     global _stderr_alert_emitted, _stderr_alert_checked_at
@@ -145,10 +96,7 @@ def emit_stderr_update_alert(state: dict[str, Any] | None, *, force: bool = Fals
     alert = format_stderr_update_alert(state)
     if not alert:
         return False
-    try:
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    ensure_utf8(sys.stderr)
     sys.stderr.write(alert + "\n")
     sys.stderr.flush()
     _stderr_alert_emitted = True
@@ -179,13 +127,3 @@ def _maybe_emit_degraded_alert(result: Any, rt_dir: Path) -> None:
             _daemon_pkg.emit_stderr_update_alert({"state": "degraded_network_error", "userHint": warn})
 
 
-def _call_compat(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Call `fn` forwarding only keyword arguments accepted by its signature."""
-    try:
-        sig = inspect.signature(fn)
-    except (TypeError, ValueError):
-        return fn(*args, **kwargs)
-    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-        return fn(*args, **kwargs)
-    filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
-    return fn(*args, **filtered)
