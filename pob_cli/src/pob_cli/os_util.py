@@ -44,28 +44,34 @@ def _get_kernel32() -> Any:
 def _is_pid_alive(pid: int) -> bool:
     """Fast (<1ms) OS-native process liveness probe to avoid 2s stale loopback TCP timeouts.
 
-    Rejects non-int/bool/non-positive PIDs; on Windows treats ERROR_ACCESS_DENIED as
-    alive (process exists under higher privilege); on POSIX uses ``os.kill(pid, 0)``.
+    Rejects non-int/bool/non-positive PIDs; short-circuits for the current process;
+    on Windows treats ERROR_ACCESS_DENIED (and unexpected ctypes failures) as alive
+    so callers never break a live lock; on POSIX uses ``os.kill(pid, 0)``.
     """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
+    if pid == os.getpid():
+        return True
     if sys.platform == "win32":
         if pid > 0xFFFFFFFF:
             return False
-        import ctypes
-
-        k32 = _get_kernel32()
-        handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
-        if not handle:
-            err = ctypes.get_last_error()
-            return err == _ERROR_ACCESS_DENIED
         try:
-            exit_code = ctypes.c_uint32(0)
-            if not k32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                return False
-            return int(exit_code.value) == _STILL_ACTIVE
-        finally:
-            k32.CloseHandle(handle)
+            import ctypes
+
+            k32 = _get_kernel32()
+            handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+            if not handle:
+                err = ctypes.get_last_error()
+                return err == _ERROR_ACCESS_DENIED
+            try:
+                exit_code = ctypes.c_uint32(0)
+                if not k32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return False
+                return int(exit_code.value) == _STILL_ACTIVE
+            finally:
+                k32.CloseHandle(handle)
+        except Exception:
+            return True
     try:
         os.kill(pid, 0)
         return True

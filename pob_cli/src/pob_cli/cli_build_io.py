@@ -241,7 +241,7 @@ def cmd_switch_main(
 def _run_undo_redo(
     action: str, target: str, as_json: bool, compact: bool, out_path: str | None
 ) -> None:
-    """Shared body of `pob undo` / `pob redo` (action is the daemon RPC name, e.g. 'Undo')."""
+    """Shared body of `pob undo` / `pob redo` (`action` is display label e.g. 'Undo'; RPC is `action.lower()`)."""
     from .formatters import render_table
 
     res = invoke_daemon(action.lower(), {"target": target})

@@ -196,8 +196,6 @@ def write_slot_state(
         pass
 
 
-
-
 def stdout_reader_loop(
     proc: subprocess.Popen[str],
     out_queue: queue.Queue[dict[str, Any] | Exception | None],

@@ -403,8 +403,6 @@ def _prepend_active_guardrail_warnings(body: str) -> str:
     return "\n".join(lines) + "\n\n" + body
 
 
-
-
 def _prepare_load_source(source: str) -> tuple[str | None, str | None]:
     """Resolve a user build source string (`@path`, `.xml` file, share-code `.txt` file, URL, or Base64 code)."""
     from pathlib import Path

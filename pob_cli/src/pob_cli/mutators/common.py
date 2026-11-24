@@ -367,8 +367,6 @@ def _resolve_slot_from_items(items_res: dict[str, Any], slot_query: str) -> str:
     raise ValueError(f"Equipment slot '{slot_query}' not found.")
 
 
-
-
 def _normalize_keep_list(keep: Iterable[str] | str | None) -> list[str]:
     if keep is None:
         return []

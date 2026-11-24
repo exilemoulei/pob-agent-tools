@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 import httpx
 
-from ..importers import _atomic_write_json as _atomic_write_json
+from ..json_io import atomic_write_json as _atomic_write_json  # noqa: F401  (re-exported)
 from ..os_util import _is_lockfile_stale as _is_lockfile_stale_generic
 from ..os_util import _is_pid_alive as _is_pid_alive
 from ..os_util import _try_break_stale_lock as _try_break_stale_lockfile  # noqa: F401  (re-exported)

@@ -22,7 +22,7 @@ pob <command>  (L4 cli*.py)
 
 | Layer | Modules | Role |
 |---|---|---|
-| L0 | `errors.py`, `ticks.py`, `guardrails/` (incl. `reply_patterns.py`, `reply_scanner.py`) | Foundation and static rules: error types, tick math, PoE2 guardrails, reply scanning for hooks |
+| L0 | `errors.py`, `ticks.py`, `os_util.py`, `compat.py`, `json_io.py`, `guardrails/` (incl. `reply_patterns.py`, `reply_scanner.py`) | Foundation and static rules: error types, tick math, process/lockfile helpers, signature-compat/UTF-8 helpers, fail-safe JSON I/O, PoE2 guardrails, reply scanning for hooks |
 | L1 | `updater/`, `bridge_protocol.py`, `bridge_client.py`, `importers.py`, `game_data/`, `external_data/`, `poedb_client/`, `turn_receipts.py` | Engine runtime and data sources: engine install and updates, the bridge to the engine, build import, local game data, poe.ninja / wiki / PoEDB clients, the hook receipt ledger |
 | L2 | `formatters/`, `snapshot.py`, `analyzer/`, `mutators/`, `comparator/`, `bench/`, `item_inspect.py`, `trade_craft.py`, `trade_item/`, `trade_client/`, `trade_query/`, `trade_eval/`, `timeless/` | Domain core: rendering, what-if transactions, audits, build edits, comparison, crafting bench, trade, timeless jewels |
 | L3 | `daemon/` | The daemon server and its client |

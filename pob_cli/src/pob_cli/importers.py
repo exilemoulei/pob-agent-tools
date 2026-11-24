@@ -7,7 +7,6 @@ import binascii
 import json
 import os
 import re
-import tempfile
 import time
 import urllib.parse
 import zlib
@@ -20,6 +19,7 @@ from . import __version__
 from . import updater as _updater
 from .bridge_client import BridgeError, BridgeWorker
 from .errors import DaemonRequestError
+from .json_io import atomic_write_json as _atomic_write_json
 from .updater import get_runtime_dir
 
 USER_AGENT = f"pob4agents/{__version__} (+https://github.com/exilemoulei/pob4agents)"
@@ -110,42 +110,6 @@ def _shared_cache_dir(runtime_dir: Path | None = None) -> Path:
 
 def _get_cache_dir(runtime_dir: Path | None = None) -> Path:
     return _shared_cache_dir(runtime_dir)
-
-
-def _atomic_write_json(path: Path, payload: Any, *, ensure_ascii: bool = False) -> None:
-    """Atomically write UTF-8 JSON to ``path`` via sibling temp file + ``os.replace`` with Windows retry.
-
-    Single canonical implementation shared by importers, trade_client, poedb_client,
-    and external_data caches. Defaults to ``ensure_ascii=False`` so CJK text stays
-    readable on disk; pass ``ensure_ascii=True`` only when ASCII-escaped output is required.
-    """
-    tmp_path: Path | None = None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            dir=str(path.parent),
-        )
-        tmp_path = Path(tmp_name)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=ensure_ascii)
-        for attempt in range(3):
-            try:
-                os.replace(tmp_path, path)
-                tmp_path = None
-                break
-            except PermissionError:
-                if attempt < 2:
-                    time.sleep(0.02 * (attempt + 1))
-    except OSError:
-        pass
-    finally:
-        if tmp_path is not None:
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
 
 
 def read_stale_cache(
