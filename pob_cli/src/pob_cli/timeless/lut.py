@@ -266,7 +266,7 @@ def load_table(game_dir: Path, stem: str, *, runtime_dir: Path | str | None = No
     table_path = Path(game_dir) / "Data" / "TimelessJewelData" / f"{stem}.zip"
     if not table_path.is_file():
         rt = Path(runtime_dir) if runtime_dir else None
-        cached = get_shared_cache_dir(rt) / "timeless_lut" / f"{stem}.zip"
+        cached = get_shared_cache_dir(rt, pob_root=Path(game_dir).parent) / "timeless_lut" / f"{stem}.zip"
         if cached.is_file():
             table_path = cached
     try:

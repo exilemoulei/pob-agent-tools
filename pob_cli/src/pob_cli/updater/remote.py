@@ -421,7 +421,8 @@ def fetch_pob_manifest_subset(
         dst = target_root / entry.local_rel
         if dst.is_file():
             try:
-                if dst.stat().st_size > 2_097_152:
+                is_text = entry.local_rel.lower().endswith((".lua", ".xml", ".json", ".txt"))
+                if dst.stat().st_size > 2_097_152 and not is_text:
                     h = hashlib.sha1()
                     with dst.open("rb") as fh:
                         while chunk := fh.read(65536):
@@ -503,9 +504,23 @@ def ensure_tree_data_files(
         low = entry.local_rel.replace("\\", "/").lower()
         return low.startswith(prefix) and low.endswith(".lua")
 
-    return fetch_pob_manifest_subset(
-        poe1_dir, _want, dest_dir=dest_dir, proxy=proxy, mirror=mirror, timeout=timeout
-    )
+    target_root = Path(dest_dir) if dest_dir is not None else Path(poe1_dir)
+    ver_dir = target_root / "TreeData" / ver
+    inc_marker = ver_dir / ".incomplete"
+    had_dir = ver_dir.is_dir()
+    if had_dir and not (ver_dir / "tree.lua").is_file():
+        inc_marker.write_text("1\n", encoding="utf-8")
+    try:
+        out = fetch_pob_manifest_subset(
+            poe1_dir, _want, dest_dir=dest_dir, proxy=proxy, mirror=mirror, timeout=timeout
+        )
+    except Exception:
+        if ver_dir.is_dir():
+            inc_marker.write_text("1\n", encoding="utf-8")
+        raise
+    if out:
+        inc_marker.unlink(missing_ok=True)
+    return out
 
 
 def ensure_timeless_lut_files(

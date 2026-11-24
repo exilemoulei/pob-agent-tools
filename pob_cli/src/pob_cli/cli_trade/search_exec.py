@@ -398,8 +398,14 @@ def _execute_trade_api_query(
                 "pseudo_filters": pseudo_filters or None,
                 "allow_corrupted": allow_corrupted,
             }
-            built_manual = build_query(**query_args, max_age_hours=max_age)
-            if isinstance(auto_query_body, dict):
+            is_auto = isinstance(auto_query_body, dict)
+            manual_args = (
+                {**query_args, "search_sort": "asc"}
+                if (is_auto and str(search_sort).startswith("sum"))
+                else query_args
+            )
+            built_manual = build_query(**manual_args, max_age_hours=max_age)
+            if is_auto:
                 extra_groups = list((built_manual.get("query") or {}).get("stats") or [])
                 if pseudo_filters and extra_groups and extra_groups[-1].get("filters") == list(pseudo_filters):
                     extra_groups.pop()
@@ -415,6 +421,10 @@ def _execute_trade_api_query(
                     allow_corrupted=False if (plan.conversions and not allow_corrupted) else None,
                     extra_stat_groups=extra_groups or None,
                 )
+                if str(search_sort).startswith("sum"):
+                    merged_stats = (query.get("query") or {}).get("stats") or []
+                    if not any(isinstance(g, dict) and g.get("type") == "weight" for g in merged_stats):
+                        raise ValueError("--search-sort sum requires at least one weighted stat group.")
             else:
                 query = built_manual
         except ValueError as exc:
@@ -449,6 +459,7 @@ def _execute_trade_api_query(
                 sort_by=sort_by,
                 proxy=proxy,
                 max_fetch_cap=max_fetch_cap,
+                has_auto_query=isinstance(auto_query_body, dict),
             )
         except TradeError as exc:
             _trade_error(ctx, exc)

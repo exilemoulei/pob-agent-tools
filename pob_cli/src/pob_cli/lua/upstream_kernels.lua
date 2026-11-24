@@ -494,10 +494,23 @@ local function postprocess_trade_query(tqg, captured_query, params)
 
 	local has_misc = (captured_query.filters and captured_query.filters.misc_filters) and 3 or 0
 	local max_first = math.max(1, math.floor((160 - 62 - has_misc) / 4) - extra_filters)
-	while #final_filters > max_first do
-		local drop = final_filters[#final_filters]
-		final_filters[#final_filters] = nil
-		if drop and drop.id then stat_labels[drop.id] = nil end
+	local pre_trim_n = #final_filters
+	if pre_trim_n > max_first then
+		local pre_w, rem_w = 0, 0
+		for i = 1, pre_trim_n do
+			local kw = kept[i] and kept[i].impact or 0
+			pre_w = pre_w + kw
+			if i <= max_first then rem_w = rem_w + kw end
+		end
+		while #final_filters > max_first do
+			local drop = final_filters[#final_filters]
+			final_filters[#final_filters] = nil
+			if drop and drop.id then stat_labels[drop.id] = nil end
+		end
+		if stat_group and stat_group.value and stat_group.value.min and stat_group.value.min > 0 then
+			local tr = (pre_w > 0 and rem_w > 0) and (rem_w / pre_w) or (#final_filters / pre_trim_n)
+			stat_group.value.min = stat_group.value.min * math.min(1.0, math.max(0.25, tr))
+		end
 	end
 	local top_filters = {}
 	for i = 1, math.min(15, #final_filters) do

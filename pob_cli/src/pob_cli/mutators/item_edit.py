@@ -238,7 +238,10 @@ def _validate_item_edit_affixes(
         return
 
     has_add = any(c.get("action") == "add" for c in touched_add_or_rep)
-    added_crafted = any("{crafted}" in str(c.get("after") or "").lower() for c in touched_add_or_rep)
+    added_crafted = any(
+        "{crafted}" in str(c.get("after") or "").lower() or "(crafted)" in str(c.get("after") or "").lower()
+        for c in touched_add_or_rep
+    )
     before_multimod = "can have up to 3 crafted modifiers" in before_raw.lower()
     item_label = f"'{slot_name}' [{after_item.display_name}]"
     has_multimod = any("can have up to 3 crafted modifiers" in m.raw.lower() for m in after_item.mods)

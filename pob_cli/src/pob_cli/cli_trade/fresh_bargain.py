@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import statistics
 from typing import Any
 
@@ -74,6 +75,11 @@ def _search_rows(
     ids = [str(item) for item in found.get("result") or []]
     total = int(found.get("total") or len(ids))
     if max_age is None:
+        if want > 20 and callable(getattr(client, "fetch", None)):
+            rows: list[dict[str, Any]] = []
+            for start in range(0, min(len(ids), want, 100), MAX_FETCH_IDS):
+                rows.extend(client.fetch(ids[start : start + MAX_FETCH_IDS], query_id))
+            return query_id, total, rows[:want], len(rows)
         rows = client.fetch_many(ids, query_id, limit=want)
         return query_id, total, rows, len(rows)
     rows, fetched = _fetch_fresh(client, ids, query_id, want=want, max_age=max_age)
@@ -90,6 +96,16 @@ def _market_chaos(cheapest: list[dict[str, Any]], rates: dict[str, float]) -> fl
     return statistics.median(prices) if len(prices) >= 5 else None
 
 
+def _clone_without_max_age(query: dict[str, Any], *, price_asc: bool = False) -> dict[str, Any]:
+    cloned = copy.deepcopy(query)
+    tf = ((cloned.get("query") or {}).get("filters") or {}).get("trade_filters")
+    if isinstance(tf, dict) and isinstance(tf.get("filters"), dict):
+        tf["filters"].pop("indexed", None)
+    if price_asc:
+        cloned["sort"] = {"price": "asc"}
+    return cloned
+
+
 def _fetch_with_fresh_and_market(
     *,
     client: Any,
@@ -103,6 +119,7 @@ def _fetch_with_fresh_and_market(
     sort_by: str,
     proxy: str | None,
     max_fetch_cap: int = 20,
+    has_auto_query: bool = False,
 ) -> dict[str, Any]:
     """Execute trade search + optional fresh filtering/fallback, chaos rates, and bargain baseline."""
     import pob_cli.cli_trade as _ct
@@ -124,7 +141,7 @@ def _fetch_with_fresh_and_market(
     if max_age is not None and not rows and want:
         # Nothing that fresh: show the older listings rather than an empty report.
         # `query` is replaced so the links and the JSON match what is listed.
-        query = build_query(**query_args)
+        query = _clone_without_max_age(query) if has_auto_query else build_query(**query_args)
         query_id, total, rows, fetched = _search_rows(
             client, league_name, query, want=want, max_age=None
         )
@@ -145,10 +162,15 @@ def _fetch_with_fresh_and_market(
             cheapest = rows[:10]  # this search already is "cheapest first, any age"
         else:
             try:
+                mkt_query = (
+                    _clone_without_max_age(query, price_asc=True)
+                    if has_auto_query
+                    else build_query(**{**query_args, "search_sort": "asc"})
+                )
                 market_total, cheapest = _search_rows(
                     client,
                     league_name,
-                    build_query(**{**query_args, "search_sort": "asc"}),
+                    mkt_query,
                     want=10,
                     max_age=None,
                 )[1:3]

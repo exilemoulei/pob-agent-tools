@@ -96,6 +96,8 @@ def _get_local_tree_versions(game_dir: Path) -> tuple[set[str], tuple[int, int] 
     for entry in tree_data_dir.iterdir():
         if not entry.is_dir():
             continue
+        if (entry / ".incomplete").exists() or not any(entry.iterdir()):
+            continue
         names.add(entry.name)
         parsed = _parse_tree_version_tuple(entry.name)
         if parsed is not None:
@@ -461,3 +463,32 @@ def decode_batch_responses(
             results[idx] = res_dict
 
     return results, first_error, had_import_error
+
+
+def apply_worker_locale(worker: Any, norm: str) -> dict[str, Any]:
+    """Execute `set_locale` / `set_translate` on an unlocked running `BridgeWorker`."""
+    want_translate = norm != "en"
+    worker.locale = norm
+    if not worker.is_running:
+        return {"ok": True, "lang": norm, "translate": want_translate, "started": False}
+    try:
+        return worker._raw_call_unlocked("set_locale", {"lang": norm}, timeout=5.0)
+    except BridgeError:
+        if worker.caps.get("translateToggle", True):
+            tr_res = worker._raw_call_unlocked("set_translate", {"enabled": want_translate}, timeout=5.0)
+            worker.translate_enabled = bool(tr_res.get("enabled", want_translate))
+            return {
+                "ok": True,
+                "lang": norm,
+                "translate": worker.translate_enabled,
+                "fallback": "set_translate",
+            }
+        if want_translate == worker.translate_enabled:
+            return {"ok": True, "lang": norm, "translate": worker.translate_enabled, "fallback": "noop"}
+        return {
+            "ok": False,
+            "lang": norm,
+            "translate": worker.translate_enabled,
+            "fallback": "unsupported",
+            "error": "Engine does not support runtime translation switching; restart worker to apply.",
+        }

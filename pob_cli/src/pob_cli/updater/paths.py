@@ -197,7 +197,11 @@ def build_engine_command(engine_dir: Path) -> tuple[list[str], dict[str, str]]:
         }
 
     if on_windows:
-        if (game_dir / "lua51.dll").is_file() and bridge_lua.is_file():
+        if (
+            (game_dir / "lua51.dll").is_file()
+            and (game_dir / "zlib1.dll").is_file()
+            and bridge_lua.is_file()
+        ):
             if not runner_lua.is_file():
                 raise UpdateError(f"Bundled headless_runner.lua not found at {runner_lua}")
             host_prefix = (
@@ -214,7 +218,7 @@ def build_engine_command(engine_dir: Path) -> tuple[list[str], dict[str, str]]:
         exe_path = eng / "pob-zh.exe"
         if not exe_path.is_file():
             raise UpdateError(
-                f"Neither PoE1/lua51.dll (with Data/bridge/bridge.lua) nor legacy pob-zh.exe found under {eng}"
+                f"Neither PoE1/lua51.dll+zlib1.dll (with Data/bridge/bridge.lua) nor legacy pob-zh.exe found under {eng}"
             )
         return [str(exe_path), "--engine-headless", str(game_dir)], {}
 
@@ -247,7 +251,11 @@ def is_valid_engine_dir(path: Path | None) -> bool:
     if not (p / "PoE1").is_dir():
         return False
     if _pkg().is_windows():
-        if (p / "PoE1" / "lua51.dll").is_file() and (p / "Data" / "bridge" / "bridge.lua").is_file():
+        if (
+            (p / "PoE1" / "lua51.dll").is_file()
+            and (p / "PoE1" / "zlib1.dll").is_file()
+            and (p / "Data" / "bridge" / "bridge.lua").is_file()
+        ):
             return True
         if os.environ.get("POB_ENGINE_CMD", "").strip() and (p / "Data" / "bridge" / "bridge.lua").is_file():
             return True

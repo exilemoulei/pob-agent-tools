@@ -90,10 +90,16 @@ def take_snapshot(worker: Any, *, prefer_cow: bool = True) -> BuildSnapshot:
         res = worker.call("cow_snapshot", {})
         snap_id = res.get("snapId") if isinstance(res, dict) else None
         if isinstance(snap_id, str) and snap_id:
+            fb_code = getattr(worker, "last_good_code", None)
+            if not fb_code:
+                try:
+                    fb_code = str((worker.call("export_code", {}) or {}).get("code") or "") or None
+                except Exception:
+                    fb_code = None
             return BuildSnapshot(
                 "cow",
                 snap_id,
-                fallback_code=getattr(worker, "last_good_code", None),
+                fallback_code=fb_code,
                 proc_tag=proc_tag,
             )
     return BuildSnapshot("code", str(worker.call("export_code", {})["code"]))
@@ -106,7 +112,7 @@ def restore_snapshot(
     drop: bool = False,
     rebuild: bool = True,
 ) -> None:
-    """Restore a `BuildSnapshot` (CoW or `import_code`), falling back cleanly if subprocess restarted."""
+    """Restore a `BuildSnapshot` (CoW or `import_code`), falling back cleanly if CoW or subprocess fails."""
     if snap.kind == "cow":
         cur_proc = getattr(worker, "_proc", None)
         if cur_proc is snap.proc_tag:
@@ -115,8 +121,12 @@ def restore_snapshot(
                 params["drop"] = True
             if not rebuild:
                 params["rebuild"] = False
-            worker.call("cow_restore", params)
-            return
+            try:
+                worker.call("cow_restore", params)
+                return
+            except Exception:
+                if not snap.fallback_code:
+                    raise
         if snap.fallback_code:
             worker.call("import_code", {"code": snap.fallback_code, "mode": "replace"})
             return

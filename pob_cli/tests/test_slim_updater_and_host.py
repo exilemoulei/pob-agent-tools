@@ -384,6 +384,12 @@ def test_windows_build_engine_command_native_and_legacy_fallback(
     (slim_eng / "PoE1" / "lua51.dll").write_bytes(b"dll")
     (slim_eng / "Data" / "bridge").mkdir(parents=True)
     (slim_eng / "Data" / "bridge" / "bridge.lua").write_text("-- bridge\n", encoding="utf-8")
+    # Missing zlib1.dll must not claim native host readiness (falls back to pob-zh.exe if present)
+    assert is_valid_engine_dir(slim_eng) is False
+    (slim_eng / "pob-zh.exe").write_bytes(b"MZ")
+    assert build_engine_command(slim_eng)[0] == [str(slim_eng / "pob-zh.exe"), "--engine-headless", str(slim_eng / "PoE1")]
+    (slim_eng / "pob-zh.exe").unlink()
+    (slim_eng / "PoE1" / "zlib1.dll").write_bytes(b"zlib")
     assert is_valid_engine_dir(slim_eng) is True
 
     monkeypatch.setattr(sys, "frozen", False, raising=False)

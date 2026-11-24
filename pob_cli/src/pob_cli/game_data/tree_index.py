@@ -337,6 +337,7 @@ def ensure_treedata_index(
     st = tree_lua_path.stat()
     hasher.update(f"{tree_ver}:{st.st_size}:{st.st_mtime_ns};".encode())
     if zh_dir is not None and zh_dir.is_dir():
+        hasher.update(f"{zh_dir.name};".encode())
         for fn in (*_TREE_ZH_NAME_FILES, "tree_sd.json"):
             zp = zh_dir / fn
             if zp.is_file():

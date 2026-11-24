@@ -450,6 +450,9 @@ def run_sweep(
                     mutated_base = True
 
                 if mutated_base:
+                    upd_ckpt = getattr(worker, "update_checkpoint", None)
+                    if callable(upd_ckpt):
+                        upd_ckpt()
                     base_snap = take_snapshot(worker)
 
                 base_digest = _mut.capture_digest(worker)

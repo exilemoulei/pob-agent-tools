@@ -17,6 +17,7 @@ from .bridge_protocol import (
     MAX_UNDO_STEPS,
     BridgeError,
     BridgeTimeoutError,
+    apply_worker_locale,
     await_startup_handshake,
     check_tree_version_mismatch,
     collect_batch_responses,
@@ -552,24 +553,8 @@ class BridgeWorker:
     def set_locale(self, lang: str) -> dict[str, Any]:
         """Switch active display locale (`'zh-CN'`, `'zh-TW'`, or `'en'`) on this worker."""
         norm = normalize_lang(lang)
-        want_translate = norm != "en"
         with self._lock:
-            self.locale = norm
-            if not self.is_running:
-                return {"ok": True, "lang": norm, "translate": want_translate, "started": False}
-            try:
-                return self._raw_call_unlocked("set_locale", {"lang": norm}, timeout=5.0)
-            except BridgeError:
-                if self.caps.get("translateToggle", True):
-                    tr_res = self._raw_call_unlocked("set_translate", {"enabled": want_translate}, timeout=5.0)
-                    return {
-                        "ok": True,
-                        "lang": norm,
-                        "translate": bool(tr_res.get("enabled", want_translate)),
-                        "fallback": "set_translate",
-                    }
-                self.translate_enabled = want_translate
-                return {"ok": True, "lang": norm, "translate": want_translate, "fallback": "noop"}
+            return apply_worker_locale(self, norm)
 
     def update_checkpoint(self) -> str:
         """Export current build code into last_good_code for crash recovery."""
