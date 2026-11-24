@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-
 SCRIPT = Path(__file__).resolve().parents[2] / "skills/pob/references/easyfarm_map_affixes.py"
 spec = importlib.util.spec_from_file_location("easyfarm_map_affixes", SCRIPT)
 easyfarm = importlib.util.module_from_spec(spec)
