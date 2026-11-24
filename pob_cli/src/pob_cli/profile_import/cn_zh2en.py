@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from ..game_data import fold_han
-from ..locale_cfg import current_lang
 from . import pob_xml_helpers as _xh
 
 _CLASS_ZH_TO_EN = _xh.CLASS_ZH_TO_EN
@@ -130,11 +129,14 @@ class Zh2EnDictionary:
 
     @classmethod
     def from_engine_dir(cls, pob_root: Path | None) -> Zh2EnDictionary:
-        """Load & cache 3.30 `Data/poe1/<active_locale>` + sibling Chinese dictionaries from `pob_root`."""
+        """Load & cache 3.30 `Data/poe1/zh-rCN` + `zh-rTW` dictionaries from `pob_root`, zh-rCN first."""
         if pob_root is None:
             return cls()
         root_tr = Path(pob_root) / "Data" / "poe1"
-        sub_order = ("zh-rTW", "zh-rCN") if current_lang() == "zh-TW" else ("zh-rCN", "zh-rTW")
+        # CN-server data is always Simplified and keys fold Traditional to Simplified with
+        # first-wins, so zh-rCN must load first whatever `pob lang` shows: otherwise 术士手套
+        # becomes zh-rTW's 術士手套 (Warlock Gloves) instead of Sorcerer Gloves.
+        sub_order = ("zh-rCN", "zh-rTW")
         zh_dirs = [cand for sub in sub_order if (cand := root_tr / sub).is_dir()]
         if not zh_dirs:
             return cls()

@@ -87,8 +87,8 @@ def _fold_search_text(text: str) -> str:
 def fold_han(text: str | None) -> str:
     """Fold Traditional Chinese characters to Simplified so both scripts compare equal.
 
-    Apply it to both sides of a comparison: pob-zh.exe shows Traditional (zh-rTW) labels by default
-    while users and our dictionaries mostly use Simplified. Only closes character-level gaps
+    Apply it to both sides of a comparison: the engine shows Traditional (zh-rTW) labels under
+    `pob lang zh-TW` or the legacy pob-zh.exe, while users mostly type Simplified. Only closes character-level gaps
     (聖宗 == 圣宗); names the two translations word differently need `english_for_zh`.
     """
     return str(text).translate(_HAN_FOLD_ALL) if text else ""

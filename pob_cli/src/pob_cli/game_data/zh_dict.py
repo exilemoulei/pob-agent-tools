@@ -10,6 +10,8 @@ from .constants import (
     NUM_PLACEHOLDER_RE,
     STAT_VALUE_RE,
     ZH_FILE_CATEGORY_HINT,
+    ZH_NON_NAME_KEY_RE,
+    ZH_SKIP_TRANSLATION_FILE_RE,
     ZH_SKIP_TRANSLATION_FILES,
 )
 
@@ -195,7 +197,12 @@ class _ZhDictionary:
 
         for p in ordered_files:
             fn = p.name
-            if fn in ZH_SKIP_TRANSLATION_FILES or fn in superseded or fn in _ZH_UI_OR_LORE_FILES:
+            if (
+                fn in ZH_SKIP_TRANSLATION_FILES
+                or ZH_SKIP_TRANSLATION_FILE_RE.search(fn)
+                or fn in superseded
+                or fn in _ZH_UI_OR_LORE_FILES
+            ):
                 continue
             try:
                 payload = json.loads(p.read_text(encoding="utf-8"))
@@ -218,7 +225,7 @@ class _ZhDictionary:
                     continue
                 en = raw_en.strip()
                 zh = raw_zh.strip()
-                if not en or not zh:
+                if not en or not zh or ZH_NON_NAME_KEY_RE.match(en) or ZH_NON_NAME_KEY_RE.match(zh):
                     continue
 
                 if is_gem_file:

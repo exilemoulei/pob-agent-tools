@@ -1,8 +1,8 @@
 """Simplified queries against Traditional engine labels.
 
-pob-zh.exe shows Traditional (zh-rTW) labels unless the user picks another locale, while queries,
-slang aliases and the local dictionary are Simplified. These tests feed the matchers labels the
-way a default Windows engine reports them, without needing that engine.
+Under `pob lang zh-TW` (or the legacy pob-zh.exe) the engine shows Traditional (zh-rTW) labels,
+while queries and slang aliases are mostly Simplified. These tests feed the matchers labels the
+way such an engine reports them, without needing that engine.
 """
 
 from __future__ import annotations

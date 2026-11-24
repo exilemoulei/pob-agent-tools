@@ -6,6 +6,7 @@ import ast
 import faulthandler
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -50,7 +51,28 @@ def _find_win_lua51_dir() -> Path | None:
     return None
 
 
-def _run_lua_inproc(lua_dir: Path, script: Path) -> int:
+def _find_posix_luajit() -> Path | None:
+    if sys.platform == "win32":
+        return None
+    eng = find_engine_data()
+    cand = eng / "bin" / "luajit" if eng is not None else None
+    return cand if cand is not None and os.access(cand, os.X_OK) else None
+
+
+def _has_lua_runtime() -> bool:
+    return _find_win_lua51_dir() is not None or _find_posix_luajit() is not None
+
+
+def _run_lua(script: Path) -> int:
+    """Run `script` on Windows' in-process lua51.dll host or the engine's POSIX LuaJIT."""
+    luajit = _find_posix_luajit()
+    if luajit is not None:
+        proc = subprocess.run([str(luajit), str(script)], capture_output=True, text=True, timeout=120)
+        if proc.returncode != 0:
+            print(proc.stdout, proc.stderr, file=sys.stderr)
+        return proc.returncode
+    lua_dir = _find_win_lua51_dir()
+    assert lua_dir is not None
     was_enabled = faulthandler.is_enabled()
     if was_enabled:
         faulthandler.disable()
@@ -331,10 +353,8 @@ def test_locale_cfg_l0_contracts_and_persistence(tmp_path: Path, monkeypatch: py
         assert resolve_runtime_dir_l0() == (leg_dir if expect_legacy else prim_dir)
 
 
-@pytest.mark.skipif(_find_win_lua51_dir() is None, reason="No Windows PoE1/lua51.dll available")
+@pytest.mark.skipif(not _has_lua_runtime(), reason="No Windows lua51.dll or engine bin/luajit available")
 def test_zh_translate_lua_synthetic_and_missing_fallback(tmp_path: Path) -> None:
-    lua_dir = _find_win_lua51_dir()
-    assert lua_dir is not None
     eng = _build_synthetic_dual_locale_engine(tmp_path / "dual_eng")
     no_tw_eng = tmp_path / "only_cn_eng"
     (no_tw_eng / "Data" / "poe1" / "zh-rCN").mkdir(parents=True)
@@ -358,6 +378,13 @@ assert(PobToolsTranslateDisplay("Mageblood, Heavy Belt") == "法师之血, 重�
 assert(PobToolsAscendancyNameZh("Raider", "Warden") == "守望者")
 assert(PobToolsItemNameZh({{ title = "Mageblood", baseName = "Heavy Belt (Variant)" }}) == "法师之血, 重革腰带")
 assert(PobToolsItemNameZh({{ title = "Foulborn Mageblood", baseName = "Heavy Belt" }}) == "秽生 法师之血, 重革腰带")
+-- zh-rCN has no ascendancy ids; its passives.json would say 暗影 (Shadow) for Assassin
+assert(PobToolsAscendancyNameZh("Assassin", "Assassin") == "刺客")
+-- zh-rCN lacks title_words / affixes / gem ids: zh-rTW's are borrowed, folded to Simplified,
+-- while zh-rCN's own tags (Potent -> 强效的) still win
+assert(zt.get_locale().ok == true)
+assert(PobToolsItemNameZh({{ title = "Keep Gear", baseName = "Heavy Belt" }}) == "坚城齿轮, 重革腰带")
+assert(PobToolsItemNameZh({{ baseName = "Heavy Belt", name = "Potent Heavy Belt of Abjuration" }}) == "强效的 重革腰带 防护之")
 
 -- Switch live to zh-TW via rpc_handlers
 local r_tw = zt.rpc_handlers.set_locale({{ lang = "zh-TW" }})
@@ -392,22 +419,21 @@ f:close()
 """,
         encoding="utf-8",
     )
-    rc = _run_lua_inproc(lua_dir, script)
+    rc = _run_lua(script)
     assert rc == 0
     assert out_file.read_text(encoding="utf-8") == "PASS"
 
 
 @pytest.mark.skipif(
-    _find_win_lua51_dir() is None
+    not _has_lua_runtime()
     or find_engine_data() is None
     or not (find_engine_data() / "Data" / "poe1" / "zh-rCN").is_dir()  # type: ignore[operator]
     or not (find_engine_data() / "Data" / "poe1" / "zh-rTW").is_dir(),  # type: ignore[operator]
-    reason="Real dual-dictionary PoE1 engine (zh-rCN + zh-rTW + lua51.dll) not present",
+    reason="Real dual-dictionary PoE1 engine (zh-rCN + zh-rTW + a Lua runtime) not present",
 )
 def test_zh_translate_lua_real_dictionaries_speed_and_accuracy(tmp_path: Path) -> None:
-    lua_dir = _find_win_lua51_dir()
     real_eng = find_engine_data()
-    assert lua_dir is not None and real_eng is not None
+    assert real_eng is not None
 
     out_file = tmp_path / "real_zt.json"
     script = tmp_path / "bench_real_zt.lua"
@@ -420,6 +446,9 @@ local t0 = os.clock()
 local cn_mb = PobToolsTranslateDisplay("Mageblood")
 local cn_ms = (os.clock() - t0) * 1000
 assert(cn_mb == "法师之血", "expected 法师之血, got " .. tostring(cn_mb))
+assert(PobToolsAscendancyNameZh("Assassin", "Assassin") == "刺客")
+local cn_title = PobToolsItemNameZh({{ title = "Keep Gear", baseName = "Leather Belt" }})
+assert(cn_title and not cn_title:find("Keep", 1, true), "rare title untranslated: " .. tostring(cn_title))
 
 local t1 = os.clock()
 zt.set_locale("zh-TW")
@@ -434,7 +463,7 @@ f:close()
 """,
         encoding="utf-8",
     )
-    rc = _run_lua_inproc(lua_dir, script)
+    rc = _run_lua(script)
     assert rc == 0
     metrics = json.loads(out_file.read_text(encoding="utf-8"))
     perf_slack = max(1.0, float(os.environ.get("POB_TEST_PERF_SLACK", "1") or 1.0))

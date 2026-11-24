@@ -299,7 +299,10 @@ def _query_translate(
     *,
     pob_dir: Path | None = None,
     runtime_dir: Path | None = None,
+    raw_query: str | None = None,
 ) -> list[dict[str, Any]]:
+    # Callers pass the query already folded; `raw_query` keeps the user's script for exact matches.
+    unfolded = (raw_query or "").strip() or q_lower
     raw_query = q_lower
     if q_lower:
         q_lower = _fold_search_text(normalize_tw_query(q_lower))
@@ -326,6 +329,17 @@ def _query_translate(
             )
         )
 
+    exact_en = (
+        resolve_zh_entity_across_locales(unfolded, pob_dir=pob_dir, runtime_dir=runtime_dir, folded=False)
+        if _CJK_RE.search(unfolded)
+        else None
+    )
+    if exact_en:
+        # An unfolded hit in either dictionary outranks a folded hit in the active-locale index:
+        # under zh-TW, 术士手套 folds onto 術士手套 (Warlock Gloves) but means Sorcerer Gloves.
+        exact_rows = _lookup_canonical_en_in_conn(conn, exact_en)
+        scored.extend(((-1, *key[1:]), item) for key, item in exact_rows)
+        has_exact = has_exact or bool(exact_rows)
     if not has_exact and (_CJK_RE.search(raw_query) or _CJK_RE.search(q_lower)):
         sibling_en = resolve_zh_entity_across_locales(
             raw_query, pob_dir=pob_dir, runtime_dir=runtime_dir

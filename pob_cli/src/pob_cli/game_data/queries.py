@@ -50,6 +50,7 @@ def _dispatch_query(
     mod_filter: str | None = None,
     pob_dir: Path | None = None,
     runtime_dir: Path | None = None,
+    raw_query: str | None = None,
 ) -> list[dict[str, Any]]:
     if limit == 0:
         return []
@@ -61,7 +62,9 @@ def _dispatch_query(
         return _query_bases(conn, q_folded, slot, ilvl, limit)
     if kind_norm == "mod":
         return _query_mods(conn, q_folded, slot, ilvl, limit)
-    return _query_translate(conn, q_folded, limit, zh_available, pob_dir=pob_dir, runtime_dir=runtime_dir)
+    return _query_translate(
+        conn, q_folded, limit, zh_available, pob_dir=pob_dir, runtime_dir=runtime_dir, raw_query=raw_query
+    )
 
 
 def _guardrail_scope_for_kind(kind_norm: str) -> Any:
@@ -253,6 +256,7 @@ def query_local_data(
             mod_filter=mod_tw,
             pob_dir=pob_dir,
             runtime_dir=runtime_dir,
+            raw_query=q_clean,
         )
         needs_slang = (not results) or (
             kind_norm == "translate" and not any(r.get("match_type") == "exact" for r in results)
@@ -416,6 +420,7 @@ def query_multi(
                 limit=limit,
                 zh_available=zh_available,
                 mod_filter=mod_tw,
+                raw_query=q_clean,
             )
             resolved_alias: dict[str, str] | None = None
             suggestions: list[dict[str, Any]] | None = None

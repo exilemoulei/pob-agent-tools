@@ -11,7 +11,7 @@ pob serve [--offline] [--proxy <url>] [--port N] [--runtime-dir <dir>]          
 pob bootstrap [--proxy <url>] [--mirror <url>] [--no-zh] [--from-dir <dir>] [--json]   # Install/seed slim managed engine (native LuaJIT _lua-host on Windows, zero pob-zh.exe; PobTools-zh bridge + zh-rCN/zh-rTW + PoB master)
 pob update [--check] [--force] [--proxy <url>] [--mirror <url>] [--offline] [--json]   # Incremental SHA1 update (hot-reloads live daemon slots)
 pob status [--json]                                                                    # Daemon PID, PoB/PobTools/Data versions, active lang, caps/winLuaHost, boolean Auth env status, updateStatus, all named slots
-pob lang [zh-CN|zh-TW|en] [--json]                                                     # Get or persist display language (default zh-CN Simplified, switchable to fixed zh-TW Traditional or en; POB_LANG env overrides)
+pob lang [zh-CN|zh-TW|en] [--json]                                                     # Get or persist display language (default zh-CN Simplified, switchable to fixed zh-TW Traditional or en; POB_LANG env overrides). Exit 1 for a locale the engine lacks, 5 when a running daemon does not answer; --json has dictLoaded, daemonSynced, envIgnored
 pob self-update [--check] [--version X.Y.Z] [--proxy <url>] [--mirror <url>] [--json]  # Update pob itself (standalone builds; signed release only); --check reports latest + the update command for this install; network/disk/swap failure exits 5
 pob profile [ACCOUNT_OR_URL] [--realm pc|xbox|sony|cn] [--league L] [--proxy U] [--json] # 0-engine official profile character list (pathofexile.com public no-cookie, or poe.game.qq.com via env POE_CN_SESSID)
 pob new [--class C] [--asc A] [--secondary-asc S] [--level N] [--target <slug>] [--json]

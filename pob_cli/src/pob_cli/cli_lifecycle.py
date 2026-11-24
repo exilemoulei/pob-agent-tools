@@ -359,6 +359,21 @@ def cmd_status(as_json: bool, compact: bool, out_path: str | None) -> None:
     _emit_text(_prepend_warning(body, res), out_path=out_path)
 
 
+def _installed_locales(rt_dir: Any) -> list[str] | None:
+    """Locales the engine on disk ships dictionaries for, or None when no engine is installed."""
+    from .game_data.paths import list_available_zh_dirs
+    from .updater import is_valid_engine_dir, resolve_engine_root
+
+    try:
+        eng = resolve_engine_root(runtime_dir=rt_dir)
+        if not is_valid_engine_dir(eng):
+            return None
+        names = {d.name for d in list_available_zh_dirs(eng)}
+    except Exception:
+        return None
+    return [lang for lang, sub in (("zh-CN", "zh-rCN"), ("zh-TW", "zh-rTW")) if sub in names] + ["en"]
+
+
 @click.command("lang")
 @click.argument("language", required=False, default=None)
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
@@ -366,10 +381,16 @@ def cmd_status(as_json: bool, compact: bool, out_path: str | None) -> None:
 def cmd_lang(language: str | None, as_json: bool, compact: bool, out_path: str | None) -> None:
     """Get or set display language (`zh-CN` default Simplified, `zh-TW` fixed Traditional, `en` English)."""
     from .daemon import call_daemon, read_daemon_state
-    from .locale_cfg import get_active_lang, normalize_lang, resolve_runtime_dir_l0, set_active_lang
-    from .updater import resolve_engine_root
+    from .locale_cfg import (
+        get_active_lang,
+        invalid_env_lang,
+        normalize_lang,
+        resolve_runtime_dir_l0,
+        set_active_lang,
+    )
 
     rt_dir = resolve_runtime_dir_l0()
+    installed = _installed_locales(rt_dir)
     persisted_info: dict[str, Any] | None = None
     target_lang: str | None = None
     if language is not None and language.strip():
@@ -377,6 +398,10 @@ def cmd_lang(language: str | None, as_json: bool, compact: bool, out_path: str |
             target_lang = normalize_lang(language)
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc
+        if installed is not None and target_lang not in installed:
+            raise click.ClickException(
+                f"Language {target_lang!r} is not installed in this engine (available: {', '.join(installed)})."
+            )
         persisted_info = set_active_lang(target_lang, runtime_dir=rt_dir)
 
     eff_lang, eff_src = get_active_lang(rt_dir)
@@ -385,62 +410,79 @@ def cmd_lang(language: str | None, as_json: bool, compact: bool, out_path: str |
         try:
             daemon_res = call_daemon(
                 "lang",
-                {"lang": eff_lang, "persist": False} if target_lang else {},
+                {"lang": target_lang, "persist": False} if target_lang else {},
                 auto_start=False,
             )
-        except Exception:
-            daemon_res = None
+        except Exception as exc:
+            detail = str(exc).strip() or type(exc).__name__
+            if "not running" not in detail.lower():
+                saved = f"Saved `{target_lang}` to {persisted_info['configPath']}, but the" if persisted_info else "The"
+                err = click.ClickException(
+                    f"{saved} running daemon did not answer the language request: {detail}\n"
+                    "Restart it with `pob stop` so the next command starts it in the new language."
+                )
+                err.exit_code = DAEMON_FAILURE_EXIT_CODE
+                raise err from exc
 
-    avail: list[str] = ["en"]
+    avail = installed or ["en"]
     if isinstance(daemon_res, dict) and isinstance(daemon_res.get("availableLocales"), list):
         avail = list(daemon_res["availableLocales"])
-    else:
-        try:
-            eng = resolve_engine_root(runtime_dir=rt_dir)
-            base = eng / "Data" / "poe1"
-            if (base / "zh-rCN").is_dir():
-                avail.insert(0, "zh-CN")
-            if (base / "zh-rTW").is_dir():
-                avail.insert(1 if "zh-CN" in avail else 0, "zh-TW")
-        except Exception:
-            pass
 
-    slots_updated = daemon_res.get("slotsUpdated") if isinstance(daemon_res, dict) else None
-    failed_slots = {
-        k: str(v.get("error") or "failed")
-        for k, v in (slots_updated or {}).items()
-        if isinstance(v, dict) and v.get("ok") is False
-    }
-    daemon_synced = (daemon_res is not None) and not failed_slots
+    raw_slots = daemon_res.get("slotsUpdated") if isinstance(daemon_res, dict) else None
+    slots_updated = raw_slots if isinstance(raw_slots, dict) else {}
+    slot_results = [v for v in slots_updated.values() if isinstance(v, dict)]
+    failed_slots = {k: str(v.get("error") or "failed") for k, v in slots_updated.items() if isinstance(v, dict) and v.get("ok") is False}
+    dict_flags = [bool(v["dictLoaded"]) for v in slot_results if "dictLoaded" in v]
+    legacy_fallback = any(v.get("fallback") for v in slot_results)
 
     payload: dict[str, Any] = {
         "lang": eff_lang,
         "source": eff_src,
         "availableLocales": avail,
-        "daemonSynced": daemon_synced,
+        "daemonRunning": daemon_res is not None,
+        "daemonSynced": daemon_res is not None and not failed_slots,
     }
+    if isinstance(daemon_res, dict) and daemon_res.get("effectiveLang"):
+        payload["daemonLang"] = daemon_res["effectiveLang"]
+    if dict_flags:
+        payload["dictLoaded"] = all(dict_flags)
     if persisted_info is not None:
         payload["persistedLang"] = persisted_info["lang"]
         payload["configPath"] = persisted_info["configPath"]
-    if isinstance(slots_updated, dict) and slots_updated:
+    if slots_updated:
         payload["slotsUpdated"] = slots_updated
     if failed_slots:
         payload["failedSlots"] = failed_slots
+    if legacy_fallback:
+        payload["legacyFallback"] = True
+    env_bad = invalid_env_lang()
+    if env_bad is not None:
+        payload["envIgnored"] = env_bad
+    if isinstance(daemon_res, dict) and daemon_res.get("daemonEnvOverridden"):
+        payload["daemonEnvOverridden"] = daemon_res["daemonEnvOverridden"]
 
     if as_json:
         _emit_json(payload, compact=compact, out_path=out_path)
         return
 
-    sync_label = "yes" if daemon_synced else ("partial/failed" if failed_slots else "no (will apply on start)")
-    msg = (
-        f"Language: `{eff_lang}` (source: `{eff_src}`) | "
-        f"Available: `{', '.join(avail)}` | Daemon synced: `{sync_label}`"
-    )
+    if daemon_res is None:
+        sync_label = "no daemon running (applies on next start)"
+    else:
+        sync_label = "partial/failed" if failed_slots else "yes"
+    msg = f"Language: `{eff_lang}` (source: `{eff_src}`) | Available: `{', '.join(avail)}` | Daemon synced: `{sync_label}`"
+    if dict_flags:
+        msg += f" | Dictionary loaded: `{'yes' if all(dict_flags) else 'no'}`"
     if failed_slots:
         err_summary = ", ".join(f"{s}: {e}" for s, e in sorted(failed_slots.items()))
         msg += f"\nWarning: Slot locale sync failed ({err_summary})."
+    if legacy_fallback:
+        msg += "\nNote: This engine cannot switch dictionaries live; it only toggled Chinese on or off."
+    if payload.get("daemonLang") and payload["daemonLang"] != eff_lang:
+        msg += f"\nNote: The daemon now shows `{payload['daemonLang']}`, while this shell resolves `{eff_lang}`."
     if persisted_info is not None and eff_lang != persisted_info["lang"]:
-        msg += f"\nNote: Persisted `{persisted_info['lang']}`, but `POB_LANG={eff_lang}` environment variable currently overrides it."
+        msg += f"\nNote: Persisted `{persisted_info['lang']}`, but `POB_LANG={eff_lang}` in this shell overrides it."
+    if env_bad is not None:
+        msg += f"\nNote: Ignored invalid `POB_LANG={env_bad}`."
     _emit_text(msg, out_path=out_path)
 
 

@@ -99,7 +99,7 @@ pob status
 
 - Pass `--proxy http://127.0.0.1:<port>` if a proxy is needed, or `pob bootstrap --from-dir "<local-path>"` to seed from an existing `PobTools` folder.
 - Windows uses a slim native LuaJIT engine host (zero `pob-zh.exe`, zero bulky Timeless `.zip*` LUT downloads); macOS and Linux standalone builds automatically use the bundled or Ed25519-verified prebuilt LuaJIT runtime — no manual compilation needed.
-- Display language defaults to Simplified Chinese (`zh-CN`); run `pob lang zh-TW` (or `pob lang en`, or set `POB_LANG`) to switch to fixed Traditional Chinese or English with instant hot-reload.
+- Display language defaults to Simplified Chinese (`zh-CN`); run `pob lang zh-TW` (or `pob lang en`, or set `POB_LANG`) to switch to fixed Traditional Chinese or English with instant hot-reload (only locales the engine ships are accepted).
 - Verify that `pob status` reports the version and a ready engine before continuing.
 
 ### 3. Install the Skill (Mandatory — Do Not Skip)

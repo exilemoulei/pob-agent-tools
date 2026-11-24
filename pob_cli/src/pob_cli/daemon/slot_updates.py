@@ -195,25 +195,24 @@ def handle_update_action(manager: DaemonManager, params: dict[str, Any]) -> dict
 
 
 def _available_locales(pob_dir: Any) -> list[str]:
-    avail: list[str] = ["en"]
+    avail: list[str] = []
     try:
         from pathlib import Path
 
-        base = Path(pob_dir) / "Data" / "poe1"
-        if (base / "zh-rCN").is_dir():
-            avail.insert(0, "zh-CN")
-        if (base / "zh-rTW").is_dir():
-            idx = 1 if "zh-CN" in avail else 0
-            avail.insert(idx, "zh-TW")
+        from ..game_data.paths import list_available_zh_dirs
+
+        names = {d.name for d in list_available_zh_dirs(Path(pob_dir))} if pob_dir else set()
+        avail = [lang for lang, sub in (("zh-CN", "zh-rCN"), ("zh-TW", "zh-rTW")) if sub in names]
     except Exception:
         pass
-    return avail
+    return [*avail, "en"]
 
 
 def handle_set_lang_action(manager: DaemonManager, params: dict[str, Any]) -> dict[str, Any]:
     rt_dir = getattr(manager, "runtime_dir", None)
     raw_lang = params.get("lang")
     persisted_info: dict[str, Any] | None = None
+    env_overridden: str | None = None
     updated_slots: dict[str, Any] = {}
     barrier_fn = getattr(manager, "_exclusive_barrier", manager._reader_barrier)
 
@@ -223,6 +222,12 @@ def handle_set_lang_action(manager: DaemonManager, params: dict[str, Any]) -> di
             if params.get("persist", True):
                 persisted_info = set_active_lang(norm, runtime_dir=rt_dir)
             target_lang = norm
+            # POB_LANG copied into the daemon at start would otherwise outrank this explicit
+            # switch forever: status would keep reporting it and new slots would start in it.
+            daemon_env = os.environ.get("POB_LANG", "").strip()
+            if daemon_env and daemon_env != norm:
+                env_overridden = daemon_env
+                os.environ["POB_LANG"] = norm
             with manager._lock:
                 workers_snap = list(manager._workers.items())
             for sname, w in workers_snap:
@@ -247,6 +252,8 @@ def handle_set_lang_action(manager: DaemonManager, params: dict[str, Any]) -> di
     if persisted_info:
         out["persistedLang"] = persisted_info["lang"]
         out["configPath"] = persisted_info["configPath"]
+    if env_overridden:
+        out["daemonEnvOverridden"] = env_overridden
     return out
 
 

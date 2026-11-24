@@ -50,6 +50,7 @@ __all__ = [
     "_has_runtime_data_l0",
     "current_lang",
     "get_active_lang",
+    "invalid_env_lang",
     "lang_to_data_subdir",
     "normalize_lang",
     "resolve_runtime_dir_l0",
@@ -139,6 +140,21 @@ def resolve_runtime_dir_l0(runtime_dir: Path | None = None) -> Path:
     return primary
 
 
+_WARNED_ENV_VALUES: set[str] = set()
+
+
+def invalid_env_lang() -> str | None:
+    """Return the raw `POB_LANG` value when it is set but is not a supported locale, else None."""
+    env_val = os.environ.get("POB_LANG", "").strip()
+    if not env_val:
+        return None
+    try:
+        normalize_lang(env_val)
+    except ValueError:
+        return env_val
+    return None
+
+
 def get_active_lang(runtime_dir: Path | None = None) -> tuple[str, str]:
     """Return `(lang, source)` where `source` is `'env'`, `'config'`, or `'default'`."""
     env_val = os.environ.get("POB_LANG", "").strip()
@@ -146,7 +162,13 @@ def get_active_lang(runtime_dir: Path | None = None) -> tuple[str, str]:
         try:
             return normalize_lang(env_val), "env"
         except ValueError:
-            pass
+            # A typo such as `zh-Hant` would otherwise switch languages with no trace.
+            if env_val not in _WARNED_ENV_VALUES:
+                _WARNED_ENV_VALUES.add(env_val)
+                print(
+                    f"Warning: ignoring POB_LANG={env_val!r}; valid choices: {', '.join(SUPPORTED_LANGS)}.",
+                    file=sys.stderr,
+                )
 
     cfg_path = resolve_runtime_dir_l0(runtime_dir) / "config.json"
     if cfg_path.is_file():

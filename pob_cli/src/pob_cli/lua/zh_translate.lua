@@ -20,6 +20,17 @@ local LANG_SUBDIR = {
 	["zh-TW"] = "zh-rTW",
 }
 
+-- zh-rCN ships no ascendancy_by_id.json, and its passives.json maps "Assassin" to 暗影 (the
+-- Shadow class); ids not listed here fall back to the passives.json name.
+local CN_ASC_BY_ID = { Assassin = "刺客" }
+local UTF8_CHAR = "[\192-\255][\128-\191]*"
+
+local SELF_DIR = (function()
+	local src = debug and debug.getinfo and debug.getinfo(1, "S").source or ""
+	local dir = type(src) == "string" and src:sub(1, 1) == "@" and src:sub(2):gsub("\\", "/"):match("^(.*)/[^/]*$")
+	return dir or "."
+end)()
+
 local engine_root = "."
 local active_lang = "zh-CN"
 local translate_enabled = true
@@ -202,6 +213,70 @@ local function load_id_table(dir, filename)
 	return entries, templates
 end
 
+local han_fold = nil -- false once a lookup failed
+
+local function utf8_chars(str)
+	local out, n = {}, 0
+	for ch in str:gmatch("[%z\1-\127\192-\255][\128-\191]*") do n = n + 1; out[n] = ch end
+	return out
+end
+
+local function py_tuple_text(src, name)
+	local body = src:match(name .. "%s*=%s*(%b())")
+	if not body then return nil end
+	local parts = {}
+	for piece in body:gmatch('"([^"]*)"') do parts[#parts + 1] = piece end
+	return table.concat(parts)
+end
+
+-- Traditional -> Simplified map read from the Python package's game_data tables (the same fold
+-- `fold_han` uses). Frozen builds ship no .py sources, so this returns nil there.
+local function get_han_fold()
+	if han_fold ~= nil then return han_fold or nil end
+	han_fold = false
+	local han_src = read_file_bytes(SELF_DIR .. "/../game_data/tables_han.py")
+	local trad = han_src and py_tuple_text(han_src, "_TRAD")
+	local simp = han_src and py_tuple_text(han_src, "_SIMP")
+	if not trad or not simp then return nil end
+	local tc, sc = utf8_chars(trad), utf8_chars(simp)
+	if #tc ~= #sc or #tc == 0 then return nil end
+	local map = {}
+	for i = 1, #tc do map[tc[i]] = sc[i] end
+	local tw_src = read_file_bytes(SELF_DIR .. "/../game_data/tables_tw.py")
+	local extra = tw_src and tw_src:match("_TRAD_TO_SIMP_MAP%s*=%s*str%.maketrans%(%s*(%b{})")
+	for k, v in (extra or ""):gmatch('"([^"]+)"%s*:%s*"([^"]+)"') do map[k] = v end
+	han_fold = map
+	return map
+end
+
+-- zh-rCN lacks affixes, title_words, gem_names_by_id and ggpk_display, so magic and rare item
+-- names stayed English. Borrow zh-rTW's tables, folded to Simplified, for keys zh-rCN lacks.
+local function add_tw_fallback(d)
+	local fold = get_han_fold()
+	if not fold then return false end
+	local tw = engine_root .. "/Data/poe1/zh-rTW"
+	local function fill(dst, src, skip)
+		for k, v in pairs(src) do
+			if dst[k] == nil and not (skip and skip[k]) then dst[k] = (v:gsub(UTF8_CHAR, fold)) end
+		end
+	end
+	local function read(fn)
+		local t = {}
+		load_entries_into(tw, fn, t, nil)
+		return t
+	end
+	fill(d.affixes, read("affixes.json"), d.tags)
+	fill(d.tags, read("tags.json"))
+	fill(d.title_words, read("title_words.json"))
+	fill(d.merged, read("ggpk_display.json"))
+	local ge, gt = load_id_table(tw, "gem_names_by_id.json")
+	if ge then
+		d.fb_gem_by_id, d.fb_gem_tpl_by_id = {}, gt
+		fill(d.fb_gem_by_id, ge)
+	end
+	return true
+end
+
 local function get_active_dict()
 	local subdir = LANG_SUBDIR[active_lang]
 	if not subdir then return nil end
@@ -260,6 +335,13 @@ local function get_active_dict()
 	}
 	for uk, uv in pairs(ui_fb) do
 		if d.merged[uk] == nil then d.merged[uk] = uv end
+	end
+	if subdir == "zh-rCN" then
+		if not d.asc_by_id then
+			d.asc_by_id, d.asc_tpl_by_id = {}, {}
+			for id, zh in pairs(CN_ASC_BY_ID) do d.asc_by_id[id] = zh; d.asc_tpl_by_id[id] = id end
+		end
+		d.twFallback = add_tw_fallback(d)
 	end
 	d.loaded = true
 	dict_cache[subdir] = d
@@ -358,25 +440,27 @@ local function translate_display(s)
 	return s
 end
 
+local function gem_by_id(by_id_tbl, tpl_tbl, id, name)
+	if id == nil or not by_id_tbl then return nil end
+	local sid = tostring(id)
+	local by_id = by_id_tbl[sid]
+	if not by_id or by_id == "" then return nil end
+	local tpl = tpl_tbl and tpl_tbl[sid]
+	if not tpl or tpl == name or tpl == (name:gsub(" Support$", "")) then return by_id end
+	return nil
+end
+
 local function gem_name_zh(id, name)
 	if not translate_enabled or active_lang == "en" or type(name) ~= "string" or name == "" then
 		return nil
 	end
 	local d = get_active_dict()
 	if not d or not d.loaded then return nil end
-	if id ~= nil and d.gem_by_id then
-		local sid = tostring(id)
-		local by_id = d.gem_by_id[sid]
-		if by_id and by_id ~= "" then
-			local tpl = d.gem_tpl_by_id and d.gem_tpl_by_id[sid]
-			if not tpl or tpl == name or tpl == (name:gsub(" Support$", "")) then
-				return by_id
-			end
-		end
-	end
+	local own = gem_by_id(d.gem_by_id, d.gem_tpl_by_id, id, name)
+	if own then return own end
 	local hit = d.gems[name] or d.gems[name .. " Support"] or d.gems[(name:gsub(" Support$", ""))]
 	if hit and hit ~= name then return hit end
-	return nil
+	return gem_by_id(d.fb_gem_by_id, d.fb_gem_tpl_by_id, id, name)
 end
 
 local function ascendancy_name_zh(id, name)
@@ -510,6 +594,7 @@ function M.set_locale(lang_or_params)
 		lang = active_lang,
 		translate = translate_enabled,
 		dictLoaded = (d ~= nil and d.loaded == true) or false,
+		twFallback = (d ~= nil and d.twFallback == true) or nil,
 	}
 end
 
