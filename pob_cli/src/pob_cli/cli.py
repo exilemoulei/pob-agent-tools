@@ -30,6 +30,7 @@ from .cli_lifecycle import register_lifecycle_commands
 from .cli_mutate import register_mutate_commands
 from .cli_mutate_items import register_item_commands
 from .cli_optimize import register_optimize_commands
+from .cli_rank_nodes import register_rank_nodes_commands
 from .cli_self_update import maybe_show_update_notice, register_self_update_commands
 from .cli_weights import register_weights_commands
 
@@ -88,6 +89,7 @@ register_inspect_commands(main)
 register_item_commands(main)
 register_mutate_commands(main)
 register_optimize_commands(main)
+register_rank_nodes_commands(main)
 register_weights_commands(main)
 register_data_commands(main)
 register_self_update_commands(main)

@@ -15,6 +15,7 @@ LAYER_MAP: dict[str, int] = {
     "__init__": 0,
     "errors": 0,
     "ticks": 0,
+    "scoring": 0,
     "guardrails": 0,
     # L1: engine runtime, bridge, importers, and data sources
     "updater": 1,
@@ -52,6 +53,7 @@ LAYER_MAP: dict[str, int] = {
     "cli_mutate": 4,
     "cli_optimize": 4,
     "cli_weights": 4,
+    "cli_rank_nodes": 4,
     "cli_self_update": 4,
     "cli_data_render": 4,
     "cli_data": 4,

@@ -43,12 +43,13 @@ description: Path of Exile 1 (PoE1 3.30, 流放之路1) build diagnosis, headles
 ```powershell
 pob summary | pob audit [--keep SPEC] | pob calc "<kw1>" ["<kw2>" ...] [--no-breakdown]
 pob items [--slot "Ring 1"|"#1"] [--all --raw] | pob skills [--group main] | pob config list [--all]
-pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--max-dist 5] | pob rank-gems [--group main] [--slot N|--add-link]
-pob weights [--mod "<ln>"]... [--scenario Pinnacle] [--keep SPEC]   # PoB-verified ΔDPS/ΔEHP per probe mod (16 defaults; --mod replaces)
+pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--score STAT=W,...] [--floor "STAT>=N"]... [--max-dist 5] [--refund] | pob respec [--score ...] [--floor ...] [--rounds 3] | pob rank-gems [--group main] [--slot N|--add-link|--optimize]
+pob weights [--mod "<ln>"]... [--preset bandit|pantheon-major|pantheon-minor|jewels] [--scenario Pinnacle] [--keep SPEC] [--score STAT=W,...] [--floor "STAT>=N"]...   # PoB-verified ΔDPS/ΔEHP per probe mod (16 defaults; --mod replaces); --score ranks by Σ W×Δ% (trade DPS vs EHP), --floor drops results under a hard limit
 pob item inspect (--slot S | --raw "<txt>" | --file f) [--want "<stat>"]... | pob item try --slot S --raw "<txt>" [--apply] | pob item edit --slot S --add-mod "<ln>" [--apply] | pob item anoint --notable "<N>"
 pob skill add|set|rm --group main ... [--apply] | pob tree change --allocate <id> [--deallocate <id>] [--apply]
 pob config set <k>=<v> [--custom-mods "<txt>"] [--apply] | pob batch --json-ops '[...]' | pob sweep --scenario Pinnacle --json-variants '[...]'
 pob bench suggest --slot boots --stat "抗性" | pob trade search --slot ring1 --stat "生命>=60" --sum "火抗|冰抗|电抗>=80" [--bench-craft "最大生命"] --budget 5 --currency divine --search-sort sum
+pob trade plan ring.json amulet.json --budget 100 [--score dps=1,ehp=0.5]   # offline: best one-listing-per-slot combo within budget from saved `trade search --pob on --json --out` files
 ```
 
 ## 3. High-Risk PoE1 3.23–3.30 Traps & Rules

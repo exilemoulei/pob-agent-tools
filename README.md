@@ -395,14 +395,28 @@ pob sweep --scenario Pinnacle --keep conditionStationary --calc "Mana" --json-va
 # 1. 按需要花费的天赋点，查找值得点的天赋（DPS / 有效生命 / 生命）
 pob rank-nodes --stat CombinedDPS --max-dist 5 --top 15
 pob rank-nodes --stat TotalEHP --max-dist 4 --top 10
+# 多目标：按各项百分比收益加权排序（+1% 有效生命算半个 +1% DPS），并剔除让有效生命低于 8000 的天赋
+pob rank-nodes --score CombinedDPS=1,TotalEHP=0.5 --floor "TotalEHP>=8000"
+# 已点天赋的退点价值：每退 1 点损失最少的排最前（死点先退）
+pob rank-nodes --refund --score CombinedDPS=1,TotalEHP=0.5
+# 自动规划洗点：退最便宜的点、补最好的点，每轮都经 PoB 实算验证，最后给出可直接执行的 pob batch 指令
+pob respec --score CombinedDPS=1,TotalEHP=0.5 --floor "TotalEHP>=8000" --rounds 3
 
 # 2. 比较替换辅助宝石或新增一连（--add-link）的收益
 pob rank-gems --group main --slot 5 --field FullDPS --top 10
 pob rank-gems --group main --add-link --field CombinedDPS --top 10
+# 整组辅助一起优化：逐孔换成当前组合下最好的辅助，直到再换也没提升（每次都经 PoB 实算）
+pob rank-gems --group main --optimize --field CombinedDPS
 
 # 逐条试加词缀（默认 16 条，--mod 可自订），查看每条带来的 DPS / 有效生命收益
 pob weights --scenario Pinnacle
 pob weights --mod "+1 to Level of all Skill Gems" --mod "20% increased Area of Effect"
+pob weights --score CombinedDPS=1,TotalEHP=0.5 --floor "Life>=4000"
+# 比较强盗任务奖励 / 万神殿主神 / 次神的每个选项
+pob weights --preset bandit
+pob weights --preset pantheon-major --scenario Pinnacle
+# 每颗已装珠宝（含深渊珠宝）各值多少：逐颗拆下比较损失，最弱的先换
+pob weights --preset jewels --score CombinedDPS=1,TotalEHP=0.5
 
 # 3. 比较原面板、统一战斗条件后的面板，以及去水后的巅峰首领面板
 pob compare "https://pobb.in/ReferenceBuildCode"
@@ -511,6 +525,11 @@ pob trade search --slot gloves --budget 20 --currency divine --stat "to Dexterit
 
 # 4. 预览丰收转换元素抗性后的物品文本；转换后的数值仍需重骰
 pob trade convert --file .\dropped_gloves.txt --to lightning
+
+# 5. 多个部位一起规划预算：先把各部位的搜索结果存成 JSON，再在总预算内每部位最多挑一件，让总收益最高（离线计算，不再调用交易 API）
+pob trade search --slot ring1 --budget 50 --pob on --json --out ring.json
+pob trade search --slot amulet --budget 80 --pob on --json --out amulet.json
+pob trade plan ring.json amulet.json --budget 100 --score dps=1,ehp=0.5
 ```
 
 `--bench-craft` 可重复指定工艺方向，默认按 PoB 收益排序；`--pob-limit` 限制原商品数量，每件商品可生成多个加工方案。`--budget` 仅限制挂牌价，工艺、移除与重复加工费用另计；`--stat` 硬性条件筛选加工前的装备。JSON 的 `bench_craft` 包含加工词条、移除词条、费用、最高数值标记和原商品文本。

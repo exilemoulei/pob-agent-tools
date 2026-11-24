@@ -1,4 +1,4 @@
-"""Batch, sweep, matrix, ROI ranking, A/B compare, and borrow Click commands for `pob` CLI."""
+"""Batch, sweep, matrix, gem ranking, A/B compare, and borrow Click commands for `pob` CLI."""
 
 from __future__ import annotations
 
@@ -243,56 +243,6 @@ def cmd_matrix(
     _emit_text(format_matrix_markdown(res, target=target), out_path=out_path)
 
 
-@click.command("rank-nodes")
-@click.option("--stat", default="CombinedDPS", show_default=True, help="Target stat (CombinedDPS, FullDPS, TotalEHP, Life, etc.).")
-@click.option("--max-dist", type=int, default=5, show_default=True, help="Maximum path distance in points.")
-@click.option("--top", type=int, default=15, show_default=True, help="Number of top candidates to show.")
-@_target_option(allow_slot_alias=True)
-@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
-@_output_options
-def cmd_rank_nodes(
-    stat: str,
-    max_dist: int,
-    top: int,
-    target: str,
-    as_json: bool,
-    compact: bool,
-    out_path: str | None,
-) -> None:
-    """Rank unallocated passive tree nodes by ROI per point (`pathPower`) and total gain (`power`)."""
-    from .formatters import fmt_num, render_table, strip_pob_escapes
-
-    res = invoke_daemon(
-        "rank_nodes",
-        {"target": target, "stat": stat, "max_dist": max_dist, "top": top},
-        timeout=180.0,
-    )
-    if as_json:
-        _emit_json(res, compact=compact, out_path=out_path)
-        return
-
-    rows = []
-    for idx, r in enumerate(res.get("byPerPoint", []), start=1):
-        rows.append(
-            [
-                idx,
-                r.get("id"),
-                strip_pob_escapes(r.get("nameZh") or r.get("name")),
-                r.get("type"),
-                r.get("pathDist"),
-                strip_pob_escapes(r.get("pathPowerStr") or fmt_num(r.get("pathPower"), 3)),
-                strip_pob_escapes(r.get("powerStr") or fmt_num(r.get("power"), 3)),
-            ]
-        )
-    body = (
-        f"### Passive Node ROI Ranking (Stat: `{res.get('stat')}`, Max Dist: `{max_dist}` pts)\n"
-        + render_table(["#", "Node ID", "Name", "Type", "Cost", "Per-Point Gain", "Total Gain"], rows)
-    )
-    if res.get("stat_fallback"):
-        body += f"\n_Stat fallback applied: `{stat}` -> `{res['stat_fallback']}`_"
-    _emit_text(body, out_path=out_path)
-
-
 @click.command("rank-gems")
 @click.option("--group", default="main", show_default=True, help="Skill group ('main', index, or label).")
 @click.option("--slot", "slot_idx", type=int, help="1-based gem slot index to replace.")
@@ -306,6 +256,8 @@ def cmd_rank_nodes(
     default=False,
     help="Include PoE1 3.28+ drop-disabled legacy Awakened supports in candidate ranking.",
 )
+@click.option("--optimize", is_flag=True, help="Swap every support slot to its best gem in turn until no swap helps (PoB-verified, build restored); prints batch ops.")
+@click.option("--passes", type=click.IntRange(1, 5), default=2, show_default=True, help="Maximum passes over the support slots with --optimize.")
 @_target_option(allow_slot_alias=False)
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @_output_options
@@ -316,6 +268,8 @@ def cmd_rank_gems(
     field: str,
     top: int,
     include_legacy: bool,
+    optimize: bool,
+    passes: int,
     target: str,
     as_json: bool,
     compact: bool,
@@ -323,6 +277,18 @@ def cmd_rank_gems(
 ) -> None:
     """Rank support/active candidate gems for a skill group by DPS gain."""
     from .formatters import fmt_num, render_table, strip_pob_escapes
+
+    if optimize:
+        opt = invoke_daemon(
+            "rank_gems",
+            {"target": target, "group": group, "field": field, "include_legacy": include_legacy, "optimize": True, "passes": passes},
+            timeout=600.0,
+        )
+        if as_json:
+            _emit_json(opt, compact=compact, out_path=out_path)
+            return
+        _emit_text(_format_link_plan(opt), out_path=out_path)
+        return
 
     res = invoke_daemon(
         "rank_gems",
@@ -369,6 +335,26 @@ def cmd_rank_gems(
     if skipped_legacy:
         body += f"\n_Filtered legacy 3.28+ removed Awakened supports (pass --include-legacy to show): {', '.join(skipped_legacy[:8])}_"
     _emit_text(body, out_path=out_path)
+
+
+def _format_link_plan(res: dict[str, Any]) -> str:
+    import json
+
+    from .formatters import fmt_num, render_table, restore_warning
+
+    rows = [[i, s["slot"], s["from"], s["to"], fmt_num(s["dpsBefore"]), fmt_num(s["dpsAfter"])] for i, s in enumerate(res.get("swaps") or [], 1)]
+    pct = res.get("pct")
+    lines = [
+        f"### Support Link Optimisation — Group #{res.get('groupIndex')} (`{res.get('dpsField')}`: "
+        f"{fmt_num(res.get('before'))} -> {fmt_num(res.get('after'))}" + (f", {pct:+.2f}%" if pct is not None else "") + ")",
+        render_table(["#", "Slot", "From", "To", "DPS Before", "DPS After"], rows) if rows else "- No support swap raises DPS.",
+    ]
+    if res.get("ops"):
+        lines.append("- Apply: `pob batch --json-ops '" + json.dumps(res["ops"], ensure_ascii=False) + "' --apply`")
+    warn = restore_warning(res.get("restoreCheck"))
+    if warn:
+        lines.append(f"> [WARN] {warn}")
+    return "\n".join(lines)
 
 
 @click.command("compare")
@@ -504,5 +490,5 @@ def cmd_borrow(
 
 
 def register_optimize_commands(group: click.Group) -> None:
-    for cmd in (cmd_batch, cmd_sweep, cmd_matrix, cmd_rank_nodes, cmd_rank_gems, cmd_compare, cmd_borrow):
+    for cmd in (cmd_batch, cmd_sweep, cmd_matrix, cmd_rank_gems, cmd_compare, cmd_borrow):
         group.add_command(cmd)

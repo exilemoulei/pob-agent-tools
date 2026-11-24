@@ -397,14 +397,28 @@ Rank unallocated passives by point cost, compare support gem swaps or adding a l
 # 1. Rank passives by point cost and gain in DPS, EHP, or Life
 pob rank-nodes --stat CombinedDPS --max-dist 5 --top 15
 pob rank-nodes --stat TotalEHP --max-dist 4 --top 10
+# Multi-objective: weight each stat's % gain (+1% EHP counts half of +1% DPS) and drop nodes that leave EHP under 8000
+pob rank-nodes --score CombinedDPS=1,TotalEHP=0.5 --floor "TotalEHP>=8000"
+# Refund value of allocated passives: lowest loss per refunded point first (dead points on top)
+pob rank-nodes --refund --score CombinedDPS=1,TotalEHP=0.5
+# Plan a respec: refund the cheapest point, allocate the best one, each round PoB-verified; prints a ready pob batch command
+pob respec --score CombinedDPS=1,TotalEHP=0.5 --floor "TotalEHP>=8000" --rounds 3
 
 # 2. Compare support gem replacements or adding one link with --add-link
 pob rank-gems --group main --slot 5 --field FullDPS --top 10
 pob rank-gems --group main --add-link --field CombinedDPS --top 10
+# Optimise the whole support set: swap each slot to its best gem given the others until nothing helps (each swap PoB-verified)
+pob rank-gems --group main --optimize --field CombinedDPS
 
 # Probe each mod line alone (16 defaults; --mod replaces) for its PoB-verified DPS / EHP gain
 pob weights --scenario Pinnacle
 pob weights --mod "+1 to Level of all Skill Gems" --mod "20% increased Area of Effect"
+pob weights --score CombinedDPS=1,TotalEHP=0.5 --floor "Life>=4000"
+# Compare every bandit / major / minor Pantheon option
+pob weights --preset bandit
+pob weights --preset pantheon-major --scenario Pinnacle
+# What each equipped jewel (abyss included) is worth: remove one at a time; replace the weakest first
+pob weights --preset jewels --score CombinedDPS=1,TotalEHP=0.5
 
 # 3. Compare original panels, aligned combat conditions, and dewatered Pinnacle results
 pob compare "https://pobb.in/ReferenceBuildCode"
@@ -513,6 +527,11 @@ pob trade search --slot gloves --budget 20 --currency divine --stat "to Dexterit
 
 # 4. Preview a Harvest resistance swap; the resulting value must be rerolled
 pob trade convert --file .\dropped_gloves.txt --to lightning
+
+# 5. Plan one budget across slots: save each slot's search as JSON, then pick at most one listing per slot for the best total gain (offline, no further trade API calls)
+pob trade search --slot ring1 --budget 50 --pob on --json --out ring.json
+pob trade search --slot amulet --budget 80 --pob on --json --out amulet.json
+pob trade plan ring.json amulet.json --budget 100 --score dps=1,ehp=0.5
 ```
 
 Repeat `--bench-craft` for multiple craft targets. Results default to PoB ranking; `--pob-limit` counts source listings, each of which may produce multiple craft variants. `--budget` caps listing prices only: crafting, removal, and repeated crafting costs are additional. Hard `--stat` filters apply before crafting. JSON `bench_craft` includes crafted lines, removed lines, costs, the maximum-roll marker, and original listing text.

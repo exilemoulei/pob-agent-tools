@@ -13,6 +13,7 @@ from .compare import (
     borrow_from_ref,
     compare_builds,
 )
+from .gem_links import optimize_links
 from .matrix import (
     DEFAULT_MATRIX_SCENARIOS,
     _apply_matrix_scenario_in_place,
@@ -20,6 +21,8 @@ from .matrix import (
     _plan_has_post_base_mutations,
     run_matrix,
 )
+from .rank_refund import DEFAULT_REFUND_SCORE, rank_refunds
+from .rank_scored import rank_nodes_scored
 from .ranking import (
     _classify_item_weapon_type,
     _detect_equipped_weapon_types,
@@ -32,9 +35,11 @@ from .ranking import (
     rank_gems,
     rank_nodes,
 )
+from .respec import plan_respec
 
 __all__ = [
     "DEFAULT_MATRIX_SCENARIOS",
+    "DEFAULT_REFUND_SCORE",
     "EXTERNAL_ENV_WHITELIST",
     "TWO_HANDED_TYPES",
     "_apply_env_config",
@@ -55,7 +60,11 @@ __all__ = [
     "_safe_float",
     "borrow_from_ref",
     "compare_builds",
+    "optimize_links",
+    "plan_respec",
     "rank_gems",
     "rank_nodes",
+    "rank_nodes_scored",
+    "rank_refunds",
     "run_matrix",
 ]

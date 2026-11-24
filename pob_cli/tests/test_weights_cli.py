@@ -71,3 +71,46 @@ def test_cmd_weights_calls_sweep_with_probes(monkeypatch: Any) -> None:
     assert captured[-1][1]["scenario"] == "Pinnacle"
     assert [v["name"] for v in captured[-1][1]["variants"]] == ["+1 to Level of all Skill Gems"]
     assert "+50 (+5.00%)" in r2.output
+
+
+def test_cmd_weights_preset_builds_config_variants(monkeypatch: Any) -> None:
+    from pob_cli.cli_weights import build_preset_variants
+
+    assert build_preset_variants("bandit")[1] == {"name": "bandit=Alira", "ops": [{"op": "config", "set": {"bandit": "Alira"}}]}
+    captured: list[dict[str, Any]] = []
+
+    def _fake_call(action: str, params: dict[str, Any] | None = None, **_: Any) -> dict[str, Any]:
+        captured.append(dict(params or {}))
+        return {"baseline": {"summary": {"primaryDps": 1000, "totalEhp": 5000}},
+                "variants": [{"name": v["name"], "ok": True, "summary": {"primaryDps": 1000, "totalEhp": 5000}} for v in params["variants"]]}
+
+    monkeypatch.setattr(cli_mod, "_daemon_call", _fake_call)
+    r = CliRunner().invoke(main, ["weights", "--preset", "pantheon-major"])
+    assert r.exit_code == 0, r.output
+    assert [v["name"] for v in captured[-1]["variants"]][1] == "pantheonMajorGod=TheBrineKing"
+    r2 = CliRunner().invoke(main, ["weights", "--preset", "bandit", "--mod", "+1 Life"])
+    assert r2.exit_code == 1 and len(captured) == 1
+
+
+def test_cmd_weights_jewels_preset_unequips_each_jewel(monkeypatch: Any) -> None:
+    captured: list[tuple[str, dict[str, Any]]] = []
+    items = {"equippedSlots": [
+        {"slotName": "Helmet", "itemId": 1, "nodeId": None, "item": {"name": "Hat"}},
+        {"slotName": "Jewel 26725", "itemId": 2, "nodeId": 26725, "item": {"name": "Gloom Eye"}},
+        {"slotName": "Jewel 2491", "itemId": None, "nodeId": 2491},
+        {"slotName": "Belt Abyssal Socket 1", "itemId": 3, "nodeId": None, "item": {"name": "Ghastly Eye"}},
+    ]}
+
+    def _fake_call(action: str, params: dict[str, Any] | None = None, **_: Any) -> dict[str, Any]:
+        captured.append((action, dict(params or {})))
+        if action == "items":
+            return items
+        return {"baseline": {"summary": {"primaryDps": 1000, "totalEhp": 5000}},
+                "variants": [{"name": v["name"], "ok": True, "summary": {"primaryDps": 900, "totalEhp": 5000}} for v in params["variants"]]}
+
+    monkeypatch.setattr(cli_mod, "_daemon_call", _fake_call)
+    r = CliRunner().invoke(main, ["weights", "--preset", "jewels", "--json"])
+    assert r.exit_code == 0, r.output
+    ops = [v["ops"][0] for v in captured[-1][1]["variants"]]
+    assert ops == [{"op": "unequip", "slot": "Jewel 26725"}, {"op": "unequip", "slot": "Belt Abyssal Socket 1"}]
+    assert json.loads(r.output)["weights"][0]["dpsPct"] == -10.0

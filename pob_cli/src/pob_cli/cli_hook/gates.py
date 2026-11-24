@@ -96,7 +96,7 @@ _POB_HELP_QUICK_REF = (
     "1. 构筑诊断/对比: pob diagnose [@build.xml|url] [--compare @b2.xml] [--ask \"...\"] [--keep ...]\n"
     "2. 数据/断点查表: pob data <gem|unique|mod|base|tree|tick|quality> \"<query>\" | pob calc \"<kw>\"\n"
     "3. 装备/验视/改词: pob item inspect --slot \"<Slot>\" | pob item edit/try/anoint/flask [--apply]\n"
-    "4. 技能/天赋/优化: pob skill set/add/rm | pob tree change | pob rank-nodes | pob rank-gems"
+    "4. 技能/天赋/优化: pob skill set/add/rm | pob tree change | pob rank-nodes [--refund] | pob respec | pob rank-gems"
 )
 
 

@@ -52,9 +52,12 @@ pob sweep (--file <vars.json|-> | --json-variants '[...]') [--base-ops '[...]'] 
 pob matrix [Original Pinnacle Uber FlasksOff "Label:Pinnacle,k=v"] [-s <spec>]... [--keep <spec>]... [--full] [--json]  # Compact default; --full for raw 200-key stats
 
 # ROI Ranking, 3-Baseline A/B Comparison & Transplant
-pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--max-dist 5] [--top 15] [--json]
+pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--score STAT=W[,STAT=W]]... [--floor "STAT>=N|STAT<=N"]... [--max-dist 5] [--top 15] [--json]  # --score ranks by Σ W×Δ% over PoB stats (one node_power pass each); --floor drops nodes breaking a limit (alone it keeps --stat as the objective)
+pob rank-nodes --refund [--score STAT=W,...] [--floor "STAT>=N"]... [--top 15] [--json]  # Allocated passives by score lost per refunded point (cheapest respec first; default primaryDps=1,totalEhp=1); one sweep variant per node, 0-residue; start/ascendancy nodes skipped, branch-orphaning nodes listed as notRefundable
+pob respec [--score STAT=W,...] [--floor "STAT>=N"]... [--rounds 3] [--max-dist 5] [--target <slug>] [--json]  # Greedy refund-cheapest + allocate-best swaps, each kept only on a PoB-verified net gain with no broken floor and no extra points; build restored, prints `pob batch --json-ops` to apply
 pob rank-gems [--group main] [--slot N | --add-link] [--field CombinedDPS|FullDPS] [--top 15] [--json]
-pob weights [--mod "<custom mod line>"]... [--scenario Pinnacle] [--keep <spec>]... [--target <slug>] [--json]       # PoB-verified DPS/EHP gain per probe mod (16 defaults; --mod replaces), 0-residue rollback
+pob rank-gems --optimize [--group main] [--field CombinedDPS] [--passes 2] [--include-legacy] [--json]  # Swap each support slot to its best gem given the others, repeat until no swap helps; every swap re-checked by PoB (top 3 tried per slot), build restored, prints `pob batch --json-ops`
+pob weights [--mod "<custom mod line>"]... [--preset bandit|pantheon-major|pantheon-minor|jewels] [--scenario Pinnacle] [--keep <spec>]... [--score STAT=W[,STAT=W]]... [--floor "STAT>=N|STAT<=N"]... [--target <slug>] [--json]       # PoB-verified DPS/EHP gain per probe mod (16 defaults; --mod replaces), 0-residue rollback; --score/--floor read sweep summary stats (CombinedDPS, TotalEHP, Life, FullDPS, ...; case-insensitive); --preset compares every option of that build choice instead (Pantheon avoidance PoB does not score shows Δ 0; bandit None does not allocate its 2 points; jewels unequips each equipped tree/abyssal jewel in turn, so Δ is what that jewel is worth)
 pob compare [<ref_source>] [--json]                                                    # 3 baselines: Original / Target Env Aligned / Pinnacle Dewatered
 pob borrow [--item-slot "Weapon 1,Amulet"] [--skill-group main] [--apply] [--json]
 
@@ -69,6 +72,7 @@ pob wiki "<q1>" ["<q2>" ...] [--proxy <url>] [--json]                           
 # Official PoE1 Trade (Read-Only, PoB-Verified) & Crafting Bench
 pob trade stats "<text|中文>" [--slot S] [--limit 5] [--proxy U] [--json]              # Local TradeSiteStats.lua (0ms) or API fallback
 pob trade search --slot S [--stat "text|中文=min"]... [--sum "a[*w]|b[*w]>=min"]... [--want T]... [--bench-craft "<stat>"]... [--budget N] [--currency chaos_equiv|chaos|divine] [--status available|securable|online|any] [--max-age HOURS] [--bargain PCT] [--search-sort asc|desc|sum] [--sort score|price|pob|sum] [--allow-conversion [--convert-to E]] [--open-prefix|--open-suffix|--open-affix] [--pob auto|on|off] [--target <slug>] [--dump-query] [--proxy U] [--json] # --bench-craft keeps originals + max-roll bench variants (PoB-ranked; budget=listing only; hard --stat pre-craft)
+pob trade plan <search.json>... --budget N [--score dps=W,ehp=W] [--top 10] [--json]  # Offline: at most one PoB-verified listing per slot from saved `trade search --json` files, max Σ score within budget (default dps=1,ehp=0.25); per-slot deltas are verified alone, the sum is an estimate
 pob trade convert (--text T | --file f) --to fire|cold|lightning [--out f] [--json]    # Harvest 3.30 swap preview (same tier, rerolled)
 pob bench list --slot S [--search "<text|中文>"] [--affix prefix|suffix] [--limit 25] [--json]
 pob bench suggest --slot S --stat "<text|中文>" [--affix prefix|suffix] [--limit 5] [--json]

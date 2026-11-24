@@ -847,6 +847,8 @@ def test_daemon_dispatch_zero_coercions_kwargs_and_borrow_slot_error(
     monkeypatch.setattr(mut_mod, "add_skill_gem", lambda _w, **kw: captured.setdefault("skill_add", kw) or {"ok": True})
     monkeypatch.setattr(mut_mod, "anoint_item", lambda _w, **kw: captured.setdefault("anoint", kw) or {"ok": True})
     monkeypatch.setattr(comp_mod, "rank_nodes", lambda _w, **kw: captured.setdefault("rank_nodes", kw) or {"ok": True})
+    monkeypatch.setattr(comp_mod, "rank_refunds", lambda _w, **kw: captured.setdefault("rank_refund", kw) or {"ok": True})
+    monkeypatch.setattr(comp_mod, "rank_nodes_scored", lambda _w, **kw: captured.setdefault("rank_scored", kw) or {"ok": True})
     monkeypatch.setattr(gd_mod, "query_local_data", lambda **kw: captured.setdefault("gd_single", kw) or {"ok": True})
     monkeypatch.setattr(gd_mod, "query_multi", lambda **kw: captured.setdefault("gd_multi", kw) or {"ok": True})
     monkeypatch.setattr(mut_mod, "add_skill_group", lambda _w, **kw: captured.setdefault("new_group", kw) or {"ok": True})
@@ -862,6 +864,13 @@ def test_daemon_dispatch_zero_coercions_kwargs_and_borrow_slot_error(
     mgr.dispatch("rank_nodes", {"max_dist": 0, "top": 0})
     assert captured["rank_nodes"]["max_dist"] == 0
     assert captured["rank_nodes"]["top"] == 0
+
+    mgr.dispatch("rank_nodes", {"stat": "Life", "floors": [["TotalEHP", ">=", 8000]]})
+    assert captured["rank_scored"]["score"] == {"Life": 1.0}  # --floor alone keeps --stat as the objective
+    assert captured["rank_scored"]["floors"] == [("TotalEHP", ">=", 8000.0)]
+
+    mgr.dispatch("rank_nodes", {"refund": True, "top": 3})
+    assert captured["rank_refund"] == {"score": None, "floors": [], "top": 3}
 
     mgr.dispatch("game_data", {"kind": "gem", "query": "Arc", "limit": 0})
     assert captured["gd_single"]["limit"] == 0
