@@ -3,13 +3,14 @@ name: pob-poe1
 description: Path of Exile 1 (PoE1 3.30, 流放之路1) build diagnosis, headless PoB calculation, DPS/EHP Pinnacle audit, passive tree/gem/item what-if optimization, official PoE1 trade search, crafting bench, and timeless jewel seed lookup via local `pob` CLI. Trigger on PoE1, PoB, pobb.in, poe.ninja, 配装, 天赋, 宝石, 技能连法, 伤害计算, 脱水, 跑PoB, 市集, 工艺台, 永恒珠宝, 法血, 猎首, 尼米斯, 大法师, 正火, 闪打, 龙卷, 漩涡, 憎恨, 耐力球, 异灵之体, 异能魔力, 万古之剑, 圣宗, 喋血之刃, 暴击时施放, 吟唱时施放, 艾许之面.
 ---
 
-# PoE1 3.30 Universal Headless PoB Skill (`pob`)
+# PoE1 3.30 Universal Headless PoB Skill (pob4agents, command `pob`)
 
 **Golden Rules (NEVER VIOLATE)**
 1. **PoE1 3.30 ONLY** — never apply PoE2 rules (`Spirit`/`精魂`, `Charm 1..3`, `Waystone`, `Soul Core`/`{rune}`, `Distilled`/`涂灌`, 1-support limit, final-type-only conversion, PoE2 `EB`).
 2. **Zero Hallucination** — NEVER estimate DPS/EHP from XML or trust memory for post-3.23 gem/unique/ascendancy/CDR stats. Verify with `pob ground` / `pob data` / `pob diagnose`.
-3. **Efficiency & Zero Context Bloat (`<= 6` steps)** — Default output is compact Markdown: NEVER pass `--json` (unless with `--out <file>`), NEVER run `pob --help` / `pob <cmd> --help`, NEVER grep/read `.runtime/engine/*.lua` or write Python scripts to parse Lua, and NEVER re-run `pob summary` / `pob items` / `pob skills` right after `pob diagnose` (it already includes them; only inspect ONE raw rare item via `pob items --slot S` or `pob item inspect --slot S`). Pass `@file.xml`/`@file.code` and quote comma args in PowerShell (`--return "skills,summary"`). All `pob` loads & mutators (`skill`/`item`/`tree`/`config`/`batch`/`sweep`) run purely in memory with automatic 0-residue rollback — NEVER copy `.xml` files or pass `--apply` during what-if tests! NEVER loop 4 timeless jewels unless asked; batch multi-variant tests via `pob batch`/`pob sweep`.
+3. **Efficiency & Zero Context Bloat (`<= 6` steps)** — Default output is compact Markdown: NEVER pass `--json` (unless with `--out <file>`), NEVER run `pob --help` / `pob <cmd> --help`, NEVER grep/read `.runtime/engine/*.lua` or write Python scripts to parse Lua, and NEVER re-run `pob summary` / `pob items` / `pob skills` right after `pob diagnose` (it already includes them; only inspect ONE raw rare item via `pob items --slot S` or `pob item inspect --slot S`). Pass `@file.xml`/`@file.code` and quote comma args in PowerShell (`--return "skills,summary"`). All `pob` loads & mutators (`skill`/`item`/`tree`/`config`/`batch`/`sweep`) run purely in memory with automatic 0-residue rollback — NEVER copy `.xml` files or pass `--apply` during what-if tests! NEVER loop 4 timeless jewels unless asked; batch multi-variant tests via `pob batch`/`pob sweep`. Web research (`pob research`/`wiki`/`poedb`) for mechanics verification is encouraged and exempt from step-count anxiety.
 4. **Long-Turn Re-Anchoring** — In multi-turn chats, ALWAYS re-run `pob ground "<new follow-up>"` when new gems/uniques/mechanics enter, and NEVER quote earlier-turn DPS/EHP/res numbers after `--apply`/load without checking the latest `pob summary` / `[Env: ... (rev=N)]` stamp.
+5. **Dual-Source & Zero-Guess Rule** — PoB (`pob diagnose`) calculates numbers; `pob research` (`poedb.tw` + `poewiki.net`) / `pob wiki` / `pob poedb` verify build mechanics, skill interactions, triggers, 3.30 hotfixes, and PoB blind spots. Whenever you have even 1% doubt ("does X trigger/stack/apply?", "how does this build loop actually work?", "did 3.30 change this?"), IMMEDIATELY run `pob research "<topic>"` (or `pob wiki` + `pob poedb`) — NEVER guess or hedge with "probably / theoretically / uncertain / test in-game".
 
 ## 1. Canonical 4-Recipe Routing (Start Here!)
 - **A. Single-build question** (1 step):
@@ -22,9 +23,12 @@ description: Path of Exile 1 (PoE1 3.30, 流放之路1) build diagnosis, headles
   pob diagnose @buildA.xml --compare @buildB.xml -q "<player question>"
   ```
   Runs parallel load + 3-baseline A/B comparison + Pinnacle audits of both builds in one compact report.
-- **C. Pure mechanics / patch / DB / CDR math (no build, 0ms daemon-free)**:
+- **C. Pure mechanics / patch / DB / CDR math & web research (no build, daemon-free)**:
   ```powershell
   pob ground "<player question>"                                      # <15ms: 3.30 cards + PoE2/patch traps
+  pob research "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us] # Concurrent poedb.tw + poewiki.net (pass 1-3 SHORT official entity names ONLY, never full sentences)
+  pob wiki "<q1>" ["<q2>" ...]                                        # PoE Wiki (local PoEDB bilingual index exact match + Mechanics/Interactions prioritized)
+  pob poedb "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us] # PoEDB 3.30 stats, mod pools (normal prefix/suffix prioritized), weights & version history
   pob data gem "<q1>" ["<q2>" ...]                                    # Live 3.30 gem stats, lv20, quality (@20%/@40%)
   pob data gem --quality-breakpoints --active-only [--limit 25]       # Active-only 20%->40%+ quality breakpoints
   pob data unique [QUERY] [--mod "<stat_kw>"] [--slot S]              # Unique lookup or reverse-search by mod text

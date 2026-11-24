@@ -1,0 +1,6 @@
+name: pob4agents CodeQL config
+
+# Tests are full of fake HTTP clients that route canned responses by URL substring,
+# which security queries report as unsafe sanitization.
+paths-ignore:
+  - pob_cli/tests

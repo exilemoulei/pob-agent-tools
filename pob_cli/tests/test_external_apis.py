@@ -22,7 +22,7 @@ from pob_cli.importers import (
 
 @pytest.fixture(autouse=True)
 def isolated_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Isolate POB_RUNTIME_DIR so tests never read or pollute F:/poe/.runtime/cache."""
+    """Isolate POB_RUNTIME_DIR so tests never read or pollute the real runtime cache."""
     monkeypatch.setenv("POB_RUNTIME_DIR", str(tmp_path))
     monkeypatch.delenv("POB_CACHE_DIR", raising=False)
     monkeypatch.delenv("POB_ROOT", raising=False)

@@ -179,6 +179,16 @@ def query_meta(
     return out
 
 
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_HEADING_RE = re.compile(r"<h([2-4])\b[^>]*>(.*?)</h\1>", flags=re.DOTALL | re.IGNORECASE)
+_EDIT_SECTION_RE = re.compile(r"<span[^>]*mw-editsection[^>]*>.*?</span>", flags=re.DOTALL | re.IGNORECASE)
+_PRIORITY_TIER_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?:skill\s+functions?\s+and\s+interactions?|mechanics?|interactions?)", re.IGNORECASE),
+    re.compile(r"(?:trigger|damage|modifiers?)", re.IGNORECASE),
+    re.compile(r"version\s+history", re.IGNORECASE),
+)
+
+
 def _strip_html(raw_html: str) -> str:
     txt = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", raw_html, flags=re.DOTALL | re.IGNORECASE)
     txt = re.sub(r"</?(br|p|li|tr|h[1-6]|div)[^>]*>", "\n", txt, flags=re.IGNORECASE)
@@ -188,6 +198,201 @@ def _strip_html(raw_html: str) -> str:
     lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in txt.splitlines()]
     cleaned = [ln for ln in lines if ln]
     return "\n".join(cleaned)
+
+
+_POEDB_CN_SUFFIX_RE = re.compile(r"(?:[（(]辅[）)]|辅助|輔助)\s*$")
+_POEDB_INDEX_MEM: dict[str, Any] = {"path": "", "mtime": -1.0, "exact": {}, "stripped": {}}
+
+
+def _lookup_poedb_local_en(candidates: tuple[str, ...]) -> str | None:
+    """Zero-hallucination exact CN->US lookup from local cached `poedb_autocomplete_index.json`."""
+    try:
+        cache_file = _shared_cache_dir() / "poedb_autocomplete_index.json"
+        if not cache_file.is_file():
+            return None
+        mtime = cache_file.stat().st_mtime
+        p_str = str(cache_file)
+        if _POEDB_INDEX_MEM["path"] != p_str or _POEDB_INDEX_MEM["mtime"] != mtime:
+            raw = json.loads(cache_file.read_text(encoding="utf-8"))
+            exact: dict[str, str] = {}
+            stripped: dict[str, str] = {}
+            for ent in raw.get("entries") or ():
+                if not isinstance(ent, dict):
+                    continue
+                cn = str(ent.get("cnLabel") or "").strip()
+                en = str(ent.get("usLabel") or "").strip() or str(ent.get("slug") or "").replace("_", " ").strip()
+                if not cn or not en or _CJK_RE.search(en):
+                    continue
+                exact.setdefault(cn, en)
+                base = _POEDB_CN_SUFFIX_RE.sub("", cn).strip()
+                if base and base != cn:
+                    stripped.setdefault(base, en)
+            _POEDB_INDEX_MEM.update({"path": p_str, "mtime": mtime, "exact": exact, "stripped": stripped})
+    except Exception:
+        return None
+
+    exact_map: dict[str, str] = _POEDB_INDEX_MEM["exact"]
+    stripped_map: dict[str, str] = _POEDB_INDEX_MEM["stripped"]
+    for cand in candidates:
+        if cand in exact_map:
+            return exact_map[cand]
+        base = _POEDB_CN_SUFFIX_RE.sub("", cand).strip()
+        if base in exact_map:
+            return exact_map[base]
+        if base in stripped_map:
+            return stripped_map[base]
+    return None
+
+
+def _resolve_wiki_english_query(topic: str) -> str | None:
+    """Resolve CJK PoE1 entity to exact English title via local PoEDB index first, then exact PoB zh-rCN dict."""
+    q = topic.strip()
+    if not q or not _CJK_RE.search(q):
+        return None
+
+    q_tw = q
+    try:
+        from ..game_data.tw_norm import normalize_tw_query
+
+        q_tw = normalize_tw_query(q) or q
+    except Exception:
+        pass
+    cands = (q, q_tw) if q_tw != q else (q,)
+
+    # 1. Local cached PoEDB CN<->US official slug index (0ms, exact, zero hallucination)
+    poedb_hit = _lookup_poedb_local_en(cands)
+    if poedb_hit:
+        return poedb_hit
+
+    # 2. Exact-only fallback via local PoB slang / zh-rCN official dictionary (no fuzzy guessing)
+    try:
+        from ..game_data.queries import query_local_data
+        from ..game_data.slang import resolve_player_slang
+    except Exception:
+        return None
+
+    for cand in cands:
+        try:
+            slang_hit = resolve_player_slang(cand)
+            if slang_hit and slang_hit[0] and not _CJK_RE.search(slang_hit[0]):
+                return slang_hit[0].strip()
+        except Exception:
+            pass
+
+    for cand in cands:
+        try:
+            tr = query_local_data("translate", cand, limit=3)
+            for r in tr.get("results") or ():
+                if isinstance(r, dict) and r.get("match_type") == "exact":
+                    en_val = str(r.get("en") or "").strip()
+                    if en_val and not _CJK_RE.search(en_val):
+                        return en_val
+        except Exception:
+            pass
+
+    for kind in ("gem", "unique"):
+        try:
+            res = query_local_data(kind, q, limit=3)
+            for r in res.get("results") or ():
+                if not isinstance(r, dict):
+                    continue
+                zh_val = str(r.get("zh_name") or "").strip()
+                if zh_val and zh_val not in cands and _POEDB_CN_SUFFIX_RE.sub("", zh_val).strip() not in cands:
+                    continue
+                en_val = str(r.get("display_name") or r.get("name") or "").strip()
+                if en_val and not _CJK_RE.search(en_val):
+                    return en_val
+        except Exception:
+            pass
+    return None
+
+
+def _priority_tier(heading: str) -> int | None:
+    for idx, pat in enumerate(_PRIORITY_TIER_RES):
+        if pat.search(heading):
+            return idx
+    return None
+
+
+def _extract_wiki_sections_and_summary(
+    raw_html: str, *, max_len: int = 3500, lead_cap: int = 900
+) -> tuple[str, list[dict[str, str]]]:
+    """Extract mechanics/interaction sections and assemble a prioritized <=3500-char summary."""
+    matches = list(_HEADING_RE.finditer(raw_html))
+    if not matches:
+        return _strip_html(raw_html)[:max_len], []
+
+    lead_text = _strip_html(raw_html[: matches[0].start()]).strip()
+    priority_entries: list[tuple[int, int, str, str]] = []
+    other_entries: list[tuple[str, str]] = []
+
+    for idx, m in enumerate(matches):
+        raw_heading = _EDIT_SECTION_RE.sub("", m.group(2))
+        heading = re.sub(r"\s*\[edit[^\]]*\]\s*$", "", _strip_html(raw_heading), flags=re.IGNORECASE).strip()
+        body_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw_html)
+        body_text = _strip_html(raw_html[m.end() : body_end]).strip()
+        if not heading or not body_text:
+            continue
+        tier = _priority_tier(heading)
+        if tier is not None:
+            priority_entries.append((tier, idx, heading, body_text))
+        else:
+            other_entries.append((heading, body_text))
+
+    if not priority_entries:
+        return _strip_html(raw_html)[:max_len], []
+
+    priority_entries.sort(key=lambda item: (item[0], item[1]))
+    mechanics_sections = [
+        {"heading": heading, "text": body_text[:1800]}
+        for _, _, heading, body_text in priority_entries[:6]
+    ]
+
+    blocks: list[str] = []
+    if lead_text:
+        blocks.append(lead_text[:lead_cap])
+    for sec in mechanics_sections:
+        blocks.append(f"## {sec['heading']}\n{sec['text']}")
+    for heading, body_text in other_entries:
+        if sum(len(b) + 2 for b in blocks) >= max_len:
+            break
+        blocks.append(f"## {heading}\n{body_text}")
+
+    return "\n\n".join(blocks)[:max_len], mechanics_sections
+
+
+def _search_poewiki_titles(http_client: httpx.Client, api_url: str, term: str) -> tuple[list[str], list[str]]:
+    s_resp = http_client.get(
+        api_url,
+        params={
+            "action": "opensearch",
+            "search": term,
+            "limit": 5,
+            "namespace": 0,
+            "format": "json",
+        },
+    )
+    s_resp.raise_for_status()
+    s_json = s_resp.json()
+    titles: list[str] = s_json[1] if len(s_json) > 1 else []
+    urls: list[str] = s_json[3] if len(s_json) > 3 else []
+
+    if not titles:
+        q_resp = http_client.get(
+            api_url,
+            params={
+                "action": "query",
+                "list": "search",
+                "srsearch": term,
+                "srlimit": 5,
+                "format": "json",
+            },
+        )
+        q_resp.raise_for_status()
+        s_hits = q_resp.json().get("query", {}).get("search", [])
+        titles = [h["title"] for h in s_hits]
+        urls = [f"https://www.poewiki.net/wiki/{t.replace(' ', '_')}" for t in titles]
+    return titles, urls
 
 
 def query_wiki(
@@ -220,36 +425,16 @@ def query_wiki(
     api_url = "https://www.poewiki.net/w/api.php"
 
     def _fetch_with_client(http_client: httpx.Client) -> dict[str, Any]:
-        s_resp = http_client.get(
-            api_url,
-            params={
-                "action": "opensearch",
-                "search": q,
-                "limit": 5,
-                "namespace": 0,
-                "format": "json",
-            },
-        )
-        s_resp.raise_for_status()
-        s_json = s_resp.json()
-        titles: list[str] = s_json[1] if len(s_json) > 1 else []
-        urls: list[str] = s_json[3] if len(s_json) > 3 else []
-
-        if not titles:
-            q_resp = http_client.get(
-                api_url,
-                params={
-                    "action": "query",
-                    "list": "search",
-                    "srsearch": q,
-                    "srlimit": 5,
-                    "format": "json",
-                },
-            )
-            q_resp.raise_for_status()
-            s_hits = q_resp.json().get("query", {}).get("search", [])
-            titles = [h["title"] for h in s_hits]
-            urls = [f"https://www.poewiki.net/wiki/{t.replace(' ', '_')}" for t in titles]
+        resolved_en = _resolve_wiki_english_query(q)
+        candidates = [resolved_en, q] if (resolved_en and resolved_en.lower() != q.lower()) else [q]
+        titles: list[str] = []
+        urls: list[str] = []
+        used_query = q
+        for cand in candidates:
+            titles, urls = _search_poewiki_titles(http_client, api_url, cand)
+            if titles:
+                used_query = cand
+                break
 
         if not titles:
             raise ValueError(f"No poewiki.net page found for '{topic}'.")
@@ -271,15 +456,20 @@ def query_wiki(
         p_data = p_resp.json().get("parse", {})
         resolved_title = p_data.get("title") or page_title
         raw_html = p_data.get("text", {}).get("*", "")
-        clean_text = _strip_html(raw_html)
+        summary_text, mechanics_sections = _extract_wiki_sections_and_summary(raw_html)
 
-        return {
+        out: dict[str, Any] = {
             "query": topic,
             "title": resolved_title,
             "url": page_url,
             "relatedTitles": titles[1:5],
-            "summary": clean_text[:3500],
+            "summary": summary_text,
         }
+        if resolved_en and resolved_en.lower() != q.lower() and used_query == resolved_en:
+            out["resolvedQuery"] = resolved_en
+        if mechanics_sections:
+            out["mechanicsSections"] = mechanics_sections
+        return out
 
     try:
         if client is not None:

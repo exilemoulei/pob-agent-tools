@@ -38,9 +38,11 @@ LEGACY_PATCH_TRAPS_328_330: tuple[LegacyPatchTrapRule, ...] = (
         canonical_term="The Sword of Ages / Temporal Mirage (3.30 Verified)",
         summary=(
             "**3.30 Live-vs-PoB Advisory (`The Sword of Ages` / `Temporal Mirage`)**: "
-            "(1) PoB 2.68.1 `other.lua` omits the `0.50s` base cooldown AND wrongly applies Saboteur `Perfect Crime` (`Triggerbots`) "
-            "`30% less` damage to Temporal Mirage clones (3.30 live game verified: clones do **NOT** take `-30% less`; "
-            "`43% more Spell Damage` in `customMods` is the exact PoB compensation). "
+            "(1) **Two separate `30% less` lines**: Temporal Mirage clones **DO** take their own innate `30% less Damage` "
+            "(`Skills used by Temporal Mirages deal 30% less Damage`, ALREADY modeled in PoB `other.lua` `SupportUniqueSuspendInTimeCanUse`), "
+            "and do **NOT** take a SECOND `-30% less` from Saboteur `Perfect Crime` (`Triggerbots`, since clones *use* the spell rather than your character triggering it). "
+            "PoB 2.68.1 omits the `0.50s` base cooldown AND double-penalizes `0.7 * 0.7 = 0.49` by wrongly applying `Perfect Crime` `-30% less` on top of Temporal Mirage's own `-30% less` "
+            "(`43% more Spell Damage` in `customMods` cancels ONLY that erroneous second penalty back to live `0.70` per-cast). "
             "(2) `on using a Movement Attack`: holding channelling `Cyclone` triggers ONLY ONCE on channel start (never continuously while held); "
             "requires tap-macro or discrete movement attacks (`Leap Slam`/`Flicker`/`Consecrated Path`). "
             "(3) `Greater Spell Cascade` shares `Firestorm of Pelting` global 12-storm cap (hurts single-target). "
@@ -169,7 +171,9 @@ LEGACY_PATCH_TRAPS_328_330: tuple[LegacyPatchTrapRule, ...] = (
             "awakened edwa",
         ),
         regex=re.compile(
-            r"(?:觉醒|覺醒)\s*[·・.．]?\s*(?!赋予|賦予|增幅|启蒙|啟蒙|六分仪|六分儀|宝石|寶石|辅助|輔助|者|之|的|后|後|了|吗|嗎|被|已|都|和|与|與)[\u4e00-\u9fff]{2,}"
+            r"(?:觉醒|覺醒|强辅|強輔)\s*[·・.．]?\s*(?!赋予|賦予|赋能|賦能|增幅|增强|增強|启蒙|啟蒙|六分仪|六分儀|"
+            r"宝石|寶石|辅助|輔助|石|者|之|的|后|後|了|吗|嗎|被|已|都|和|与|與|或|别|別|不|没|沒|无|無|只|仅|僅|"
+            r"在|是|为|為|等|同样|體系|体系|上限|等级|掉落|替代|取代)[\u4e00-\u9fff]{2,}"
         ),
         canonical_term="Exceptional Supports (3.28+) / Only Awakened Empower, Enhance, Enlighten remain",
         summary=(

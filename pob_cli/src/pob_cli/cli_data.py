@@ -9,12 +9,14 @@ import click
 from .cli_common import _call_with_supported_kwargs, _emit_json, _emit_text, _output_options
 from .cli_data_render import (
     _render_gem_quality_breakpoints_markdown,
+    _render_research_markdown,
     _render_single_data_markdown,
     _render_single_poedb_markdown,
     _render_single_price_markdown,
     _render_single_wiki_markdown,
     _render_tick_data_markdown,
     _render_tree_data_markdown,
+    run_dual_research,
 )
 
 
@@ -191,6 +193,7 @@ def cmd_data(
 @click.command("poedb")
 @click.argument("queries", nargs=-1, required=True)
 @click.option("--mods", "include_mods", is_flag=True, help="Fetch item/base mod pool with DropChance weights & fossil tags.")
+@click.option("--filter", "mod_filter", type=str, default=None, help="Filter mod pool rows by keyword(s) (case-insensitive, '|' for OR).")
 @click.option("--lang", type=click.Choice(["cn", "us", "en"], case_sensitive=False), default="cn", show_default=True, help="PoEDB language.")
 @click.option("--proxy", help="Optional HTTP/SOCKS proxy URL.")
 @click.option("--limit", type=int, default=60, show_default=True, help="Maximum mod pool rows to return.")
@@ -199,6 +202,7 @@ def cmd_data(
 def cmd_poedb(
     queries: tuple[str, ...],
     include_mods: bool,
+    mod_filter: str | None,
     lang: str,
     proxy: str | None,
     limit: int,
@@ -213,7 +217,10 @@ def cmd_poedb(
     if not q_list:
         raise click.UsageError("Provide at least one non-empty query.")
     if len(q_list) == 1:
-        res = pc.query_poedb(q_list[0], include_mods=include_mods, lang=lang, proxy=proxy, limit_mods=limit)
+        extra_kw: dict[str, Any] = {"mod_filter": mod_filter} if mod_filter else {}
+        res = _call_with_supported_kwargs(
+            pc.query_poedb, q_list[0], include_mods=include_mods, lang=lang, proxy=proxy, limit_mods=limit, **extra_kw
+        )
         if as_json:
             _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
             return
@@ -221,12 +228,16 @@ def cmd_poedb(
         return
 
     if hasattr(pc, "query_poedb_multi"):
+        extra_kw = {"mod_filter": mod_filter} if mod_filter else {}
         multi_res = _call_with_supported_kwargs(
-            pc.query_poedb_multi, q_list, include_mods=include_mods, lang=lang, proxy=proxy, limit_mods=limit
+            pc.query_poedb_multi, q_list, include_mods=include_mods, lang=lang, proxy=proxy, limit_mods=limit, **extra_kw
         )
     else:
         grouped = {
-            q: pc.query_poedb(q, include_mods=include_mods, lang=lang, proxy=proxy, limit_mods=limit)
+            q: _call_with_supported_kwargs(
+                pc.query_poedb, q, include_mods=include_mods, lang=lang, proxy=proxy, limit_mods=limit,
+                **({"mod_filter": mod_filter} if mod_filter else {}),
+            )
             for q in q_list
         }
         multi_res = {"queries": q_list, "results": grouped}
@@ -472,6 +483,39 @@ def cmd_wiki(
     _emit_text("\n\n".join(sections), out_path=out_path)
 
 
+@click.command("research")
+@click.argument("queries", nargs=-1, required=True)
+@click.option("--mods", "include_mods", is_flag=True, help="Also fetch PoEDB mod pool weights & fossil tags.")
+@click.option("--filter", "mod_filter", type=str, default=None, help="Filter PoEDB mod pool rows by keyword(s) (case-insensitive, '|' for OR).")
+@click.option("--lang", type=click.Choice(["cn", "us", "en"], case_sensitive=False), default="cn", show_default=True, help="PoEDB language.")
+@click.option("--proxy", help="Optional HTTP/SOCKS proxy URL.")
+@click.option("--limit", type=int, default=40, show_default=True, help="Maximum PoEDB mod pool rows.")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
+@_output_options
+def cmd_research(
+    queries: tuple[str, ...],
+    include_mods: bool,
+    mod_filter: str | None,
+    lang: str,
+    proxy: str | None,
+    limit: int,
+    as_json: bool,
+    compact: bool,
+    out_path: str | None,
+) -> None:
+    """Concurrent dual-source research via poedb.tw + poewiki.net (partial-success resilient)."""
+    q_list = [q.strip() for q in queries if q and q.strip()]
+    if not q_list:
+        raise click.UsageError("Provide at least one non-empty query.")
+    res = run_dual_research(
+        q_list, include_mods=include_mods, mod_filter=mod_filter, lang=lang, proxy=proxy, limit_mods=limit
+    )
+    if as_json:
+        _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
+        return
+    _emit_text(_render_research_markdown(res), out_path=out_path)
+
+
 def register_data_commands(group: click.Group) -> None:
-    for cmd in (cmd_data, cmd_poedb, cmd_price, cmd_meta, cmd_wiki):
+    for cmd in (cmd_data, cmd_poedb, cmd_price, cmd_meta, cmd_wiki, cmd_research):
         group.add_command(cmd)

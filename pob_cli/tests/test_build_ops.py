@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 
 import pytest
+from engine_paths import find_runnable_engine
 
 from pob_cli.analyzer import inspect_config, inspect_items, search_calcs_breakdown
 from pob_cli.bridge_client import BridgeWorker
@@ -40,7 +41,7 @@ from pob_cli.mutators import (
 )
 from pob_cli.snapshot import diff_digest, undo_build
 
-POB_DIR = Path("F:/poe/PobTools[20261102]")
+POB_DIR = find_runnable_engine()
 
 
 # ---------------------------------------------------------------------------
@@ -263,11 +264,16 @@ def test_parse_matrix_scenario_formats() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _has_zh_ui(worker: BridgeWorker) -> bool:
+    """Only the Windows pob-zh engine translates UI labels; the POSIX LuaJIT runtime is English only."""
+    return bool(worker.caps.get("translateToggle"))
+
+
 @pytest.fixture(scope="module")
 def pob_worker():
     """Boot one isolated headless pob-zh.exe worker for build-ops integration tests (never touches .runtime/)."""
-    if not (POB_DIR / "pob-zh.exe").is_file():
-        pytest.skip(f"Local PobTools engine not available at {POB_DIR}")
+    if POB_DIR is None:
+        pytest.skip("No runnable PoB engine found (set POB_ROOT or run pob bootstrap)")
     worker = BridgeWorker(slot_name="test", pob_dir=POB_DIR)
     worker.start()
 
@@ -427,6 +433,8 @@ def test_search_calcs_breakdown_bilingual(pob_worker: BridgeWorker) -> None:
     assert any(c.get("breakdown") for c in top_mr["cells"])
 
     # 4. Chinese queries
+    if not _has_zh_ui(pob_worker):
+        pytest.skip("Chinese calc labels need the pob-zh engine (caps.translateToggle)")
     res_ehp_zh = search_calcs_breakdown(pob_worker, "有效生命")
     assert res_ehp_zh["totalMatches"] >= 1
 
@@ -575,10 +583,11 @@ def test_search_and_try_item_db(pob_worker: BridgeWorker) -> None:
     assert search_diacritic["total"] >= 1
     assert any("mj" in (m.get("title") or "").lower() for m in search_diacritic["matches"])
 
-    # Pure search ZH
-    search_zh = search_and_try_item_db(pob_worker, query="法师之血", db_type="UNIQUE", limit=5)
-    assert search_zh["total"] >= 1
-    assert search_zh["matches"][0]["title"] == "Mageblood"
+    # Pure search ZH (Chinese item names come from the pob-zh engine only)
+    if _has_zh_ui(pob_worker):
+        search_zh = search_and_try_item_db(pob_worker, query="法师之血", db_type="UNIQUE", limit=5)
+        assert search_zh["total"] >= 1
+        assert search_zh["matches"][0]["title"] == "Mageblood"
 
     # Try equip (what-if, 0-residue)
     try_res = search_and_try_item_db(
@@ -599,12 +608,13 @@ def test_search_and_try_item_db(pob_worker: BridgeWorker) -> None:
 
 def test_set_class_ascendancy_what_if_and_apply(pob_worker: BridgeWorker) -> None:
     before_state = _capture_semantic_state(pob_worker)
+    zh = _has_zh_ui(pob_worker)
 
     # 1. What-if switch to Templar / Hierophant (ZH) + Aul Bloodline (0-residue)
     res_whatif = set_class_ascendancy(
         pob_worker,
         class_name="Templar",
-        ascendancy_name="圣宗",
+        ascendancy_name="圣宗" if zh else "Hierophant",
         secondary_ascendancy_name="Aul Bloodline",
         apply=False,
     )
@@ -619,7 +629,7 @@ def test_set_class_ascendancy_what_if_and_apply(pob_worker: BridgeWorker) -> Non
     res_apply = set_class_ascendancy(
         pob_worker,
         ascendancy_name="Reliquarian",
-        secondary_ascendancy_name="深渊血脉",
+        secondary_ascendancy_name="深渊血脉" if zh else "Abyssal Bloodline",
         apply=True,
     )
     assert res_apply["applied"] is True

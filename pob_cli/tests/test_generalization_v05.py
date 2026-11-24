@@ -9,12 +9,13 @@ from typing import Any
 
 import pytest
 from click.testing import CliRunner
+from engine_paths import find_engine_data
 
 from pob_cli import analyzer, cli, comparator, formatters, game_data, guardrails
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REAL_POB_DIR = Path(r"F:\poe\.runtime\engine")
-HAS_REAL_POB = (REAL_POB_DIR / "PoE1" / "Data" / "Gems.lua").is_file()
+REAL_POB_DIR = find_engine_data()
+HAS_REAL_POB = REAL_POB_DIR is not None
 
 
 @pytest.fixture(autouse=True)

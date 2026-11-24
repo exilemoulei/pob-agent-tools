@@ -384,10 +384,50 @@ def _normalize_mod_side(bucket: str, gen_id: str) -> str:
     return bucket
 
 
+_MOD_FILTER_ALIASES: dict[str, str] = {
+    "能量护盾": "energy shield",
+    "护盾": "energy shield",
+    "最大生命": "maximum life",
+    "生命": "life",
+    "魔力": "mana",
+    "移动速度": "movement speed",
+    "抗性": "resistance",
+    "压制": "suppress",
+    "冷却": "cooldown",
+    "暴击": "critical",
+}
+
+
+def _mod_matches_filter(mod: dict[str, Any], mod_filter: str) -> bool:
+    terms: list[str] = []
+    for raw in re.split(r"[|,，]", mod_filter):
+        tok = raw.strip().lower()
+        if not tok:
+            continue
+        terms.append(tok)
+        alias = _MOD_FILTER_ALIASES.get(tok)
+        if alias and alias not in terms:
+            terms.append(alias)
+    if not terms:
+        return True
+    hay = " ".join(
+        [
+            str(mod.get("text") or ""),
+            str(mod.get("name") or ""),
+            str(mod.get("side") or ""),
+            str(mod.get("bucket") or ""),
+            " ".join(str(x) for x in (mod.get("family") or ())),
+            " ".join(str(x) for x in (mod.get("tags") or ())),
+        ]
+    ).lower()
+    return any(t in hay for t in terms)
+
+
 def _extract_mods_from_modsview(
     mv: dict[str, Any],
     *,
     limit_mods: int = 80,
+    mod_filter: str | None = None,
 ) -> tuple[list[dict[str, Any]], int, dict[str, int]]:
     """Extract normalized mod entries + summary counts from a PoEDB `ModsView` payload."""
     bucket_order = (
@@ -462,17 +502,22 @@ def _extract_mods_from_modsview(
                 }
             )
 
-    total_count = len(all_parsed)
-    if limit_mods <= 0 or total_count <= limit_mods:
-        return all_parsed, total_count, summary
-
-    # Select representative highest-ilvl weighted tiers across buckets/families first
-    # so compact `limit_mods` slices still expose prefix, suffix, corrupted, eldritch, delve, etc.
-    def _sort_key(mod: dict[str, Any]) -> tuple[int, int]:
+    def _sort_key(mod: dict[str, Any]) -> tuple[int, int, int]:
+        is_normal = 1 if mod.get("bucket") == "normal" else 0
         has_weight = 1 if (mod.get("dropChance") or 0) > 0 else 0
         lv = mod.get("level")
         lv_num = int(lv) if isinstance(lv, int) else 0
-        return (has_weight, lv_num)
+        return (is_normal, has_weight, lv_num)
+
+    if mod_filter and mod_filter.strip():
+        matched = [m for m in all_parsed if _mod_matches_filter(m, mod_filter)]
+        matched.sort(key=_sort_key, reverse=True)
+        sliced = matched[:limit_mods] if limit_mods > 0 else matched
+        return sliced, len(matched), summary
+
+    total_count = len(all_parsed)
+    if limit_mods <= 0 or total_count <= limit_mods:
+        return all_parsed, total_count, summary
 
     # Group best representative per (side, tuple(family))
     best_per_family: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
@@ -488,12 +533,30 @@ def _extract_mods_from_modsview(
         else:
             others.append(mod)
 
-    # Interleave buckets fairly so prefix, suffix, corrupted, eldritch, delve all appear
     by_side: dict[str, list[dict[str, Any]]] = {}
     for mod in best_per_family.values():
         by_side.setdefault(mod["side"], []).append(mod)
     for lst in by_side.values():
         lst.sort(key=_sort_key, reverse=True)
+
+    selected: list[dict[str, Any]] = []
+    # Prioritize core `normal` prefix/suffix first (up to >=75% of limit) before special pools.
+    core_sides = [s for s in ("prefix", "suffix") if s in by_side]
+    core_quota = max((limit_mods * 3) // 4, limit_mods - 8)
+    core_idx = {s: 0 for s in core_sides}
+    while len(selected) < min(limit_mods, core_quota) and core_sides:
+        progressed = False
+        for s in core_sides:
+            lst = by_side[s]
+            i = core_idx[s]
+            if i < len(lst):
+                selected.append(lst[i])
+                core_idx[s] = i + 1
+                progressed = True
+                if len(selected) >= min(limit_mods, core_quota):
+                    break
+        if not progressed:
+            break
 
     side_priority = [
         "prefix",
@@ -506,10 +569,7 @@ def _extract_mods_from_modsview(
         "veiled",
     ]
     ordered_sides = [s for s in side_priority if s in by_side] + [s for s in by_side if s not in side_priority]
-
-    selected: list[dict[str, Any]] = []
-    # Reserve up to ~70% of limit for core normal prefix/suffix, and rest for special pools
-    idx_map = {s: 0 for s in ordered_sides}
+    idx_map = {s: core_idx.get(s, 0) for s in ordered_sides}
     while len(selected) < limit_mods:
         progressed = False
         for s in ordered_sides:

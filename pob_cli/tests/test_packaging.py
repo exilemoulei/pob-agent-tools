@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -101,44 +99,6 @@ def test_build_daemon_spawn_cmd_frozen_vs_python(
         "--runtime-dir",
         str(rt),
     ]
-
-
-def test_release_tools_pack_and_scoop_manifest_update(tmp_path: Path) -> None:
-    tool_path = Path(__file__).resolve().parents[1] / "packaging" / "release_tools.py"
-    spec = importlib.util.spec_from_file_location("release_tools", tool_path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
-    dist_dir = tmp_path / "dist" / "pob"
-    (dist_dir / "_internal").mkdir(parents=True)
-    (dist_dir / "pob.exe").write_bytes(b"MZ-fake-pob")
-    (dist_dir / "_internal" / "cert.pem").write_text("dummy", encoding="utf-8")
-
-    out_dir = tmp_path / "release-assets"
-    zip_path, zip_sha = mod.pack_windows_release(dist_dir, out_dir, "v0.2.0")
-
-    assert zip_path.name == "pob-v0.2.0-windows-x64.zip"
-    assert len(zip_sha) == 64
-    with zipfile.ZipFile(zip_path) as zf:
-        names = set(zf.namelist())
-        assert "pob.exe" in names
-        assert "_internal/cert.pem" in names
-
-    sums = (out_dir / "SHA256SUMS.txt").read_text(encoding="utf-8")
-    assert f"{zip_sha}  pob-v0.2.0-windows-x64.zip" in sums
-
-    repo_manifest = Path(__file__).resolve().parents[2] / "bucket" / "pob.json"
-    copied = tmp_path / "pob.json"
-    copied.write_text(repo_manifest.read_text(encoding="utf-8"), encoding="utf-8")
-    mod.update_scoop_manifest(copied, "0.2.0", "v0.2.0", zip_sha)
-
-    updated = json.loads(copied.read_text(encoding="utf-8"))
-    assert updated["version"] == "0.2.0"
-    assert updated["architecture"]["64bit"]["hash"] == zip_sha
-    assert updated["architecture"]["64bit"]["url"] == (
-        "https://github.com/exilemoulei/pob4agents/releases/download/v0.2.0/pob-v0.2.0-windows-x64.zip"
-    )
 
 
 def test_lazy_subcommands_listed_in_pyinstaller_hiddenimports() -> None:

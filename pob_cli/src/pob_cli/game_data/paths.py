@@ -16,7 +16,6 @@ from ..updater import detect_source_checkout_root, get_runtime_dir
 from .constants import (
     _MANIFEST_VER_CACHE,
     _ZH_META_VER_CACHE,
-    FALLBACK_POB_ROOT,
 )
 
 
@@ -154,8 +153,6 @@ def resolve_pob_dir(pob_dir: Path | None = None, runtime_dir: Path | None = None
         local_pob = checkout_root / "PobTools[20261102]"
         if local_pob.is_dir():
             return local_pob
-    if FALLBACK_POB_ROOT.is_dir():
-        return FALLBACK_POB_ROOT
     return managed_engine
 
 

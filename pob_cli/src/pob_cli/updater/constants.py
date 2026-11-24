@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 from .. import __version__
 
-USER_AGENT = f"pob-cli/{__version__} (+https://github.com/exilemoulei/pob4agents)"
+USER_AGENT = f"pob4agents/{__version__} (+https://github.com/exilemoulei/pob4agents)"
 
 POBTOOLS_LATEST_URL = "https://github.com/Hsiung-Shao/PobTools-zh/releases/latest"
 POBTOOLS_DOWNLOAD_BASE = "https://github.com/Hsiung-Shao/PobTools-zh/releases/download"
@@ -25,6 +25,9 @@ POSIX_LUAJIT_COMMIT = "2460b3ff93a1c955de3d62cfc825de7d68dc272e"
 POSIX_LUAJIT_TARBALL_URL = f"https://github.com/LuaJIT/LuaJIT/archive/{POSIX_LUAJIT_COMMIT}.tar.gz"
 POSIX_LUAUTF8_TAG = "0.1.6"
 POSIX_LUAUTF8_TARBALL_URL = f"https://github.com/starwing/luautf8/archive/refs/tags/{POSIX_LUAUTF8_TAG}.tar.gz"
+# SHA-256 of the two source tarballs above, so a mirror or a changed archive cannot feed the build.
+POSIX_LUAJIT_TARBALL_SHA256 = "5c52d06876d86aa199f9b8cdc65f6f9ac086fdfa8a4489ebf8dc4516e194550b"
+POSIX_LUAUTF8_TARBALL_SHA256 = "b76873b4afb09abd00508a66887ae1658492078869f9414c334dea35b5769656"
 
 # Strict fast-fail budget for metadata checks (lazy httpx.Timeout construction avoids ~196ms eager import)
 _AUTO_CHECK_TIMEOUT_SPEC = (1.5, 5.0, 5.0, 1.5)

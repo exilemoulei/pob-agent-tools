@@ -25,6 +25,7 @@
   - [6. 搜索永恒珠宝种子 (`pob timeless`)](#6-搜索永恒珠宝种子-pob-timeless)
   - [7. 查询游戏数据、物价与构筑分布](#7-查询游戏数据物价与构筑分布)
   - [8. 搜索交易装备与工艺台词缀](#8-搜索交易装备与工艺台词缀)
+- [AI Agent 生命周期硬护栏 (`pob hook`)](#ai-agent-生命周期硬护栏-pob-hook)
 - [退出码说明](#退出码说明)
 - [本地开发、测试与发版](#本地开发测试与发版)
 - [致谢与开源协议](#致谢与开源协议)
@@ -47,7 +48,7 @@
   - 单步和批量改动都在内存中的构筑快照上运行。`pob batch` 可组合 19 类操作并返回指定分析视图；`pob sweep` 在同一个已启动的引擎中比较多套配装、天赋或技能连法，单套方案出错不会中断其他结果。
 - **搜索永恒珠宝种子**（`pob timeless list` / `pob timeless search`）：按已点亮的珠宝孔和天赋，用 PoB 逐个计算候选种子的收益；支持中文和英文珠宝名。需要遍历所有候选时可加 `--exact`。
   - 从 PoB 的 `Data/Uniques/jewel.lua` 读取 11 种永恒珠宝数据。对致命的骄傲、残酷的约束、军团的信仰、优雅的狂妄、英雄的悲剧等珠宝，先按已分配及涂油取得的核心天赋去重，再预筛候选种子；`--exact` 跳过预筛。搜索可用多个临时引擎进程并行运行，并处理其他珠宝孔中冲突的 `Historic` 珠宝。
-- **查询游戏数据和物价**（`pob data` / `pob price` / `pob meta` / `pob poedb` / `pob wiki`）：本地中英双语索引可查宝石、传奇装备、词缀和底材；联网时还能查 poe.ninja 物价与构筑分布、流亡编年史和 PoE Wiki。
+- **查询游戏数据、机制与物价**（`pob data` / `pob research` / `pob poedb` / `pob wiki` / `pob price` / `pob meta`）：本地中英双语索引可查宝石、传奇装备、词缀和底材；联网时支持 `pob research` 并发核验流亡编年史（`poedb.tw`）与 PoE Wiki（`poewiki.net`，直接复用本地 PoEDB 官方双语索引精确匹配英文条目、0 翻译幻觉，并优先提取 `Mechanics` / `Skill functions and interactions` 段落），并查 poe.ninja 物价与构筑分布。
   - 本地数据库由 PoB 的 Lua 数据建立 SQLite/FTS5 索引；无需启动 PoB，查询通常在 15ms 内完成。覆盖秽生传奇变体、工艺台/古灵/腐化词缀和中英名称互查，一条命令可同时查多个词。
 - **找装备、补词缀**（`pob trade` / `pob bench`）：搜索官方交易市集的在售装备，用 PoB 比较换装收益；还能查看工艺台可补的词缀，并试算丰收同阶元素抗性转换。交易功能只负责搜索和计算，不会代替玩家购买。
   - `TradeSiteStats.lua` 在本地匹配中英文交易词缀，并区分装备局部词缀与全局词缀；交易搜索遵守 GGG 响应头给出的请求频率限制，支持 3.30 一口价搜索和 `chaos_equiv` 折算。
@@ -77,7 +78,7 @@ $env:POB_PROXY = "your_proxy_here"
 irm https://raw.githubusercontent.com/exilemoulei/pob4agents/main/install.ps1 | iex
 ```
 
-以后要升级，重新运行这条命令即可。安装脚本会校验 SHA256，并停止旧版后台进程。
+以后要升级，重新运行这条命令即可。安装脚本会校验发布的 Ed25519 签名和 SHA256，并停止旧版后台进程。
 
 #### 方式二：Scoop 包管理器
 
@@ -91,18 +92,26 @@ scoop install pob
 scoop update pob
 ```
 
-#### 方式三：GitHub Releases 便携压缩包
+#### 方式三：GitHub Releases 便携压缩包（永久链接）
 
-前往 [GitHub Releases](https://github.com/exilemoulei/pob4agents/releases/latest) 下载 `pob-v0.6.0-windows-x64.zip`，解压后将包含 `pob.exe` 的目录加入系统 `PATH`。
+```powershell
+# 永久链接：始终指向最新正式版，不用关心版本号
+irm https://github.com/exilemoulei/pob4agents/releases/latest/download/pob-windows-x64.zip -OutFile "$env:TEMP\pob-windows-x64.zip"
+```
+
+解压后，把包含 `pob.exe` 的目录加入系统 `PATH`（也可以用浏览器直接打开上面的链接下载）。校验和在同目录的 [`SHA256SUMS.txt`](https://github.com/exilemoulei/pob4agents/releases/latest/download/SHA256SUMS.txt) 里，同时覆盖版本化文件名与永久别名。
 
 #### 方式四：Python 包安装（Python 3.11+，`uv` / `pipx` / `pip`）
 
 ```powershell
-# 使用 uv（推荐）
-uv tool install "git+https://github.com/exilemoulei/pob4agents.git@v0.6.0#subdirectory=pob_cli"
+# 使用 uv（推荐，跟随仓库主分支的最新提交）
+uv tool install "git+https://github.com/exilemoulei/pob4agents.git#subdirectory=pob_cli"
 
-# 或直接安装 Release Wheel
-pip install "https://github.com/exilemoulei/pob4agents/releases/download/v0.6.0/pob_cli-0.6.0-py3-none-any.whl"
+# 需要可复现的固定版本时（把 vX.Y.Z 换成 Releases 页上的具体 tag）
+uv tool install "git+https://github.com/exilemoulei/pob4agents.git@vX.Y.Z#subdirectory=pob_cli"
+
+# pip / pipx 同样可用
+pip install "git+https://github.com/exilemoulei/pob4agents.git#subdirectory=pob_cli"
 ```
 
 > **为 AI Agent 挂载通用 Skill（可选，推荐）**：将仓库内的 [`skills/pob`](skills/pob) 目录复制到你的 Agent 技能目录（如 `~/.agents/skills/pob`、`~/.claude/skills/pob` 或 DeepSeek Harness 的 `skills` 目录），即可让快速模型（如 DeepSeek Flash / Hydrogen / Haiku）按精简路由调用 `pob` 并规避跨版本幻觉。
@@ -117,7 +126,7 @@ pip install "https://github.com/exilemoulei/pob4agents/releases/download/v0.6.0/
 git clone https://github.com/exilemoulei/pob4agents.git
 cd pob4agents
 
-# 1. 安装 pob CLI
+# 1. 安装 pob4agents（命令 pob）
 pip install "./pob_cli"
 
 # 2. 编译原生 LuaJIT 2.1 + lua-utf8 运行时并放入托管引擎目录
@@ -137,13 +146,13 @@ pob status
 
 ### 3. 首次设置 PoB 引擎
 
-安装 `pob` 后，运行一次 `pob bootstrap` 下载 PoB 引擎。已有本地 `PobTools` 的话，也可以从该目录导入：
+安装 pob4agents 后，运行一次 `pob bootstrap` 下载 PoB 引擎。已有本地 `PobTools` 的话，也可以从该目录导入：
 
 ```powershell
 pob --version
 pob bootstrap                                   # 直连 GitHub 下载 PobTools-zh + 官方 PoB
 pob bootstrap --proxy http://127.0.0.1:7890     # 通过 HTTP / SOCKS5 代理下载
-pob bootstrap --from-dir "D:\PoE\PobTools"      # 从本地已有 PobTools 目录离线导入种子
+pob bootstrap --from-dir "<path-to-PobTools>"      # 从本地已有 PobTools 目录离线导入种子
 pob update --check                              # 检查上游是否有新版本
 pob update --proxy http://127.0.0.1:7890        # 更新引擎，并刷新已加载的构筑槽位
 ```
@@ -159,6 +168,7 @@ pob update --proxy http://127.0.0.1:7890        # 更新引擎，并刷新已加
 | `POB_PROXY` | 网络请求代理（支持 `http://`、`https://`、`socks5://`；亦兼容 `HTTPS_PROXY` / `ALL_PROXY`） |
 | `POB_GITHUB_MIRROR` | GitHub 下载镜像前缀（加速 `bootstrap` / `update`） |
 | `POB_OFFLINE` | 设为 `1` 时跳过启动期与定时 GitHub 更新检查（等价于全局 `--offline`） |
+| `POB_HOOK_DISABLE_V5` | 设为 `1` 时关闭 `verify-stop` 的 V5 联网机制核验闸门（独立于 `POB_OFFLINE`） |
 | `POESESSID` / `POE_COOKIE` | 官方交易接口返回 401/403 时可按需设置；请只通过环境变量提供，不要写进命令参数或日志 |
 
 ---
@@ -197,7 +207,7 @@ pob stop
 ```powershell
 # 1. 将构筑导入默认的 main 槽位
 pob load "https://poedb.tw/pob/AWqOLSSmyG"
-pob load "@D:\builds\my_chieftain.xml"
+pob load "@builds/my_chieftain.xml"
 pob load "https://poe.ninja/poe1/builds/mirage/character/AccountName-1234/CharName"
 
 # 2. 用 --target 管理其他构筑，例如用于对比的 ref、用于试配的 exp1
@@ -209,7 +219,7 @@ pob switch-main --loadout "Endgame Mageblood"
 pob switch-main --spec 2 --item-set 2 --skill-group 1
 
 # 4. 导出 XML 文件或 PoB 分享码
-pob save "D:\builds\optimized.xml"
+pob save "builds/optimized.xml"
 pob export-code --target exp1
 ```
 
@@ -223,10 +233,10 @@ pob export-code --target exp1
 
 ```powershell
 # 一键加载并诊断单套构筑（-q 可附带玩家问题做版本陷阱与实体词条核对）
-pob diagnose "@D:\builds\my_build.xml" -q "为什么打Boss伤害低而且容易被秒？"
+pob diagnose "@builds/my_build.xml" -q "为什么打Boss伤害低而且容易被秒？"
 
 # 一键对比两套构筑在三组基准（原面板 / 对齐环境 / Pinnacle 去水）下的表现与隐患
-pob diagnose "@D:\builds\build_a.xml" --compare "@D:\builds\build_b.xml"
+pob diagnose "@builds/build_a.xml" --compare "@builds/build_b.xml"
 
 # 基础攻防与召唤物摘要 + PoB 原生告警
 pob summary
@@ -465,8 +475,10 @@ pob price "Forbidden Flame" --variant "Hierophant" --limit 30
 pob price "Awakened Spell Echo Support" --detailed
 pob meta --skill "Ice Nova of Frostbolts" --top 15
 
-# --- PoE Wiki：查机制说明 ---
-pob wiki "Eldritch Battery" "Leech"
+# --- 双源并发机制核验（poedb.tw + poewiki.net）与 PoE Wiki（本地 PoEDB 双语索引精确匹配 + 机制段落优先提取） ---
+pob research "Returning Projectiles" "Ice Spear"
+pob research "暮光法衣" --mods --lang cn
+pob wiki "异能魔力" "Eldritch Battery" "Leech"
 ```
 
 ---
@@ -507,6 +519,24 @@ pob trade convert --file .\dropped_gloves.txt --to lightning
 
 ---
 
+## AI Agent 生命周期硬护栏 (`pob hook`)
+
+针对快速/轻量模型容易出现的“跳过 `pob` 手撕 XML/Lua、正文中裸奔 PoE2 或旧补丁幻觉、未验视装备就断言有空词缀、未算帧率就编造 CoC 断点”等问题，`pob4agents` 内置了零 LLM 裁判的进程外回执与三道确定性生命周期护栏（`pob --offline hook <pre-prompt|pre-tool|verify-stop> [--protocol raw|agy|claude]`）：
+
+- **前置核对与游标锚定（`pre-prompt`）**：新轮次开始时记录 `turnStartTs` 并离线注入 `<pob-grounding>` 3.30 事实卡与版本陷阱告警（`<15ms`）；遇到流派运作/技能交互问题时前置注入 `[MECHANICS-RESEARCH-REQUIRED]` 强搜指令。
+- **调用前违规拒止（`pre-tool`）**：拦截手撕引擎 Lua 源码、脚本手算构筑 XML（`R5`）、浪费上下文的 `pob --help`、无 `--out` 的裸 `--json`（支持重写时自动剥离）以及 `diagnose` 后的机械重复查询。
+- **收尾核验与自动代跑塞真值（`verify-stop`）**：基于不可篡改的 `turn_receipts.jsonl` 回执账本与终稿文本扫描（`guardrails/reply_patterns.py` + `reply_scanner.py`：V1 幻觉/硬谬误、V2 面板数字算力回执、V3 空词缀验视回执、V4 触发器 `0.033s` 断点回执、V5 犹豫/机制问答未联网核验拦截，支持 `POB_HOOK_DISABLE_V5=1` 独立关闭），不通过时同步代跑毫秒级取证或回填本地缓存并注入单次纠偏（`maxRetries = 1`，全链路 Fail-Open）。
+
+跨宿主接线模板与插件：
+
+| 宿主环境 | 配置文件 / 插件 | 协议 |
+|---|---|---|
+| **Antigravity** | [`hooks/hooks.json`](hooks/hooks.json)（复制到 `.agents/hooks.json`） | `--protocol agy` |
+| **Claude Code** | [`hooks/claude-hooks.json`](hooks/claude-hooks.json)（合入 `.claude/settings.json`） | `--protocol claude` |
+| **DeepSeek Harness (DSH)** | `dsh-pob-assistant` 插件（内置 `agent/pre-step`、`tools/pre-execute`、`agent/turn-stopping`） | `--protocol raw` |
+
+---
+
 ## 退出码说明
 
 写脚本或让 Agent 调用时，可以根据退出码判断下一步。命令报错时会显示简短提示，不会直接打印 Python Traceback：
@@ -529,8 +559,9 @@ pob trade convert --file .\dropped_gloves.txt --to lightning
 ## 本地开发、测试与发版
 
 ```powershell
-# 本地可编辑模式安装开发依赖
-pip install -e "./pob_cli[dev]"
+# 按锁文件安装开发环境到 pob_cli/.venv（与 CI 版本一致）
+uv sync --project pob_cli --extra dev
+# 不用 uv 时：pip install -e "./pob_cli[dev]"
 
 # 运行全量单元与无头集成测试（离线模式可设 $env:POB_OFFLINE="1"）
 python -m pytest pob_cli/tests -v
@@ -543,9 +574,9 @@ pyinstaller --noconfirm --clean pob_cli/packaging/pob.spec
 
 1. 修改 `pob_cli/src/pob_cli/__init__.py` 中的 `__version__`，并合入 `main`。
 2. 创建并推送版本标签：`git tag -s v0.5.0 -m "pob4agents v0.5.0" && git push origin main v0.5.0`。
-3. GitHub Actions 检查版本号、运行测试、构建并冒烟测试 `pob-vX.Y.Z-windows-x64.zip`、Wheel / sdist 和 `SHA256SUMS.txt`，随后发布 GitHub Release，并更新 Scoop 清单 `bucket/pob.json`。
+3. GitHub Actions 检查版本号、在 Windows / macOS / Linux 上跑真实引擎门禁（`engine.yml`）、运行测试、构建并冒烟测试 `pob-vX.Y.Z-windows-x64.zip`、Wheel / sdist 和 `SHA256SUMS.txt`，随后发布 GitHub Release，并更新 Scoop 清单 `bucket/pob.json`。每个 Release 还会附一份内容相同的永久别名 `pob-windows-x64.zip`，供 `releases/latest/download/pob-windows-x64.zip` 免改版本号直接下载（`latest` 指向最新正式版，跳过 prerelease）。
 
-Agent 命令速查见 [AGENTS.md](AGENTS.md)。
+参与贡献请先读 [CONTRIBUTING.md](CONTRIBUTING.md)。Agent 命令速查见 [AGENTS.md](AGENTS.md)。
 
 ---
 

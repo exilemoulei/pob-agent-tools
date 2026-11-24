@@ -34,9 +34,11 @@ def _check_sword_of_ages_and_triggers(
             "hasTriggerbotCompensationCustomMod": has_43_comp,
             "advisories": [
                 (
-                    "PoB 2.68.1 `other.lua` misses Temporal Mirage's 0.50s base cooldown AND wrongly applies Saboteur "
-                    "`Perfect Crime` (Triggerbots) `30% less` damage to clones. 3.30 live game verified: clones do NOT take "
-                    "`-30% less` (`43% more Spell Damage` in customMods is the exact PoB compensation"
+                    "Two separate `30% less` lines: Temporal Mirage clones DO take their own innate `30% less Damage` "
+                    "(ALREADY modeled in PoB `other.lua` `SupportUniqueSuspendInTimeCanUse`), and do NOT take a SECOND "
+                    "`-30% less` from Saboteur `Perfect Crime` (Triggerbots). PoB 2.68.1 omits the `0.50s` base cooldown "
+                    "AND double-penalizes `0.7 * 0.7 = 0.49` instead of live `0.70` (`43% more Spell Damage` in customMods "
+                    "cancels ONLY the erroneous second Perfect Crime penalty"
                     + ("; ALREADY PRESENT in customMods" if has_43_comp else ("; currently MISSING in customMods" if has_perfect_crime else ""))
                     + ")."
                 ),
@@ -55,8 +57,9 @@ def _check_sword_of_ages_and_triggers(
                     "category": "PoBModeling",
                     "severity": "MEDIUM",
                     "message": (
-                        "The Sword of Ages + Saboteur Perfect Crime: PoB 2.68.1 wrongly applies Triggerbots -30% less "
-                        "to Temporal Mirage clones (live 3.30 does NOT). Add `43% more Spell Damage` in customMods to model true live DPS."
+                        "The Sword of Ages + Saboteur Perfect Crime: PoB 2.68.1 double-penalizes `0.7 * 0.7 = 0.49` by "
+                        "stacking Perfect Crime `-30% less` on top of Temporal Mirage's own `-30% less` (live 3.30 only takes "
+                        "Temporal Mirage's innate `-30% less`). Add `43% more Spell Damage` in customMods to cancel the second `-30%`."
                     ),
                 }
             )

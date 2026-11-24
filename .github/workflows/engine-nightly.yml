@@ -1,0 +1,38 @@
+name: Engine nightly
+
+# Upstream canary: PoB master and PobTools-zh change daily, and users always get the latest.
+# A failure here opens (or comments on) one tracking issue instead of breaking PR CI.
+# Separate from engine.yml so the release gate that calls engine.yml never needs issues: write.
+on:
+  schedule:
+    - cron: "23 4 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    uses: ./.github/workflows/engine.yml
+
+  report:
+    name: Open or update the failure issue
+    needs: engine
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or comment on the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly real-engine run failing"
+          body="The nightly real-engine run failed against the latest PoB master / PobTools-zh: $RUN_URL"
+          num="$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

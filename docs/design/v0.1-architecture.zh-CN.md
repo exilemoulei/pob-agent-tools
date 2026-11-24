@@ -1,6 +1,6 @@
 # PoB Agent CLI (`pob`) 开发方案
 
-本文档锁定 `F:/poe` 项目的技术路线、模块边界、RPC 契约与严禁踩坑清单。任何接手开发的 Agent 必须严格按本方案执行，不得偏离架构或调用已证实失效的接口。
+本文档锁定 `pob4agents` 项目的技术路线、模块边界、RPC 契约与严禁踩坑清单。任何接手开发的 Agent 必须严格按本方案执行，不得偏离架构或调用已证实失效的接口。
 
 ---
 
@@ -12,7 +12,7 @@
 3. **跨构筑参考与寻优（Compare & Optimize）**：利用引擎原生算力对未点天赋（`node_power`）与备选技能石（`gem_search` 按 DPS 排序）做真实收益排行；加载他人参考构筑时，自动将双方拉到**同一套外部靶子环境与去水分基准**下做公平对比，拆解天赋/技能/装备路线差异，并支持一键“借穿”对方某件装备或技能组（`borrow`）到当前构筑实测真收益。
 
 ### 1.2 四大架构铁律
-1. **零公式复刻**：严禁在 Python 侧用简化公式估算 DPS/EHP，100% 数值必须由 `F:/poe/PobTools[20261102]/pob-zh.exe --engine-headless` 真实计算产出。
+1. **零公式复刻**：严禁在 Python 侧用简化公式估算 DPS/EHP，100% 数值必须由 `PobTools[20261102]/pob-zh.exe --engine-headless` 真实计算产出。
 2. **常驻守护 + 薄 CLI（非巨型 MCP）**：采用本地常驻 Daemon 管理无头引擎子进程（消除每次调用 ~2.9s 冷启动开销），对外暴露面向 Agent 高信噪比的 `pob` CLI 命令（默认输出紧凑 Markdown 表，支持 `--json`），不向模型上下文注入数十个原始 UI 级 RPC schema。
 3. **内存级全量快照回滚**：所有 `what-if` 试改与跨标签 `undo/redo` 统一基于 `export_code{}` + `import_code{code, mode="replace"}` 纯内存快照（耗时 `<10ms`，覆盖天赋+装备+技能+Config+等级职业，零磁盘 I/O）。
 4. **同靶子公平对比与全景去水分**：跨构筑对比必须区分**外部靶子环境白名单**（Boss 级别、怪物等级、亢奋度、自定义怪物抗性等，可跨构筑对齐）与**角色固有构筑项**（盗贼奖励 `bandit`、万神殿 `pantheon*`、自产球/低血机制等，严禁盲拷破坏构筑），同时给出“各自原始面板”、“对齐 `main` 外部靶子环境面板”与“标准 Pinnacle Boss 全景去水分面板”，主动揭露 `customMods`、敌人满感电（`conditionEnemyShocked`）、普通怪预设、非魔血虚开 5 药、常驻护体/爆发/瓦尔技能与 `PartyTab` 团队光环等注水手段。
@@ -21,7 +21,7 @@
 
 ## 2. Argon 防错红线清单（违反任一条即判失败）
 
-基于 `F:/poe/exports/agy_7dd0b608.md` 的排障复盘与 `F:/poe/PobTools[20261102]/Data/bridge/bridge.lua` 源码实测，以下红线必须在代码层面硬编码拦截：
+基于 `exports/agy_7dd0b608.md` 的排障复盘与 `PobTools[20261102]/Data/bridge/bridge.lua` 源码实测，以下红线必须在代码层面硬编码拦截：
 
 | 编号 | 严禁行为（Argon 曾踩或险踩的坑） | 根因（已实证） | 唯一正确做法 |
 | :--- | :--- | :--- | :--- |
@@ -34,7 +34,7 @@
 | **R7** | 每条 CLI 命令单独 `subprocess.Popen("pob-zh.exe")` 跑完即杀 | 每次冷启动需加载 Lua VM 与 118 个中英词典 JSON（实测耗时 `~2.9s`），且丢失会话修改状态 | 必须通过本地常驻 `daemon.py` 复用已启动的 headless 进程，单次 RPC 延迟压在 `10~50ms` |
 | **R8** | 无锁并发读写 `stdin/stdout`、挂 `stderr=PIPE` 不消费、或直接把首行输出当响应 | 启动先吐 `gate_result`/`hello` 事件；并发无锁会协议串包；Windows `stderr` 管道写满（4~64KB）会让子进程永久死锁；网络导入挂死会拖死 Daemon | 每槽位加互斥锁 + 单次 RPC 超时强杀自愈；`stderr` 必须由独立后台线程排空（或定向至日志文件）；循环读行严格匹配 `resp.get("id") == req_id` |
 | **R9** | 在 `bridge_client.py` 底层对全部返回字段一刀切剥离 `^7`/`^xRRGGBB`，或把上千键裸 JSON 直接吐给 Agent | 全局正则清洗会篡改 `save_xml`（`<Notes>` 原文）、`export_code`、`item_raw` 并把笔记中幂次如 `10^6` 误删为 `10`；裸 JSON 污染上下文 | `bridge_client.py` 保持传输无损；仅在 `analyzer.py` / `formatters.py` 展示与指标解析层执行 `strip_pob_escapes()`（跳过 `xml`/`code`/`raw`/`notes`） |
-| **R10** | 在 PowerShell 中对 `F:\poe\PobTools[20261102]` 使用不带 `-LiteralPath` 的命令 | `[20261102]` 被 PowerShell 当作通配符字符集解析导致找不到路径；`pob-zh.ini` 含二进制/非 UTF-8 字节 | Python 内一律用 `pathlib.Path`；PowerShell 命令涉及该路径一律加 `-LiteralPath`；绝不读写 `pob-zh.ini` |
+| **R10** | 在 PowerShell 中对 `PobTools[20261102]` 使用不带 `-LiteralPath` 的命令 | `[20261102]` 被 PowerShell 当作通配符字符集解析导致找不到路径；`pob-zh.ini` 含二进制/非 UTF-8 字节 | Python 内一律用 `pathlib.Path`；PowerShell 命令涉及该路径一律加 `-LiteralPath`；绝不读写 `pob-zh.ini` |
 | **R11** | 用 `save_build_as` 写外部路径，或让未鉴权的本地 HTTP Daemon 直接代写任意磁盘路径 | `bridge.lua` 第 1990 行 `under_build_path` 拦截外部路径；无 Token 的本地 HTTP 端口若开放写盘存在浏览器跨站/DNS Rebinding 任意文件覆写风险 | `daemon.json` 写入随机 `token` 并强制校验 `X-PoB-Token` 请求头；`pob save` 由 Daemon 调 `save_xml{}` 返回字符串，**在 CLI 客户端进程本地落盘**；本地 `.xml` 读取编码同样在 CLI 侧完成 |
 | **R12** | 对多节点天赋增删列表无脑循环调 `tree_click`，或忽略专精/职业确认返回标志 | `bridge.lua` 中 `tree_click` 是 **Toggle 翻转开关**（过路自动点亮或级联摘除会让后续点击反向抵消）；点到专精或跨职业起点时静默返回 `{needsMastery: true}` / `{needsConfirm: "class_change"}` 而不报错 | 每次 `tree_click` 前必须先查最新 `get_tree_state().allocatedNodes` 做幂等过滤（加点仅点未亮节点，删点仅摘仍亮节点），并显式校验返回标志位 |
 
@@ -43,10 +43,10 @@
 ## 3. 系统架构与目录规划
 
 ### 3.1 目录结构
-全部新增代码集中在 `F:/poe/pob_cli/`（标准 Python 包，`pyproject.toml` 注册 `pob` 可执行入口），不动已有参考仓库（`F:/poe/POEMCP`、`F:/poe/pob-mcp`、`F:/poe/PobTools[20261102]`）：
+全部新增代码集中在 `pob_cli/`（标准 Python 包，`pyproject.toml` 注册 `pob` 可执行入口），不动已有参考仓库（`POEMCP`、`pob-mcp`、`PobTools[20261102]`）：
 
 ```text
-F:/poe/
+pob4agents/
 ├── plan.md                      # 本开发蓝图与防错契约
 ├── PROGRESS.md                  # 极简进度交接单（progress-log 规范）
 ├── AGENTS.md                    # 供所有 Agent 秒懂 pob CLI 用法的电报式规范（M4 产出）
@@ -72,16 +72,16 @@ F:/poe/
 ### 3.2 进程与通信模型
 ```text
 [Agent / 用户终端]
-   │  pob <subcommand> (HTTP/JSON + X-PoB-Token over 127.0.0.1:<port>, 状态与密钥文件 F:/poe/.runtime/daemon.json)
+   │  pob <subcommand> (HTTP/JSON + X-PoB-Token over 127.0.0.1:<port>, 状态与密钥文件 .runtime/daemon.json)
    ▼
 [pob_cli.daemon] (常驻 Python 进程，全局空闲 30 分钟自动退出)
-   ├── Slot "main" ──► pob-zh.exe --engine-headless F:\poe\PobTools[20261102]\PoE1 (槽位互斥锁 + 单次 RPC 超时)
+   ├── Slot "main" ──► pob-zh.exe --engine-headless PobTools[20261102]\PoE1 (槽位互斥锁 + 单次 RPC 超时)
    │                    └── 内存维护 undo_stack / redo_stack (存 export_code 字符串，上限 30 步)
    └── Slot "ref"  ──► 按需懒启动第二个 headless worker（仅 `compare`/`borrow` 拉起，空闲 5 分钟提前回收释放 ~200MB 内存）
 ```
 
 - **Worker 启动与并发安全序列（硬编码在 `BridgeWorker.start()`）**：
-  1. 启动 `F:\poe\PobTools[20261102]\pob-zh.exe --engine-headless F:\poe\PobTools[20261102]\PoE1`（`stdin/stdout` UTF-8 行缓冲，`cwd` 设为 `F:\poe\PobTools[20261102]\PoE1`；`stderr` 由独立守护线程持续排空或写日志文件，严禁裸挂 `PIPE` 不读导致 Windows 管道缓冲区满死锁）。
+  1. 启动 `PobTools[20261102]\pob-zh.exe --engine-headless PobTools[20261102]\PoE1`（`stdin/stdout` UTF-8 行缓冲，`cwd` 设为 `PobTools[20261102]\PoE1`；`stderr` 由独立守护线程持续排空或写日志文件，严禁裸挂 `PIPE` 不读导致 Windows 管道缓冲区满死锁）。
   2. 为每个 `BridgeWorker` 绑定独立 `threading.Lock` 与单次调用超时（默认 `15s`，网络导入 `30s`），超时立即 `kill()` 子进程并按最新快照自动重建。
   3. 消费启动事件直到收到 `event == "gate_result"`（断言 `data.ok == true`）与 `event == "hello"`（记录 `pobVersion`）。
   4. 调 `version{}` 缓存 `caps` 字典，供后续方法做前置能力断言。
@@ -181,7 +181,7 @@ F:/poe/
   4. **核心装备差异**：双方同部位暗金选择差异或稀有装核心词缀差异。
 - `pob borrow [--item-slot "Helmet,Weapon 1"] [--skill-group main] [--apply]`：将 `ref` 槽位上的装备或技能组移植到 `main` 跑一次真实 `what-if`（或 `--apply`）：自动处理双手武器与单手+副手槽位冲突；若目标技能组由装备词缀赋予（`group.source` 非空）则提示或联动借穿对应部位装备；借入主技能组时自动切换 `mainSocketGroup` 指向新组确保面板真实重算。
 
-### 5.5 轻量物价与机制百科（可选增强，复用 `F:/poe/POEMCP` 经验）
+### 5.5 轻量物价与机制百科（可选增强，复用 `POEMCP` 经验）
 - `pob price <query> [-l league] [-c category]`：走 `poe.ninja` 公开 `dense/overviews` 接口（本地 `~/.cache/pob-cli/` 磁盘缓存 15 分钟），速查暗金/通货/技能石/团簇珠宝 Chaos 与 Divine 价格，辅助评估升级性价比。
 - `pob wiki <topic>`：走 `poewiki.net`（磁盘缓存 24 小时）提取词条核心机制说明与公式。
 
@@ -216,4 +216,4 @@ F:/poe/
   4. 实测一条真实 `https://poe.ninja/poe1/builds/.../character/...` 链接完成一键导入与面板计算。
 
 ### Milestone 4：物价/百科辅助命令 + 项目级 `AGENTS.md` 收尾
-- **交付物**：`external_data.py`（`pob price`、`pob wiki` 带本地磁盘缓存）、自动化回归测试套件 `pytest` 全绿、根目录电报风 `F:/poe/AGENTS.md`（让后续任何 Agent 打开 `F:/poe` 即刻掌握 `pob` 全套命令与分析工作流）。
+- **交付物**：`external_data.py`（`pob price`、`pob wiki` 带本地磁盘缓存）、自动化回归测试套件 `pytest` 全绿、根目录电报风 `AGENTS.md`（让后续任何 Agent 打开 `<repo>` 即刻掌握 `pob` 全套命令与分析工作流）。

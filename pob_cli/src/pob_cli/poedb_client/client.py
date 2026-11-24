@@ -26,6 +26,7 @@ from .html_parser import (
     _extract_inline_mod_cards,
     _extract_mods_from_modsview,
     _extract_mods_view_json,
+    _mod_matches_filter,
     _PoedbPageParser,
 )
 
@@ -323,6 +324,7 @@ def _query_poedb_with_entries(
     norm_lang: str = "cn",
     proxy: str | None = None,
     limit_mods: int = 80,
+    mod_filter: str | None = None,
     client: httpx.Client | _LazyClient | None = None,
     index_stale: bool = False,
 ) -> dict[str, Any]:
@@ -414,15 +416,26 @@ def _query_poedb_with_entries(
                     break
 
         if mv is not None:
-            mods_list, total_mods, mod_summary = _extract_mods_from_modsview(mv, limit_mods=limit_mods)
+            mods_list, total_mods, mod_summary = _extract_mods_from_modsview(
+                mv, limit_mods=limit_mods, mod_filter=mod_filter
+            )
             result["modPoolSlug"] = mod_pool_slug
             result["modPoolUrl"] = mod_pool_url
             result["modCountTotal"] = total_mods
             result["modPoolSummary"] = mod_summary
+            if mod_filter and mod_filter.strip():
+                result["modFilter"] = mod_filter.strip()
             result["mods"] = mods_list
         elif inline_cards:
-            result["modCountTotal"] = len(inline_cards)
-            result["mods"] = inline_cards[:limit_mods] if limit_mods > 0 else inline_cards
+            cards_filtered = (
+                [c for c in inline_cards if _mod_matches_filter(c, mod_filter)]
+                if (mod_filter and mod_filter.strip())
+                else inline_cards
+            )
+            if mod_filter and mod_filter.strip():
+                result["modFilter"] = mod_filter.strip()
+            result["modCountTotal"] = len(cards_filtered)
+            result["mods"] = cards_filtered[:limit_mods] if limit_mods > 0 else cards_filtered
         else:
             result["modCountTotal"] = 0
             result["mods"] = []
@@ -439,6 +452,7 @@ def query_poedb(
     lang: str = "cn",
     proxy: str | None = None,
     limit_mods: int = 80,
+    mod_filter: str | None = None,
 ) -> dict[str, Any]:
     """Search PoEDB autocomplete index (CN+US) and parse page + optional mod pool into compact JSON."""
     from ..guardrails import GuardrailScope, check_input, validate_url
@@ -461,6 +475,7 @@ def query_poedb(
             norm_lang=norm_lang,
             proxy=proxy,
             limit_mods=limit_mods,
+            mod_filter=mod_filter,
             client=holder,
             index_stale=index_stale,
         )
@@ -473,6 +488,7 @@ def query_poedb_multi(
     lang: str = "cn",
     proxy: str | None = None,
     limit_mods: int = 80,
+    mod_filter: str | None = None,
     max_workers: int = 4,
 ) -> dict[str, Any]:
     """Query multiple PoEDB entities concurrently with a shared HTTP client and stale-cache fallback."""
@@ -500,6 +516,7 @@ def query_poedb_multi(
                     norm_lang=norm_lang,
                     proxy=proxy,
                     limit_mods=limit_mods,
+                    mod_filter=mod_filter,
                     client=holder,
                     index_stale=index_stale,
                 )

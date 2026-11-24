@@ -9,6 +9,7 @@ from typing import Any
 
 from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
+from ..game_data import fold_han
 from ..snapshot import _call_batch
 from .tree_inspect import _normalize_query_list
 
@@ -17,6 +18,11 @@ _CALC_CELL_NUM_RE = re.compile(
 )
 _CAMEL_SPLIT_RE = re.compile(r"([a-z0-9])([A-Z])")
 _CALC_PUNCT_RE = re.compile(r"[\s_\-\"'`.,:/\\()\[\]{}%+]+")
+
+# Words the Traditional (zh-rTW) and Simplified (zh-rCN) translations render differently for the
+# same calc label, applied after the character fold: PoB's "Recovery" row is 恢復 in zh-rTW but
+# 回复 in zh-rCN, so a Simplified query 魔力回复 would otherwise miss 魔力 / 恢復.
+_CALC_ZH_TERM_FOLD: tuple[tuple[str, str], ...] = (("恢复", "回复"),)
 
 _CALC_TOKEN_SYNONYMS: dict[str, tuple[str, ...]] = {
     "regen": ("regeneration", "recovery", "回复"),
@@ -81,12 +87,17 @@ def _parse_calc_cell_value(raw_text: str, disp_text: str) -> float | None:
 
 
 def _norm_calc_text(text: str | None) -> str:
-    """Normalize calc label/query: strip PoB escapes, split camelCase, lowercase, collapse punctuation."""
+    """Normalize calc label/query: strip PoB escapes, split camelCase, lowercase, collapse punctuation.
+
+    Also folds Traditional -> Simplified Chinese, since pob-zh.exe labels default to Traditional.
+    """
     if not text:
         return ""
     cleaned = strip_pob_escapes(str(text))
     cleaned = _CAMEL_SPLIT_RE.sub(r"\1 \2", cleaned)
-    cleaned = _CALC_PUNCT_RE.sub(" ", cleaned).strip().lower()
+    cleaned = fold_han(_CALC_PUNCT_RE.sub(" ", cleaned).strip().lower())
+    for variant, canonical in _CALC_ZH_TERM_FOLD:
+        cleaned = cleaned.replace(variant, canonical)
     return cleaned
 
 

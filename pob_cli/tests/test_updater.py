@@ -14,6 +14,8 @@ from typing import Any
 
 import httpx
 import pytest
+from engine_paths import find_legacy_snapshot
+from support import dead_proxy_url
 
 from pob_cli.bridge_client import (
     FORBIDDEN_METHODS,
@@ -45,7 +47,7 @@ from pob_cli.updater import (
     verify_pob_sha1,
 )
 
-REAL_LEGACY_DIR = Path("F:/poe/PobTools[20261102]")
+REAL_LEGACY_DIR = find_legacy_snapshot()
 
 
 def _encode_xml(xml_text: str) -> str:
@@ -172,7 +174,7 @@ def test_invalid_proxy_fast_degradation_under_4s(tmp_path: Path, monkeypatch: py
     rt = tmp_path / "runtime"
     eng = _make_fake_engine(rt / "engine", version="2.67.2")
     monkeypatch.setenv("POB_RUNTIME_DIR", str(rt))
-    monkeypatch.setenv("POB_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("POB_PROXY", dead_proxy_url())
     monkeypatch.delenv("POB_ROOT", raising=False)
 
     t0 = time.monotonic()
@@ -216,7 +218,7 @@ def test_bootstrap_missing_offline_when_no_engine(tmp_path: Path, monkeypatch: p
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not REAL_LEGACY_DIR.is_dir(), reason="Legacy F:/poe/PobTools[20261102] not present")
+@pytest.mark.skipif(REAL_LEGACY_DIR is None, reason="Legacy PobTools 2.67.2 snapshot not present (POB_LEGACY_DIR)")
 def test_real_manifest_sha1_detects_exact_tampered_update_check() -> None:
     poe1 = REAL_LEGACY_DIR / "PoE1"
     manifest = parse_pob_manifest((poe1 / "manifest.xml").read_text(encoding="utf-8"))
@@ -581,7 +583,7 @@ def test_posix_engine_validation_command_and_manifest_filtering(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not REAL_LEGACY_DIR.is_dir(), reason="Legacy F:/poe/PobTools[20261102] not present")
+@pytest.mark.skipif(REAL_LEGACY_DIR is None, reason="Legacy PobTools 2.67.2 snapshot not present (POB_LEGACY_DIR)")
 def test_real_probe_engine_gate() -> None:
     res = probe_engine_gate(REAL_LEGACY_DIR, timeout_sec=20.0)
     assert res["ok"] is True
@@ -590,7 +592,7 @@ def test_real_probe_engine_gate() -> None:
     assert isinstance(res["caps"], dict)
 
 
-@pytest.mark.skipif(not REAL_LEGACY_DIR.is_dir(), reason="Legacy F:/poe/PobTools[20261102] not present")
+@pytest.mark.skipif(REAL_LEGACY_DIR is None, reason="Legacy PobTools 2.67.2 snapshot not present (POB_LEGACY_DIR)")
 def test_bridge_worker_dynamic_r2_and_import_code_deadlock_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

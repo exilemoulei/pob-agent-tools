@@ -22,7 +22,7 @@ from .bridge_client import BridgeError, BridgeWorker
 from .errors import DaemonRequestError
 from .updater import get_runtime_dir
 
-USER_AGENT = f"pob-cli/{__version__} (+https://github.com/exilemoulei/pob4agents)"
+USER_AGENT = f"pob4agents/{__version__} (+https://github.com/exilemoulei/pob4agents)"
 DEFAULT_HTTP_TIMEOUT = httpx.Timeout(connect=4.0, read=15.0, write=15.0, pool=4.0)
 
 POE_NINJA_CHAR_RE = re.compile(

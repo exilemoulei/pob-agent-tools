@@ -11,6 +11,17 @@ from .build_gate import (
     validate_engine_root,
     validate_url,
 )
+from .reply_scanner import (
+    ReplyIssue,
+    detect_build_source_in_text,
+    detect_hesitation_claims,
+    detect_mechanics_research_need,
+    detect_panel_or_delta_claims,
+    detect_trigger_breakpoint_claims,
+    extract_claimed_open_affix_slots,
+    extract_research_entities,
+    scan_assistant_reply,
+)
 from .rules_false_friends import SAME_NAME_FALSE_FRIENDS_POE1, FalseFriendRule
 from .rules_legacy import LEGACY_PATCH_TRAPS_POE1, LegacyPatchTrapRule
 from .rules_poe2 import (
@@ -68,6 +79,7 @@ __all__ = [
     "FalseFriendRule",
     "GuardrailScope",
     "LegacyPatchTrapRule",
+    "ReplyIssue",
     "S",
     "TrapRule",
     "UrlGateRule",
@@ -75,7 +87,14 @@ __all__ = [
     "check_input_item_raw",
     "check_poe2_class_or_ascendancy",
     "check_poe2_timeless_jewel",
+    "detect_build_source_in_text",
+    "detect_hesitation_claims",
+    "detect_mechanics_research_need",
+    "detect_panel_or_delta_claims",
+    "detect_trigger_breakpoint_claims",
     "emit_stderr_warnings_from_dicts",
+    "extract_claimed_open_affix_slots",
+    "extract_research_entities",
     "extract_scannable_item_parts",
     "get_active_warning_dicts",
     "get_active_warnings",
@@ -85,6 +104,7 @@ __all__ = [
     "normalize_guardrail_text",
     "normalize_zh_compact",
     "reset_cli_warnings",
+    "scan_assistant_reply",
     "scan_text_traps",
     "validate_build_xml",
     "validate_engine_root",

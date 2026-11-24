@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from engine_paths import find_engine_data
 
 from pob_cli import game_data
 from pob_cli.game_data import (
@@ -27,12 +28,8 @@ from pob_cli.guardrails import (
     warning_context,
 )
 
-REAL_POB_DIR = Path("F:/poe/.runtime/engine")
-HAS_REAL_POB = (REAL_POB_DIR / "PoE1" / "Data" / "Gems.lua").is_file()
-LEGACY_POB_DIR = Path("F:/poe/PobTools[20261102]")
-if not HAS_REAL_POB and (LEGACY_POB_DIR / "PoE1" / "Data" / "Gems.lua").is_file():
-    REAL_POB_DIR = LEGACY_POB_DIR
-    HAS_REAL_POB = True
+REAL_POB_DIR = find_engine_data()
+HAS_REAL_POB = REAL_POB_DIR is not None
 
 
 # ---------------------------------------------------------------------------

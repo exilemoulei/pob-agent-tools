@@ -448,7 +448,7 @@ def cmd_item_charm_trap(raw_args: tuple[str, ...]) -> None:
         error="Belt `Charm 1..3` slots (`护符`/`咒符`) are a PoE2 mechanic; Path of Exile 1 does not have belt Charm slots.",
         remediation=(
             "In PoE1, toggle `Flask 1..5` via `pob item flask <1..5|all> <on|off>`, "
-            "or run `pob2 item charm` in `F:/poe2` for PoE2 builds."
+            "or run `pob2 item charm` for PoE2 builds."
         ),
         equivalent_command=f"pob item flask {idx_tok} {state_tok}",
         rule_id="CLI_TRAP_ITEM_CHARM_IN_POB1",
@@ -477,7 +477,7 @@ def cmd_item_instill_trap(raw_args: tuple[str, ...]) -> None:
         error="Amulet Instilling (`涂灌` with Delirium Distilled/Liquid Emotions) is a PoE2 mechanic.",
         remediation=(
             "In PoE1, anoint amulets/rings with Blight Oils (`圣油`/`涂油`) via `pob item anoint`, "
-            "or run `pob2 item instill` in `F:/poe2` for PoE2 builds."
+            "or run `pob2 item instill` for PoE2 builds."
         ),
         equivalent_command=f"pob item anoint {slot_part}{notable_part}".strip(),
         rule_id="CLI_TRAP_ITEM_INSTILL_IN_POB1",
@@ -508,7 +508,7 @@ def cmd_rune_trap(raw_args: tuple[str, ...]) -> None:
         error="Path of Exile 1 does not have PoE2 equipment Rune/Soul Core sockets (`pob2 rune` / `ModRunes.lua`).",
         remediation=(
             "In PoE1, gear crafting uses the Hideout Crafting Bench (`{crafted}` via `pob bench list` / `pob bench suggest`), "
-            "or run `pob2 rune` in `F:/poe2` for PoE2."
+            "or run `pob2 rune` for PoE2."
         ),
         equivalent_command=equiv,
         rule_id="CLI_TRAP_RUNE_IN_POB1",
@@ -537,7 +537,7 @@ def cmd_instill_trap(raw_args: tuple[str, ...]) -> None:
         error="Amulet Instilling (`涂灌` with Delirium Distilled/Liquid Emotions) is a PoE2 mechanic.",
         remediation=(
             "In PoE1, anoint items with Blight Oils (`圣油`/`涂油`) via `pob item anoint`, "
-            "or run `pob2 item instill` in `F:/poe2` for PoE2."
+            "or run `pob2 item instill` for PoE2."
         ),
         equivalent_command=f"pob item anoint {slot_part}{notable_part}".strip(),
         rule_id="CLI_TRAP_INSTILL_IN_POB1",

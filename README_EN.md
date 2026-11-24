@@ -25,6 +25,7 @@ DPS, effective hit pool (TotalEHP), maximum hit taken (MaxHit), and the effects 
   - [6. Search Timeless Jewel seeds](#6-search-timeless-jewel-seeds)
   - [7. Look up game data, prices, and build trends](#7-look-up-game-data-prices-and-build-trends)
   - [8. Search trade listings and bench crafts](#8-search-trade-listings-and-bench-crafts)
+- [AI Agent lifecycle hook guardrails (`pob hook`)](#ai-agent-lifecycle-hook-guardrails-pob-hook)
 - [Exit codes](#exit-codes)
 - [Development, tests, and releases](#development-tests-and-releases)
 - [Credits and license](#credits-and-license)
@@ -47,7 +48,7 @@ DPS, effective hit pool (TotalEHP), maximum hit taken (MaxHit), and the effects 
   - Single edits and batches run on an in-memory build snapshot. `pob batch` combines 19 operation types and returns selected analysis views. `pob sweep` compares multiple gear, passive, or gem setups in the same running engine; one failed variant does not stop the others.
 - **Search Timeless Jewel seeds** (`pob timeless list` / `pob timeless search`): Evaluate candidate seeds in PoB using your allocated socket and passives. English and Chinese jewel names are accepted. Use `--exact` to evaluate all candidates.
   - Jewel data comes from PoB's `Data/Uniques/jewel.lua` and covers 11 Timeless Jewel variants. For jewels such as Lethal Pride, Brutal Restraint, Militant Faith, Elegant Hubris, and Heroic Tragedy, the search deduplicates allocated and anointed notables before prefiltering seeds; `--exact` skips that prefilter. Multiple temporary engine workers can search in parallel, while conflicting `Historic` jewels in other sockets are handled automatically.
-- **Look up game data and prices** (`pob data` / `pob price` / `pob meta` / `pob poedb` / `pob wiki`): The local bilingual index covers gems, unique items, modifiers, and bases. Online queries cover poe.ninja prices and build trends, PoEDB, and PoE Wiki.
+- **Look up game data, mechanics, and prices** (`pob data` / `pob research` / `pob poedb` / `pob wiki` / `pob price` / `pob meta`): The local bilingual index covers gems, unique items, modifiers, and bases. Online queries support concurrent `pob research` (`poedb.tw` + `poewiki.net`), exact local PoEDB bilingual index matching for `pob wiki` with prioritized `Mechanics` / `Skill functions and interactions` extraction, and poe.ninja prices and build trends.
   - A SQLite/FTS5 index is built from PoB's Lua data and can be searched without starting PoB, usually within 15 ms. It includes Foulborn unique variants, bench/Eldritch/corrupted modifiers, and English↔Chinese names; one command can search multiple terms.
 - **Find gear and fill modifier gaps** (`pob trade` / `pob bench`): Search official trade listings, compare upgrades in PoB, inspect available bench crafts, and preview same-tier Harvest resistance conversions. Trade commands only search and calculate; they do not buy items for you.
   - `pob item inspect` classifies rare-item prefixes, suffixes, hybrid modifiers, and existing bench crafts; uncertain matches never imply a free slot. Trade search uses `--bench-craft` to evaluate legal additions or replacements at maximum rolls and compare the resulting PoB gains.
@@ -77,7 +78,7 @@ $env:POB_PROXY = "http://127.0.0.1:7890"
 irm https://raw.githubusercontent.com/exilemoulei/pob4agents/main/install.ps1 | iex
 ```
 
-Run the same command again to upgrade. The installer checks SHA256 and stops the old background process.
+Run the same command again to upgrade. The installer checks the release's Ed25519 signature and SHA256 and stops the old background process.
 
 #### Option 2: Scoop
 
@@ -91,18 +92,26 @@ scoop install pob
 scoop update pob
 ```
 
-#### Option 3: Portable GitHub release
+#### Option 3: Portable GitHub release (permanent link)
 
-Download `pob-v0.6.0-windows-x64.zip` from [GitHub Releases](https://github.com/exilemoulei/pob4agents/releases/latest), extract it, and add the folder containing `pob.exe` to your `PATH`.
+```powershell
+# Permanent link: always the latest stable release, no version string needed
+irm https://github.com/exilemoulei/pob4agents/releases/latest/download/pob-windows-x64.zip -OutFile "$env:TEMP\pob-windows-x64.zip"
+```
+
+Extract it and add the folder containing `pob.exe` to your `PATH` (you can also just open the link above in a browser). Checksums live in [`SHA256SUMS.txt`](https://github.com/exilemoulei/pob4agents/releases/latest/download/SHA256SUMS.txt), which covers both the versioned filenames and the permanent alias.
 
 #### Option 4: Python package (Python 3.11+, `uv` / `pipx` / `pip`)
 
 ```powershell
-# Use uv (recommended)
-uv tool install "git+https://github.com/exilemoulei/pob4agents.git@v0.6.0#subdirectory=pob_cli"
+# Use uv (recommended; tracks the latest commit on the main branch)
+uv tool install "git+https://github.com/exilemoulei/pob4agents.git#subdirectory=pob_cli"
 
-# Or install the release wheel
-pip install "https://github.com/exilemoulei/pob4agents/releases/download/v0.6.0/pob_cli-0.6.0-py3-none-any.whl"
+# Pin an exact version when you need reproducibility (replace vX.Y.Z with a real tag from the Releases page)
+uv tool install "git+https://github.com/exilemoulei/pob4agents.git@vX.Y.Z#subdirectory=pob_cli"
+
+# pip / pipx work the same way
+pip install "git+https://github.com/exilemoulei/pob4agents.git#subdirectory=pob_cli"
 ```
 
 > **Load the bundled AI Agent Skill (optional, recommended)**: Copy [`skills/pob`](skills/pob) into your agent's skill folder (such as `~/.agents/skills/pob`, `~/.claude/skills/pob`, or DeepSeek Harness's `skills` directory) so fast models follow concise `pob` workflows and avoid cross-patch hallucinations.
@@ -117,7 +126,7 @@ On macOS (Apple Silicon `arm64` / Intel `x86_64`) or Linux (`x86_64` / `aarch64`
 git clone https://github.com/exilemoulei/pob4agents.git
 cd pob4agents
 
-# 1. Install the pob CLI
+# 1. Install pob4agents (the pob command)
 pip install "./pob_cli"
 
 # 2. Build LuaJIT 2.1 + lua-utf8 and place it in the managed engine directory
@@ -137,13 +146,13 @@ pob status
 
 ### 3. Set up the PoB engine
 
-After installing `pob`, run `pob bootstrap` once to download the PoB engine. You can also import an existing local `PobTools` directory:
+After installing pob4agents, run `pob bootstrap` once to download the PoB engine. You can also import an existing local `PobTools` directory:
 
 ```powershell
 pob --version
 pob bootstrap # Download PobTools-zh and official PoB directly from GitHub
 pob bootstrap --proxy http://127.0.0.1:7890 # Download through an HTTP or SOCKS5 proxy
-pob bootstrap --from-dir "D:\PoE\PobTools" # Seed the engine from an existing local PobTools directory
+pob bootstrap --from-dir "<path-to-PobTools>" # Seed the engine from an existing local PobTools directory
 pob update --check # Check for upstream updates
 pob update --proxy http://127.0.0.1:7890 # Update the engine and refresh loaded build slots
 ```
@@ -159,6 +168,7 @@ Common environment variables:
 | `POB_PROXY` | HTTP, HTTPS, or SOCKS5 proxy; `HTTPS_PROXY` and `ALL_PROXY` are also supported |
 | `POB_GITHUB_MIRROR` | Mirror prefix for GitHub downloads during `bootstrap` and `update` |
 | `POB_OFFLINE` | Set to `1` to skip startup and scheduled GitHub update checks; equivalent to global `--offline` |
+| `POB_HOOK_DISABLE_V5` | Set to `1` to disable the Gate 3 V5 web-research verification gate (independent of `POB_OFFLINE`) |
 | `POESESSID` / `POE_COOKIE` | Optional when the official trade API returns 401/403; provide them only as environment variables, never as CLI arguments or log entries |
 
 ---
@@ -197,7 +207,7 @@ pob stop
 ```powershell
 # 1. Import a build into the default main slot
 pob load "https://poedb.tw/pob/AWqOLSSmyG"
-pob load "@D:\builds\my_chieftain.xml"
+pob load "@builds/my_chieftain.xml"
 pob load "https://poe.ninja/poe1/builds/mirage/character/AccountName-1234/CharName"
 
 # 2. Use --target for other builds, such as ref for comparison or exp1 for experiments
@@ -209,7 +219,7 @@ pob switch-main --loadout "Endgame Mageblood"
 pob switch-main --spec 2 --item-set 2 --skill-group 1
 
 # 4. Export an XML file or PoB share code
-pob save "D:\builds\optimized.xml"
+pob save "builds/optimized.xml"
 pob export-code --target exp1
 ```
 
@@ -223,10 +233,10 @@ When you receive a PoB, run `pob diagnose` for a one-shot report covering origin
 
 ```powershell
 # One-shot build diagnosis (-q grounds mechanics/gems mentioned in a question)
-pob diagnose "@D:\builds\my_build.xml" -q "Why is my boss DPS low and why am I getting one-shot?"
+pob diagnose "@builds/my_build.xml" -q "Why is my boss DPS low and why am I getting one-shot?"
 
 # One-shot 3-baseline comparison and Pinnacle audit across two builds
-pob diagnose "@D:\builds\build_a.xml" --compare "@D:\builds\build_b.xml"
+pob diagnose "@builds/build_a.xml" --compare "@builds/build_b.xml"
 
 # Offence, defence, minion summary, and native PoB warnings
 pob summary
@@ -467,8 +477,10 @@ pob price "Forbidden Flame" --variant "Hierophant" --limit 30
 pob price "Awakened Spell Echo Support" --detailed
 pob meta --skill "Ice Nova of Frostbolts" --top 15
 
-# --- PoE Wiki: mechanics ---
-pob wiki "Eldritch Battery" "Leech"
+# --- Concurrent dual-source research (poedb.tw + poewiki.net) & PoE Wiki (local PoEDB bilingual exact match + Mechanics priority) ---
+pob research "Returning Projectiles" "Ice Spear"
+pob research "Twilight Regalia" --mods --lang us
+pob wiki "异能魔力" "Eldritch Battery" "Leech"
 ```
 
 ---
@@ -509,6 +521,24 @@ Repeat `--bench-craft` for multiple craft targets. Results default to PoB rankin
 
 ---
 
+## AI Agent lifecycle hook guardrails (`pob hook`)
+
+To prevent fast/lightweight models from bypassing `pob` (hand-parsing Lua/XML, hallucinating PoE2 or removed legacy mechanics in final answers, claiming open affixes without inspecting items, or inventing CoC breakpoints), `pob4agents` ships a deterministic, zero-LLM-judge hook kernel (`pob --offline hook <pre-prompt|pre-tool|verify-stop> [--protocol raw|agy|claude]`) backed by an out-of-band execution receipt ledger:
+
+- **Pre-prompt grounding & turn cursor (`pre-prompt`)**: anchors `turnStartTs` once per turn and injects compact `<pob-grounding>` PoE1 3.30 entity cards and trap alerts offline (`<15ms`), plus `[MECHANICS-RESEARCH-REQUIRED]` when the user asks about build mechanics or skill interactions.
+- **Pre-tool hard deny / rewrite (`pre-tool`)**: blocks raw engine `.lua` reads, script-based XML calculations (`R5`), redundant `pob --help`, bare `--json` without `--out` (auto-stripped on hosts that support argument overwrite), and redundant post-`diagnose` fetches.
+- **Stop verification & auto-remediation (`verify-stop`)**: checks `turn_receipts.jsonl` and scans the final assistant text (`guardrails/reply_patterns.py` + `reply_scanner.py`: V1 PoE2/legacy/mechanic fallacies, V2 compute receipts for DPS/EHP claims, V3 slot inspection receipts for open-affix claims, V4 `0.033s` tick receipts for trigger breakpoints, V5 web-research verification for hedging or mechanics-interaction answers — disable independently with `POB_HOOK_DISABLE_V5=1`). On failure, it runs fast in-process remediation or cached research lookup and injects a single correction pass (`maxRetries = 1`, fail-open on errors).
+
+Ready-to-use host templates and plugin integration:
+
+| Host | Template / Plugin | Protocol |
+|---|---|---|
+| **Antigravity** | [`hooks/hooks.json`](hooks/hooks.json) (copy to `.agents/hooks.json`) | `--protocol agy` |
+| **Claude Code** | [`hooks/claude-hooks.json`](hooks/claude-hooks.json) (merge into `.claude/settings.json`) | `--protocol claude` |
+| **DeepSeek Harness (DSH)** | `dsh-pob-assistant` plugin (`agent/pre-step`, `tools/pre-execute`, `agent/turn-stopping`) | `--protocol raw` |
+
+---
+
 ## Exit codes
 
 Scripts and agents can use exit codes to decide what to do next. Errors are shown as short messages, without a raw Python traceback:
@@ -531,8 +561,9 @@ Scripts and agents can use exit codes to decide what to do next. Errors are show
 ## Development, tests, and releases
 
 ```powershell
-# Install development dependencies in editable mode
-pip install -e "./pob_cli[dev]"
+# Install the locked development environment into pob_cli/.venv (same versions as CI)
+uv sync --project pob_cli --extra dev
+# or, without uv: pip install -e "./pob_cli[dev]"
 
 # Run unit and headless integration tests; set POB_OFFLINE=1 for offline mode
 python -m pytest pob_cli/tests -v
@@ -545,9 +576,9 @@ pyinstaller --noconfirm --clean pob_cli/packaging/pob.spec
 
 1. Update `__version__` in `pob_cli/src/pob_cli/__init__.py` and merge it into `main`.
 2. Create and push a version tag: `git tag -s v0.5.0 -m "pob4agents v0.5.0" && git push origin main v0.5.0`.
-3. GitHub Actions checks the version, runs tests, builds and smoke-tests `pob-vX.Y.Z-windows-x64.zip`, the wheel / sdist, and `SHA256SUMS.txt`, publishes the GitHub Release, and updates the Scoop manifest at `bucket/pob.json`.
+3. GitHub Actions checks the version, runs the real-engine gate on Windows, macOS and Linux (`engine.yml`), runs tests, builds and smoke-tests `pob-vX.Y.Z-windows-x64.zip`, the wheel / sdist, and `SHA256SUMS.txt`, publishes the GitHub Release, and updates the Scoop manifest at `bucket/pob.json`. Every release also carries a byte-identical stable alias `pob-windows-x64.zip` so `releases/latest/download/pob-windows-x64.zip` always downloads the newest build without editing the version (`latest` skips prereleases).
 
-For a compact command reference for agents, see [AGENTS.md](AGENTS.md).
+To contribute, start with [CONTRIBUTING.md](CONTRIBUTING.md). For a compact command reference for agents, see [AGENTS.md](AGENTS.md).
 
 ---
 

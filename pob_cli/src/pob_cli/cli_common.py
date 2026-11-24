@@ -180,9 +180,11 @@ class GuardrailGroup(LazyGroup):
     def invoke(self, ctx: click.Context) -> Any:
         from .errors import CrossGameHallucinationError, LegacyPatchTrapError
         from .guardrails import reset_cli_warnings, warning_context
+        from .turn_receipts import receipt_context
 
+        raw_args = ctx.find_root().meta.get("pob_raw_args") or ()
         reset_cli_warnings()
-        with warning_context():
+        with receipt_context(raw_args), warning_context():
             try:
                 return super().invoke(ctx)
             except (CrossGameHallucinationError, LegacyPatchTrapError) as exc:
@@ -365,9 +367,13 @@ def invoke_daemon(
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Dispatch daemon call respecting test monkeypatches on `pob_cli.cli._daemon_call`."""
+    from .turn_receipts import record_daemon_receipt_hint
+
     cli_mod = sys.modules.get("pob_cli.cli")
     fn = getattr(cli_mod, "_daemon_call", _daemon_call) if cli_mod is not None else _daemon_call
-    return fn(action, params, **kwargs)
+    res = fn(action, params, **kwargs)
+    record_daemon_receipt_hint(action, params, res)
+    return res
 
 
 def _merge_keep_tokens(*sources: Any) -> list[str]:
