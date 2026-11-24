@@ -274,9 +274,10 @@ def main(argv: list[str] | None = None) -> int:
         "--max-skipped",
         type=int,
         default=None,
-        help="Maximum skipped tests (default: the budget of the tier this machine is in: "
-        f"{MAX_SKIPPED_TESTS} with the legacy seed, {_MAX_SKIPPED_BOOTSTRAPPED} with a bootstrapped "
-        f"engine, {_MAX_SKIPPED_NO_ENGINE} with no engine).",
+        help="Maximum skipped tests (default: the budget of the tier this machine is in, but only "
+        f"when neither flag is passed: {MAX_SKIPPED_TESTS} with the legacy seed, "
+        f"{_MAX_SKIPPED_BOOTSTRAPPED} with a bootstrapped engine, {_MAX_SKIPPED_NO_ENGINE} with no "
+        "engine; passing either flag pins both).",
     )
     args = parser.parse_args(argv)
 
@@ -315,9 +316,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.fast:
         return 0
 
+    # The engine tier is a convenience for a bare run only. Passing either ratchet flag means the
+    # caller is pinning the numbers (engine.yml does), so the other one keeps its plain default
+    # instead of being quietly widened to the tier budget.
+    explicit_ratchet = args.min_passed is not None or args.max_skipped is not None
     min_passed = args.min_passed if args.min_passed is not None else MIN_PASSED_TESTS
-    max_skipped = args.max_skipped
-    if max_skipped is None:
+    max_skipped = args.max_skipped if args.max_skipped is not None else MAX_SKIPPED_TESTS
+    if not explicit_ratchet:
         tier, max_skipped = _engine_tier(pob_cli_root.parent)
         print(
             f"INFO: {tier}: offline gate allows up to {max_skipped} skipped tests"
