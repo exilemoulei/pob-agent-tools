@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pob-cli"
+name = "pob4agents"
 dynamic = ["version"]
 description = "Path of Building headless daemon and high-SNR CLI for agents"
 license = { text = "GPL-3.0-or-later" }
@@ -13,11 +13,14 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: MacOS",
     "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
     "click>=8.1.0",
@@ -30,12 +33,13 @@ dev = [
     "pytest>=8.0.0",
     "build>=1.2.0",
     "pyinstaller>=6.0.0",
+    "ruff>=0.17.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/exilemoulei/pob-agent-tools"
-Repository = "https://github.com/exilemoulei/pob-agent-tools"
-Issues = "https://github.com/exilemoulei/pob-agent-tools/issues"
+Homepage = "https://github.com/exilemoulei/pob4agents"
+Repository = "https://github.com/exilemoulei/pob4agents"
+Issues = "https://github.com/exilemoulei/pob4agents/issues"
 
 [project.scripts]
 pob = "pob_cli.cli:main"
@@ -47,4 +51,18 @@ version = { attr = "pob_cli.__version__" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-pob_cli = ["data/*.json"]
+pob_cli = ["data/*.json", "lua/*.lua"]
+
+[tool.ruff]
+src = ["src"]
+target-version = "py311"
+line-length = 108
+extend-exclude = ["build", "dist", "*.egg-info"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "PIE", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pob_cli"]
+

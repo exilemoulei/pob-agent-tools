@@ -11,7 +11,6 @@ import pytest
 from pob_cli import trade_query as tq
 from pob_cli.updater import resolve_engine_root
 
-
 # Representative real PoE1 trade stat entries (exact IDs and texts from GGG / TradeSiteStats.lua)
 SAMPLE_ENTRIES: list[dict[str, str]] = [
     # Resistances
@@ -81,6 +80,9 @@ def test_slot_category_and_pob_slot_mappings() -> None:
     assert tq.category_for_slot("flask3") == "flask"
     assert tq.category_for_slot("abyss_jewel") == "jewel.abyss"
     assert tq.category_for_slot("cluster_jewel") == "jewel.cluster"
+    # Chinese slot names resolve in either script.
+    assert tq.category_for_slot("頭盔") == tq.category_for_slot("头盔") == "armour.helmet"
+    assert tq.category_for_slot("腰帶") == "accessory.belt"
 
     assert tq.pob_slot_for_slot("Body Armour") == "Body Armour"
     assert tq.pob_slot_for_slot("chest") == "Body Armour"
@@ -287,6 +289,46 @@ def test_tiny_entry_does_not_hijack_long_unrelated_query() -> None:
     assert tq.resolve_stat("Unicorn Rainbow Life Explosion", SAMPLE_ENTRIES) is None
 
 
+@pytest.mark.parametrize(
+    ("traditional", "simplified"),
+    [("能量護盾", "能量护盾"), ("暴擊率", "暴击率"), ("火焰傷害", "火焰伤害"), ("閃避", "闪避"), ("護甲", "护甲")],
+)
+def test_translate_stat_query_folds_traditional_names(traditional: str, simplified: str) -> None:
+    """Traditional names reach the Simplified alias table instead of a fuzzy guess at another stat."""
+    assert tq.translate_stat_query(traditional) == tq.ZH_STAT_ALIASES[simplified]
+
+
+def test_translate_stat_query_ignores_partial_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unaliased Chinese queries must never be rewritten using game_data `match_type == 'partial'` hits."""
+    from pob_cli import game_data
+
+    (tmp_path / "PoE1" / "Data").mkdir(parents=True)
+    monkeypatch.setattr(tq, "resolve_engine_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        game_data,
+        "query_local_data",
+        lambda kind, query, limit=12: {
+            "results": [
+                {"en": "The First Ones exist,", "zh": "先祖存在", "category": "passive", "match_type": "partial"},
+            ]
+        },
+    )
+    assert tq.translate_stat_query("不存在的测试词缀") == "不存在的测试词缀"
+
+    # Exact/substring matches from SQLite still work normally
+    monkeypatch.setattr(
+        game_data,
+        "query_local_data",
+        lambda kind, query, limit=12: {
+            "results": [
+                {"en": "The First Ones exist,", "zh": "先祖存在", "category": "passive", "match_type": "partial"},
+                {"en": "+{0} to maximum Mana", "zh": "最大魔力词缀测试", "category": "mod", "match_type": "exact"},
+            ]
+        },
+    )
+    assert tq.translate_stat_query("最大魔力词缀测试") == "+# to maximum Mana"
+
+
 # ---------------------------------------------------------------------------
 # 4. Harvest conversion planning & official query builder
 # ---------------------------------------------------------------------------
@@ -410,6 +452,54 @@ def test_build_query_status_currency_and_corrupted_mirrored_guards() -> None:
     # Invalid status raises ValueError
     with pytest.raises(ValueError, match="Invalid trade status"):
         tq.build_query(plan=plan_with_conv, category=None, rarity="rare", status="bogus")
+
+
+def test_weighted_sum_group_parsing_and_query_building() -> None:
+    grp = tq.parse_sum_group_argument(
+        "+#% to Fire Resistance*1.5|+#% to Cold Resistance|+#% to Lightning Resistance=20>=45"
+    )
+    assert grp.min_sum == 45.0
+    assert [(e.text, e.weight, e.min_value) for e in grp.entries] == [
+        ("+#% to Fire Resistance", 1.5, None),
+        ("+#% to Cold Resistance", 1.0, None),
+        ("+#% to Lightning Resistance", 1.0, 20.0),
+    ]
+
+    plan = tq.plan_stats(
+        [tq.parse_stat_argument("+# to maximum Life=70")],
+        SAMPLE_ENTRIES,
+        slot="ring1",
+        weighted_groups=[grp],
+    )
+    assert tq.parse_stat_argument("生命>=70") == tq.StatRequest(text="生命", min_value=70.0)
+    assert tq.parse_stat_argument("+# to maximum Life >= 75") == tq.StatRequest(
+        text="+# to maximum Life", min_value=75.0
+    )
+    assert len(plan.weighted_groups) == 1
+    body = tq.build_query(
+        plan=plan,
+        category="accessory.ring",
+        rarity="rare",
+        search_sort="sum",
+    )
+    stats = body["query"]["stats"]
+    # Weighted group placed first at index 0 for statgroup.0 sorting
+    assert stats[0] == {
+        "type": "weight",
+        "value": {"min": 45.0},
+        "filters": [
+            {"id": "explicit.stat_3372524247", "value": {"weight": 1.5}, "disabled": False},
+            {"id": "explicit.stat_4220027924", "value": {"weight": 1.0}, "disabled": False},
+            {"id": "explicit.stat_1671376347", "value": {"weight": 1.0, "min": 20.0}, "disabled": False},
+        ],
+    }
+    assert stats[1]["type"] == "and"
+    assert body["sort"] == {"statgroup.0": "desc"}
+
+    # --search-sort sum without any --sum group raises cleanly
+    empty_plan = tq.plan_stats([], SAMPLE_ENTRIES)
+    with pytest.raises(ValueError, match="--search-sort sum requires"):
+        tq.build_query(plan=empty_plan, category=None, rarity="rare", search_sort="sum")
 
 
 # ---------------------------------------------------------------------------

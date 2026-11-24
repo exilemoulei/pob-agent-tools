@@ -1,0 +1,63 @@
+"""Structured PoEDB (poedb.tw) client with 24h CN/US autocomplete index & 12h page/mod-pool cache."""
+
+from __future__ import annotations
+
+from .client import (
+    _LAST_STALE,
+    COMMUNITY_ALIASES,
+    POEDB_BASE_URL,
+    POEDB_CDN_URL,
+    _discover_autocomplete_urls,
+    _fetch_poedb_page,
+    _LazyClient,
+    _load_autocomplete_index,
+    _poedb_get,
+    _query_poedb_with_entries,
+    _resolve_poedb_slug,
+    query_poedb,
+    query_poedb_multi,
+)
+from .html_parser import (
+    _ATTR_SPLIT_CLASSES,
+    _ATTR_TAG_MAP,
+    _SKIP_CARD_KEYS,
+    _SPECIAL_BASE_MOD_POOLS,
+    _clean_html_fragment,
+    _clean_html_lines,
+    _derive_mod_pool_candidates,
+    _extract_inline_mod_cards,
+    _extract_mods_from_modsview,
+    _extract_mods_view_json,
+    _normalize_mod_side,
+    _parse_int_or_raw,
+    _PoedbPageParser,
+)
+
+__all__ = [
+    "COMMUNITY_ALIASES",
+    "POEDB_BASE_URL",
+    "POEDB_CDN_URL",
+    "_ATTR_SPLIT_CLASSES",
+    "_ATTR_TAG_MAP",
+    "_LAST_STALE",
+    "_SKIP_CARD_KEYS",
+    "_SPECIAL_BASE_MOD_POOLS",
+    "_LazyClient",
+    "_PoedbPageParser",
+    "_clean_html_fragment",
+    "_clean_html_lines",
+    "_derive_mod_pool_candidates",
+    "_discover_autocomplete_urls",
+    "_extract_inline_mod_cards",
+    "_extract_mods_from_modsview",
+    "_extract_mods_view_json",
+    "_fetch_poedb_page",
+    "_load_autocomplete_index",
+    "_normalize_mod_side",
+    "_parse_int_or_raw",
+    "_poedb_get",
+    "_query_poedb_with_entries",
+    "_resolve_poedb_slug",
+    "query_poedb",
+    "query_poedb_multi",
+]

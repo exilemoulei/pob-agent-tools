@@ -10,12 +10,9 @@ from pob_cli.trade_item import (
     ELEMENTS,
     POSITIVE_REDUCED_PATTERNS,
     RESISTANCE,
-    Conversion,
     ConvertedItem,
     HarvestGroup,
     HarvestMatch,
-    Item,
-    Mod,
     build_item_text,
     classify_mod,
     conversion_note,
@@ -32,7 +29,6 @@ from pob_cli.trade_item import (
     sanitize_text,
     trade_mod_tiers,
 )
-
 
 # ---------------------------------------------------------------------------
 # 1. Sanitization, GGG string cleaning, and template normalization

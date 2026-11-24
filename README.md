@@ -1,160 +1,167 @@
-# pob-agent-tools (`pob`)
+# pob4agents (`pob`)
 
-High-signal CLI, managed dual-upstream headless engine, offline Lua game-data SQLite index, and persistent dual-slot daemon for **Path of Building (PoE 1)**, purpose-built for AI Agents and power users.
+**简体中文** | [English](README_EN.md)
 
-> **Acknowledgements & Lineage**  
-> Inspired by [**ianderse/pob-mcp**](https://github.com/ianderse/pob-mcp) (GPL-3.0) and [**shalayiding/POEMCP**](https://github.com/shalayiding/POEMCP), powered by [**Hsiung-Shao/PobTools-zh**](https://github.com/Hsiung-Shao/PobTools-zh) (`pob-zh.exe --engine-headless` + `bridge.lua`) and official [**PathOfBuildingCommunity/PathOfBuilding**](https://github.com/PathOfBuildingCommunity/PathOfBuilding). Trade upgrade workflow, Harvest same-tier conversion, and crafting-bench fallback design pioneered by [**ChangMenQAQ**](https://github.com/ChangMenQAQ) in [PR #1](https://github.com/exilemoulei/pob-agent-tools/pull/1).
+`pob4agents` 是专为AI打造的 [**PathOfBuilding**](https://github.com/PathOfBuildingCommunity/PathOfBuilding) 工具
 
----
+玩家只要通过与AI agents对话导入构筑，就能让agent真的帮你跑一遍pob
 
-## Key Features (v0.3)
+碰上不懂的还会去[编年史](https://poedb.tw)和[wiki](https://www.poewiki.net)，而不是和往常一样空口瞎编
 
-- **Managed Dual-Upstream Engine & Auto-Update (`pob bootstrap` / `pob update`)**:
-  - Automatically resolves `POB_ROOT` -> `<POB_RUNTIME_DIR>/engine` (defaults to `%LOCALAPPDATA%\pob-agent-tools\engine` when installed, or `<repo>/.runtime/engine` in a source checkout).
-  - Checks upstream on daemon startup (and every 30m with zero-loss slot hot-reload) via `PobTools-zh` `302` release tags (never `api.github.com`) + official PoB `manifest.xml` SHA1 incremental diff with `gate_result` smoke probe & `.bak/` rollback.
-  - Fast-fails (`connect=3s`) when GitHub is unreachable, degrades cleanly to local engine, and emits dual-channel alerts (`stderr` + JSON `updateWarning` / Markdown `> [WARN]`).
-- **Zero-Residue `what-if` Simulation & 30-Step Undo/Redo**: Every mutation (`item try/edit/db/flask/anoint`, `skill set/add/rm`, `tree change/set-class`, `config set [--append-mods]`, `batch`, `borrow`) runs inside an in-memory `export_code`/`import_code` transaction and rolls back unless `--apply` is passed.
-- **Multi-Scenario Matrix (`pob matrix`) & 4-Dim Inflation Audit (`pob audit`)**: Compare `Original`, `Pinnacle`, `Uber`, `FlasksOff`, and custom `Label:Pinnacle,key=val` scenarios in one atomic pass, or strip Config/Flask/Skill/Party water automatically.
-- **3-Baseline A/B Comparison (`pob compare`) & Transplant (`pob borrow`)**: Compare `main` vs `ref` across Original, Target-Env-Aligned, and Dewatered Pinnacle baselines with tree/skill/gear diffs.
-- **0ms Local Offline Game Data (`pob data`)**: Pure-Python PoB Lua parser + SQLite/FTS5 index (`gem`, `unique` incl. Foulborn, `mod` incl. Bench/Eldritch/Corrupted, `base`, `translate` EN<->ZH) running daemon-free in `<15ms`.
-- **External Economy, Meta, PoEDB & Wiki (`pob price` / `pob meta` / `pob poedb` / `pob wiki`)**:
-  - `poe.ninja`: 52 overview categories, `--variant`, `--limit`, `--detailed` (corrupted/21-20 gems/links/listings via stash API), `pob meta` (`build-index-state`), and fixed character URL import (`Name-1234`).
-  - `poedb.tw`: 24h CN/US autocomplete index + 12h cleaned pages with `DropChance` weights, `ModFamilyList`, and `fossil_no` tags.
-- **Official PoE1 Trade & Crafting Bench (`pob trade` / `pob bench`)**:
-  - Read-only official trade search with 0ms offline local `TradeSiteStats.lua` resolution (bilingual EN/ZH + slot-aware `(Local)` routing), GGG dynamic `X-Rate-Limit-*` persistence, 3.30 instant buyout (`--status available`) & `chaos_equiv` pricing, Harvest same-tier conversion (`--allow-conversion` with same-group conflict guards), and single-snapshot batch headless PoB DPS/EHP verification (`trade_eval_items`). See [docs/TRADE.md](docs/TRADE.md).
-  - Dual-source crafting bench lookup (`pob bench list|suggest`) driven by auto-updating `ModMaster.lua` (0 unknown affixes) with a compact offline cost/unlock overlay and ready-to-verify `{crafted}` lines.
+它会给你诸多优化建议，还能找找对你最有提升的装备，直接提供市集购买链接
+
+甚至还能帮你找永恒珠宝！
 
 ---
 
-## Installation (Windows x64)
+## 该怎么安装？
 
-No Python installation is required for the standalone Windows binary.
+直接告诉你的agent：
 
-### Option 1: One-Click PowerShell Installer (Recommended, No Python Needed)
+> 我要安装 exilemoulei/pob4agents ，请帮我装好所有依赖
 
-```powershell
-irm https://raw.githubusercontent.com/exilemoulei/pob-agent-tools/main/install.ps1 | iex
-```
+以后出新版本不用重装，让agent帮你跑一下 `pob self-update` 就行
 
-If GitHub requires a proxy on your network:
+## 什么是agent？
 
-```powershell
-$env:POB_PROXY = "http://127.0.0.1:7890"
-irm https://raw.githubusercontent.com/exilemoulei/pob-agent-tools/main/install.ps1 | iex
-```
+最常见的客户端有Deepseek Harness (DSH)、Codex (ChatGPT)、Claude Code
 
-Re-run the same command anytime to upgrade to the latest release (verifies SHA256 and stops the old daemon automatically).
+如果你不知道这是什么，去b站搜搜教程吧
 
-### Option 2: Scoop Package Manager (Easy Updates)
+## 我该怎么用？
 
-This repository doubles as a Scoop bucket (`bucket/pob.json`, auto-updated on every tagged release):
+安装完成之后，新开对话窗，给它提供你的 poe.ninja / 国际服或国服官网角色链接 / pob导出链接，它都能认
 
-```powershell
-scoop bucket add pob https://github.com/exilemoulei/pob-agent-tools
-scoop install pob
+（国服看下面导入 Cookie 的方法。另外官网接口拿不到盗贼和万神殿，记得确认下）
 
-# Update to new releases anytime:
-scoop update pob
-```
+尽量选择聪明点的模型（推荐Neon/Opus/Sol），不过你只有大肥鱼也没关系
 
-### Option 3: Portable Zip from GitHub Releases
+可以多告诉它你的角色是什么bd、有什么特别容易搞错的核心机制
 
-Download `pob-vX.Y.Z-windows-x64.zip` from [GitHub Releases](https://github.com/exilemoulei/pob-agent-tools/releases/latest), unzip it, and add the folder containing `pob.exe` to your `PATH`.
+让它多问问你，实测会让准确性大幅提升！
 
-### Option 4: Python Package (`uv` / `pipx` / `pip`, Python 3.11+)
+它会自动挤掉bd水分，还原真实数据
 
-```powershell
-# With uv (recommended for Python users)
-uv tool install "git+https://github.com/exilemoulei/pob-agent-tools.git#subdirectory=pob_cli"
+但有时候也会做得太过火，请务必确认一下
 
-# Or with pipx / pip (non-editable, from a release wheel or git tag)
-pipx install "git+https://github.com/exilemoulei/pob-agent-tools.git@v0.3.0#subdirectory=pob_cli"
-pip install "https://github.com/exilemoulei/pob-agent-tools/releases/download/v0.3.0/pob_cli-0.3.0-py3-none-any.whl"
-```
+对话不宜跑太长，差不多到四五轮就建议新开一个窗口
 
-### First-Time Engine Setup
+跑不出来也不用急，poe是个很复杂的游戏，请多多反馈给我们
 
-After installing `pob`, download the headless PoB engine once (or import an existing local `PobTools` directory):
+我们会尽量多做支持，争取让agent能理解大部分的bd
 
-```powershell
-pob --version
-pob bootstrap                                  # Direct GitHub download
-pob bootstrap --proxy http://127.0.0.1:7890    # Via HTTP/SOCKS5 proxy
-pob bootstrap --from-dir "D:\path\to\PobTools" # Offline seed from local PobTools
-```
+## 我想让它帮我找装备，还有你说的永恒珠宝
 
-Supported environment variables: `POB_ROOT`, `POB_RUNTIME_DIR` (defaults to `%LOCALAPPDATA%\pob-agent-tools`), `POB_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`, `POB_GITHUB_MIRROR`, `POB_OFFLINE=1`.
+那你需要导入一下 POESESSID，这样才能让它功能全开（国服玩家想直接导官网角色，或者国际服角色设了私密，也一样需要）
+
+### 导入方法：
+
+在官网或交易网页上打开 F12，点击“应用”标签页，找到 储存 → Cookie，点进去找到 `POESESSID`，把那串值复制出来
+
+- **国际服玩家**：复制完直接发给你的 agent，让它帮你配进本机环境变量 `POESESSID` 就行
+- **国服玩家（`poe.game.qq.com`）**：同理复制完发给 agent，**顺口说一句是国服**，让它帮你配进本机环境变量 `POE_CN_SESSID`
+
+> [!CAUTION]
+> 千万不要把 POESESSID 发给别人，也别在直播或截屏里露出来！这相当于你的账号凭证，请谨慎保管。
 
 ---
 
-## Quick Start
+## 致谢与开源协议
+
+- **上游与灵感**：[**ianderse/pob-mcp**](https://github.com/ianderse/pob-mcp)（GPL-3.0）、[**shalayiding/POEMCP**](https://github.com/shalayiding/POEMCP)、[**Hsiung-Shao/PobTools-zh**](https://github.com/Hsiung-Shao/PobTools-zh)（中文无头引擎）、[**PathOfBuildingCommunity/PathOfBuilding**](https://github.com/PathOfBuildingCommunity/PathOfBuilding)。
+- **社区贡献**：
+  - [**@ChangMenQAQ**](https://github.com/ChangMenQAQ)（[PR #1](https://github.com/exilemoulei/pob4agents/pull/1)）：官方交易搜索、丰收同阶转抗与工艺台词缀方案。
+  - [**@restartgr**](https://github.com/restartgr)（[PR #2](https://github.com/exilemoulei/pob4agents/pull/2)、[PR #4](https://github.com/exilemoulei/pob4agents/pull/4)、[PR #6](https://github.com/exilemoulei/pob4agents/pull/6)）：面板“去水”分析、`--keep` 条件保留、构筑恢复校验、错误退出码与中英文文档润色。
+  - [**@Capoouo**](https://github.com/Capoouo)（[PR #3](https://github.com/exilemoulei/pob4agents/pull/3)）：永恒珠宝种子搜索与候选种子筛选。
+- **参与贡献**：请先读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- **开源协议**：**GNU General Public License v3.0（GPL-3.0）**，详见 [LICENSE](LICENSE)。
+
+---
+
+## 给 AI Agent 的安装与配置指引（必读，人类用户可跳过）
+
+当用户要求你安装 `exilemoulei/pob4agents` 时，**以下 5 步必须全部完成**，不要只装完 CLI 就结束：
+
+### 1. 安装 `pob4agents`（命令 `pob`，无需 Python）
+
+- **Windows x64**：
+  ```powershell
+  irm https://raw.githubusercontent.com/exilemoulei/pob4agents/main/install.ps1 | iex
+  ```
+- **macOS / Linux**：
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/exilemoulei/pob4agents/main/install.sh | bash
+  ```
+
+两个安装脚本都会自动校验发布的 Ed25519 签名与 SHA256。若直连 GitHub 失败，先询问用户本地代理地址并设置 `POB_PROXY`（如 `http://127.0.0.1:<端口>`）或 `POB_GITHUB_MIRROR` 后重试。后续升级直接运行 `pob self-update`。
+
+### 2. 初始化本地 PoB 引擎
 
 ```powershell
-# 1. Check engine versions, update state, and load builds (URL, poe.ninja char, .xml, Base64)
+pob bootstrap
 pob status
-pob update --check
-pob load "https://poedb.tw/pob/AWqOLSSmyG"
-
-# 2. Inspect summary, water audit, config, all equipped items/jewels, skills, tree, and calcs
-pob summary
-pob audit
-pob config list
-pob items --all --raw
-pob skills --group main
-pob calc "Average Hit"
-
-# 3. What-if simulations (add --apply to persist; pob undo / pob redo to revert)
-pob item edit --slot "Ring 1" --replace-mod "Cold Resistance" "+45% to Lightning Resistance"
-pob item db "Mageblood" --equip
-pob config set --append-mods "+100 to maximum Life"
-pob tree set-class Witch Necromancer
-pob matrix Original Pinnacle Uber FlasksOff
-
-# 4. Rankings, 3-baseline comparison, and gear/skill transplant
-pob rank-nodes --stat CombinedDPS --max-dist 4 --top 10
-pob rank-gems --group main --top 10
-pob compare "https://poedb.tw/pob/AWqOLSSmyG"
-pob borrow --item-slot "Weapon 1,Amulet" --skill-group main
-
-# 5. Local 0ms game data & external poedb / poe.ninja / wiki queries
-pob data mod "Life Converted to Energy Shield"
-pob data gem "Dark Bargain"
-pob data translate "喋血之刃"
-pob poedb "傲视头冠" --mods
-pob price "Forbidden Flame" --variant "Necromancer" --limit 50
-pob price "Empower Support" --detailed
-pob meta --top 15
-pob wiki "Eldritch Battery"
-
-# 6. Official PoE1 trade search (read-only, PoB-verified) & crafting bench fallback
-pob trade stats "攻击速度" --slot weapon1
-pob trade search --slot gloves --budget 20 --stat "冰霜抗性=40" --want "Attack Speed" --allow-conversion --pob auto
-pob trade search --slot gloves --budget 10 --stat "最大生命=60" --open-suffix --pob auto
-pob bench suggest --slot gloves --stat "冰霜抗性"
 ```
 
-Pass `--json` to any command for structured, color-stripped JSON output. Pass `--offline` before a subcommand (or set `POB_OFFLINE=1`) to skip GitHub update checks. See [AGENTS.md](AGENTS.md) for the compact agent cheat-sheet.
+- 需代理时加 `--proxy http://127.0.0.1:<端口>`；若本机已有 `PobTools` 目录，可用 `pob bootstrap --from-dir "<本地路径>"` 离线导入。
+- macOS / Linux 独立版会自动使用内置或经 Ed25519 校验下载的预编译 LuaJIT 运行时，无需手动编译。
+- 确认 `pob status` 返回版本与引擎就绪状态后再进入下一步。
 
----
+### 3. 挂载 Skill（必做，不可跳过）
 
-## Development & Releasing
+`install.ps1` / `install.sh` 只安装 `pob` 可执行文件，**不会**自动复制 Skill 和 Hook。请先拉取本仓库（例如 `git clone --depth 1 https://github.com/exilemoulei/pob4agents.git` 到临时目录），将整个 [`skills/pob`](skills/pob) 目录（含 `SKILL.md` 及 `references/`）完整复制到当前客户端的技能目录：
 
-```powershell
-# Local editable dev install
-pip install -e "./pob_cli[dev]"
+| 客户端 | 目标路径 |
+| :--- | :--- |
+| Claude Code | `~/.claude/skills/pob` |
+| Codex / Antigravity / OpenCode / 通用 | `~/.agents/skills/pob` |
+| DeepSeek Harness (DSH) | 对应客户端的 `skills/pob` 目录 |
 
-# Run tests
-python -m pytest pob_cli/tests -v
+后续所有《流放之路》1 构筑对话，必须先读取并遵守 [`skills/pob/SKILL.md`](skills/pob/SKILL.md)。
 
-# Build standalone Windows binary locally
-pyinstaller --noconfirm --clean pob_cli/packaging/pob.spec
-```
+### 4. 接入防幻觉护栏 Hook（必做，与 Skill 配套使用）
 
-**Tag-driven releases** (`.github/workflows/release.yml`):
-1. Bump `__version__` in `pob_cli/src/pob_cli/__init__.py` and commit to `main`.
-2. Tag and push: `git tag v0.3.0 && git push origin v0.3.0`.
-3. GitHub Actions (`windows-latest`) validates the tag, runs tests, builds & smoke-tests `pob-v0.3.0-windows-x64.zip` + wheel/sdist + `SHA256SUMS.txt`, publishes the GitHub Release, and auto-updates `bucket/pob.json` for Scoop.
+从仓库 [`hooks/`](hooks) 目录安装当前客户端对应的钩子，防止跳过 `pob` 瞎编数值、翻查敏感环境变量或混入 PoE2 / 旧版本规则：
 
-## License
+| 客户端 | 安装方式 |
+| :--- | :--- |
+| Antigravity | 将 [`hooks/hooks.json`](hooks/hooks.json) 复制或合并到 `.agents/hooks.json` |
+| Claude Code | 将 [`hooks/claude-hooks.json`](hooks/claude-hooks.json) 合并到 `.claude/settings.json` |
+| DeepSeek Harness (DSH) | 启用 `dsh-pob-assistant` 插件 |
 
-Licensed under the **GNU General Public License v3.0 (GPL-3.0)** — see [LICENSE](LICENSE) for details.
+若当前客户端不支持上述 Hook 机制，明确告知用户，但必须保证第 3 步的 Skill 已安装到位。
+
+### 5. 收尾验收与用户 Cookie 安全规则
+
+- **完成验收**：确认 `pob status` 正常、`skills/pob` 已落盘、对应 Hook 已接入后，**提醒用户新开一个对话窗口**，让新装的 Skill 与 Hook 生效。
+- **收到用户发来的 Cookie 时**：
+  - 国际服交易 / 国际服私密角色 → 写入本机用户级环境变量 **`POESESSID`**（Windows PowerShell：`[Environment]::SetEnvironmentVariable("POESESSID", "<值>", "User")`；macOS/Linux 写入 shell 配置文件）。
+  - 国服官网（`poe.game.qq.com`）角色导入 → 写入本机用户级环境变量 **`POE_CN_SESSID`**（或完整 `POE_CN_COOKIE`）。
+  - **严禁**写入命令行参数、仓库文件或日志；**严禁**执行 `Get-ChildItem Env:` / `printenv` 等命令读取或打印环境变量；回复中不要复读明文。确认凭证是否生效只查 `pob status`。
+
+<details>
+<summary>备用安装方式（Scoop / PyPI / Releases 便携包）与文档索引（主流程卡住时展开）</summary>
+
+### 备用安装方式
+
+- **Windows Scoop**：
+  ```powershell
+  scoop bucket add pob https://github.com/exilemoulei/pob4agents
+  scoop install pob
+  ```
+- **PyPI 安装（Python 3.11+）**：
+  ```powershell
+  uv tool install pob4agents
+  # 或 pip install pob4agents
+  ```
+- **GitHub Releases 便携包**：前往 [Releases 最新正式版](https://github.com/exilemoulei/pob4agents/releases/latest) 下载对应平台压缩包（附 `SHA256SUMS.txt` 与 Ed25519 签名 `SHA256SUMS.txt.sig`），解压后将含 `pob` 的目录加入 `PATH`。
+- **macOS / Linux 源码编译兜底**：若预编译运行时不适配当前系统，可用 [`pob_cli/packaging/build_posix_runtime.sh`](pob_cli/packaging/build_posix_runtime.sh) 编译。
+
+### 常用排障环境变量与仓库文档
+
+- 常用环境变量：`POB_PROXY`（网络代理）、`POB_GITHUB_MIRROR`（GitHub 镜像前缀，替换文件时仍校验哈希/签名）、`POB_OFFLINE=1`（跳过更新检查）、`POESESSID`（国际服交易/私密资料）、`POE_CN_SESSID`（国服官网角色）。
+- 文档总目录：[`docs/README.md`](docs/README.md)
+- 全部子命令与参数：[`docs/guides/commands.md`](docs/guides/commands.md)
+- 交易搜索与工艺台细则：[`docs/guides/trade.md`](docs/guides/trade.md)
+- 架构与贡献指南：[`CONTRIBUTING.md`](CONTRIBUTING.md)、[`AGENTS.md`](AGENTS.md)
+
+</details>

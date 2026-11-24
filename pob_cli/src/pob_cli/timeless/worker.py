@@ -1,0 +1,298 @@
+"""Throwaway PoB engine wrapper, build tree inspection, and search pre-validation."""
+
+from __future__ import annotations
+
+import threading
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
+from ..errors import CrossGameHallucinationError
+from ..guardrails import GuardrailScope, check_input, check_poe2_timeless_jewel
+from .lut import (
+    FLAT_TABLES,
+    RESET_EVERY,
+    STAT_KEYS,
+    _extract_allocated_notable_names,
+    _extract_xml_allocated_nodes,
+    _json_safe_stat,
+    _local_jewel_name,
+    _resolve_conqueror,
+    _resolve_game_dir,
+    _resolve_jewel_static,
+    _worker_batch,
+    load_jewels,
+)
+
+
+class Engine:
+    """One throwaway PoB engine holding the build; recalculates it with a given seed socketed."""
+
+    def __init__(
+        self,
+        code: str,
+        template: str,
+        slot: str,
+        clear: Sequence[str] = (),
+        pob_dir: Path | str | None = None,
+        runtime_dir: Path | str | None = None,
+    ) -> None:
+        import pob_cli.timeless as _tl
+
+        self.code = code
+        self.template = template
+        self.slot = slot
+        self.clear: Sequence[str] = list(clear)
+        self.count = 0
+        self.pob_dir = Path(pob_dir) if pob_dir else None
+        self.runtime_dir = Path(runtime_dir) if runtime_dir else None
+        self._loaded = False
+        self._cleared_slots: tuple[str, ...] = ()
+        self.worker = _tl.BridgeWorker("test", pob_dir=self.pob_dir, runtime_dir=self.runtime_dir)
+        self._start_worker()
+
+    def _start_worker(self) -> None:
+        try:
+            if self.code:
+                try:
+                    self.worker.start(restore_code=self.code)
+                except TypeError:
+                    self.worker.start()
+                    return
+                if getattr(self.worker, "last_good_code", None) == self.code:
+                    self._loaded = True
+            else:
+                self.worker.start()
+        except BaseException:
+            try:
+                self.worker.stop()
+            except Exception:
+                pass
+            raise
+
+    def ensure_loaded(self) -> None:
+        if not getattr(self, "_loaded", False):
+            self.reset()
+
+    def reset(self) -> None:
+        calls: list[tuple[str, dict[str, Any]]] = [
+            ("import_code", {"code": self.code, "mode": "replace"}),
+        ]
+        for slot in self.clear:  # other Historic jewels: the game allows one, PoB would count them all
+            calls.append(("unequip_slot", {"slotName": slot}))
+        _worker_batch(self.worker, calls, timeout=120.0)
+        self.count = 0
+        self._loaded = True
+        self._cleared_slots = tuple(self.clear)
+
+    def read(self) -> dict[str, Any]:
+        stats = self.worker.call("get_stats", {}, timeout=60).get("stats") or {}
+        return {key: _json_safe_stat(stats.get(key)) for key in STAT_KEYS}
+
+    def stats(self, seed: int) -> dict[str, Any]:
+        loaded = getattr(self, "_loaded", False)
+        need_reset = (not loaded) or (self.count > 0 and self.count % RESET_EVERY == 0)
+        pending_clear: list[str] = []
+        if need_reset:
+            self.reset()
+        else:
+            cleared = getattr(self, "_cleared_slots", ())
+            pending_clear = [s for s in self.clear if s not in cleared]
+        self.count += 1
+        # not str.format: item lines may carry braces of their own, e.g. `{crafted}`
+        raw = self.template.replace("{seed}", str(seed))
+        calls: list[tuple[str, dict[str, Any]]] = [
+            ("unequip_slot", {"slotName": slot}) for slot in pending_clear
+        ]
+        calls.append(("add_item", {"raw": raw, "equip": True, "slotName": self.slot}))
+        calls.append(("get_stats", {}))
+        responses = _worker_batch(self.worker, calls, timeout=60.0)
+        if pending_clear:
+            self._cleared_slots = tuple(self.clear)
+        stats = (responses[-1] if responses else {}).get("stats") or {}
+        return {key: _json_safe_stat(stats.get(key)) for key in STAT_KEYS}
+
+    def stop(self) -> None:
+        self.worker.stop()
+
+
+def describe_worker(
+    worker: Any,
+    pob_dir: Path | str | None = None,
+    runtime_dir: Path | str | None = None,
+) -> dict[str, Any]:
+    """Jewel types (English + local display name) and allocated jewel sockets on a live worker."""
+    game_dir = _resolve_game_dir(worker, pob_dir=pob_dir, runtime_dir=runtime_dir)
+    jewels = load_jewels(game_dir)
+    dialog, _closed, tree_state = _worker_batch(
+        worker,
+        [("tj_open", {}), ("tj_close", {}), ("get_tree_state", {})],
+        timeout=60.0,
+    )
+    allocated = {int(x) for x in ((tree_state or {}).get("allocatedNodes") or [])}
+    charm_ids = {
+        int(s["nodeId"])
+        for s in ((tree_state or {}).get("sockets") or [])
+        if isinstance(s, dict) and s.get("charm") and s.get("nodeId") is not None
+    }
+    jewel_opts = ((dialog or {}).get("jewel") or {}).get("options") or []
+    dialog_local = {
+        str(o["label"]): str(o.get("labelZh") or o["label"])
+        for o in jewel_opts
+        if isinstance(o, dict) and o.get("label")
+    }
+    socket_opts = ((dialog or {}).get("socket") or {}).get("options") or []
+    socket_ids = (dialog or {}).get("socketIds") or []
+    sockets = [
+        {"nodeId": int(node), "label": opt.get("label"), "labelLocal": opt.get("labelZh")}
+        for node, opt in zip(socket_ids, socket_opts, strict=False)
+        if isinstance(node, (int, float)) and int(node) > 0 and int(node) in allocated and int(node) not in charm_ids
+    ]
+    return {
+        "jewels": [
+            {
+                "name": name,
+                "nameLocal": _local_jewel_name(name, dialog_local),
+                "seeds": len(j["seeds"]),
+                "conquerors": list(j["conquerors"]),
+                "grouped": name in FLAT_TABLES,
+            }
+            for name, j in jewels.items()
+        ],
+        "sockets": sockets,
+    }
+
+
+def describe(
+    code: str,
+    pob_dir: Path | str | None = None,
+    runtime_dir: Path | str | None = None,
+) -> dict[str, Any]:
+    """Jewel types (English + this PoB's display language) and the build's allocated jewel sockets."""
+    import pob_cli.timeless as _tl
+
+    engine_kwargs = {k: v for k, v in (("pob_dir", pob_dir), ("runtime_dir", runtime_dir)) if v}
+    engine = _tl.Engine(code, "", "", **engine_kwargs)
+    try:
+        if hasattr(engine, "ensure_loaded"):
+            engine.ensure_loaded()
+        else:
+            engine.reset()
+        return describe_worker(engine.worker, pob_dir=pob_dir, runtime_dir=runtime_dir)
+    finally:
+        engine.stop()
+
+
+def _resolve_jewel(
+    name: str,
+    jewels: dict[str, Any],
+    engine: Engine,
+    dialog: dict[str, Any] | None = None,
+) -> str:
+    """Resolve English name, static Chinese display name/alias, or PoB's localized display name."""
+    static_match = _resolve_jewel_static(name, jewels)
+    if static_match is not None:
+        return static_match
+    query = name.strip()
+    q_low = query.lower()
+    if dialog is None:
+        dialog, _closed = _worker_batch(engine.worker, [("tj_open", {}), ("tj_close", {})], timeout=60.0)
+    options = ((dialog or {}).get("jewel") or {}).get("options") or []
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        label = option.get("label")
+        label_zh = option.get("labelZh")
+        if label in jewels and (
+            query in (label_zh, label)
+            or (isinstance(label_zh, str) and label_zh.strip().lower() == q_low)
+            or (isinstance(label, str) and label.strip().lower() == q_low)
+        ):
+            return str(label)
+    raise ValueError(f"Unknown timeless jewel {name!r}. Known: {', '.join(jewels)}")
+
+
+def _seed_nodes(engine: Engine, xml: str, index: dict[int, int], code: str = "") -> list[int]:
+    """Notables whose table entry can change this build: conquered by the socketed jewel AND either allocated
+    or granted by an item ("Allocates X", e.g. an anoint) - PoB uses the conquered version for those too."""
+    state = engine.worker.call("get_tree_state", {}, timeout=60)
+    conquered = {int(k) for k, v in (state.get("overrides") or {}).items() if v.get("why") == "conquered"}
+    used = {int(x) for x in (state.get("allocatedNodes") or [])}
+    granted = _extract_allocated_notable_names(xml, code or getattr(engine, "code", ""))
+    if granted:
+        tree = engine.worker.get_cached_tree_data(state.get("treeVersion")).get("nodes", {})
+        used |= {int(node) for node, info in tree.items() if info.get("name") in granted}
+    return sorted(node for node in conquered & used if node in index)
+
+
+def _prevalidate_search(
+    jewel_name: str,
+    conqueror: str | None,
+    mods: Sequence[str],
+    stat: str,
+    socket: int,
+    xml: str,
+    pob_dir: Path | str | None,
+    runtime_dir: Path | str | None,
+) -> tuple[Path | None, dict[str, dict[str, Any]] | None, str | None]:
+    """Run guardrails and fast pre-spawn validation before launching a throwaway engine."""
+    import pob_cli.timeless as _tl
+
+    check_poe2_timeless_jewel(jewel_name, expected_game="poe1")
+    check_input(jewel_name, scope=GuardrailScope.DATA_QUERY, expected_game="poe1")
+    for mod in mods:
+        check_input(mod, scope=GuardrailScope.ITEM_RAW, expected_game="poe1")
+
+    if stat not in STAT_KEYS:
+        raise ValueError(f"Unknown stat {stat!r}. Known: {', '.join(STAT_KEYS)}")
+    if socket <= 0:
+        raise ValueError(f"Node {socket} is not an allocated jewel socket of this build (see `pob timeless list`).")
+
+    # Fast pre-spawn validation (~5s saved): resolve jewel/conqueror (static English + Chinese aliases)
+    # and reject provably unallocated sockets before spawning a ~1.3 GB throwaway PoB engine.
+    pre_game_dir: Path | None = None
+    if pob_dir is not None:
+        pre_game_dir = _resolve_game_dir(None, pob_dir=pob_dir, runtime_dir=runtime_dir)
+    elif getattr(_tl.Engine, "game_dir", None) is not None:
+        pre_game_dir = Path(_tl.Engine.game_dir)
+    else:
+        try:
+            pre_game_dir = _resolve_game_dir(None, runtime_dir=runtime_dir)
+        except CrossGameHallucinationError:
+            raise
+        except Exception:
+            pre_game_dir = None
+
+    pre_jewels: dict[str, dict[str, Any]] | None = None
+    if pre_game_dir is not None and (pre_game_dir / "Data" / "Uniques" / "jewel.lua").is_file():
+        pre_jewels = load_jewels(pre_game_dir)
+        if pre_jewels:
+            pre_name = _resolve_jewel_static(jewel_name, pre_jewels)
+            if pre_name is not None:
+                conqueror = _resolve_conqueror(conqueror, pre_jewels[pre_name], pre_name)
+            elif jewel_name.strip().isascii():
+                raise ValueError(f"Unknown timeless jewel {jewel_name!r}. Known: {', '.join(pre_jewels)}")
+
+    xml_nodes = _extract_xml_allocated_nodes(xml)
+    if xml_nodes is not None and socket not in xml_nodes:
+        raise ValueError(f"Node {socket} is not an allocated jewel socket of this build (see `pob timeless list`).")
+
+    return pre_game_dir, pre_jewels, conqueror
+
+
+def _abort_engines(
+    engines_lock: threading.Lock,
+    active_engines: list[Engine],
+    stop: threading.Event,
+) -> None:
+    with engines_lock:
+        stop.set()
+        snapshot = list(active_engines)
+    for eng in snapshot:
+        worker = getattr(eng, "worker", None)
+        abort_fn = getattr(worker, "abort", None)
+        if callable(abort_fn):
+            try:
+                abort_fn()
+            except Exception:
+                pass

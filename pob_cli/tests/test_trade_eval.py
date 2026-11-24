@@ -630,3 +630,841 @@ def test_format_report_with_pob_conversions_bench_and_escaping() -> None:
     assert decoded[0]["conversions"][0]["tier_range"] == "46-48"
     assert decoded[1]["pob"] is None
     assert decoded[1]["pob_error"] == "Timed out evaluating item"
+
+
+# ---------------------------------------------------------------------------
+# 6. Pipelined Snapshot, Analyzer, Comparator & Fast In-Place eval_trade_items
+# ---------------------------------------------------------------------------
+
+
+class _FakeBatchWorker:
+    """In-memory mock BridgeWorker tracking both single `call()` and pipelined `call_batch()` calls."""
+
+    def __init__(
+        self,
+        *,
+        support_batch: bool = True,
+        translate_enabled: bool | None = True,
+        stats: dict[str, Any] | None = None,
+        lock: Any | None = None,
+    ) -> None:
+        import threading
+
+        self.lock = lock if lock is not None else threading.RLock()
+        self.caps = {"translateToggle": True}
+        self.translate_enabled = translate_enabled
+        self.hello_info = {"pobVersion": "2.68.1"}
+        self.single_calls: list[tuple[str, dict[str, Any]]] = []
+        self.batch_calls: list[list[tuple[str, dict[str, Any]]]] = []
+        self.all_methods: list[str] = []
+        self._support_batch = support_batch
+        self._code_ver = 0
+        self._current_code = "BASE_CODE"
+        self.last_good_code = "ORIG_LAST_GOOD"
+        self._base_stats = dict(
+            stats
+            or {
+                "CombinedDPS": 1_000_000.0,
+                "TotalDPS": 1_000_000.0,
+                "AverageDamage": 200_000.0,
+                "Speed": 5.0,
+                "TotalEHP": "inf",
+                "Life": 4000.0,
+                "EnergyShield": 1000.0,
+                "FireResist": 75.0,
+                "ColdResist": 75.0,
+                "LightningResist": 75.0,
+                "ChaosResist": 20.0,
+                "PhysicalMaximumHitTaken": 18000.0,
+                "FireMaximumHitTaken": 40000.0,
+                "ColdMaximumHitTaken": 35000.0,
+                "LightningMaximumHitTaken": 38000.0,
+                "ChaosMaximumHitTaken": "inf",
+            }
+        )
+        self._state_stats = dict(self._base_stats)
+        self._next_item_id = 100
+        self._items: dict[int, dict[str, Any]] = {
+            1: {"id": 1, "name": "Old Ring", "title": "Old Ring", "baseName": "Ruby Ring", "type": "Ring", "rarity": "RARE"},
+            2: {"id": 2, "name": "Old Bow", "title": "Old Bow", "baseName": "Thicket Bow", "type": "Bow", "rarity": "RARE"},
+        }
+        self._slots: list[dict[str, Any]] = [
+            {"name": "Ring 1", "label": "Ring 1", "selItemId": 1, "shown": True},
+            {"name": "Ring 2", "label": "Ring 2", "selItemId": None, "shown": True},
+            {"name": "Weapon 1", "label": "Weapon 1", "selItemId": 2, "shown": True},
+            {"name": "Flask 1", "label": "Flask 1", "isFlask": True, "active": True, "selItemId": None, "shown": True},
+            {"name": "Jewel 1000", "label": "Jewel 1", "nodeId": 1000, "socketIndex": 1, "selItemId": None, "shown": True},
+        ]
+        self._tree_nodes: dict[str, dict[str, Any]] = {
+            "1000": {"id": 1000, "name": "Jewel Socket", "type": "Socket", "x": 0.0, "y": 0.0, "stats": []},
+            "1001": {"id": 1001, "name": "Close Notable", "nameZh": "近点核心", "type": "Notable", "x": 500.0, "y": 0.0, "stats": ["+30 to maximum Life"]},
+            "1002": {"id": 1002, "name": "Medium Keystone", "type": "Keystone", "x": 1200.0, "y": 0.0, "stats": ["Chaos Inoculation"]},
+            "1003": {"id": 1003, "name": "Large Notable", "type": "Notable", "x": 1700.0, "y": 0.0, "stats": ["+20% to Fire Resistance"]},
+            "1004": {"id": 1004, "name": "Very Large Notable", "type": "Notable", "x": 2200.0, "y": 0.0, "stats": ["10% increased Attack Speed"]},
+            "1005": {"id": 1005, "name": "Massive Notable", "type": "Notable", "x": 2700.0, "y": 0.0, "stats": ["+50 to Intelligence"]},
+            "1006": {"id": 1006, "name": "Too Far Notable", "type": "Notable", "x": 4000.0, "y": 0.0, "stats": ["+10 to Strength"]},
+            "2000": {
+                "id": 2000,
+                "name": "Life Mastery",
+                "nameZh": "生命专精",
+                "type": "Mastery",
+                "x": 600.0,
+                "y": 600.0,
+                "stats": [],
+                "masteryEffects": [
+                    {"effect": 55001, "stats": ["+50 to maximum Life"], "statsZh": ["+50 最大生命"]},
+                    {"effect": 55002, "stats": ["15% increased maximum Life if no Life Modifiers on Body Armour"], "statsZh": ["胸甲无生命词缀时最大生命提高 15%"]},
+                    {"effect": 55003, "stats": ["10% more Maximum Life"], "statsZh": ["最大生命额外提高 10%"]},
+                ],
+            },
+            "3000": {"id": 3000, "name": "Arcane Blessing", "type": "Notable", "asc": "Hierophant", "x": 100.0, "y": 100.0, "stats": ["Gain Arcane Surge"]},
+        }
+        self._allocated = {1000, 1001, 3000}
+        self._code_snapshots: dict[str, dict[str, Any]] = {"BASE_CODE": dict(self._base_stats)}
+
+    def get_cached_tree_data(self, tree_version: str | None = None) -> dict[str, Any]:
+        return {"treeVersion": tree_version or "3_26", "nodes": self._tree_nodes}
+
+    def _exec(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        self.all_methods.append(method)
+        if method == "get_stats":
+            return {"stats": dict(self._state_stats)}
+        if method == "get_sidebar":
+            return {"rows": [], "warnings": [{"text": "Low Dex"}]}
+        if method == "get_build_info":
+            return {"level": 95, "className": "Templar", "ascendClassName": "Hierophant", "treeVersion": "3_26", "points": {"used": 110, "usedMax": 123, "ascUsed": 8, "ascMax": 8}}
+        if method == "get_build_header":
+            return {"mainSocketGroup": {"index": 1, "list": ["Group 1"]}}
+        if method == "list_skills":
+            return {
+                "mainSocketGroup": 1,
+                "groups": [
+                    {
+                        "index": 1,
+                        "isMain": True,
+                        "label": "Main",
+                        "enabled": True,
+                        "gems": [
+                            {"index": 1, "name": "Arc", "level": 20, "quality": 20, "enabled": True, "support": False},
+                            {"index": 2, "name": "Spell Echo", "level": 20, "quality": 20, "enabled": True, "support": True},
+                        ],
+                    }
+                ],
+            }
+        if method == "list_specs":
+            return {"activeSpec": 1, "specs": [{"index": 1, "title": "Default"}]}
+        if method == "list_items":
+            return {"activeItemSetId": 1, "itemSets": [], "items": list(self._items.values()), "slots": [dict(s) for s in self._slots]}
+        if method == "item_raw":
+            iid = int(params["id"])
+            return {"raw": f"Rarity: RARE\nItem #{iid}\nRuby Ring\nImplicits: 0\n+50 to maximum Life"}
+        if method == "gem_tooltip":
+            return {"dps": {"pct": 12.5, "delta": 125000.0}}
+        if method == "gem_candidate_tooltip":
+            return {"dps": {"pct": 15.0, "delta": 150000.0}}
+        if method == "get_gem_options":
+            return {"sortGemsByDPS": False, "sortGemsByDPSField": "CombinedDPS"}
+        if method == "set_gem_options":
+            return {"ok": True}
+        if method == "gem_search":
+            return {
+                "dpsField": "CombinedDPS",
+                "baseDps": 1_000_000.0,
+                "gems": [
+                    {"gemId": f"gem_{i}", "name": f"Support {i}", "dps": 1_100_000 + i * 1000}
+                    for i in range(6)
+                ],
+            }
+        if method == "get_tree_state":
+            return {
+                "treeVersion": "3_26",
+                "className": "Templar",
+                "ascendClassName": "Hierophant",
+                "points": {"used": 110, "usedMax": 123},
+                "allocatedNodes": sorted(self._allocated),
+                "dynamicNodes": [],
+                "overrides": {},
+                "sockets": [{"nodeId": 1000}],
+            }
+        if method == "node_hover":
+            nid = int(params["id"])
+            cost = 0 if nid in self._allocated else (nid % 7) + 1
+            return {"id": nid, "allocated": nid in self._allocated, "cost": cost, "path": [1000, nid] if cost else [], "depends": [nid] if nid in self._allocated else []}
+        if method == "list_config":
+            return {
+                "activeConfigSetId": 1,
+                "configSets": [{"id": 1, "title": "Default"}],
+                "customMods": [],
+                "sections": [
+                    {
+                        "name": "General",
+                        "nameZh": "常规",
+                        "items": [
+                            {
+                                "var": "enemyIsBoss",
+                                "label": "Is the enemy a Boss?",
+                                "labelZh": "敌人是否为首领",
+                                "type": "list",
+                                "value": "None",
+                                "visible": True,
+                                "list": [
+                                    {"val": "None", "label": "Standard Boss"},
+                                    {"val": "Pinnacle", "label": "Guardian/Pinnacle Boss"},
+                                    {"val": "Uber", "label": "Uber Pinnacle Boss"},
+                                ],
+                            },
+                            {
+                                "var": "usePowerCharges",
+                                "label": "Do you use Power Charges?",
+                                "labelZh": "是否使用暴击球",
+                                "type": "check",
+                                "value": True,
+                                "visible": True,
+                            },
+                            {
+                                "var": "multiplierWitheredStackCount",
+                                "label": "# of Withered Stacks",
+                                "labelZh": "凋零层数",
+                                "type": "count",
+                                "value": None,
+                                "visible": True,
+                            },
+                        ],
+                    }
+                ],
+            }
+        if method == "get_party":
+            return {"fields": {}, "enableExportBuffs": False}
+        if method in ("reset_config", "set_config", "set_custom_mods", "set_slot_active", "set_gem", "party_action"):
+            if method == "set_config" and params.get("var") == "enemyIsBoss":
+                if params.get("value") == "Pinnacle":
+                    self._state_stats["CombinedDPS"] = 800_000.0
+                elif params.get("value") == "Uber":
+                    self._state_stats["CombinedDPS"] = 500_000.0
+            if method == "set_slot_active" and params.get("active") is False:
+                self._state_stats["CombinedDPS"] = min(float(self._state_stats["CombinedDPS"]), 700_000.0)
+            return {"ok": True}
+        if method == "export_code":
+            self._code_ver += 1
+            code = f"SNAP_{self._code_ver}"
+            self._code_snapshots[code] = dict(self._state_stats)
+            self.last_good_code = code
+            return {"code": code}
+        if method == "import_code":
+            code = params["code"]
+            self._current_code = code
+            self._state_stats = dict(self._code_snapshots.get(code, self._base_stats))
+            self.last_good_code = code
+            return {"ok": True}
+        if method == "add_item":
+            self._next_item_id += 1
+            nid = self._next_item_id
+            raw = params["raw"]
+            bonus = 100_000.0 if "Upgrade" in raw else 10_000.0
+            self._state_stats["CombinedDPS"] = float(self._base_stats["CombinedDPS"]) + bonus
+            self._state_stats["Life"] = float(self._base_stats["Life"]) + 80.0
+            itype = "Bow" if "Bow" in raw else "Ring"
+            self._items[nid] = {"id": nid, "name": f"Cand {nid}", "type": itype, "rarity": "RARE"}
+            slot_name = params.get("slotName")
+            for s in self._slots:
+                if s["name"] == slot_name:
+                    s["selItemId"] = nid
+            return {"item": self._items[nid]}
+        if method == "equip_item":
+            slot_name = params["slotName"]
+            iid = int(params["id"])
+            for s in self._slots:
+                if s["name"] == slot_name:
+                    s["selItemId"] = iid
+            self._state_stats = dict(self._base_stats)
+            return {"ok": True}
+        if method == "delete_item":
+            self._items.pop(int(params["id"]), None)
+            return {"ok": True}
+        if method == "get_calcs":
+            return {
+                "sections": [
+                    {
+                        "si": 1,
+                        "id": "Skill",
+                        "group": "Offence",
+                        "subsections": [
+                            {
+                                "ui": 1,
+                                "label": "Speed",
+                                "labelZh": "速度",
+                                "rows": [
+                                    {
+                                        "ri": 1,
+                                        "label": "Cast Rate",
+                                        "labelZh": "施法速度",
+                                        "cells": [
+                                            {"ci": 1, "text": "3.201 秒", "raw": "3.201 s", "hasBreakdown": True},
+                                        ],
+                                    },
+                                    {
+                                        "ri": 2,
+                                        "label": "Crit Chance",
+                                        "labelZh": "暴击率",
+                                        "cells": [
+                                            {"ci": 1, "text": "75.5%", "raw": "75.5%", "hasBreakdown": True},
+                                        ],
+                                    },
+                                    {
+                                        "ri": 3,
+                                        "label": "Combined DPS",
+                                        "labelZh": "综合秒伤",
+                                        "cells": [
+                                            {"ci": 1, "text": "1,234,567", "raw": "1,234,567", "hasBreakdown": True},
+                                        ],
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        if method == "calcs_breakdown":
+            return {"sections": [{"type": "text", "lines": [f"Breakdown {params['ri']}"]}]}
+        raise AssertionError(f"Unexpected RPC method: {method}({params})")
+
+    def call(self, method: str, params: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
+        p = params or {}
+        self.single_calls.append((method, p))
+        return self._exec(method, p)
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "call_batch" and self._support_batch:
+            def _batch(
+                calls: list[tuple[str, dict[str, Any] | None]],
+                timeout: float = 30.0,
+                raise_on_error: bool = True,
+            ) -> list[dict[str, Any]]:
+                norm = [(m, p or {}) for m, p in calls]
+                self.batch_calls.append(norm)
+                out = []
+                for m, p in norm:
+                    if raise_on_error:
+                        out.append(self._exec(m, p))
+                    else:
+                        try:
+                            out.append(self._exec(m, p))
+                        except Exception as exc:
+                            out.append({"_error": str(exc)})
+                return out
+            return _batch
+        raise AttributeError(name)
+
+
+def test_snapshot_pipelined_digest_and_compact_summary() -> None:
+    from pob_cli.snapshot import capture_digest, compact_digest_summary
+
+    w = _FakeBatchWorker(support_batch=True)
+    dig = capture_digest(w)
+    assert len(w.batch_calls) == 1
+    assert [m for m, _ in w.batch_calls[0]] == ["get_stats", "get_sidebar", "get_build_info", "get_build_header"]
+    assert dig["totalEhp"] == "inf"
+    assert dig["primaryDps"] == 1_000_000.0
+    assert dig["warnings"] == ["Low Dex"]
+
+    compact = compact_digest_summary(dig)
+    assert compact["build"]["className"] == "Templar"
+    assert compact["defence"]["TotalEHP"] == "inf"
+    assert compact["defence"]["EleMaxHit"] == 35000.0
+    assert compact["coreStats"]["CombinedDPS"] == 1_000_000.0
+    # Strictly RFC-8259 JSON-safe
+    json.dumps(compact, allow_nan=False)
+
+    # Fallback works seamlessly on workers without call_batch
+    w_legacy = _FakeBatchWorker(support_batch=False)
+    dig_legacy = capture_digest(w_legacy)
+    assert dig_legacy["primaryDps"] == 1_000_000.0
+    assert len(w_legacy.single_calls) == 4
+
+
+def test_analyzer_pipelined_summary_items_skills_config_tree_calcs() -> None:
+    from pob_cli.analyzer import (
+        extract_summary,
+        inspect_calcs,
+        inspect_config,
+        inspect_items,
+        inspect_skills,
+        inspect_tree,
+    )
+
+    # 1. extract_summary drops unused list_config and pipelines in 1 batch
+    w = _FakeBatchWorker()
+    summary = extract_summary(w)
+    assert len(w.batch_calls) == 1
+    assert "list_config" not in w.all_methods
+    assert summary["offence"]["CombinedDPS"] == 1_000_000.0
+
+    # 2. inspect_items(all_raw=True) pipelines item_raw in 1 batch
+    w = _FakeBatchWorker()
+    items_res = inspect_items(w, all_raw=True)
+    assert items_res["equippedCount"] == 2
+    raw_batches = [b for b in w.batch_calls if b and b[0][0] == "item_raw"]
+    assert len(raw_batches) == 1 and len(raw_batches[0]) == 2
+
+    # 3. inspect_skills pipelines gem_tooltip in 1 batch
+    w = _FakeBatchWorker()
+    sk_res = inspect_skills(w, group_selector="main")
+    assert len(sk_res["group"]["gems"]) == 2
+    tip_batches = [b for b in w.batch_calls if b and b[0][0] == "gem_tooltip"]
+    assert len(tip_batches) == 1 and len(tip_batches[0]) == 2
+
+    # 4. inspect_config omits options by default, keeps options on search or with_options=True
+    w = _FakeBatchWorker()
+    cfg_default = inspect_config(w)
+    boss_var = next(v for v in cfg_default["variables"] if v["var"] == "enemyIsBoss")
+    assert "options" not in boss_var
+
+    cfg_with_opts = inspect_config(w, with_options=True)
+    boss_var_opts = next(v for v in cfg_with_opts["variables"] if v["var"] == "enemyIsBoss")
+    assert len(boss_var_opts["options"]) == 3
+
+    cfg_search = inspect_config(w, search="wither")
+    assert [v["var"] for v in cfg_search["variables"]] == ["multiplierWitheredStackCount"]
+
+    cfg_search_boss = inspect_config(w, search="首领")
+    assert cfg_search_boss["variables"][0]["var"] == "enemyIsBoss"
+    assert len(cfg_search_boss["variables"][0]["options"]) == 3
+
+    # 5. inspect_tree: drops list_specs, pipelines node_hover, multi-query, show_path, masteries, socket_radius
+    w = _FakeBatchWorker()
+    t_multi = inspect_tree(
+        w,
+        queries=["Chaos Inoculation", "Life Mastery"],
+        show_path=True,
+        masteries=True,
+    )
+    assert "list_specs" not in w.all_methods
+    assert t_multi["totalMatches"] == 2
+    hover_batches = [b for b in w.batch_calls if b and b[0][0] == "node_hover"]
+    assert len(hover_batches) == 1 and len(hover_batches[0]) == 2
+    mastery_node = next(m for m in t_multi["matches"] if m["id"] == 2000)
+    assert len(mastery_node["masteryEffects"]) == 3
+    assert mastery_node["masteryEffects"][0]["effect"] == 55001
+    assert mastery_node["path"] == [1000, 2000]
+
+    # Node type + allocated filter
+    w = _FakeBatchWorker()
+    t_asc = inspect_tree(w, node_types=["Ascendancy"], allocated=True)
+    assert [m["id"] for m in t_asc["matches"]] == [3000]
+
+    # Socket radius across Small / Medium / Large / Very Large / Massive
+    w = _FakeBatchWorker()
+    t_rad = inspect_tree(w, socket_radius="#1")
+    assert t_rad["socketRadius"]["socketNodeId"] == 1000
+    assert t_rad["socketRadius"]["id"] == 1000
+    by_id = {m["id"]: m for m in t_rad["matches"]}
+    assert by_id[1001]["radiusTier"] == "Small"
+    assert by_id[1002]["radiusTier"] == "Medium"
+    assert by_id[1003]["radiusTier"] == "Large"
+    assert by_id[1004]["radiusTier"] == "Very Large"
+    assert by_id[1005]["radiusTier"] == "Massive"
+    assert 1006 not in by_id  # outside 2880 Massive radius
+    assert 3000 not in by_id  # ascendancy node excluded
+    # Verify format_tree_markdown renders socket_radius & masteries cleanly without TypeError
+    from pob_cli.formatters import format_tree_markdown
+
+    rad_md = format_tree_markdown(t_rad)
+    assert "Jewel Socket Radius: `1000`" in rad_md
+    assert "Radius `Small`" in rad_md
+    multi_md = format_tree_markdown(t_multi, show_path=True, masteries=True)
+    assert "2000:55001" in multi_md
+    assert "1000 -> 2000" in multi_md
+
+    # 6. inspect_calcs: skips version{} when translate_enabled tracked, variadic keywords, raw+value, no_breakdown
+    w = _FakeBatchWorker(translate_enabled=True)
+    calc_multi = inspect_calcs(w, keywords=["Cast Rate", "Crit Chance"])
+    assert "version" not in w.all_methods
+    assert calc_multi["keywords"] == ["Cast Rate", "Crit Chance"]
+    bd_batches = [b for b in w.batch_calls if b and b[0][0] == "calcs_breakdown"]
+    assert len(bd_batches) == 1 and len(bd_batches[0]) == 2
+    cast_cell = calc_multi["results"][0]["matches"][0]["cells"][0]
+    assert cast_cell["text"] == "3.201 秒"
+    assert cast_cell["raw"] == "3.201 s"
+    assert cast_cell["value"] == pytest.approx(3.201)
+    crit_cell = calc_multi["results"][1]["matches"][0]["cells"][0]
+    assert crit_cell["value"] == pytest.approx(75.5)
+
+    w_nobd = _FakeBatchWorker(translate_enabled=True)
+    calc_nobd = inspect_calcs(w_nobd, "Combined DPS", no_breakdown=True)
+    assert "calcs_breakdown" not in w_nobd.all_methods
+    assert calc_nobd["matches"][0]["cells"][0]["value"] == pytest.approx(1_234_567.0)
+
+
+def test_comparator_rank_gems_matrix_cache_and_concurrent_compare() -> None:
+    from pob_cli.comparator import compare_builds, rank_gems, run_matrix
+
+    # 1. rank_gems pipelines top-5 gem_candidate_tooltip in ONE batch
+    w = _FakeBatchWorker()
+    rg = rank_gems(w)
+    tip_batches = [b for b in w.batch_calls if b and b[0][0] == "gem_candidate_tooltip"]
+    assert len(tip_batches) == 1 and len(tip_batches[0]) == 5
+    assert rg["candidates"][0]["tooltipDps"]["pct"] == 15.0
+
+    # 2. run_matrix caches Pinnacle base ONCE across multiple Pinnacle/Uber scenarios and emits compact JSON by default
+    w = _FakeBatchWorker()
+    mat = run_matrix(w, ["Original", "Pinnacle", "Uber", "PinnacleWither:Pinnacle,multiplierWitheredStackCount=10", "FlasksOff"])
+    assert mat["full"] is False
+    # Dewater read batch (list_config) runs ONLY ONCE despite 3 Pinnacle/Uber scenarios!
+    dewater_reads = [b for b in w.batch_calls if b and b[0][0] == "list_config"]
+    assert len(dewater_reads) == 1
+    # Compact output omits raw 200-key stats & buildHeader while preserving summary + coreStats + digest headline
+    sc0 = mat["scenarios"][0]
+    assert "summary" in sc0 and "coreStats" in sc0 and "deltasVsFirst" in sc0
+    assert "stats" not in sc0["digest"]
+    assert "buildHeader" not in sc0["digest"]
+    assert sc0["digest"]["primaryDps"] == 1_000_000.0
+    assert w.last_good_code == "ORIG_LAST_GOOD"
+
+    # Full mode preserves complete digest
+    mat_full = run_matrix(w, ["Original", "Pinnacle"], full=True)
+    assert mat_full["full"] is True
+    assert "stats" in mat_full["scenarios"][0]["digest"]
+    assert "buildHeader" in mat_full["scenarios"][0]["digest"]
+    assert w.last_good_code == "ORIG_LAST_GOOD"
+
+    # 3. compare_builds works both with separate locks (concurrent) and shared lock (fallback) + handles 'inf' EHP
+    mw = _FakeBatchWorker()
+    rw = _FakeBatchWorker()
+    cmp_res = compare_builds(mw, rw)
+    assert "pinnacleDewatered" in cmp_res["baselines"]
+    assert mw.last_good_code == "ORIG_LAST_GOOD"
+    assert rw.last_good_code == "ORIG_LAST_GOOD"
+    json.dumps(cmp_res, allow_nan=False)
+
+    rw_shared = _FakeBatchWorker(lock=mw.lock)
+    cmp_shared = compare_builds(mw, rw_shared)
+    assert "original" in cmp_shared["baselines"]
+
+
+def test_eval_trade_items_fast_inplace_swap_and_complex_fallback() -> None:
+    from pob_cli.trade_eval import eval_trade_items
+
+    # 1. Standard Ring 1 slot with known prev_item_id: fast in-place swap for 3 items, only 1 final import_code!
+    w = _FakeBatchWorker()
+    items = [
+        {"id": 0, "raw": "Rarity: RARE\nUpgrade Ring A\nRuby Ring\nImplicits: 0\n+70 to maximum Life"},
+        {"id": 1, "raw": "Rarity: RARE\nUpgrade Ring B\nRuby Ring\nImplicits: 0\n+80 to maximum Life"},
+        {"id": 2, "raw": "Rarity: RARE\nPlain Ring C\nRuby Ring\nImplicits: 0\n+50 to maximum Life"},
+    ]
+    res = eval_trade_items(w, slot_name="Ring 1", items=items)
+    assert len(res["results"]) == 3
+    assert all(r["ok"] for r in res["results"])
+    assert res["results"][0]["after"]["primaryDps"] == 1_100_000.0
+    assert res["results"][2]["after"]["primaryDps"] == 1_010_000.0
+    # Fast swap batches (equip_item + delete_item) used between items 0->1 and 1->2
+    swap_batches = [b for b in w.batch_calls if len(b) == 2 and b[0][0] == "equip_item" and b[1][0] == "delete_item"]
+    assert len(swap_batches) == 2
+    # Final safety-net import_code called ONLY ONCE (not 3 times!)
+    import_count = sum(1 for m in w.all_methods if m == "import_code")
+    assert import_count == 1
+    assert w.last_good_code == "ORIG_LAST_GOOD"
+
+    # 2. Complex 2H Weapon 1 slot falls back cleanly to full import_code isolation per item
+    w_2h = _FakeBatchWorker()
+    bow_items = [
+        {"id": 0, "raw": "Rarity: RARE\nBow A\nThicket Bow\nImplicits: 0\n+100 to maximum Life"},
+        {"id": 1, "raw": "Rarity: RARE\nBow B\nThicket Bow\nImplicits: 0\n+120 to maximum Life"},
+    ]
+    res_2h = eval_trade_items(w_2h, slot_name="Weapon 1", items=bow_items)
+    assert len(res_2h["results"]) == 2
+    assert all(r["ok"] for r in res_2h["results"])
+    swap_batches_2h = [b for b in w_2h.batch_calls if len(b) == 2 and b[0][0] == "equip_item"]
+    assert len(swap_batches_2h) == 0
+    assert sum(1 for m in w_2h.all_methods if m == "import_code") == 2
+
+    # 3. Item granting a skill on a Ring slot forces full import_code isolation for subsequent candidates
+    w_grant = _FakeBatchWorker()
+    grant_items = [
+        {"id": 0, "raw": "Rarity: UNIQUE\nGrant Ring\nUnset Ring\nImplicits: 0\nGrants Level 20 Aspect of the Spider Skill"},
+        {"id": 1, "raw": "Rarity: RARE\nPlain Ring\nRuby Ring\nImplicits: 0\n+50 to maximum Life"},
+    ]
+    res_grant = eval_trade_items(w_grant, slot_name="Ring 1", items=grant_items)
+    assert len(res_grant["results"]) == 2
+    assert all(r["ok"] for r in res_grant["results"])
+    assert sum(1 for m in w_grant.all_methods if m == "import_code") == 2
+
+    # 4. 'Grants ... Skill' without 'Level' (e.g. Death Aura) also triggers full import_code isolation
+    w_grant_nolv = _FakeBatchWorker()
+    grant_nolv_items = [
+        {"id": 0, "raw": "Rarity: UNIQUE\nDeath's Oath\nAstral Plate\nImplicits: 0\nGrants Death Aura Skill"},
+        {"id": 1, "raw": "Rarity: RARE\nPlain Ring\nRuby Ring\nImplicits: 0\n+50 to maximum Life"},
+    ]
+    res_nolv = eval_trade_items(w_grant_nolv, slot_name="Ring 1", items=grant_nolv_items)
+    assert len(res_nolv["results"]) == 2
+    assert sum(1 for m in w_grant_nolv.all_methods if m == "import_code") == 2
+
+
+def test_eval_trade_items_abyssal_inactive_vs_active_and_dual_wield_guard() -> None:
+    from pob_cli.analyzer import inspect_items
+    from pob_cli.trade_eval import eval_trade_items
+
+    # 1. Primary gear slot with PoB's default inactive=True Abyssal Socket placeholder MUST still use fast-swap!
+    w_inactive = _FakeBatchWorker()
+    w_inactive._items[10] = {"id": 10, "name": "Old Belt", "type": "Belt", "rarity": "RARE"}
+    w_inactive._slots.extend(
+        [
+            {"name": "Belt", "label": "Belt", "selItemId": 10, "shown": True},
+            {"name": "Belt Abyssal Socket 1", "label": "Belt Abyssal Socket 1", "inactive": True, "selItemId": None},
+        ]
+    )
+    belt_items = [
+        {"id": 0, "raw": "Rarity: RARE\nUpgrade Belt A\nLeather Belt\nImplicits: 0\n+90 to maximum Life"},
+        {"id": 1, "raw": "Rarity: RARE\nUpgrade Belt B\nLeather Belt\nImplicits: 0\n+95 to maximum Life"},
+    ]
+    res_inact = eval_trade_items(w_inactive, slot_name="Belt", items=belt_items)
+    assert all(r["ok"] for r in res_inact["results"])
+    swap_inact = [b for b in w_inactive.batch_calls if len(b) == 2 and b[0][0] == "equip_item" and b[1][0] == "delete_item"]
+    assert len(swap_inact) == 1
+    assert sum(1 for m in w_inactive.all_methods if m == "import_code") == 1
+
+    # 2. Active (inactive=False) Abyssal Socket on Belt (e.g. Stygian Vise) MUST disable fast-swap!
+    w_active = _FakeBatchWorker()
+    w_active._items[10] = {"id": 10, "name": "Stygian Belt", "type": "Belt", "rarity": "RARE"}
+    w_active._slots.extend(
+        [
+            {"name": "Belt", "label": "Belt", "selItemId": 10, "shown": True},
+            {"name": "Belt Abyssal Socket 1", "label": "Belt Abyssal Socket 1", "inactive": False, "selItemId": None},
+        ]
+    )
+    res_act = eval_trade_items(w_active, slot_name="Belt", items=belt_items)
+    assert all(r["ok"] for r in res_act["results"])
+    swap_act = [b for b in w_active.batch_calls if len(b) == 2 and b[0][0] == "equip_item"]
+    assert len(swap_act) == 0
+    assert sum(1 for m in w_active.all_methods if m == "import_code") == 2
+
+    # 3. Dual-wield guard: Weapon 1 + Weapon 2 equipped -> changing Weapon 1 class disables fast-swap; same class keeps fast-swap
+    class _WeaponWorker(_FakeBatchWorker):
+        def _exec(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "add_item":
+                self._next_item_id += 1
+                nid = self._next_item_id
+                raw = params["raw"]
+                itype = "Wand" if "Wand" in raw else "Claw"
+                self._items[nid] = {"id": nid, "name": f"Wep {nid}", "type": itype, "rarity": "RARE"}
+                for s in self._slots:
+                    if s["name"] == params.get("slotName"):
+                        s["selItemId"] = nid
+                return {"item": self._items[nid]}
+            return super()._exec(method, params)
+
+    # 3a. Class change (Claw -> Wand) with Weapon 2 equipped -> disables fast-swap
+    w_dw_chg = _WeaponWorker()
+    w_dw_chg._items[20] = {"id": 20, "name": "Main Claw", "type": "Claw", "rarity": "RARE"}
+    w_dw_chg._items[21] = {"id": 21, "name": "Offhand Claw", "type": "Claw", "rarity": "RARE"}
+    w_dw_chg._slots = [
+        {"name": "Weapon 1", "label": "Weapon 1", "selItemId": 20, "shown": True},
+        {"name": "Weapon 2", "label": "Weapon 2", "selItemId": 21, "shown": True},
+    ]
+    wep_change_items = [
+        {"id": 0, "raw": "Rarity: RARE\nCaster Wand\nProphecy Wand\nImplicits: 0\n+20% Spell Damage"},
+        {"id": 1, "raw": "Rarity: RARE\nAttack Claw\nImperial Claw\nImplicits: 0\n+20% Attack Speed"},
+    ]
+    res_dw_chg = eval_trade_items(w_dw_chg, slot_name="Weapon 1", items=wep_change_items)
+    assert all(r["ok"] for r in res_dw_chg["results"])
+    assert len([b for b in w_dw_chg.batch_calls if len(b) == 2 and b[0][0] == "equip_item"]) == 0
+    assert sum(1 for m in w_dw_chg.all_methods if m == "import_code") == 2
+
+    # 3b. Same class (Claw -> Claw) with Weapon 2 equipped -> fast-swap stays enabled!
+    w_dw_same = _WeaponWorker()
+    w_dw_same._items[20] = {"id": 20, "name": "Main Claw", "type": "Claw", "rarity": "RARE"}
+    w_dw_same._items[21] = {"id": 21, "name": "Offhand Claw", "type": "Claw", "rarity": "RARE"}
+    w_dw_same._slots = [
+        {"name": "Weapon 1", "label": "Weapon 1", "selItemId": 20, "shown": True},
+        {"name": "Weapon 2", "label": "Weapon 2", "selItemId": 21, "shown": True},
+    ]
+    same_cls_items = [
+        {"id": 0, "raw": "Rarity: RARE\nClaw A\nImperial Claw\nImplicits: 0\n+20% Attack Speed"},
+        {"id": 1, "raw": "Rarity: RARE\nClaw B\nImperial Claw\nImplicits: 0\n+25% Attack Speed"},
+    ]
+    res_dw_same = eval_trade_items(w_dw_same, slot_name="Weapon 1", items=same_cls_items)
+    assert all(r["ok"] for r in res_dw_same["results"])
+    assert len([b for b in w_dw_same.batch_calls if len(b) == 2 and b[0][0] == "equip_item"]) == 1
+    assert sum(1 for m in w_dw_same.all_methods if m == "import_code") == 1
+
+    # 4. inspect_items includes buildInfo in both multi-slot and single-slot modes (0 extra tick cost)
+    w_info = _FakeBatchWorker()
+    all_res = inspect_items(w_info, all_raw=True)
+    assert all_res["buildInfo"]["className"] == "Templar"
+    single_res = inspect_items(w_info, slot_name="Ring 2")
+    assert single_res["buildInfo"]["ascendClassName"] == "Hierophant"
+
+
+def test_call_batch_ok_false_error_handling_in_analyzer_and_comparator() -> None:
+    from pob_cli.analyzer import inspect_skills, inspect_tree, search_calcs_breakdown
+    from pob_cli.comparator import rank_gems
+
+    class _PartialOkFalseWorker(_FakeBatchWorker):
+        def call_batch(
+            self,
+            calls: list[tuple[str, dict[str, Any] | None]],
+            timeout: float = 30.0,
+            raise_on_error: bool = True,
+        ) -> list[dict[str, Any]]:
+            out = []
+            for m, p in calls:
+                if m in ("gem_tooltip", "node_hover", "calcs_breakdown", "gem_candidate_tooltip"):
+                    out.append({"ok": False, "error": f"{m} failed"})
+                else:
+                    out.append(self._exec(m, p or {}))
+            return out
+
+    w = _PartialOkFalseWorker()
+    sk = inspect_skills(w, group_selector="main")
+    assert all(g["tooltipDps"] is None for g in sk["group"]["gems"])
+
+    tr = inspect_tree(w, search="Chaos Inoculation", show_path=True)
+    assert tr["totalMatches"] == 1
+    assert "cost" not in tr["matches"][0]
+
+    calc = search_calcs_breakdown(w, "Cast Rate")
+    assert calc["totalMatches"] == 1
+    assert "breakdown" not in calc["matches"][0]["cells"][0]
+
+    rg = rank_gems(w)
+    assert all("tooltipDps" not in c for c in rg["candidates"])
+
+
+def test_inspect_tree_max_cost_proximity_presort_bfs_and_euclidean() -> None:
+    from pob_cli.analyzer import inspect_tree
+
+    # Case 1: BFS hop distance over adjacency (linked + out/in) finds high-ID nearby notables
+    # even when >100 low-ID distant notables exist!
+    w_bfs = _FakeBatchWorker()
+    nodes: dict[str, dict[str, Any]] = {
+        "1000": {"id": 1000, "name": "Start", "type": "Normal", "x": 0.0, "y": 0.0, "linked": [90001, 50000]},
+        "90001": {"id": 90001, "name": "Near Notable 1", "type": "Notable", "x": 100.0, "y": 0.0, "linked": [1000, 90002]},
+        "90002": {"id": 90002, "name": "Near Notable 2", "type": "Notable", "x": 200.0, "y": 0.0, "out": [90001]},
+        "50000": {"id": 50000, "name": "Bridge", "type": "Normal", "x": 50.0, "y": 50.0, "in": [90003]},
+        "90003": {"id": 90003, "name": "Near Notable 3", "type": "Notable", "x": 150.0, "y": 50.0, "out": [50000]},
+    }
+    # Add 100 low-ID distant notables (IDs 1..100) connected in a far chain
+    prev_far = 50000
+    for i in range(1, 11):
+        fid = 50000 + i
+        nodes[str(fid)] = {"id": fid, "name": f"Far Road {i}", "type": "Normal", "x": float(i * 100), "y": 500.0, "linked": [prev_far]}
+        prev_far = fid
+    for i in range(1, 101):
+        nodes[str(i)] = {"id": i, "name": f"Distant Notable {i}", "type": "Notable", "x": 2000.0 + i, "y": 2000.0, "linked": [prev_far]}
+    w_bfs._tree_nodes = nodes
+    w_bfs._allocated = {1000}
+
+    orig_exec = w_bfs._exec
+
+    def _bfs_exec(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "node_hover":
+            nid = int(params["id"])
+            cost_map = {1000: 0, 90001: 1, 90002: 2, 90003: 2}
+            cost = cost_map.get(nid, 12)
+            return {"id": nid, "allocated": nid == 1000, "cost": cost, "path": []}
+        return orig_exec(method, params)
+
+    w_bfs._exec = _bfs_exec  # type: ignore[method-assign]
+    res_bfs = inspect_tree(w_bfs, node_types=["Notable"], allocated=False, max_cost=2)
+    matched_ids = [m["id"] for m in res_bfs["matches"]]
+    assert matched_ids == [90001, 90002, 90003]
+
+    # Case 2: Euclidean fallback when adjacency is absent
+    w_euc = _FakeBatchWorker()
+    euc_nodes: dict[str, dict[str, Any]] = {
+        "1000": {"id": 1000, "name": "Start", "type": "Normal", "x": 0.0, "y": 0.0},
+        "95001": {"id": 95001, "name": "Close Notable A", "type": "Notable", "x": 80.0, "y": 20.0},
+        "95002": {"id": 95002, "name": "Close Notable B", "type": "Notable", "x": 120.0, "y": 40.0},
+    }
+    for i in range(1, 101):
+        euc_nodes[str(i)] = {"id": i, "name": f"Far Notable {i}", "type": "Notable", "x": 5000.0 + i, "y": 5000.0}
+    w_euc._tree_nodes = euc_nodes
+    w_euc._allocated = {1000}
+
+    orig_euc_exec = w_euc._exec
+
+    def _euc_exec(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "node_hover":
+            nid = int(params["id"])
+            cost = 1 if nid in (95001, 95002) else 15
+            return {"id": nid, "allocated": False, "cost": cost, "path": []}
+        return orig_euc_exec(method, params)
+
+    w_euc._exec = _euc_exec  # type: ignore[method-assign]
+    res_euc = inspect_tree(w_euc, node_types=["Notable"], allocated=False, max_cost=2)
+    assert [m["id"] for m in res_euc["matches"]] == [95001, 95002]
+
+
+def test_apply_env_config_preserves_zero_overrides() -> None:
+    from pob_cli.comparator import _apply_env_config
+
+    w = _FakeBatchWorker()
+    _apply_env_config(
+        w,
+        {
+            "enemyIsBoss": "Pinnacle",
+            "enemyFireResist": 0,
+            "enemyChaosResist": 0,
+            "enemyLevel": None,
+            "EHPUnluckyWorstOf": False,
+            "deliriousPercentage": "",
+        },
+    )
+    assert len(w.batch_calls) == 1
+    by_var = {p["var"]: (m, p) for m, p in w.batch_calls[0]}
+    assert by_var["enemyFireResist"] == ("set_config", {"var": "enemyFireResist", "value": 0})
+    assert by_var["enemyChaosResist"] == ("set_config", {"var": "enemyChaosResist", "value": 0})
+    assert by_var["enemyIsBoss"] == ("set_config", {"var": "enemyIsBoss", "value": "Pinnacle"})
+    assert by_var["enemyLevel"] == ("reset_config", {"var": "enemyLevel"})
+    assert by_var["EHPUnluckyWorstOf"] == ("reset_config", {"var": "EHPUnluckyWorstOf"})
+    assert by_var["deliriousPercentage"] == ("reset_config", {"var": "deliriousPercentage"})
+
+
+def test_eval_trade_items_sourceless_explode_group_and_chinese_raw_disable_fast_swap() -> None:
+    from pob_cli.trade_eval import eval_trade_items
+
+    # 1. Source-less Explode skill group (source="Explode", slot=None) disables fast-swap on Body Armour
+    class _ExplodeSkillWorker(_FakeBatchWorker):
+        def _exec(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "list_skills":
+                return {
+                    "mainSocketGroup": 2,
+                    "groups": [
+                        {"index": 1, "label": "On Kill Monster Explosion", "source": "Explode", "slot": None, "enabled": True, "gems": []},
+                        {"index": 2, "isMain": True, "label": "Main", "enabled": True, "gems": []},
+                    ],
+                }
+            return super()._exec(method, params)
+
+    w_exp = _ExplodeSkillWorker()
+    w_exp._items[30] = {"id": 30, "name": "Explode Chest", "type": "Body Armour", "rarity": "RARE"}
+    w_exp._slots.append({"name": "Body Armour", "label": "Body Armour", "selItemId": 30, "shown": True})
+    chest_items = [
+        {"id": 0, "raw": "Rarity: RARE\nPlain Chest A\nVaal Regalia\nImplicits: 0\n+100 to maximum Life"},
+        {"id": 1, "raw": "Rarity: RARE\nPlain Chest B\nVaal Regalia\nImplicits: 0\n+110 to maximum Life"},
+    ]
+    res_exp = eval_trade_items(w_exp, slot_name="Body Armour", items=chest_items)
+    assert all(r["ok"] for r in res_exp["results"])
+    assert len([b for b in w_exp.batch_calls if len(b) == 2 and b[0][0] == "equip_item"]) == 0
+    assert sum(1 for m in w_exp.all_methods if m == "import_code") == 2
+
+    # 2. English 'Explode' mod and Chinese complex raw keywords disable fast-swap
+    for raw_text in (
+        "Rarity: RARE\nCrusader Chest\nAstral Plate\nImplicits: 0\nEnemies you Kill Explode, dealing 3% of their Life as Physical Damage",
+        "稀 有 度: 传奇\nSpider Ring\n潜能之戒\nImplicits: 0\n赋予 20 级蜘蛛之势技能",
+        "Rarity: RARE\nCN Explode\n星芒战铠\nImplicits: 0\n被击杀的敌人会爆炸",
+        "Rarity: RARE\nCN Abyss\n深渊腰带\nImplicits: 0\n拥有 1 个深渊插槽",
+        "Rarity: RARE\nTW Abyss\n深淵腰帶\nImplicits: 0\n擁有 1 個深淵插槽",
+        "Rarity: RARE\nTW Grant\n潛能之戒\nImplicits: 0\n賦予 20 級蜘蛛之勢技能",
+    ):
+        w_cx = _FakeBatchWorker()
+        res_cx = eval_trade_items(
+            w_cx,
+            slot_name="Ring 1",
+            items=[
+                {"id": 0, "raw": raw_text},
+                {"id": 1, "raw": "Rarity: RARE\nPlain Ring\nRuby Ring\nImplicits: 0\n+50 to maximum Life"},
+            ],
+        )
+        assert all(r["ok"] for r in res_cx["results"])
+        assert len([b for b in w_cx.batch_calls if len(b) == 2 and b[0][0] == "equip_item"]) == 0
+        assert sum(1 for m in w_cx.all_methods if m == "import_code") == 2

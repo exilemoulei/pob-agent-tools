@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from .bridge_client import BridgeWorker, MAX_UNDO_STEPS
+from .bridge_client import MAX_UNDO_STEPS, BridgeWorker
+from .errors import DaemonRequestError
 from .formatters import _parse_numeric_or_none, fmt_delta, fmt_num, strip_pob_escapes
 
 CORE_STAT_KEYS: list[tuple[str, str, str]] = [
@@ -50,51 +52,217 @@ CORE_STAT_KEYS: list[tuple[str, str, str]] = [
 ]
 
 
+def _call_batch(
+    worker: Any,
+    calls: list[tuple[str, dict[str, Any] | None]],
+    *,
+    timeout: float = 30.0,
+    raise_on_error: bool = True,
+) -> list[dict[str, Any]]:
+    """Execute multiple RPCs in one pipelined stdin flush when supported, else fall back to worker.call()."""
+    if not calls:
+        return []
+    batch_fn = getattr(worker, "call_batch", None)
+    if callable(batch_fn):
+        return batch_fn(calls, timeout=timeout, raise_on_error=raise_on_error)
+    results: list[dict[str, Any]] = []
+    for method, params in calls:
+        if raise_on_error:
+            results.append(worker.call(method, params or {}))
+        else:
+            try:
+                results.append(worker.call(method, params or {}))
+            except Exception as exc:
+                results.append({"ok": False, "_error": str(exc), "error": str(exc)})
+    return results
+
+
 def _stat_float(val: Any) -> float:
+    """Parse a stat to float for ordering/threshold checks; returns 0.0 for None/NaN/unparseable."""
     parsed = _parse_numeric_or_none(val)
-    return parsed if parsed is not None else 0.0
+    if parsed is None or math.isnan(parsed):
+        return 0.0
+    return parsed
+
+
+def _finite_float(val: Any, default: float = 0.0) -> float:
+    """Parse a stat to a strictly finite float (never NaN/Inf)."""
+    parsed = _parse_numeric_or_none(val)
+    if parsed is None or not math.isfinite(parsed):
+        return default
+    return float(parsed)
 
 
 def _json_safe_stat(val: Any) -> float | str:
+    """Convert any PoB stat into a finite float or RFC-8259 sentinel string ('inf', '-inf', 'nan')."""
+    if val is None:
+        return 0.0
     parsed = _parse_numeric_or_none(val)
     if parsed is None:
-        return 0.0
+        return str(val) if isinstance(val, str) and val.strip() else 0.0
     if math.isfinite(parsed):
         return parsed
     return fmt_num(parsed)
 
 
-def capture_digest(worker: BridgeWorker) -> dict[str, Any]:
-    """Capture a complete offence/defence/warning digest of the current build."""
-    with worker.lock:
-        stats_res = worker.call("get_stats", {})
-        sidebar_res = worker.call("get_sidebar", {})
-        info_res = worker.call("get_build_info", {})
-        header_res = worker.call("get_build_header", {})
+def _safe_min_ele_max_hit(stats: dict[str, Any]) -> float | str | None:
+    """Safely compute minimum elemental max hit across Fire/Cold/Lightning (inf/NaN-hardened)."""
+    vals: list[float] = []
+    for key in ("FireMaximumHitTaken", "ColdMaximumHitTaken", "LightningMaximumHitTaken"):
+        raw = stats.get(key)
+        if raw is None:
+            continue
+        parsed = _parse_numeric_or_none(raw)
+        if parsed is None or math.isnan(parsed):
+            continue
+        vals.append(parsed)
+    if not vals:
+        return None
+    m = min(vals)
+    return m if math.isfinite(m) else fmt_num(m)
 
-    stats = stats_res.get("stats", {})
+
+def capture_digest(worker: BridgeWorker) -> dict[str, Any]:
+    """Capture a complete offence/defence/warning digest of the current build in one pipelined batch."""
+    with worker.lock:
+        stats_res, sidebar_res, info_res, header_res = _call_batch(
+            worker,
+            [
+                ("get_stats", {}),
+                ("get_sidebar", {}),
+                ("get_build_info", {}),
+                ("get_build_header", {}),
+            ],
+        )
+
+    stats = stats_res.get("stats", {}) if isinstance(stats_res, dict) else {}
+    sidebar_warnings = sidebar_res.get("warnings", []) if isinstance(sidebar_res, dict) else []
     warnings = [
         strip_pob_escapes(w.get("text") or w.get("raw") or "")
-        for w in sidebar_res.get("warnings", [])
-        if (w.get("text") or w.get("raw"))
+        for w in sidebar_warnings
+        if isinstance(w, dict) and (w.get("text") or w.get("raw"))
     ]
 
-    # Pick primary headline DPS metric
+    # Pick primary headline DPS metric (NaN/Inf-safe)
     primary_dps_key = "CombinedDPS"
-    if _stat_float(stats.get("FullDPS")) > 0:
+    full_dps = _stat_float(stats.get("FullDPS"))
+    comb_dps = _stat_float(stats.get("CombinedDPS"))
+    minion_dps = _stat_float(stats.get("MinionCombinedDPS"))
+    if full_dps > 0:
         primary_dps_key = "FullDPS"
-    elif _stat_float(stats.get("MinionCombinedDPS")) > _stat_float(stats.get("CombinedDPS")):
+    elif minion_dps > comb_dps:
         primary_dps_key = "MinionCombinedDPS"
 
     return {
         "stats": stats,
         "warnings": warnings,
-        "buildInfo": info_res,
-        "buildHeader": header_res,
+        "buildInfo": info_res if isinstance(info_res, dict) else {},
+        "buildHeader": header_res if isinstance(header_res, dict) else {},
         "primaryDpsKey": primary_dps_key,
         "primaryDps": _json_safe_stat(stats.get(primary_dps_key)),
         "totalEhp": _json_safe_stat(stats.get("TotalEHP")),
         "life": _json_safe_stat(stats.get("Life")),
+    }
+
+
+def compact_digest_summary(digest: dict[str, Any]) -> dict[str, Any]:
+    """Build a compact, strictly JSON-safe headline dict reused across summary, matrix, audit, batch, and sweep."""
+    stats = digest.get("stats") or {}
+    info = digest.get("buildInfo") or {}
+    pts = info.get("points") or {}
+    primary_dps_key = digest.get("primaryDpsKey") or "CombinedDPS"
+
+    def _pick(keys: tuple[str, ...]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for k in keys:
+            if stats.get(k) is not None:
+                out[k] = _json_safe_stat(stats.get(k))
+        return out
+
+    offence = _pick(
+        (
+            "FullDPS",
+            "CombinedDPS",
+            "TotalDPS",
+            "TotalDotDPS",
+            "MinionCombinedDPS",
+            "MinionTotalDPS",
+            "AverageDamage",
+            "Speed",
+            "CritChance",
+            "CritMultiplier",
+            "HitChance",
+            "ManaCost",
+        )
+    )
+    defence = _pick(
+        (
+            "TotalEHP",
+            "Life",
+            "LifeUnreserved",
+            "Mana",
+            "ManaUnreserved",
+            "EnergyShield",
+            "Ward",
+            "Armour",
+            "Evasion",
+            "PhysicalMaximumHitTaken",
+            "FireMaximumHitTaken",
+            "ColdMaximumHitTaken",
+            "LightningMaximumHitTaken",
+            "ChaosMaximumHitTaken",
+            "FireResist",
+            "ColdResist",
+            "LightningResist",
+            "ChaosResist",
+            "EffectiveSpellSuppressionChance",
+            "EffectiveBlockChance",
+            "EffectiveSpellBlockChance",
+            "LifeRegenRecovery",
+            "ManaRegenRecovery",
+        )
+    )
+    ele_min = _safe_min_ele_max_hit(stats)
+    if ele_min is not None:
+        defence["EleMaxHit"] = ele_min
+
+    core_stats = {
+        key: _json_safe_stat(stats.get(key))
+        for key, _, _ in CORE_STAT_KEYS
+        if stats.get(key) is not None
+    }
+
+    primary_dps_raw = digest.get("primaryDps") if digest.get("primaryDps") is not None else stats.get(primary_dps_key)
+    total_ehp_raw = digest.get("totalEhp") if digest.get("totalEhp") is not None else stats.get("TotalEHP")
+    life_raw = digest.get("life") if digest.get("life") is not None else stats.get("Life")
+
+    return {
+        "build": {
+            "level": info.get("level"),
+            "className": info.get("className"),
+            "classNameZh": info.get("classNameZh"),
+            "ascendClassName": info.get("ascendClassName"),
+            "ascendClassNameZh": info.get("ascendClassNameZh"),
+            "treeVersion": info.get("treeVersion"),
+            "points": (
+                {
+                    "used": pts.get("used"),
+                    "usedMax": pts.get("usedMax"),
+                    "ascUsed": pts.get("ascUsed"),
+                    "ascMax": pts.get("ascMax"),
+                }
+                if isinstance(pts, dict) and pts
+                else {}
+            ),
+        },
+        "primaryDpsKey": primary_dps_key,
+        "primaryDps": _json_safe_stat(primary_dps_raw),
+        "totalEhp": _json_safe_stat(total_ehp_raw),
+        "life": _json_safe_stat(life_raw),
+        "offence": offence,
+        "defence": defence,
+        "coreStats": core_stats,
+        "warnings": list(digest.get("warnings") or []),
     }
 
 
@@ -185,6 +353,7 @@ def run_mutation(
     Guarantees atomic restore even if `mutate_fn` raises an exception.
     """
     with worker.lock:
+        prev_last_good = getattr(worker, "last_good_code", None)
         snap_before = worker.call("export_code", {})["code"]
         digest_before = capture_digest(worker)
 
@@ -195,6 +364,8 @@ def run_mutation(
         except Exception:
             # Always restore snapshot on error
             worker.call("import_code", {"code": snap_before, "mode": "replace"})
+            if hasattr(worker, "last_good_code"):
+                worker.last_good_code = prev_last_good
             raise
 
         if apply:
@@ -208,6 +379,8 @@ def run_mutation(
             mode_str = "APPLIED"
         else:
             worker.call("import_code", {"code": snap_before, "mode": "replace"})
+            if hasattr(worker, "last_good_code"):
+                worker.last_good_code = prev_last_good
             mode_str = "WHAT-IF (not applied; pass --apply to persist)"
 
         return {
@@ -238,7 +411,7 @@ def undo_build(worker: BridgeWorker) -> dict[str, Any]:
     """Pop one snapshot from `worker.undo_stack` and restore it."""
     with worker.lock:
         if not worker.undo_stack:
-            raise RuntimeError("Undo stack is empty.")
+            raise DaemonRequestError("Undo stack is empty.")
         current_code = worker.call("export_code", {})["code"]
         digest_before = capture_digest(worker)
         target_code = worker.undo_stack.pop()
@@ -261,7 +434,7 @@ def redo_build(worker: BridgeWorker) -> dict[str, Any]:
     """Pop one snapshot from `worker.redo_stack` and restore it."""
     with worker.lock:
         if not worker.redo_stack:
-            raise RuntimeError("Redo stack is empty.")
+            raise DaemonRequestError("Redo stack is empty.")
         current_code = worker.call("export_code", {})["code"]
         digest_before = capture_digest(worker)
         target_code = worker.redo_stack.pop()

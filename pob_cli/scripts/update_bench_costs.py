@@ -13,13 +13,13 @@ Crafting currency costs and unlock locations are overlaid from either:
 from __future__ import annotations
 
 import argparse
-from datetime import date
-from html.parser import HTMLParser
 import json
-from pathlib import Path
 import re
 import sqlite3
 import sys
+from datetime import date
+from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
 
 # Allow running directly as `python pob_cli/scripts/update_bench_costs.py`
@@ -27,7 +27,7 @@ _SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from pob_cli import bench, game_data, importers
+from pob_cli import bench, game_data, importers  # noqa: E402
 
 DEFAULT_OUTPUT = _SRC_DIR / "pob_cli" / "data" / "bench_costs.json"
 POEDB_BENCH_URL = "https://poedb.tw/us/Crafting_Bench"

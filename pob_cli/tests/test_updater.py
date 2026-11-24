@@ -14,6 +14,8 @@ from typing import Any
 
 import httpx
 import pytest
+from engine_paths import find_legacy_snapshot
+from support import dead_proxy_url
 
 from pob_cli.bridge_client import (
     FORBIDDEN_METHODS,
@@ -32,7 +34,6 @@ from pob_cli.updater import (
     bootstrap_engine,
     build_manifest_file_url,
     check_and_apply_updates,
-    diff_pob_manifest,
     find_local_manifest_mismatches,
     format_stderr_update_alert,
     get_update_warning,
@@ -46,7 +47,7 @@ from pob_cli.updater import (
     verify_pob_sha1,
 )
 
-REAL_LEGACY_DIR = Path("F:/poe/PobTools[20261102]")
+REAL_LEGACY_DIR = find_legacy_snapshot()
 
 
 def _encode_xml(xml_text: str) -> str:
@@ -59,7 +60,16 @@ def _make_fake_engine(root: Path, version: str = "2.67.2", files: dict[str, byte
     (root / "pob-zh.ini").write_text("[PobTools]\nGame=poe1\n", encoding="utf-8")
     (root / "engine").mkdir(exist_ok=True)
     (root / "engine" / "lua51.dll").write_bytes(b"fake-dll")
+    (root / "bin").mkdir(exist_ok=True)
+    fake_lj = root / "bin" / "luajit"
+    fake_lj.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    try:
+        fake_lj.chmod(0o755)
+    except OSError:
+        pass
     (root / "Data").mkdir(exist_ok=True)
+    (root / "Data" / "bridge").mkdir(parents=True, exist_ok=True)
+    (root / "Data" / "bridge" / "bridge.lua").write_text("-- fake bridge\n", encoding="utf-8")
     (root / "Data" / "translations_version.json").write_text(
         json.dumps({"dataVersion": "data-19"}), encoding="utf-8"
     )
@@ -164,7 +174,7 @@ def test_invalid_proxy_fast_degradation_under_4s(tmp_path: Path, monkeypatch: py
     rt = tmp_path / "runtime"
     eng = _make_fake_engine(rt / "engine", version="2.67.2")
     monkeypatch.setenv("POB_RUNTIME_DIR", str(rt))
-    monkeypatch.setenv("POB_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("POB_PROXY", dead_proxy_url())
     monkeypatch.delenv("POB_ROOT", raising=False)
 
     t0 = time.monotonic()
@@ -208,7 +218,7 @@ def test_bootstrap_missing_offline_when_no_engine(tmp_path: Path, monkeypatch: p
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not REAL_LEGACY_DIR.is_dir(), reason="Legacy F:/poe/PobTools[20261102] not present")
+@pytest.mark.skipif(REAL_LEGACY_DIR is None, reason="Legacy PobTools 2.67.2 snapshot not present (POB_LEGACY_DIR)")
 def test_real_manifest_sha1_detects_exact_tampered_update_check() -> None:
     poe1 = REAL_LEGACY_DIR / "PoE1"
     manifest = parse_pob_manifest((poe1 / "manifest.xml").read_text(encoding="utf-8"))
@@ -484,6 +494,10 @@ def test_clean_bootstrap_from_github_dual_upstream(tmp_path: Path, monkeypatch: 
         return httpx.Response(404)
 
     _patch_updater_http(monkeypatch, handler)
+    import pob_cli.updater as upd_mod
+
+    if not upd_mod.is_windows():
+        monkeypatch.setattr(upd_mod, "ensure_posix_runtime", lambda *_a, **_kw: {})
 
     res = bootstrap_engine(
         target_dir=target,
@@ -495,9 +509,154 @@ def test_clean_bootstrap_from_github_dual_upstream(tmp_path: Path, monkeypatch: 
     assert res["localPobVersion"] == "2.68.1"
     assert res["pobToolsVersion"] == "1.8.12"
     assert res["dataVersion"] == "data-24"
-    assert (target / "pob-zh.exe").read_bytes() == b"MZ-new-host"
+    if upd_mod.is_windows():
+        assert (target / "pob-zh.exe").read_bytes() == b"MZ-new-host"
+    else:
+        assert not (target / "pob-zh.exe").exists()
+        assert (target / "Data" / "bridge" / "bridge.lua").read_bytes() == b"-- bridge"
     assert (target / "Data" / "poe1" / "zh-rCN" / "gems.json").is_file()
     assert (target / "PoE1" / "Modules" / "Main.lua").read_bytes() == pob_main
+
+
+def test_mirror_serves_the_routine_check_but_hashes_come_from_github(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hashes read through a mirror prove nothing about files that mirror serves."""
+    from pob_cli.updater import UpdateError, fetch_pob_manifest_remote, fetch_pobtools_latest_info
+    from pob_cli.updater.remote import _download_and_stage_release_zip
+
+    mirror = "https://mirror.example.com"
+    manifest_url = f"{POBTOOLS_DOWNLOAD_BASE}/v1.8.12/PobTools-manifest-v1.8.12.json"
+
+    def pob_xml(version: str) -> str:
+        return (
+            "<?xml version='1.0' encoding='UTF-8'?><PoBVersion>"
+            f'<Version number="{version}" />'
+            '<Source part="program" url="https://raw.githubusercontent.com/PathOfBuildingCommunity/PathOfBuilding/{branch}/src/" />'
+            f'<File name="Modules/Main.lua" part="program" sha1="{hashlib.sha1(b"main").hexdigest()}" />'
+            "</PoBVersion>"
+        )
+
+    seen: list[str] = []
+    github_up = True
+    github_cut_off = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        seen.append(url)
+        via_mirror = url.startswith(mirror)
+        if not via_mirror and not github_up:
+            raise httpx.ConnectError("GitHub unreachable")
+        plain = url.removeprefix(mirror + "/")
+        if plain == POBTOOLS_LATEST_URL:
+            return httpx.Response(302, headers={"Location": "https://github.com/x/y/releases/tag/v1.8.12"})
+        if plain == manifest_url:
+            return httpx.Response(200, json={"version": "1.8.12", "assets": []})
+        if plain == POB_MANIFEST_URL:
+            if request.headers.get("If-None-Match"):
+                return httpx.Response(304)
+            if github_cut_off and not via_mirror:
+                return httpx.Response(200, text=pob_xml("2.68.1")[:60])
+            return httpx.Response(200, text=pob_xml("9.9.9" if via_mirror else "2.68.1"))
+        return httpx.Response(200, content=b"not the zip the manifest hashed")
+
+    _patch_updater_http(monkeypatch, handler)
+
+    def requests_of(call: Any) -> tuple[Any, list[str]]:
+        seen.clear()
+        return call(), list(seen)
+
+    # The routine check (a tag, or a 304) stays on the mirror: no extra round trip, no GitHub timeout.
+    assert requests_of(lambda: fetch_pobtools_latest_info(mirror=mirror, fetch_manifest=False))[1] == [
+        f"{mirror}/{POBTOOLS_LATEST_URL}"
+    ]
+    assert requests_of(lambda: fetch_pob_manifest_remote(mirror=mirror, etag="abc")) == (
+        ("not_modified", None, "abc"),
+        [f"{mirror}/{POB_MANIFEST_URL}"],
+    )
+
+    # Anything that carries hashes comes from GitHub itself, whatever the mirror says.
+    assert requests_of(lambda: fetch_pobtools_latest_info(mirror=mirror))[1] == [POBTOOLS_LATEST_URL, manifest_url]
+    (status, manifest, _etag), urls = requests_of(lambda: fetch_pob_manifest_remote(mirror=mirror))
+    assert (status, manifest.version) == ("ok", "2.68.1")
+    assert urls == [f"{mirror}/{POB_MANIFEST_URL}", POB_MANIFEST_URL]
+
+    # A cut-off answer from GitHub is no answer: the mirror's copy stands.
+    github_cut_off = True
+    assert fetch_pob_manifest_remote(mirror=mirror)[1].version == "9.9.9"
+    github_cut_off = False
+
+    # Without a route to GitHub the mirror's copy is used, so those users can still update.
+    github_up = False
+    info, urls = requests_of(lambda: fetch_pobtools_latest_info(mirror=mirror))
+    assert info["version"] == "1.8.12"
+    assert urls[-2:] == [f"{mirror}/{POBTOOLS_LATEST_URL}", f"{mirror}/{manifest_url}"]
+    assert fetch_pob_manifest_remote(mirror=mirror)[1].version == "9.9.9"
+
+    # The engine zip itself may come through the mirror, but never without a hash to check it by.
+    for asset in ({"name": "PobTools-1.8.12.zip"}, {"name": "PobTools-1.8.12.zip", "sha256": "00" * 32}):
+        with pytest.raises(UpdateError, match="SHA256 mismatch"):
+            _download_and_stage_release_zip("v1.8.12", asset, tmp_path, mirror=mirror)
+
+
+def test_posix_engine_validation_command_and_manifest_filtering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pob_cli.updater as upd_mod
+
+    # 1. Bundled headless_runner.lua must always be shipped inside package
+    runner_path = upd_mod.get_bundled_headless_runner_path()
+    assert runner_path.is_file()
+    assert "PobToolsBridgeSetDispatcher" in runner_path.read_text(encoding="utf-8")
+
+    # 2. Manifest filtering on POSIX skips win32 runtime DLLs while keeping pure Lua files
+    manifest_xml = (
+        "<?xml version='1.0' encoding='UTF-8'?>\n"
+        "<PoBVersion>\n"
+        '\t<Version number="2.68.1" />\n'
+        '\t<Source part="program" url="https://example.invalid/src/" />\n'
+        '\t<Source part="runtime" url="https://example.invalid/runtime/" />\n'
+        '\t<File name="Modules/Main.lua" part="program" sha1="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" />\n'
+        '\t<File name="lua/dkjson.lua" part="runtime" sha1="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" />\n'
+        '\t<File name="SimpleGraphic.dll" part="runtime" runtime="win32" sha1="cccccccccccccccccccccccccccccccccccccccc" />\n'
+        "</PoBVersion>\n"
+    )
+    win_man = parse_pob_manifest(manifest_xml, include_win32_runtime=True)
+    posix_man = parse_pob_manifest(manifest_xml, include_win32_runtime=False)
+    assert "SimpleGraphic.dll" in win_man.files
+    assert "SimpleGraphic.dll" not in posix_man.files
+    assert "Modules/Main.lua" in posix_man.files
+    assert "lua/dkjson.lua" in posix_man.files
+
+    # 3. Simulate macOS/Linux engine validation and command construction
+    monkeypatch.setattr(upd_mod, "is_windows", lambda: False)
+    monkeypatch.delenv("POB_ENGINE_CMD", raising=False)
+    monkeypatch.delenv("POB_LUAJIT", raising=False)
+    monkeypatch.setattr(upd_mod.shutil, "which", lambda _name: None)
+
+    eng = tmp_path / "posix_eng"
+    (eng / "PoE1").mkdir(parents=True)
+    assert upd_mod.is_valid_engine_dir(eng) is False
+
+    (eng / "Data" / "bridge").mkdir(parents=True)
+    (eng / "Data" / "bridge" / "bridge.lua").write_text("-- bridge\n", encoding="utf-8")
+    assert upd_mod.is_valid_engine_dir(eng) is False
+
+    (eng / "bin").mkdir(parents=True)
+    lj = eng / "bin" / "luajit"
+    lj.write_text("#!/bin/sh\n", encoding="utf-8")
+    assert upd_mod.is_valid_engine_dir(eng) is True
+
+    cmd, extra_env = upd_mod.build_engine_command(eng)
+    assert cmd == [
+        str(lj),
+        str(runner_path),
+        str(eng / "PoE1"),
+        str(eng / "Data" / "bridge" / "bridge.lua"),
+    ]
+    assert extra_env["POB_ZH_HEADLESS"] == "1"
+    assert extra_env["POB_GAME"] == "poe1"
+    assert extra_env["POB_ENGINE_ROOT"] == str(eng)
 
 
 # ---------------------------------------------------------------------------
@@ -505,7 +664,7 @@ def test_clean_bootstrap_from_github_dual_upstream(tmp_path: Path, monkeypatch: 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not REAL_LEGACY_DIR.is_dir(), reason="Legacy F:/poe/PobTools[20261102] not present")
+@pytest.mark.skipif(REAL_LEGACY_DIR is None, reason="Legacy PobTools 2.67.2 snapshot not present (POB_LEGACY_DIR)")
 def test_real_probe_engine_gate() -> None:
     res = probe_engine_gate(REAL_LEGACY_DIR, timeout_sec=20.0)
     assert res["ok"] is True
@@ -514,7 +673,7 @@ def test_real_probe_engine_gate() -> None:
     assert isinstance(res["caps"], dict)
 
 
-@pytest.mark.skipif(not REAL_LEGACY_DIR.is_dir(), reason="Legacy F:/poe/PobTools[20261102] not present")
+@pytest.mark.skipif(REAL_LEGACY_DIR is None, reason="Legacy PobTools 2.67.2 snapshot not present (POB_LEGACY_DIR)")
 def test_bridge_worker_dynamic_r2_and_import_code_deadlock_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -604,6 +763,7 @@ def test_daemon_hot_reload_serializes_concurrent_get_worker_and_status(
 ) -> None:
     """Verify DLL-unlock concurrency safety: get_worker/status/periodic check cannot touch workers mid-hot-reload."""
     import threading
+
     import pob_cli.daemon as daemon_mod
 
     rt = tmp_path / "runtime"
@@ -677,7 +837,7 @@ def test_daemon_hot_reload_serializes_concurrent_get_worker_and_status(
     def _run_reload() -> None:
         try:
             mgr._hot_reload_update()
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             errs.append(exc)
 
     t_reload = threading.Thread(target=_run_reload)
@@ -690,7 +850,7 @@ def test_daemon_hot_reload_serializes_concurrent_get_worker_and_status(
             w = mgr.get_worker("main")
             assert w is not old_worker
             events.append("get_worker_after_reload")
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             errs.append(exc)
 
     def _run_status() -> None:
@@ -698,7 +858,7 @@ def test_daemon_hot_reload_serializes_concurrent_get_worker_and_status(
             st = mgr.dispatch("status", {})
             assert st["main"]["alive"] is True
             events.append("status_after_reload")
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             errs.append(exc)
 
     t_gw = threading.Thread(target=_run_get_worker)
@@ -730,3 +890,327 @@ def test_daemon_hot_reload_serializes_concurrent_get_worker_and_status(
     t_p2.join(timeout=3.0)
     # 1 check_only + 1 _hot_reload_update (second thread sees fresh checkedAt after lock release)
     assert check_calls == 2
+
+
+def test_get_shared_cache_dir_priority_and_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify POB_CACHE_DIR override, shared engine parent cache for swarm workers, and tmp_path isolation."""
+    from pob_cli.updater import get_shared_cache_dir
+
+    monkeypatch.delenv("POB_CACHE_DIR", raising=False)
+    monkeypatch.delenv("POB_ROOT", raising=False)
+    monkeypatch.setenv("POB_LEGACY_DIR", "")
+
+    # 1. Isolated runtime with its own managed engine -> uses <runtime_dir>/cache
+    rt_iso = tmp_path / "iso_rt"
+    _make_fake_engine(rt_iso / "engine")
+    assert get_shared_cache_dir(rt_iso) == rt_iso / "cache"
+
+    # 2. Swarm worker with separate POB_RUNTIME_DIR sharing engine under `.runtime/engine` -> shares `.runtime/cache`
+    shared_root = tmp_path / ".runtime"
+    shared_eng = _make_fake_engine(shared_root / "engine")
+    swarm_rt = shared_root / "swarm_worker_1"
+    swarm_rt.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("POB_ROOT", str(shared_eng))
+    assert get_shared_cache_dir(swarm_rt) == shared_root / "cache"
+
+    # 2b. Engine under `pob4agents/engine` or legacy `pob-agent-tools/engine` also shares parent cache
+    for app_dir_name in ("pob4agents", "pob-agent-tools"):
+        app_root = tmp_path / app_dir_name
+        app_eng = _make_fake_engine(app_root / "engine")
+        monkeypatch.setenv("POB_ROOT", str(app_eng))
+        assert get_shared_cache_dir(swarm_rt) == app_root / "cache"
+
+    # 3. External engine whose parent is NOT `.runtime`/`pob4agents`/`pob-agent-tools` and has no `cache/` -> stays isolated in rt/cache
+    other_eng = _make_fake_engine(tmp_path / "custom_parent" / "my_eng")
+    monkeypatch.setenv("POB_ROOT", str(other_eng))
+    assert get_shared_cache_dir(swarm_rt) == swarm_rt / "cache"
+
+    # 4. A folder next to the engine that is only *named* cache is somebody else's: leave it alone
+    (tmp_path / "custom_parent" / "cache").mkdir()
+    (tmp_path / "custom_parent" / "cache" / "thumbnails.db").write_bytes(b"not ours")
+    assert get_shared_cache_dir(swarm_rt) == swarm_rt / "cache"
+
+    # 4a. Once pob has written to it (an index or a trade cache file) -> shares it
+    (tmp_path / "custom_parent" / "cache" / "trade_ratelimit.json").write_text("{}", encoding="utf-8")
+    assert get_shared_cache_dir(swarm_rt) == tmp_path / "custom_parent" / "cache"
+
+    # 4b. Explicit pob_root parameter takes precedence over env POB_ROOT (isolates legacy/custom engines)
+    monkeypatch.setenv("POB_ROOT", str(shared_eng))
+    legacy_eng = _make_fake_engine(tmp_path / "legacy_parent" / "PobTools[20261102]")
+    iso_test_rt = tmp_path / "iso_test_rt"
+    assert get_shared_cache_dir(iso_test_rt, pob_root=legacy_eng) == iso_test_rt / "cache"
+
+    # 5. Explicit POB_CACHE_DIR always wins
+    explicit_cache = tmp_path / "explicit_cache"
+    monkeypatch.setenv("POB_CACHE_DIR", str(explicit_cache))
+    assert get_shared_cache_dir(swarm_rt) == explicit_cache
+    assert explicit_cache.is_dir()
+
+
+def test_find_local_manifest_mismatches_fast_stat_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify fast_stat skips re-hashing unchanged files while catching edits, deletions, and force full-SHA1."""
+    import pob_cli.updater as upd_mod
+
+    eng = _make_fake_engine(
+        tmp_path / "eng",
+        version="2.68.1",
+        files={
+            "UpdateCheck.lua": b"return 'official'\n",
+            "Modules/Main.lua": b"local x = 1\n",
+        },
+    )
+    poe1 = eng / "PoE1"
+    cache_dir = tmp_path / "cache"
+
+    # First call populates manifest_stat_cache.json
+    assert find_local_manifest_mismatches(poe1, fast_stat=True, cache_dir=cache_dir) == []
+    assert (cache_dir / "manifest_stat_cache.json").is_file()
+
+    # Second call with unchanged files must NOT call verify_pob_sha1 at all (pure stat fast path)
+    sha_calls = 0
+    orig_verify = upd_mod.verify_pob_sha1
+
+    def _counting_verify(data: bytes, expected: str) -> bool:
+        nonlocal sha_calls
+        sha_calls += 1
+        return orig_verify(data, expected)
+
+    monkeypatch.setattr(upd_mod, "verify_pob_sha1", _counting_verify)
+    assert find_local_manifest_mismatches(poe1, fast_stat=True, cache_dir=cache_dir) == []
+    assert sha_calls == 0
+
+    # Explicit fast_stat=False always performs full SHA1 verification
+    assert find_local_manifest_mismatches(poe1, fast_stat=False, cache_dir=cache_dir) == []
+    assert sha_calls == 2
+
+    # Modifying a file invalidates its stat signature and triggers detection even with fast_stat=True
+    sha_calls = 0
+    (poe1 / "UpdateCheck.lua").write_bytes(b"return 'tampered_payload'\n")
+    mismatches = find_local_manifest_mismatches(poe1, fast_stat=True, cache_dir=cache_dir)
+    assert [m.local_rel for m in mismatches] == ["UpdateCheck.lua"]
+    assert sha_calls == 1
+
+
+def test_daemon_start_non_blocking_background_update_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify DaemonManager.start() starts serving immediately when engine exists and checks updates in background."""
+    import threading
+
+    import pob_cli.daemon as daemon_mod
+
+    rt = tmp_path / "rt"
+    eng = _make_fake_engine(rt / "engine", version="2.68.1")
+    monkeypatch.setenv("POB_RUNTIME_DIR", str(rt))
+
+    bg_started = threading.Event()
+    bg_release = threading.Event()
+    recorded_kwargs: dict[str, Any] = {}
+
+    class _FastFakeWorker:
+        def __init__(self, slot_name: str = "main", pob_dir: Path | None = None) -> None:
+            self.slot_name = slot_name
+            self.pob_root = pob_dir or eng
+            self.alive = False
+            self.last_good_code: str | None = None
+            self.undo_stack: list[str] = []
+            self.redo_stack: list[str] = []
+            self.source_label: str | None = None
+            self.hello_info: dict[str, Any] = {"pobVersion": "2.68.1"}
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def start(self) -> None:
+            self.alive = True
+
+        def stop(self) -> None:
+            self.alive = False
+
+    def _slow_check(**kwargs: Any) -> dict[str, Any]:
+        recorded_kwargs.update(kwargs)
+        bg_started.set()
+        bg_release.wait(timeout=5.0)
+        return {
+            "state": STATE_DEGRADED_NETWORK,
+            "localPobVersion": "2.68.1",
+            "checkedAt": time.time(),
+            "userHint": "网络不可达，请配置代理",
+        }
+
+    monkeypatch.setattr(daemon_mod, "BridgeWorker", _FastFakeWorker)
+    monkeypatch.setattr(daemon_mod, "check_and_apply_updates", _slow_check)
+
+    mgr = daemon_mod.DaemonManager(pob_dir=eng, token="tok", runtime_dir=rt, offline=False)
+    t0 = time.monotonic()
+    mgr.start()
+    elapsed = time.monotonic() - t0
+
+    # Must return immediately without waiting for slow network update check!
+    assert elapsed < 0.5
+    assert mgr.main_worker.is_alive() is True
+    assert bg_started.wait(timeout=3.0)
+    assert recorded_kwargs.get("check_only") is True
+
+    # P1-1: status dispatch (both normal and skip_periodic_check) must NOT block on active _boot_update_thread!
+    t_st = time.monotonic()
+    st_res = mgr.dispatch("status", {})
+    assert (time.monotonic() - t_st) < 0.5
+    assert st_res["main"]["alive"] is True
+    t_pr = time.monotonic()
+    st_pr = mgr.dispatch("status", {"skip_periodic_check": True})
+    assert (time.monotonic() - t_pr) < 0.5
+    assert st_pr["main"]["alive"] is True
+
+    bg_release.set()
+    assert mgr._boot_update_thread is not None
+    mgr._boot_update_thread.join(timeout=3.0)
+    assert mgr.update_status["state"] == STATE_DEGRADED_NETWORK
+    assert mgr._current_update_warning() == "网络不可达，请配置代理"
+
+
+def test_daemon_boot_bg_update_triggers_hot_reload_and_fresh_ok_checks_update_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify P1-1: boot check_only with updateAvailable=True invokes _hot_reload_update and fresh_ok rejects updateAvailable."""
+    import threading
+
+    import pob_cli.daemon as daemon_mod
+
+    rt = tmp_path / "rt"
+    eng = _make_fake_engine(rt / "engine", version="2.68.1")
+    monkeypatch.setenv("POB_RUNTIME_DIR", str(rt))
+
+    hot_reload_called = threading.Event()
+    check_calls: list[bool] = []
+
+    class _FakeW:
+        def __init__(self, slot_name: str = "main", pob_dir: Path | None = None, runtime_dir: Path | None = None) -> None:
+            self.slot_name = slot_name
+            self.pob_root = pob_dir or eng
+            self.alive = False
+            self.last_good_code: str | None = None
+            self.undo_stack: list[str] = []
+            self.redo_stack: list[str] = []
+            self.source_label: str | None = None
+            self.hello_info: dict[str, Any] = {}
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def start(self) -> None:
+            self.alive = True
+
+        def stop(self) -> None:
+            self.alive = False
+
+        def update_checkpoint(self) -> str:
+            return ""
+
+    def _fake_check(**kwargs: Any) -> dict[str, Any]:
+        is_check_only = bool(kwargs.get("check_only", False))
+        check_calls.append(is_check_only)
+        if is_check_only:
+            return {
+                "state": STATE_UP_TO_DATE,
+                "updateAvailable": True,
+                "localPobVersion": "2.68.1",
+                "remotePobVersion": "2.69.0",
+                "checkedAt": time.time(),
+                "engineDir": str(eng),
+            }
+        hot_reload_called.set()
+        return {
+            "state": STATE_UPDATED,
+            "updateAvailable": False,
+            "localPobVersion": "2.69.0",
+            "remotePobVersion": "2.69.0",
+            "checkedAt": time.time(),
+            "engineDir": str(eng),
+        }
+
+    monkeypatch.setattr(daemon_mod, "BridgeWorker", _FakeW)
+    monkeypatch.setattr(daemon_mod, "check_and_apply_updates", _fake_check)
+
+    # Even if previous persisted state has fresh checkedAt + STATE_UP_TO_DATE, updateAvailable=True must NOT skip boot check
+    mgr = daemon_mod.DaemonManager(pob_dir=eng, token="tok", runtime_dir=rt, offline=False)
+    mgr.update_status = {
+        "state": STATE_UP_TO_DATE,
+        "updateAvailable": True,
+        "checkedAt": time.time(),
+        "engineDir": str(eng),
+    }
+    mgr.start()
+    assert mgr._boot_update_thread is not None
+    mgr._boot_update_thread.join(timeout=3.0)
+    assert hot_reload_called.is_set()
+    assert check_calls == [True, False]
+    assert mgr.update_status["state"] == STATE_UPDATED
+    assert mgr.update_status["updateAvailable"] is False
+
+
+def test_updater_edge_hardening_cache_pob_root_readonly_and_tmp_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify P2-4: check_and_apply_updates forwards pob_root=active_dir, get_shared_cache_dir handles OSError, and tmp is unlinked."""
+    import os
+
+    import pob_cli.updater as upd_mod
+
+    # 1. check_and_apply_updates passes pob_root=active_dir to get_shared_cache_dir
+    rt = tmp_path / "rt"
+    explicit_eng = _make_fake_engine(tmp_path / "explicit_eng", version="2.68.1")
+    seen_pob_roots: list[Path | None] = []
+    orig_get_cache = upd_mod.get_shared_cache_dir
+
+    def _spy_get_cache(runtime_dir: Path | None = None, *, pob_root: Path | None = None) -> Path:
+        seen_pob_roots.append(pob_root)
+        return orig_get_cache(runtime_dir, pob_root=pob_root)
+
+    monkeypatch.setattr(upd_mod, "get_shared_cache_dir", _spy_get_cache)
+    monkeypatch.setattr(
+        upd_mod,
+        "fetch_pob_manifest_remote",
+        lambda **_kw: ("not_modified", None, '"etag-1"'),
+    )
+    monkeypatch.setattr(
+        upd_mod,
+        "fetch_pobtools_latest_info",
+        lambda **_kw: {"tag": "v1.0.0", "version": "1.0.0"},
+    )
+    (explicit_eng / upd_mod.POBTOOLS_META_FILENAME).write_text(
+        json.dumps({"pobToolsVersion": "1.0.0", "pobToolsTag": "v1.0.0", "dataVersion": "d1"}),
+        encoding="utf-8",
+    )
+    upd_mod.check_and_apply_updates(engine_dir=explicit_eng, runtime_dir=rt, offline=False, check_only=True)
+    assert seen_pob_roots == [explicit_eng]
+
+    # 2. get_shared_cache_dir catches OSError on mkdir() and falls back cleanly
+    monkeypatch.setattr(upd_mod, "get_shared_cache_dir", orig_get_cache)
+    ro_env_cache = tmp_path / "ro_env_cache"
+    ro_rt = tmp_path / "ro_rt"
+    monkeypatch.setenv("POB_CACHE_DIR", str(ro_env_cache))
+    orig_mkdir = Path.mkdir
+
+    def _failing_mkdir(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self in (ro_env_cache, ro_rt / "cache"):
+            raise PermissionError("read-only filesystem")
+        return orig_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", _failing_mkdir)
+    res_dir = orig_get_cache(ro_rt, pob_root=ro_rt / "engine")
+    assert res_dir != ro_env_cache
+    assert res_dir != ro_rt / "cache"
+    monkeypatch.delenv("POB_CACHE_DIR", raising=False)
+    monkeypatch.setattr(Path, "mkdir", orig_mkdir)
+
+    # 3. _save_manifest_stat_cache cleans up tmp file if os.replace fails
+    cache_file = tmp_path / "stat_cache_dir" / "manifest_stat_cache.json"
+    monkeypatch.setattr(os, "replace", lambda _src, _dst: (_ for _ in ()).throw(PermissionError("locked")))
+    upd_mod._save_manifest_stat_cache(cache_file, "key", "sha1", {"a.lua": [1, 2, "abc"]})
+    leftovers = list(cache_file.parent.glob("*.tmp"))
+    assert leftovers == [], f"Leftover tmp files were not cleaned up: {leftovers}"

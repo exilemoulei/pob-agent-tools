@@ -1,12 +1,12 @@
 {
-    "version": "0.3.0",
+    "version": "0.8.1",
     "description": "Headless Path of Building (PoE 1) daemon, offline Lua game-data index, and high-SNR CLI for AI agents",
-    "homepage": "https://github.com/exilemoulei/pob-agent-tools",
+    "homepage": "https://github.com/exilemoulei/pob4agents",
     "license": "GPL-3.0-only",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/exilemoulei/pob-agent-tools/releases/download/v0.3.0/pob-v0.3.0-windows-x64.zip",
-            "hash": "a410c7b0ea0671c4d7106f6268882caca38479164985fabe86b589b947db3362"
+            "url": "https://github.com/exilemoulei/pob4agents/releases/download/v0.8.1/pob4agents-0.8.1-windows-x64.zip",
+            "hash": "a507c88187b1448222ccfe1b03c8836099bac7aaeb70f0996accf2821dbd0c3c"
         }
     },
     "bin": "pob.exe",
@@ -14,13 +14,13 @@
     "pre_uninstall": "if (Test-Path \"$dir\\pob.exe\") { try { & \"$dir\\pob.exe\" stop 2>$null | Out-Null } catch {} }",
     "notes": [
         "Run `pob bootstrap` (or `pob bootstrap --proxy http://127.0.0.1:7890`) once to install the headless PoB engine.",
-        "Runtime state and managed engine are stored in %LOCALAPPDATA%\\pob-agent-tools (override with POB_RUNTIME_DIR)."
+        "Runtime state and managed engine are stored in %LOCALAPPDATA%\\pob4agents (existing %LOCALAPPDATA%\\pob-agent-tools data is auto-reused; override with POB_RUNTIME_DIR)."
     ],
     "checkver": "github",
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://github.com/exilemoulei/pob-agent-tools/releases/download/v$version/pob-v$version-windows-x64.zip"
+                "url": "https://github.com/exilemoulei/pob4agents/releases/download/v$version/pob4agents-$version-windows-x64.zip"
             }
         },
         "hash": {

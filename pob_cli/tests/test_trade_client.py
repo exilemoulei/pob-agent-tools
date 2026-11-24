@@ -567,3 +567,193 @@ def test_fetch_many_chunks_batches_of_10_and_caps_at_20(tmp_path: Path):
     # fetch() directly rejects >10 IDs.
     with pytest.raises(ValueError):
         client.fetch(ids_15, "q99")
+
+
+def test_trade_client_reuses_single_httpx_client_and_closes_via_context_manager(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    opened_clients: list[httpx.Client] = []
+    real_open = TradeClient._open_client
+
+    def spy_open(self: TradeClient, req_headers: dict[str, str]) -> httpx.Client:
+        c = real_open(self, req_headers)
+        opened_clients.append(c)
+        return c
+
+    monkeypatch.setattr(TradeClient, "_open_client", spy_open)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "q1", "result": ["i1"], "total": 1})
+        if "/api/trade/fetch/" in request.url.path:
+            return httpx.Response(200, json={"result": [{"id": "i1"}]})
+        return httpx.Response(200, json={"result": [{"id": "Covens", "realm": "pc"}]})
+
+    with TradeClient(cache_dir=tmp_path, transport=httpx.MockTransport(handler)) as client:
+        client.leagues()
+        client.search("Covens", {"query": {}})
+        client.fetch(["i1"], "q1")
+        assert len(opened_clients) == 1
+        assert not opened_clients[0].is_closed
+
+    assert opened_clients[0].is_closed
+
+
+def test_trade_client_shares_ratelimit_and_stats_cache_across_runtime_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    shared_cache = tmp_path / "shared_cache"
+    monkeypatch.setenv("POB_CACHE_DIR", str(shared_cache))
+    now, _ = _make_clock(1_700_000_000.0)
+
+    monkeypatch.setenv("POB_RUNTIME_DIR", str(tmp_path / "swarm_1"))
+    c1 = TradeClient(
+        now=now,
+        transport=httpx.MockTransport(
+            lambda req: httpx.Response(
+                200,
+                json={"result": [{"label": "Explicit", "entries": [{"id": "stat_shared"}]}]},
+                headers={
+                    "X-Rate-Limit-Policy": "trade-data-request-limit",
+                    "X-Rate-Limit-Rules": "Ip",
+                    "X-Rate-Limit-Ip": "5:10:60",
+                    "X-Rate-Limit-Ip-State": "4:10:0",
+                },
+            )
+        ),
+    )
+    assert c1.stats()[0]["entries"][0]["id"] == "stat_shared"
+    assert (shared_cache / "trade_stats.json").is_file()
+    assert (shared_cache / "trade_ratelimit.json").is_file()
+    c1.close()
+
+    # Worker 2 with a different POB_RUNTIME_DIR sees the shared stats cache & rate limit!
+    monkeypatch.setenv("POB_RUNTIME_DIR", str(tmp_path / "swarm_2"))
+    sleeps: list[float] = []
+    c2 = TradeClient(
+        now=now,
+        sleep=sleeps.append,
+        transport=httpx.MockTransport(lambda req: httpx.Response(200, json={"result": []})),
+    )
+    assert c2.cache_dir == shared_cache
+    assert c2.stats()[0]["entries"][0]["id"] == "stat_shared"  # cache hit, 0 HTTP
+    c2.leagues()  # hits shared rate limit (cur=4 >= 5-1=4 -> sleeps 10s)
+    assert sleeps == [pytest.approx(10.0)]
+    c2.close()
+
+
+def test_rate_limiter_in_flight_reservation_prevents_concurrent_burst_and_merges_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Verify optimistic in-flight reservation blocks 2nd concurrent worker at cur=effective_limit-1,
+    timestamps union across workers, retry_after is preserved, and _atomic_write_json retries PermissionError."""
+    import os
+
+    now, advance = _make_clock(1_700_000_000.0)
+    sleeps_a: list[float] = []
+    sleeps_b: list[float] = []
+
+    lim_a = TradeRateLimiter(cache_dir=tmp_path, limit_margin=1, max_wait_sec=15.0, sleep=sleeps_a.append, now=now)
+    lim_b = TradeRateLimiter(cache_dir=tmp_path, limit_margin=1, max_wait_sec=15.0, sleep=sleeps_b.append, now=now)
+
+    # Seed state at 6/7 (max_hits=8, margin=1 -> effective_limit=7)
+    lim_a.record_response(
+        "search",
+        {
+            "X-Rate-Limit-Policy": "trade-search-request-limit",
+            "X-Rate-Limit-Rules": "Ip",
+            "X-Rate-Limit-Ip": "8:10:60",
+            "X-Rate-Limit-Ip-State": "6:10:0",
+        },
+    )
+    advance(1.0)
+
+    # Worker A proceeds immediately (6 < 7) and reserves an optimistic in-flight hit
+    assert lim_a.before_request("search") == 0.0
+    assert sleeps_a == []
+    assert not lim_a.lock_path.exists()
+
+    # Worker B arrives while Worker A is still in-flight: sees 6 + 1 = 7 >= 7 -> must sleep 9.0s!
+    waited = lim_b.before_request("search")
+    assert waited == pytest.approx(9.0)
+    assert sleeps_b == [pytest.approx(9.0)]
+    assert not lim_b.lock_path.exists()
+
+    # Stale lockfile from dead PID is recovered cleanly
+    lim_a.lock_path.write_text(json.dumps({"pid": 99999999, "token": "dead", "ts": 1.0}), encoding="utf-8")
+    os.utime(lim_a.lock_path, (1.0, 1.0))
+    lim_a.record_429("search", {"Retry-After": "30"})
+    assert not lim_a.lock_path.exists()
+
+    # Worker B updating a different policy ('fetch') must NOT erase Worker A's 'search' 429 Retry-After
+    lim_b.record_response(
+        "fetch",
+        {
+            "X-Rate-Limit-Policy": "trade-fetch-request-limit",
+            "X-Rate-Limit-Rules": "Ip",
+            "X-Rate-Limit-Ip": "10:10:60",
+            "X-Rate-Limit-Ip-State": "1:10:0",
+        },
+    )
+    persisted = json.loads(lim_a.state_path.read_text(encoding="utf-8"))
+    assert "trade-search-request-limit" in persisted["policies"]
+    assert persisted["policies"]["trade-search-request-limit"]["retry_after"] == pytest.approx(1_700_000_031.0)
+    assert "trade-fetch-request-limit" in persisted["policies"]
+
+    # _atomic_write_json retries PermissionError up to 3 attempts
+    real_replace = os.replace
+    attempts = {"n": 0}
+
+    def flaky_replace(src, dst):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise PermissionError("busy")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    target = tmp_path / "retry_test.json"
+    trade_client._atomic_write_json(target, {"ok": True})
+    assert attempts["n"] == 3
+    assert json.loads(target.read_text(encoding="utf-8")) == {"ok": True}
+
+
+def test_non_json_response_does_not_chain_json_decode_error(tmp_path: Path):
+    client = TradeClient(
+        cache_dir=tmp_path,
+        transport=httpx.MockTransport(
+            lambda req: httpx.Response(200, text="<html>POESESSID=0123456789abcdef0123456789abcdef</html>")
+        ),
+    )
+    with pytest.raises(TradeError, match="non-JSON") as exc_info:
+        client.leagues()
+    assert exc_info.value.__cause__ is None
+    assert "0123456789abcdef" not in str(exc_info.value)
+
+
+def test_rate_limiter_records_each_request_once_so_the_wait_ends_with_the_oldest_hit(tmp_path: Path):
+    """5 per 10 s with margin 1: after 4 searches a second apart, the 5th waits for the first to expire."""
+    now, advance = _make_clock(1_700_000_000.0)
+    sleeps: list[float] = []
+    limiter = TradeRateLimiter(cache_dir=tmp_path, limit_margin=1, max_wait_sec=15.0, sleep=sleeps.append, now=now)
+
+    for hits in (1, 2, 3, 4):
+        assert limiter.before_request("search") == 0.0
+        advance(0.3)  # the response arrives
+        limiter.record_response(
+            "search",
+            {
+                "X-Rate-Limit-Policy": "trade-search-request-limit",
+                "X-Rate-Limit-Rules": "Ip",
+                "X-Rate-Limit-Ip": "5:10:60",
+                "X-Rate-Limit-Ip-State": f"{hits}:10:0",
+            },
+        )
+        advance(0.7)
+
+    # t = 4.0. The first hit was recorded at 0.3 and leaves the 10 s window at 10.3. Recording every
+    # request twice (once reserved, once on its response) used to stretch this to 8.0 s.
+    assert limiter.before_request("search") == pytest.approx(6.3)
+    stamps = json.loads(limiter.state_path.read_text(encoding="utf-8"))["policies"][
+        "trade-search-request-limit"
+    ]["timestamps"]
+    assert len(stamps) == 5

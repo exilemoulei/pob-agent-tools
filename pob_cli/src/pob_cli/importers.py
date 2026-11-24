@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import os
 import re
@@ -15,21 +16,28 @@ from typing import Any
 import httpx
 
 from . import __version__
+from . import updater as _updater
 from .bridge_client import BridgeError, BridgeWorker
+from .errors import DaemonRequestError
+from .json_io import atomic_write_json as _atomic_write_json
 from .updater import get_runtime_dir
 
-USER_AGENT = f"pob-cli/{__version__} (+https://github.com/exilemoulei/pob-agent-tools)"
+USER_AGENT = f"pob4agents/{__version__} (+https://github.com/exilemoulei/pob4agents)"
+DEFAULT_HTTP_TIMEOUT = httpx.Timeout(connect=4.0, read=15.0, write=15.0, pool=4.0)
+
+# poe.ninja puts the site language first when it is not English: poe.ninja/zh-tw/poe1/builds/...
+_NINJA_HOST = r"^https?://poe\.ninja/(?:[a-z]{2}(?:-[a-z]{2})?/)?"
 
 POE_NINJA_CHAR_RE = re.compile(
-    r"^https?://poe\.ninja/poe1/builds/(?P<league>[^/?#]+)/character/(?P<account>[^/?#]+)/(?P<name>[^/?#]+)",
+    _NINJA_HOST + r"poe1/builds/(?P<league>[^/?#]+)/character/(?P<account>[^/?#]+)/(?P<name>[^/?#]+)",
     re.IGNORECASE,
 )
 
 SHARE_RAW_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^https?://pobb\.in/([A-Za-z0-9_-]+)(?:/.*)?$"), "https://pobb.in/{0}/raw"),
     (re.compile(r"^https?://poedb\.tw/(?:[a-z]{2}/)?pob/([A-Za-z0-9_-]+)(?:/.*)?$"), "https://poedb.tw/pob/{0}/raw"),
-    (re.compile(r"^https?://poe\.ninja/pob/([A-Za-z0-9_-]+)(?:/.*)?$"), "https://poe.ninja/pob/{0}/raw"),
-    (re.compile(r"^https?://poe\.ninja/poe1/pob/([A-Za-z0-9_-]+)(?:/.*)?$"), "https://poe.ninja/poe1/pob/{0}/raw"),
+    (re.compile(_NINJA_HOST + r"pob/([A-Za-z0-9_-]+)(?:/.*)?$"), "https://poe.ninja/pob/{0}/raw"),
+    (re.compile(_NINJA_HOST + r"poe1/pob/([A-Za-z0-9_-]+)(?:/.*)?$"), "https://poe.ninja/poe1/pob/{0}/raw"),
     (re.compile(r"^https?://rentry\.co/([A-Za-z0-9_-]+)(?:/.*)?$"), "https://rentry.co/{0}/raw"),
     (re.compile(r"^https?://pastebin\.com/(?:raw/)?([A-Za-z0-9_-]+)(?:/.*)?$"), "https://pastebin.com/raw/{0}"),
     (re.compile(r"^https?://pastebinp\.com/(?:raw/)?([A-Za-z0-9_-]+)(?:/.*)?$"), "https://pastebinp.com/raw/{0}"),
@@ -48,27 +56,85 @@ def xml_to_share_code(xml_text: str) -> str:
 
 def share_code_to_xml(code: str) -> str:
     """Decompress a URL-safe Base64 PoB share code into raw PoB XML text."""
-    cleaned = code.lstrip("\ufeff").strip().replace("-", "+").replace("_", "/")
+    cleaned = re.sub(r"\s+", "", code.lstrip("\ufeff")).replace("-", "+").replace("_", "/")
+    if not cleaned:
+        raise ValueError("Invalid PoB share code: empty share code.")
     pad = (-len(cleaned)) % 4
     if pad:
         cleaned += "=" * pad
-    raw_bytes = base64.b64decode(cleaned)
     try:
-        decompressed = zlib.decompress(raw_bytes)
-    except zlib.error:
-        decompressed = zlib.decompress(raw_bytes, -15)
+        raw_bytes = base64.b64decode(cleaned, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(f"Invalid PoB share code: {exc}") from exc
+    try:
+        try:
+            decompressed = zlib.decompress(raw_bytes)
+        except zlib.error:
+            decompressed = zlib.decompress(raw_bytes, -15)
+    except (zlib.error, ValueError) as exc:
+        raise ValueError(f"Invalid PoB share code: {exc}") from exc
     return decompressed.decode("utf-8-sig", errors="replace").lstrip("\ufeff")
 
 
-def _get_cache_dir() -> Path:
-    cache_dir = get_runtime_dir() / "cache"
+def _shared_cache_dir(runtime_dir: Path | None = None) -> Path:
+    """Resolve shared engine-scoped cache directory, delegating to updater.get_shared_cache_dir if present."""
     try:
+        fn = getattr(_updater, "get_shared_cache_dir", None)
+        if callable(fn):
+            cache_dir = Path(fn(runtime_dir))
+        else:
+            env_cache = os.environ.get("POB_CACHE_DIR", "").strip()
+            if env_cache:
+                cache_dir = Path(env_cache)
+            else:
+                rt = get_runtime_dir(runtime_dir)
+                env_root = os.environ.get("POB_ROOT", "").strip()
+                shared_candidate: Path | None = None
+                if env_root:
+                    try:
+                        eng_parent = Path(env_root).resolve().parent
+                        same_rt = eng_parent == rt.resolve()
+                    except OSError:
+                        eng_parent = Path(env_root).parent
+                        same_rt = False
+                    if not same_rt and (
+                        (eng_parent / "cache").is_dir()
+                        or eng_parent.name.lower() in (".runtime", "pob4agents", "pob-agent-tools")
+                    ):
+                        shared_candidate = eng_parent / "cache"
+                cache_dir = shared_candidate or (rt / "cache")
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir
     except OSError:
         fallback = Path.home() / ".cache" / "pob-cli"
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback
+
+
+def _get_cache_dir(runtime_dir: Path | None = None) -> Path:
+    return _shared_cache_dir(runtime_dir)
+
+
+def read_stale_cache(
+    cache_file: Path,
+    *,
+    data_key: str = "data",
+) -> tuple[Any | None, float | None]:
+    """Read an expired/stale JSON cache entry if present and parseable.
+
+    Returns ``(payload, age_seconds)`` or ``(None, None)`` if missing/unreadable.
+    """
+    if not cache_file.is_file():
+        return None, None
+    try:
+        cached = json.loads(cache_file.read_text(encoding="utf-8"))
+        if not isinstance(cached, dict) or data_key not in cached:
+            return None, None
+        ts = cached.get("_ts")
+        age = max(0.0, time.time() - float(ts)) if isinstance(ts, (int, float)) else None
+        return cached[data_key], age
+    except Exception:
+        return None, None
 
 
 def _resolve_proxy(proxy: str | None = None) -> str | None:
@@ -92,7 +158,7 @@ def _resolve_proxy(proxy: str | None = None) -> str | None:
 
 def _make_httpx_client(
     *,
-    timeout: float = 20.0,
+    timeout: float | httpx.Timeout | None = None,
     proxy: str | None = None,
     headers: dict[str, str] | None = None,
 ) -> httpx.Client:
@@ -101,8 +167,9 @@ def _make_httpx_client(
     if headers:
         merged_headers.update(headers)
     resolved_proxy = _resolve_proxy(proxy)
+    resolved_timeout = DEFAULT_HTTP_TIMEOUT if timeout is None else timeout
     kwargs: dict[str, Any] = {
-        "timeout": timeout,
+        "timeout": resolved_timeout,
         "follow_redirects": True,
         "headers": merged_headers,
     }
@@ -111,8 +178,13 @@ def _make_httpx_client(
     return httpx.Client(**kwargs)
 
 
-def _fetch_poe_ninja_index_state(ttl_sec: int = 900) -> dict[str, Any]:
-    cache_file = _get_cache_dir() / "poe_ninja_index_state.json"
+def _fetch_poe_ninja_index_state(
+    ttl_sec: int = 900,
+    *,
+    proxy: str | None = None,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    cache_file = _shared_cache_dir() / "poe_ninja_index_state.json"
     now = time.time()
     if cache_file.exists():
         try:
@@ -123,21 +195,34 @@ def _fetch_poe_ninja_index_state(ttl_sec: int = 900) -> dict[str, Any]:
             pass
 
     url = "https://poe.ninja/poe1/api/data/index-state"
-    with _make_httpx_client(timeout=20.0) as client:
-        resp = client.get(url)
-        resp.raise_for_status()
-        data = resp.json()
-
     try:
-        cache_file.write_text(json.dumps({"_ts": now, "data": data}), encoding="utf-8")
-    except Exception:
-        pass
+        if client is not None:
+            resp = client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+        else:
+            with _make_httpx_client(timeout=DEFAULT_HTTP_TIMEOUT, proxy=proxy) as own_client:
+                resp = own_client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+    except (httpx.HTTPError, OSError):
+        stale_data, _ = read_stale_cache(cache_file, data_key="data")
+        if isinstance(stale_data, dict):
+            return stale_data
+        raise
+
+    _atomic_write_json(cache_file, {"_ts": now, "data": data})
     return data
 
 
-def _fetch_poe_ninja_build_index_state(ttl_sec: int = 900) -> dict[str, Any]:
+def _fetch_poe_ninja_build_index_state(
+    ttl_sec: int = 900,
+    *,
+    proxy: str | None = None,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
     """Fetch poe.ninja build-index-state (leagueBuilds + meta statistics) with 15m disk cache."""
-    cache_file = _get_cache_dir() / "poe_ninja_build_index_state.json"
+    cache_file = _shared_cache_dir() / "poe_ninja_build_index_state.json"
     now = time.time()
     if cache_file.exists():
         try:
@@ -148,15 +233,23 @@ def _fetch_poe_ninja_build_index_state(ttl_sec: int = 900) -> dict[str, Any]:
             pass
 
     url = "https://poe.ninja/poe1/api/data/build-index-state"
-    with _make_httpx_client(timeout=20.0) as client:
-        resp = client.get(url)
-        resp.raise_for_status()
-        data = resp.json()
-
     try:
-        cache_file.write_text(json.dumps({"_ts": now, "data": data}), encoding="utf-8")
-    except Exception:
-        pass
+        if client is not None:
+            resp = client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+        else:
+            with _make_httpx_client(timeout=DEFAULT_HTTP_TIMEOUT, proxy=proxy) as own_client:
+                resp = own_client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+    except (httpx.HTTPError, OSError):
+        stale_data, _ = read_stale_cache(cache_file, data_key="data")
+        if isinstance(stale_data, dict):
+            return stale_data
+        raise
+
+    _atomic_write_json(cache_file, {"_ts": now, "data": data})
     return data
 
 
@@ -226,6 +319,9 @@ def _resolve_poe_ninja_overviews(
 
 def fetch_poe_ninja_character_code(url: str) -> str:
     """Resolve a poe.ninja character URL into a raw PoB share code."""
+    from .guardrails import validate_url
+
+    validate_url(url, expected_game="poe1", cli_subcommand="load")
     m = POE_NINJA_CHAR_RE.match(url.strip())
     if not m:
         raise ValueError(f"Not a valid poe.ninja character URL: {url}")
@@ -260,16 +356,17 @@ def fetch_poe_ninja_character_code(url: str) -> str:
 
     if not candidates:
         err_note = f" ({'; '.join(fetch_errs)})" if fetch_errs else ""
-        raise RuntimeError(
-            f"Could not find league slug '{league_slug}' in poe.ninja build-index-state or index-state{err_note}."
-        )
+        msg = f"Could not find league slug '{league_slug}' in poe.ninja build-index-state or index-state{err_note}."
+        if not fetch_errs:
+            raise DaemonRequestError(msg)
+        raise RuntimeError(msg)
 
     account_attempts = [raw_account]
     if hash_account != raw_account:
         account_attempts.append(hash_account)
 
     last_err: Exception | None = None
-    with _make_httpx_client(timeout=20.0) as client:
+    with _make_httpx_client(timeout=DEFAULT_HTTP_TIMEOUT) as client:
         for overview, snap_type in candidates:
             for acc_idx, acc in enumerate(account_attempts):
                 params: dict[str, str] = {
@@ -298,41 +395,48 @@ def fetch_poe_ninja_character_code(url: str) -> str:
 
 def fetch_share_url_code_fallback(url: str) -> str:
     """Fallback Python httpx fetcher for share site URLs when Curl/Lua fails."""
+    from .guardrails import validate_build_xml, validate_url
+
     clean_url = url.strip()
+    validate_url(clean_url, expected_game="poe1", cli_subcommand="load")
     if POE_NINJA_CHAR_RE.match(clean_url):
-        return fetch_poe_ninja_character_code(clean_url)
+        code = fetch_poe_ninja_character_code(clean_url)
+        validate_build_xml(share_code_to_xml(code), expected_game="poe1", source_hint=clean_url)
+        return code
 
-    with _make_httpx_client(timeout=20.0) as client:
-        for pattern, template in SHARE_RAW_PATTERNS:
-            m = pattern.match(clean_url)
-            if m:
-                raw_url = template.format(m.group(1))
-                resp = client.get(raw_url)
+    from .profile_import import wrap_share_http_error
+
+    try:
+        with _make_httpx_client(timeout=DEFAULT_HTTP_TIMEOUT) as client:
+            for pattern, template in SHARE_RAW_PATTERNS:
+                m = pattern.match(clean_url)
+                if m:
+                    resp = client.get(template.format(m.group(1)))
+                    resp.raise_for_status()
+                    code = resp.text.strip()
+                    validate_build_xml(share_code_to_xml(code), expected_game="poe1", source_hint=clean_url)
+                    return code
+
+            m_maxroll = MAXROLL_POB_RE.match(clean_url)
+            if m_maxroll:
+                resp = client.get(
+                    f"https://maxroll.gg/poe/api/pob/{m_maxroll.group(1)}",
+                    headers={"Accept": "application/json"},
+                )
                 resp.raise_for_status()
-                code = resp.text.strip()
-                share_code_to_xml(code)
-                return code
+                payload = resp.json()
+                code = payload.get("build") or payload.get("code") or payload.get("data")
+                if isinstance(code, str) and code.strip():
+                    validate_build_xml(share_code_to_xml(code.strip()), expected_game="poe1", source_hint=clean_url)
+                    return code.strip()
 
-        m_maxroll = MAXROLL_POB_RE.match(clean_url)
-        if m_maxroll:
-            code_id = m_maxroll.group(1)
-            resp = client.get(
-                f"https://maxroll.gg/poe/api/pob/{code_id}",
-                headers={"Accept": "application/json"},
-            )
+            resp = client.get(clean_url)
             resp.raise_for_status()
-            payload = resp.json()
-            code = payload.get("build") or payload.get("code") or payload.get("data")
-            if isinstance(code, str) and code.strip():
-                share_code_to_xml(code.strip())
-                return code.strip()
-
-        # Generic raw GET attempt
-        resp = client.get(clean_url)
-        resp.raise_for_status()
-        text = resp.text.strip()
-        share_code_to_xml(text)
-        return text
+            text = resp.text.strip()
+            validate_build_xml(share_code_to_xml(text), expected_game="poe1", source_hint=clean_url)
+            return text
+    except httpx.HTTPStatusError as exc:
+        raise wrap_share_http_error(exc, clean_url) from exc
 
 
 def load_build_into_worker(
@@ -340,61 +444,102 @@ def load_build_into_worker(
     *,
     source: str | None = None,
     xml_code: str | None = None,
+    char_name: str | None = None,
+    league: str | None = None,
+    realm: str | None = None,
 ) -> dict[str, Any]:
-    """Load a build into `worker` from an encoded XML share code, URL, or raw Base64 code.
+    """Load a build into `worker` from XML, share URL, official profile, or Base64 code (R11)."""
+    from .guardrails import validate_build_xml, validate_url
+    from .profile_import import load_official_profile_into_worker, should_route_official_profile
 
-    Follows R11: local file I/O happens on the CLI side (passed as `xml_code`), never on the daemon.
-    Always snapshots `export_code` into `worker.last_good_code` and clears undo/redo history on load.
-    """
     with worker.lock:
         import_method = "code"
+        prof_extra: dict[str, Any] = {}
         if xml_code:
             clean_xml_code = xml_code.lstrip("\ufeff").strip()
             if clean_xml_code.startswith("<"):
+                validate_build_xml(clean_xml_code, expected_game="poe1")
                 clean_xml_code = xml_to_share_code(clean_xml_code)
+            else:
+                try:
+                    decoded_xml = share_code_to_xml(clean_xml_code)
+                except ValueError:
+                    decoded_xml = ""
+                if decoded_xml:
+                    validate_build_xml(decoded_xml, expected_game="poe1")
             res = worker.call("import_code", {"code": clean_xml_code, "mode": "replace"})
             import_method = "xml_file"
-        elif source:
-            src = source.lstrip("\ufeff").strip()
+        elif source or (realm and realm.strip().lower() == "cn"):
+            src = (source or "").lstrip("\ufeff").strip()
             if src.startswith("<"):
+                validate_build_xml(src, expected_game="poe1")
                 res = worker.call("import_code", {"code": xml_to_share_code(src), "mode": "replace"})
                 import_method = "xml_file"
-            elif POE_NINJA_CHAR_RE.match(src):
-                code = fetch_poe_ninja_character_code(src)
-                res = worker.call("import_code", {"code": code, "mode": "replace"})
-                import_method = "poe_ninja_character"
-            elif src.startswith(("http://", "https://")):
-                try:
-                    url_res = worker.call("import_from_url", {"url": src})
-                    code = (url_res.get("code") or "").strip()
-                    if not code:
-                        raise BridgeError("import_from_url returned empty code")
-                    res = worker.call("import_code", {"code": code, "mode": "replace"})
-                    import_method = "url_native"
-                except BridgeError:
-                    code = fetch_share_url_code_fallback(src)
-                    res = worker.call("import_code", {"code": code, "mode": "replace"})
-                    import_method = "url_fallback"
+            elif should_route_official_profile(src, char_name=char_name, realm=realm):
+                prof_extra = load_official_profile_into_worker(
+                    worker, src or None, char_name=char_name, league=league, realm=realm
+                )
+                import_method = str(prof_extra.get("importMethod") or "official_profile")
+                res = prof_extra.get("importResult") or {}
             else:
-                # Raw Base64 share code
-                res = worker.call("import_code", {"code": src, "mode": "replace"})
-                import_method = "share_code"
+                validate_url(src, expected_game="poe1", cli_subcommand="load")
+                if POE_NINJA_CHAR_RE.match(src):
+                    code = fetch_poe_ninja_character_code(src)
+                    validate_build_xml(share_code_to_xml(code), expected_game="poe1", source_hint=src)
+                    res = worker.call("import_code", {"code": code, "mode": "replace"})
+                    import_method = "poe_ninja_character"
+                elif src.startswith(("http://", "https://")):
+                    try:
+                        url_res = worker.call("import_from_url", {"url": src})
+                        code = (url_res.get("code") or "").strip()
+                        if not code:
+                            raise BridgeError("import_from_url returned empty code")
+                        try:
+                            decoded_xml = share_code_to_xml(code)
+                        except ValueError:
+                            decoded_xml = ""
+                        if decoded_xml:
+                            validate_build_xml(decoded_xml, expected_game="poe1", source_hint=src)
+                        res = worker.call("import_code", {"code": code, "mode": "replace"})
+                        import_method = "url_native"
+                    except BridgeError:
+                        code = fetch_share_url_code_fallback(src)
+                        res = worker.call("import_code", {"code": code, "mode": "replace"})
+                        import_method = "url_fallback"
+                else:
+                    decoded_xml = share_code_to_xml(src)
+                    validate_build_xml(decoded_xml, expected_game="poe1")
+                    res = worker.call("import_code", {"code": src, "mode": "replace"})
+                    import_method = "share_code"
         else:
             raise ValueError("Either 'source' or 'xml_code' must be provided.")
 
-        # Snapshot current build state as last_good_code and reset undo/redo
         exp = worker.call("export_code", {})
         worker.last_good_code = exp.get("code")
-        worker.source_label = source or "xml_file"
+        ch = prof_extra.get("character")
+        if isinstance(ch, dict):
+            worker.source_label = f"profile:{ch.get('accountName')}/{ch.get('name')}"
+        elif source:
+            src_s = source.strip()
+            if len(src_s) > 120 and not src_s.startswith(("http://", "https://", "<")):
+                worker.source_label = f"share_code({len(src_s)} chars)"
+            elif len(src_s) > 200:
+                worker.source_label = f"{src_s[:120]}... ({len(src_s)} chars)"
+            else:
+                worker.source_label = src_s
+        else:
+            worker.source_label = "xml_file"
         worker.undo_stack.clear()
         worker.redo_stack.clear()
         worker.save_slot_state()
 
-        info = worker.call("get_build_info", {})
-        header = worker.call("get_build_header", {})
-        return {
+        out: dict[str, Any] = {
             "importMethod": import_method,
             "importResult": res,
-            "buildInfo": info,
-            "buildHeader": header,
+            "buildInfo": worker.call("get_build_info", {}),
+            "buildHeader": worker.call("get_build_header", {}),
         }
+        for k in ("character", "importNotes", "translateWarnings"):
+            if prof_extra.get(k):
+                out[k] = prof_extra[k]
+        return out

@@ -22,8 +22,10 @@ from pob_cli.importers import (
 
 @pytest.fixture(autouse=True)
 def isolated_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Isolate POB_RUNTIME_DIR so tests never read or pollute F:/poe/.runtime/cache."""
+    """Isolate POB_RUNTIME_DIR so tests never read or pollute the real runtime cache."""
     monkeypatch.setenv("POB_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.delenv("POB_CACHE_DIR", raising=False)
+    monkeypatch.delenv("POB_ROOT", raising=False)
     return tmp_path
 
 
@@ -568,6 +570,349 @@ def test_poedb_client_offline_discovery_parsing_and_error(
     monkeypatch.setattr(httpx, "Client", BrokenClient)
     with pytest.raises(RuntimeError, match="POB_PROXY"):
         poedb_client.query_poedb("Mageblood")
+
+
+def test_split_timeout_and_stale_cache_fallbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify split httpx.Timeout(connect=4.0, read=15.0) and stale-cache fallback across external clients."""
+    captured_timeouts: list[Any] = []
+
+    class CaptureClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured_timeouts.append(kwargs.get("timeout"))
+
+        def __enter__(self) -> CaptureClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def get(self, url: str, **_: Any) -> _FakeResponse:
+            raise httpx.ConnectTimeout("simulated offline")
+
+    monkeypatch.setattr(httpx, "Client", CaptureClient)
+
+    # Default split timeout & explicit override preservation
+    importers._make_httpx_client()
+    assert isinstance(captured_timeouts[-1], httpx.Timeout)
+    assert captured_timeouts[-1].connect == 4.0
+    assert captured_timeouts[-1].read == 15.0
+
+    importers._make_httpx_client(timeout=7.5)
+    assert captured_timeouts[-1] == 7.5
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    stale_ts = time.time() - 999999
+
+    # 1. query_price stale fallback
+    (cache_dir / "ninja_dense_Covens.json").write_text(
+        json.dumps(
+            {
+                "_ts": stale_ts,
+                "data": {
+                    "Currency": [{"name": "Divine Orb", "chaos": 200.0}],
+                    "UniqueAccessory": [{"name": "Mageblood", "chaos": 25000.0}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    stale_price = external_data.query_price("Mageblood", league="Covens")
+    assert stale_price["stale"] is True
+    assert stale_price["totalMatches"] == 1
+    assert stale_price["matches"][0]["name"] == "Mageblood"
+
+    # 2. query_meta stale fallback
+    (cache_dir / "poe_ninja_build_index_state.json").write_text(
+        json.dumps(
+            {
+                "_ts": stale_ts,
+                "data": {
+                    "leagueBuilds": [
+                        {
+                            "leagueName": "Covens",
+                            "leagueUrl": "covens",
+                            "total": 50000,
+                            "category": 0,
+                            "hardcore": False,
+                            "statistics": [{"class": "Hierophant", "skill": "Ice Nova", "percentage": 8.0}],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    stale_meta = external_data.query_meta()
+    assert stale_meta["stale"] is True
+    assert stale_meta["league"] == "Covens"
+
+    # 3. query_wiki stale fallback
+    import hashlib
+
+    slug_hash = hashlib.sha1(b"mind over matter").hexdigest()[:12]
+    (cache_dir / f"poewiki_{slug_hash}.json").write_text(
+        json.dumps(
+            {
+                "_ts": stale_ts,
+                "data": {
+                    "query": "Mind over Matter",
+                    "title": "Mind over Matter",
+                    "url": "https://www.poewiki.net/wiki/Mind_over_Matter",
+                    "relatedTitles": [],
+                    "summary": "40% of Damage is taken from Mana before Life.",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    stale_wiki = external_data.query_wiki("Mind over Matter")
+    assert stale_wiki["stale"] is True
+    assert "Mana before Life" in stale_wiki["summary"]
+
+    # 4. query_poedb stale fallback (both autocomplete + page)
+    (cache_dir / "poedb_autocomplete_index.json").write_text(
+        json.dumps(
+            {
+                "_ts": stale_ts,
+                "entries": [{"slug": "Mageblood", "cnLabel": "法师之血", "usLabel": "Mageblood", "cnDesc": "腰带", "usDesc": "Belts"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    p_hash = hashlib.sha1(b"cn:Mageblood").hexdigest()[:16]
+    (cache_dir / f"poedb_page_cn_{p_hash}.json").write_text(
+        json.dumps(
+            {
+                "_ts": stale_ts,
+                "url": "https://poedb.tw/cn/Mageblood",
+                "html": "<html><head><title>法师之血 - 流亡编年史</title></head><body></body></html>",
+            }
+        ),
+        encoding="utf-8",
+    )
+    stale_pdb = poedb_client.query_poedb("法师之血")
+    assert stale_pdb["stale"] is True
+    assert stale_pdb["slug"] == "Mageblood"
+
+
+def test_concurrent_multi_queries_reuse_single_client_and_honor_proxy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify query_price_multi, query_wiki_multi, query_poedb_multi reuse ONE client and pass proxy."""
+    client_inits: list[dict[str, Any]] = []
+
+    class MultiFakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            client_inits.append(dict(kwargs))
+
+        def __enter__(self) -> MultiFakeClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def get(self, url: str, params: dict[str, Any] | None = None, **_: Any) -> _FakeResponse:
+            params = params or {}
+            if "dense/overviews" in url:
+                return _FakeResponse(
+                    json_data={
+                        "currencyOverviews": [{"type": "Currency", "lines": [{"name": "Divine Orb", "chaos": 200.0}]}],
+                        "itemOverviews": [
+                            {"type": "SkillGem", "lines": [{"name": "Vaal Grace", "variant": "21/20c", "chaos": 400.0}]},
+                            {"type": "UniqueArmour", "lines": [{"name": "The Ivory Tower", "variant": "6L", "chaos": 600.0}]},
+                        ],
+                    }
+                )
+            if "stash/current/item/overview" in url:
+                t = params.get("type")
+                if t == "SkillGem":
+                    return _FakeResponse(json_data={"lines": [{"name": "Vaal Grace", "gemLevel": 21, "gemQuality": 20, "corrupted": True, "chaosValue": 420.0}]})
+                if t == "UniqueArmour":
+                    return _FakeResponse(json_data={"lines": [{"name": "The Ivory Tower", "links": 6, "chaosValue": 650.0}]})
+                return _FakeResponse(json_data={"lines": []})
+            if "poewiki.net" in url:
+                action = params.get("action")
+                if action == "opensearch":
+                    s = params["search"]
+                    return _FakeResponse(json_data=[s, [s], [""], [f"https://www.poewiki.net/wiki/{s}"]])
+                if action == "parse":
+                    pg = params["page"]
+                    return _FakeResponse(json_data={"parse": {"title": pg, "text": {"*": f"<p>Info about {pg}</p>"}}})
+            if url == "https://poedb.tw/cn/":
+                return _FakeResponse(text='autocomplete_cn.aaa.json autocomplete_us.bbb.json')
+            if url.endswith("autocomplete_cn.aaa.json"):
+                return _FakeResponse(json_data=[{"label": "法师之血", "value": "Mageblood", "desc": "腰带"}, {"label": "象牙之塔", "value": "The_Ivory_Tower", "desc": "胸甲"}])
+            if url.endswith("autocomplete_us.bbb.json"):
+                return _FakeResponse(json_data=[{"label": "Mageblood", "value": "Mageblood", "desc": "Belts"}, {"label": "The Ivory Tower", "value": "The_Ivory_Tower", "desc": "Body Armours"}])
+            if url.endswith("/cn/Mageblood"):
+                return _FakeResponse(text="<html><head><title>法师之血</title></head></html>")
+            if url.endswith("/cn/The_Ivory_Tower"):
+                return _FakeResponse(text="<html><head><title>象牙之塔</title></head></html>")
+            raise AssertionError(f"Unexpected URL: {url} params={params}")
+
+    monkeypatch.setattr(httpx, "Client", MultiFakeClient)
+
+    # 1. query_price_multi with 2 detailed categories -> 1 dense client + 1 shared stash batch client (not 2 stash clients!)
+    client_inits.clear()
+    pm = external_data.query_price_multi(
+        ["Vaal Grace 21/20", "The Ivory Tower 6L"],
+        league="Covens",
+        proxy="http://127.0.0.1:7891",
+    )
+    assert pm["count"] == 2
+    assert pm["results"][0]["matches"][0]["gemLevel"] == 21
+    assert pm["results"][1]["matches"][0]["links"] == 6
+    assert len(client_inits) == 2  # 1 dense + 1 shared client for both stash categories
+    assert all(ci.get("proxy") == "http://127.0.0.1:7891" for ci in client_inits)
+
+    # 2. query_wiki_multi -> 1 shared client for both topics
+    client_inits.clear()
+    wm = external_data.query_wiki_multi(["Arcane Cloak", "Mind over Matter"], proxy="http://127.0.0.1:7891")
+    assert wm["count"] == 2
+    assert [r["title"] for r in wm["results"]] == ["Arcane Cloak", "Mind over Matter"]
+    assert len(client_inits) == 1
+    assert client_inits[0].get("proxy") == "http://127.0.0.1:7891"
+
+    # 3. query_poedb_multi -> 1 shared client across discovery + concurrent cn/us + both pages
+    client_inits.clear()
+    pdb_m = poedb_client.query_poedb_multi(["Mageblood", "象牙之塔"], proxy="http://127.0.0.1:7891")
+    assert pdb_m["count"] == 2
+    assert [r["slug"] for r in pdb_m["results"]] == ["Mageblood", "The_Ivory_Tower"]
+    assert len(client_inits) == 1
+    assert client_inits[0].get("proxy") == "http://127.0.0.1:7891"
+    assert list((tmp_path / "cache").glob("*.tmp")) == []
+
+
+def test_resolve_current_trade_league_does_not_poison_cache_on_offline_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Offline failures must never cache 'Standard'; stale cache is reused, else RuntimeError is raised."""
+    cache_file = tmp_path / "cache" / "poe_trade_league.json"
+
+    class OfflineClient:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> OfflineClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def get(self, url: str, **_: Any) -> _FakeResponse:
+            raise httpx.ConnectTimeout("offline")
+
+    monkeypatch.setattr(httpx, "Client", OfflineClient)
+
+    # No cache + all network failed -> raises RuntimeError and does NOT create poisoned Standard cache
+    with pytest.raises(RuntimeError, match="Failed to resolve current PoE trade league"):
+        external_data.resolve_current_trade_league()
+    assert not cache_file.exists()
+
+    # Stale non-Standard cache present -> returns stale league without overwriting with Standard
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    stale_ts = time.time() - 999999
+    cache_file.write_text(json.dumps({"_ts": stale_ts, "league": "Covens"}), encoding="utf-8")
+    assert external_data.resolve_current_trade_league() == "Covens"
+    persisted = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert persisted["league"] == "Covens"
+    assert persisted["_ts"] == stale_ts
+
+    # Genuine HTTP 200 from POE_LEAGUES_URL with only Standard/Hardcore DOES cache Standard
+    cache_file.unlink()
+
+    class StandardOnlyClient:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> StandardOnlyClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def get(self, url: str, **_: Any) -> _FakeResponse:
+            if "poe.ninja" in url:
+                raise httpx.ConnectTimeout("ninja down")
+            return _FakeResponse(status_code=200, json_data=[{"id": "Standard"}, {"id": "Hardcore"}])
+
+    monkeypatch.setattr(httpx, "Client", StandardOnlyClient)
+    assert external_data.resolve_current_trade_league() == "Standard"
+    assert json.loads(cache_file.read_text(encoding="utf-8"))["league"] == "Standard"
+
+
+def test_shared_cache_dir_ro_fallback_and_detailed_stash_partial_fallback_and_wiki_empty_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify RO fallback in importers._shared_cache_dir, per-query stale isolation in query_price_multi, and wiki {} hit."""
+    # 1. RO fallback when updater.get_shared_cache_dir raises PermissionError
+    fake_home = tmp_path / "fake_home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setattr(
+        importers._updater,
+        "get_shared_cache_dir",
+        lambda *_a, **_kw: (_ for _ in ()).throw(PermissionError("read-only runtime")),
+    )
+    fallback = importers._shared_cache_dir()
+    assert fallback == fake_home / ".cache" / "pob-cli"
+    assert fallback.is_dir()
+    monkeypatch.undo()
+    monkeypatch.setenv("POB_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.delenv("POB_CACHE_DIR", raising=False)
+    monkeypatch.delenv("POB_ROOT", raising=False)
+
+    # 2. Cold detailed stash failure falls back to dense overviews with per-query stale=True,
+    #    without aborting or tainting fresh non-detailed sibling queries in query_price_multi.
+    dense_mock = {
+        "Currency": [{"name": "Divine Orb", "chaos": 200.0}],
+        "SkillGem": [{"name": "Vaal Grace", "variant": "21/20c", "chaos": 410.0}],
+        "UniqueAccessory": [{"name": "Mageblood", "chaos": 25000.0}],
+    }
+    monkeypatch.setattr(external_data, "_fetch_dense_overviews", lambda league, ttl_sec=900, **kw: dense_mock)
+
+    class FailStashClient:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> FailStashClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def get(self, url: str, **_: Any) -> _FakeResponse:
+            raise httpx.ConnectTimeout("stash offline")
+
+    monkeypatch.setattr(httpx, "Client", FailStashClient)
+
+    single_det = external_data.query_price("Vaal Grace 21/20", league="Covens")
+    assert single_det["stale"] is True
+    assert single_det["totalMatches"] == 1
+    assert single_det["matches"][0]["chaosValue"] == 410.0
+
+    multi_mix = external_data.query_price_multi(["Mageblood", "   ", "Vaal Grace 21/20"], league="Covens")
+    assert multi_mix["queries"] == ["Mageblood", "Vaal Grace 21/20"]
+    assert multi_mix["count"] == 2
+    assert multi_mix["results"][0]["query"] == "Mageblood"
+    assert multi_mix["results"][0].get("stale") is None  # Fresh non-detailed query NOT tainted!
+    assert multi_mix["results"][1]["query"] == "Vaal Grace 21/20"
+    assert multi_mix["results"][1]["stale"] is True
+    assert multi_mix["stale"] is True
+
+    # 3. query_wiki_multi handles cached `{}` data cleanly without KeyError
+    import hashlib
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    h = hashlib.sha1(b"empty topic").hexdigest()[:12]
+    (cache_dir / f"poewiki_{h}.json").write_text(json.dumps({"_ts": time.time(), "data": {}}), encoding="utf-8")
+    wm = external_data.query_wiki_multi([" Empty Topic ", "   "])
+    assert wm["queries"] == ["Empty Topic"]
+    assert wm["results"] == [{}]
 
 
 # ---------------------------------------------------------------------------

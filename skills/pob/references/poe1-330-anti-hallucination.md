@@ -1,0 +1,52 @@
+# PoE1 3.30 Anti-Hallucination & Patch-Drift Reference
+
+All mechanics below are empirically verified against live `PoE1/Data/` (`PoB 2.68.1`, `TreeData/3_30/tree.lua`, `Gems.lua`, `act_dex.lua`, `act_int.lua`, `CalcSetup.lua`).
+
+## 1. PoE1 Legacy Patch Traps (3.23 – 3.30 Removals & Reworks)
+
+| Patch | Term (EN / ZH) | Status in 3.30 | Current Reality / Remediation |
+|---|---|---|---|
+| **3.28** | Regular `Awakened Support Gems` (`强辅`/`觉醒辅助`) -> `Exceptional Support Gems` (`非凡辅助`) | **REMOVED / REPLACED** | Regular Awakened Supports (e.g., `Awakened Elemental Focus`, `Awakened Spell Echo`, `Awakened CwC`, `Awakened CoC`) were **drop-disabled in 3.28 (Mirage)** (legacy Standard only) and replaced by **Exceptional Support Gems** (max natural **Lv3**, corrupted **Lv4** — e.g., `Greater Spell Echo`, `Cooldown Recovery`, `Eldritch Blasphemy`, `Hexpass`, `Congregation`). ONLY `Awakened Empower`, `Awakened Enhance`, `Awakened Enlighten` remain as Exceptional gems (max natural **Lv4**, corrupted **Lv5**). NEVER suggest leveling an Exceptional gem to Lv20! |
+| **3.25** | `Divine Blessing Support` / `神圣祝福` | **REMOVED** | Cannot run Divine Blessing + Aura. Use `Eternal Blessing` (`永恒祝福`, zero mana reservation) or `Guardian's Blessing` (`守卫祝福`, minions). |
+| **3.25** | `Ancestral Protector` / `先祖卫士` & `Ancestral Warchief` / `先祖战士长` | **REMOVED** | Melee base skill damage buffed directly; melee builds no longer run Ancestral buff totems. (`Ancestral Call`/`Cry`/`Bond` still exist.) |
+| **3.25** | `Hatred` / `憎恨` | **REWORKED** | **NO `% more Cold Damage`**! Lv20 grants ONLY `39% of Physical Damage as Extra Cold Damage` (`act_dex.lua`). Zero DPS for pure non-Phys Cold/Lightning spells. |
+| **3.25** | `Endurance Charge` / `耐力球` (`红球`) | **REWORKED** | Grants **4% Phys DR + 4% Ele DR** per charge (`CalcSetup.lua`). **NO LONGER grants `+4% Elemental Resistances`**! |
+| **3.24/3.25** | Left-Click Instant Skills / `Call to Arms` (`武装召唤`) | **REMOVED / REPLACED** | Instant Guard/Warcry cannot bind to Left-Click move. Use `Automation` (`自动化`) for Guard/instant spells and `Autoexertion` (`自动增助`) for Warcries. |
+| **3.24** | `Sextant` / `六分仪` | **REMOVED** | Replaced by Atlas Scarabs (`圣甲虫`) & Atlas Tree rework. |
+| **3.23** | Lab Helmet/Boot/Glove Enchants (`迷宫附魔`/`头盔附魔`) | **REMOVED** | Effects moved to **Transfigured Gems (`改造宝石`)** & base Quality. |
+| **3.23** | `Anomalous` / `Divergent` / `Phantasmal` (`异常`/`分歧`/`魅影`品质) | **REMOVED** | Replaced by **Transfigured Gems (`改造宝石`)** (e.g., `Ice Nova of Frostbolts`). |
+| **3.23** | `Vortex` / `漩涡` | **REWORKED** | **NO LONGER instant-cast**: `castTime = 0.6s` (`act_int.lua`). |
+| **3.25+** | `Taste of Hate` / `恨意` | **REWORKED** | Converts **Fire & Lightning Hits taken as Cold** (NO LONGER Physical taken as Cold). |
+| **3.30** | Hierophant `Sanctuary of Thought` (`思维圣殿`) | **REWORKED** | **NO LONGER grants 50% less Mana Cost**! Grants 20% Max Mana as Extra ES + 1% Mana Regen/s + AoE. |
+| **3.30** | `Cloak of Defiance` (`卫道之袍`) | **REWORKED** | Grants standard `Mind Over Matter` (40%) + Mana/Regen; **NO legacy extra +10% MoM**. |
+| **3.30** | `The Sword of Ages` (`万古之剑`) / `Temporal Mirage` | **POB MODELING GAP** | `0.50s` base CD (`0.033s = 33ms` server ticks); clones do **NOT** take Saboteur `Triggerbots` `-30% less` (`43% more Spell Damage` in `customMods` compensates); holding `Cyclone` triggers only ONCE on channel start; `Greater Spell Cascade` shares `Firestorm of Pelting` 12-storm cap. |
+| **3.30** | `+% to Quality of all Skill Gems` (`所有技能宝石品质`) | **SCOPE RULE** | Applies **ONLY to Active Skill Gems** (`grants_active_skill`), **NOT Support Gems**! Use `pob data gem --quality-breakpoints --active-only`. |
+| **3.30** | `Bloodsoaked Blade` (`喋血之刃`) + Tinctures + `Screams of the Desiccated` | **MECHANIC RULE** | **Tinctures are NOT Flasks** (`Screams of the Desiccated` "while affected by no Flasks" works 100% with active Tinctures; Reliquarian `The Living Blade` / `活木之刃` grants `+2 additional Tinctures`). |
+
+## 2. PoE1 vs PoE2 Same-Name False Friends
+
+| Concept | PoE1 3.30 (CORRECT HERE) | PoE2 (DO NOT APPLY!) |
+|---|---|---|
+| **Sockets & Supports** | Sockets/links live on **gear** (up to 6L); **duplicate support gems ARE legal** across different skill groups; gems level 1–20 / Exceptional 1–3 (corrupt 4); Awakened Empower/Enhance/Enlighten 1–4 (corrupt 5). | Skill-gem sockets; 1-copy-per-character support limit; Tier I/II/III. |
+| **Damage Conversion** | Fixed one-way chain `Phys -> Lightning -> Cold -> Fire -> Chaos`; scales with **BOTH** source AND target `% inc` / `% more`. | 2-step conversion scaling ONLY with final damage type. |
+| **`Eldritch Battery` (`异能魔力`)** | Spend ES before Mana; ES protects Mana instead of Life; 50% less ES Recharge Rate. | Converts all ES into Maximum Mana. |
+| **`Chaos Inoculation` (`异灵之体`)** | Maximum Life = 1, Immune to Chaos (incl. Poison). Physical Bleed still affects character unless Bleed-immune; non-CI Chaos bypasses ES. | Chaos + Bleed immune; non-CI Chaos hits remove 2x ES. |
+| **`Mind Over Matter` (`心灵升华`)** | **40%** of Damage taken from Mana before Life. | 100% from Mana + 50% less Mana Recovery. |
+| **`Acrobatics` (`移形换影`)** | Spell Suppression Chance converts to Spell Dodge Chance at 50% value (Max 75%). | Evasion can evade AoE / all hits (~70% less Evasion). |
+| **`Armour` (`护甲`)** | Physical hits only by default; Resistance runs **BEFORE** Armour when Armour applies to Elemental. | Armour-to-Elemental runs BEFORE Resistance. |
+| **`Mageblood` (`法师之血`/`法血`)** | Leftmost 2–4 **Magic Utility Flasks** constantly apply. | `Legacy of <Flask>` belt variants + Charm slots. |
+| **Charges** | Inherent passive stats (Frenzy 4% more dmg/speed, Power +50% crit, Endurance 4% Phys & Ele DR). | 0 inherent passive stats. |
+| **Reservation / Crafting / Anoint** | **Mana/Life** reservation (`魔力保留效能`), **Hideout Crafting Bench** (`{crafted}`), **Blight Oils** (`涂油`), **Maps** (`地图`), **Flask 1..5**. | Spirit (`精魂`), Runes/Soul Cores (`{rune}`), Delirium Emotions (`涂灌`), Waystones (`引路石`), Charm 1..3. |
+
+## 3. Common CN Player Slang & PoE2-CN Aliases (`pob data` & `pob ground` Auto-Resolve)
+`法血`/`魔血`=Mageblood | `猎首`=Headhunter | `尼米斯`=Nimis | `原罪`=Original Sin | `百属`=Astramentis (`均衡之符`) | `全知`=Crystallised Omniscience (`结晶全知`) | `星尘`/`骨灰盒`=Ashes of the Stars | `象牙塔`=The Ivory Tower | `三球鞋`=Ralakesh's Impatience | `万古之剑`/`万古剑`=The Sword of Ages | `时空幻影`=Temporal Mirage | `靛蓝头`=Indigon | `不眨之眼`=The Unblinking Eye | `倾泻火雨`/`改造火雨`=Firestorm of Pelting | `陨星火雨`=Firestorm of Meteors | `沸燃`/`沸腾灵体火球`=Volatile Dead of Seething | `逆转规则`=Invert the Rules | `寒冰法师`=Frostmage | `喋血之刃`=Bloodsoaked Blade | `守藏者`=Reliquarian | `枯萎尖叫`=Screams of the Desiccated | `四季之侵`=Sap of the Seasons | `暗夜血契`/`黑暗交易`=Dark Bargain | `圣宗`=Hierophant | `卫道之袍`=Cloak of Defiance | `恨意`=Taste of Hate | `大法师`=Archmage | `电弧`=Arc | `闪打`=Flicker Strike | `正火`=Righteous Fire | `龙卷`=Tornado Shot | `法压`=Spell Suppression | `暴伤`=Critical Strike Multiplier | PoE2-CN aliases: `杂耍`->Acrobatics(`移形换影`), `心灵灭界`->Mind Over Matter(`心灵升华`), `混沌接种`->Chaos Inoculation(`异灵之体`).
+
+## 4. High-Risk Build-Archetype & PoB Evaluation Traps
+- **`CWS` Chieftain (`Cast when Stunned`)**: Core lock = **`The Agnostic` (`ES = 0`) + `Valyrium` + `Bloodnotch` + `Immutable Force` + `Defiance of Destiny`**. Any `>0` ES adds 50% Stun Avoidance & raises Valyrium stun threshold — **NEVER** unspec `The Agnostic` (even with `Blood Magic`), and **NEVER** replace `Defiance of Destiny` with a damage amulet. Multi-active CWS links are intentional (kill `Penance Mark` phantasms to trigger `Hinekora, Death's Fury` 250% HP explosions + `Detonate Dead` + `Flame Surge of Combusting` Burning Ground). `Stationary` config is normal CWS gameplay, NOT fake PoB padding. `Ramako, Sun's Light` locks stationary enemy Fire Res vs DoT to a **fixed `-20%`** (so `Flammability` / Fire Exposure / Scorch do 0 for Fire DoT while stationary — use `Punishment` instead); `Frost Bomb` is `-75%` enemy life regen (NOT a curse).
+- **`Sadism Support`**: Inflicts **70% less Ailment Duration** — inflates PoB's displayed Ignite/Bleed DPS rate while severely gutting per-ignite total damage & uptime on CWS, explosion-ignite, and bossing setups.
+- **`Inspiration Support` High-Mana Reset**: Resets ALL Inspiration Charges after spending **800 Mana** at Lv20 (**922** at Lv21). High-cost Archmage skills blow through the threshold every 1–2 casts, yielding far lower real average charges than PoB's assumed max 5.
+- **`Hexblast of Contradiction` & Repeat-Support Mana**: `Hexblast of Contradiction` has a **`1.0s` Cooldown** and **`3` stored uses**, so **`Cooldown Recovery Support`** (Exceptional Lv3/4) works and scales sustained output. Repeats from **`Greater Spell Echo` / `Spell Echo`** cost **0 Mana**, so actual sustain demand is `ManaCost * casts/s`, NOT `ManaCost * hits/s`.
+- **`Doryani's Prototype`, Aura Groups & Unique Mechanics**: `-200%` Lightning Resistance on `Doryani's Prototype` is intentional (`6m` radius; Armour mitigates Lightning hits, NOT Lightning DoT). Unequipped `slot: -` skill groups in PoB are often intentional Spectre/Party/Mercenary aura simulations (do not misdiagnose as "unlinked gems"). `Uul-Netol's Vow` provides a **7th link** from the Amulet slot; `Returning Projectiles` requires **`Pierce`** to hit on the way out and return; `Unending Hunger` Soul Eater does **NOT** stack across multiple jewels; Pathfinder permanent flasks + `Master Surgeon` + `Petrified Blood` + `Progenesis` is an intentional high-recovery defensive loop.
+- **Rare Item Inspection Mandate**: NEVER claim or critique rare gear affix tiers, open affixes, or `{crafted}` crafting bench slots from memory/summaries without first running `pob items --slot <S>` or `pob item inspect --slot <S>`.
+
+> **Note on PoB Legacy Rows**: PoB's local `Gems.lua` / `EnchantmentHelmet.lua` retain legacy rows (e.g., `Divine Blessing`, pre-3.28 regular `Awakened Support Gems`) solely so old Standard characters can still be imported — they are **drop-disabled & unobtainable** in 3.28+/3.30 leagues.
