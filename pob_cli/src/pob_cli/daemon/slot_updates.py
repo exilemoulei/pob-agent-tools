@@ -258,15 +258,17 @@ def handle_set_lang_action(manager: DaemonManager, params: dict[str, Any]) -> di
 
 
 def build_status_payload(manager: DaemonManager) -> dict[str, Any]:
+    # Never wait for the boot update check (it can take a network timeout): report it as running.
     boot_t = getattr(manager, "_boot_update_thread", None)
-    if not manager.update_status and boot_t is not None and boot_t.is_alive():
-        boot_t.join(timeout=6.0)
+    boot_running = boot_t is not None and boot_t.is_alive()
     with manager._reader_barrier():
         with manager._lock:
             workers_snap = dict(manager._workers)
             pob_dir_val = getattr(manager, "pob_dir", None)
             pob_dir_str = str(pob_dir_val)
             upd_copy = dict(manager.update_status)
+        if not upd_copy and boot_running:
+            upd_copy = {"state": "checking"}
         slots_status = {sname: manager._slot_status_entry(sname, w) for sname, w in workers_snap.items()}
         main_w = workers_snap.get("main")
         main_caps = dict(getattr(main_w, "caps", None) or {})
