@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..bridge_client import BridgeWorker
+from ..errors import DaemonRequestError
 from ..updater import (
     OK_STATES,
     STATE_BOOTSTRAP_MISSING,
@@ -489,7 +490,12 @@ class DaemonManager:
                             f"{', '.join(loaded_others)} are loaded. Pass `--target {loaded_others[0]}` "
                             "if you intended to inspect or mutate that build."
                         )
-                res_slot = self._dispatch_slot(action, params, worker)
+                try:
+                    res_slot = self._dispatch_slot(action, params, worker)
+                except DaemonRequestError as exc:
+                    if drift_warn and drift_warn not in str(exc):
+                        raise DaemonRequestError(f"{drift_warn}\n{exc}") from exc
+                    raise
                 if action in ("load", "undo", "redo") or (
                     isinstance(res_slot, dict) and res_slot.get("applied") is True
                 ):

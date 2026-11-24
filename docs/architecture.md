@@ -111,7 +111,7 @@ Runtime state in `<POB_RUNTIME_DIR>/`: `daemon.json`, `update_state.json`, `slot
 
 ### External APIs (`R6`, `R7`)
 
-- Public international official profiles (`www.pathofexile.com/account/view-profile/...` -> `character-window/get-*`) are queried with `Path of Building` User-Agent and no cookies (falling back to env `POESESSID`/`POE_COOKIE` only on 401/403 private profiles); Windows uses native `bridge.lua` site import when public, POSIX uses `lua/import_char_json.lua` (`import_character_json` RPC), and private/CN profiles fall back to pure-Python PoB XML (`profile_import/pob_xml.py`) + `import_code`.
+- Public international official profiles (`www.pathofexile.com/account/view-profile/...` -> `character-window/get-*`) are queried with `Path of Building` User-Agent and no cookies (falling back to env `POESESSID`/`POE_COOKIE` only on 401/403 private profiles); both international and CN character JSON bundles use capability-based dispatch: `lua/import_char_json.lua` (`import_character_json` RPC) when the worker advertises `importCharacterJson`, otherwise pure-Python PoB XML (`profile_import/pob_xml.py`) + `import_code`.
 - CN server profiles (`poe.game.qq.com`) use `POST` form requests with env `POE_CN_SESSID`/`POE_CN_COOKIE`, pure-Python ZH->EN translation against local `PobTools-zh` `Data/poe1/zh-rCN/` dictionaries (`profile_import/cn_zh2en.py`), and surface any unmatched Chinese mod lines as `[CN-TRANSLATE-WARN]`.
 - Never bypass Cloudflare Turnstile on `poe.ninja/poe1/builds/*` HTML. poe.ninja character import tries the `Name-1234` hyphen form first (the `#` form only after a 404) and resolves `overview` from `build-index-state` / `index-state`.
 

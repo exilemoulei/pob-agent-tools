@@ -169,6 +169,9 @@ def diagnose_compare_builds(
     xml_code: str | None = None,
     compare_source: str | None = None,
     compare_xml_code: str | None = None,
+    char_name: str | None = None,
+    league: str | None = None,
+    realm: str | None = None,
     keep: Iterable[str] | str | None = None,
     top: int = 5,
     no_rank: bool = True,
@@ -184,9 +187,24 @@ def diagnose_compare_builds(
     from ..comparator import _run_worker_pair, compare_builds
     from ..importers import load_build_into_worker
 
-    def _load_into(worker: Any, src: str | None, code: str | None) -> None:
+    def _load_into(
+        worker: Any,
+        src: str | None,
+        code: str | None,
+        *,
+        c_name: str | None = None,
+        c_league: str | None = None,
+        c_realm: str | None = None,
+    ) -> None:
         if src or code:
-            load_build_into_worker(worker, source=src, xml_code=code)
+            load_build_into_worker(
+                worker,
+                source=src,
+                xml_code=code,
+                char_name=c_name,
+                league=c_league,
+                realm=c_realm,
+            )
             if hasattr(worker, "bump_rev"):
                 worker.bump_rev()
                 if hasattr(worker, "save_slot_state"):
@@ -195,7 +213,14 @@ def diagnose_compare_builds(
     _run_worker_pair(
         main_worker,
         ref_worker,
-        lambda: _load_into(main_worker, source, xml_code),
+        lambda: _load_into(
+            main_worker,
+            source,
+            xml_code,
+            c_name=char_name,
+            c_league=league,
+            c_realm=realm,
+        ),
         lambda: _load_into(ref_worker, compare_source, compare_xml_code),
     )
     comparison = compare_builds(main_worker, ref_worker)

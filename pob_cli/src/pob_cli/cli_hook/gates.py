@@ -108,10 +108,10 @@ _ENV_DUMP_RE = re.compile(
     re.IGNORECASE,
 )
 _STANDALONE_ENV_SET_RE = re.compile(
-    r"(?:^|(?:&&|\|\||[;|&]|(?:\bcmd(?:\.exe)?\s+/[ck]|\b(?:ba|z|da)?sh\s+-\w*c|\b(?:pwsh|powershell)(?:\.exe)?\s+-(?:c|command)))\s*[\"']?)"
+    r"(?:^|(?:&&|\|\||[;&|\r\n]|(?:\bcmd(?:\.exe)?\s+/[ck]|\b(?:ba|z|da)?sh\s+-\w*c|\b(?:pwsh|powershell)(?:\.exe)?\s+-(?:c|command)))\s*[\"']?)"
     r"\s*(?:"
-    r"env(?=\s*(?:$|[;|&>\"'`])|\s+-)"
-    r"|set(?=\s*(?:$|[;|&>\"'`])|\s+[A-Za-z_][A-Za-z0-9_]*(?:\s|$|[;|&>\"'`]))"
+    r"env(?=\s*(?:$|[;&|\r\n>\"'`])|\s+-)"
+    r"|set(?=\s*(?:$|[;&|\r\n>\"'`])|\s+[A-Za-z_][A-Za-z0-9_]*(?:\s|$|[;&|\r\n>\"'`]))"
     r")",
     re.IGNORECASE,
 )
@@ -435,6 +435,13 @@ def handle_verify_stop(
         runtime_dir=runtime_dir,
     )
     summary = summarize_turn_receipts(receipts)
+    v2_summary = (
+        summarize_turn_receipts(
+            [r for r in receipts if (str(r.get("slot") or "").strip().lower() or "main") == explicit_slot]
+        )
+        if explicit_slot
+        else summary
+    )
     failed_checks: list[str] = []
 
     # V1: reply hallucination & fallacy scanner
@@ -442,24 +449,24 @@ def handle_verify_stop(
     if v1_issues:
         failed_checks.append("V1")
 
-    # V2: compute receipt & post-apply rev freshness
+    # V2: compute receipt & post-apply rev freshness (scoped to explicit_slot when supplied)
     has_src_user, src_hint_user = detect_build_source_in_text(user_text)
     has_build_src = bool((state.get("hasBuildSource") if same_turn else False) or has_src_user)
     build_source_hint = src_hint_user or (state.get("buildSourceHint") if same_turn else None)
     panel_claims = detect_panel_or_delta_claims(assistant_text)
     v2_info: dict[str, Any] | None = None
     target_slot = str(
-        (summary.get("lastSlot") if summary.get("hasCompute") else None)
-        or explicit_slot
+        explicit_slot
+        or (v2_summary.get("lastSlot") if v2_summary.get("hasCompute") else None)
         or summary.get("lastSlot")
         or "main"
     )
 
     # If the model attempted an external build load/profile check that errored (e.g. 401/403/multi-char)
     # and made ZERO fabricated panel claims, do not falsely fail V2 or query another slot.
-    honest_failed_load = bool(has_build_src and not panel_claims and summary.get("attemptedBuildLoadFailed"))
+    honest_failed_load = bool(has_build_src and not panel_claims and v2_summary.get("attemptedBuildLoadFailed"))
     if (has_build_src or panel_claims) and not honest_failed_load:
-        if not summary.get("hasCompute"):
+        if not v2_summary.get("hasCompute"):
             failed_checks.append("V2")
             v2_info = {
                 "reasonKind": "missing_compute",
@@ -467,8 +474,8 @@ def handle_verify_stop(
                 "buildSourceHint": build_source_hint,
             }
         else:
-            applied_revs: dict[str, int] = summary.get("maxAppliedRevBySlot") or {}
-            compute_revs: dict[str, int] = summary.get("maxComputeRevBySlot") or {}
+            applied_revs: dict[str, int] = v2_summary.get("maxAppliedRevBySlot") or {}
+            compute_revs: dict[str, int] = v2_summary.get("maxComputeRevBySlot") or {}
             for slot_name, max_app_rev in applied_revs.items():
                 comp_rev = compute_revs.get(slot_name)
                 if comp_rev is None or comp_rev < max_app_rev:

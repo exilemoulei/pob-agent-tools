@@ -47,8 +47,13 @@ def _op_config(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int
         pairs.extend(raw_assign.items())
     elif isinstance(raw_assign, list):
         for item in raw_assign:
-            if isinstance(item, (list, tuple)) and len(item) == 2:
-                pairs.append((item[0], item[1]))
+            if not (isinstance(item, (list, tuple)) and len(item) == 2):
+                raise ValueError(
+                    f"Batch op 'config' at step {idx} expects each 'assignments' item to be a [key, value] pair."
+                )
+            pairs.append((item[0], item[1]))
+    elif raw_assign is not None:
+        raise ValueError(f"Batch op 'config' at step {idx} expects 'assignments' to be a dict or list of [key, value] pairs.")
     for var in reset_list or []:
         pairs.append((var, "reset"))
     cm = op.get("customMods") if "customMods" in op else op.get("custom_mods")
@@ -328,7 +333,7 @@ def _dispatch_skill_op(
                 raise ValueError(f"Batch op 'skill_add' at step {idx} requires 'gem' or 'addGem'.")
             norm["addGem"] = str(gem_name).strip()
     elif sub_action in ("remove", "rm"):
-        if "removeGem" not in norm and "remove_gem" not in norm:
+        if norm.get("removeGem") is None and norm.get("remove_gem") is None:
             gem_sel = norm.pop("gem", None)
             if gem_sel is None:
                 gem_sel = norm.get("index")

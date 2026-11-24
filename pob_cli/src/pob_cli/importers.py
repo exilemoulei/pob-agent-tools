@@ -435,7 +435,7 @@ def fetch_share_url_code_fallback(url: str) -> str:
             text = resp.text.strip()
             validate_build_xml(share_code_to_xml(text), expected_game="poe1", source_hint=clean_url)
             return text
-    except httpx.HTTPError as exc:
+    except httpx.HTTPStatusError as exc:
         raise wrap_share_http_error(exc, clean_url) from exc
 
 

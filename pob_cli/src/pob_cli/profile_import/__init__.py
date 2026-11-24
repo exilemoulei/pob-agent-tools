@@ -128,21 +128,29 @@ def _import_english_bundle(
 ) -> tuple[str, dict[str, Any]]:
     """Import an English character bundle via POSIX `import_character_json` or pure-Python PoB XML."""
     if worker.caps.get("importCharacterJson"):
-        worker.call("new_build", {}, timeout=10.0)
-        res = worker.call(
-            "import_character_json",
-            {
-                "char": bundle["char"],
-                "passiveSkills": bundle["passiveSkills"],
-                "items": bundle["items"],
-                "deleteJewels": True,
-                "clearItems": True,
-                "clearSkills": True,
-                "ignoreWeaponSwap": False,
-            },
-            timeout=30.0,
-        )
-        return "import_character_json", res
+        prev_code = getattr(worker, "last_good_code", None)
+        try:
+            res = worker.call(
+                "import_character_json",
+                {
+                    "char": bundle["char"],
+                    "passiveSkills": bundle["passiveSkills"],
+                    "items": bundle["items"],
+                    "deleteJewels": True,
+                    "clearItems": True,
+                    "clearSkills": True,
+                    "ignoreWeaponSwap": False,
+                },
+                timeout=30.0,
+            )
+            return "import_character_json", res
+        except Exception:
+            if prev_code:
+                try:
+                    worker.call("import_code", {"code": prev_code, "mode": "replace"}, timeout=15.0)
+                except Exception:
+                    pass
+            raise
 
     xml_text = character_bundle_to_pob_xml(bundle, pob_root=getattr(worker, "pob_root", None))
     validate_build_xml(xml_text, expected_game="poe1", source_hint=source_hint)

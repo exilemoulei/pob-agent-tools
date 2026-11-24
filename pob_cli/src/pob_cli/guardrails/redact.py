@@ -7,7 +7,7 @@ import re
 from urllib.parse import quote
 
 _COOKIE_SECRET_RE = re.compile(
-    r"\b(?:POESESSID|POE_CN_SESSID|cf_clearance)=[^;\s\"'<>]+",
+    r"\b(?:POESESSID|POE_CN_SESSID|cf_clearance)=(?:\"[^\r\n\"]*\"|'[^\r\n']*'|[^;\s\"'<>]+)",
     re.IGNORECASE,
 )
 _HEX_TOKEN_RE = re.compile(r"\b[0-9a-fA-F]{16,}\b")
@@ -19,7 +19,9 @@ _AUTH_HEADER_RE = re.compile(
 )
 _BEARER_RE = re.compile(r"\bBearer\s+[^\s,;\"'<>]+", re.IGNORECASE)
 _COOKIE_HEADER_RE = re.compile(
-    r"(\bCookie[\"']?\s*[:=]\s*[\"']?)((?:[^\s;\r\n\"'<>]+;\s*)*[^\s;\r\n\"'<>]+)",
+    r"(\bCookie[\"']?\s*[:=]\s*[\"']?)"
+    r"((?:(?:[^\s;\r\n\"'<>]|\"[^\r\n\"]*\"|'[^\r\n']*')+;\s*)*"
+    r"(?:[^\s;\r\n\"'<>]|\"[^\r\n\"]*\"|'[^\r\n']*')+)",
     re.IGNORECASE,
 )
 

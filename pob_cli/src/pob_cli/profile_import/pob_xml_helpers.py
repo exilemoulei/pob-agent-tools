@@ -101,3 +101,33 @@ def pick_main_socket_group(groups: list[tuple[int, str, list[tuple[str, bool]]]]
         return (not_swap, has_active, tier, len(gems), sup_count, -idx)
 
     return max(groups, key=_score)[0]
+
+
+CLASS_ZH_TO_EN: dict[str, str] = {
+    "贵族": "Scion", "升华使徒": "Ascendant",
+    "野蛮人": "Marauder", "勇士": "Juggernaut", "暴徒": "Berserker", "酋长": "Chieftain",
+    "游侠": "Ranger", "锐眼": "Deadeye", "侠客": "Raider", "追猎者": "Pathfinder", "守望者": "Warden",
+    "女巫": "Witch", "秘术家": "Occultist", "元素使": "Elementalist", "死灵师": "Necromancer",
+    "决斗者": "Duelist", "处刑者": "Slayer", "卫士": "Gladiator", "冠军": "Champion",
+    "圣堂武僧": "Templar", "判官": "Inquisitor", "圣宗": "Hierophant", "守护者": "Guardian",
+    "暗影刺客": "Shadow", "刺客": "Assassin", "破坏者": "Saboteur", "欺诈师": "Trickster",
+}
+
+PROP_ZH_TO_EN: dict[str, str] = {
+    "品质": "Quality", "护甲": "Armour", "闪避值": "Evasion Rating", "能量护盾": "Energy Shield",
+    "结界": "Ward", "范围": "Radius", "仅限": "Limited to", "等级": "Level",
+    "格挡几率": "Chance to Block", "暴击几率": "Critical Strike Chance",
+    "每秒攻击次数": "Attacks per Second", "物理伤害": "Physical Damage",
+    "元素伤害": "Elemental Damage", "混沌伤害": "Chaos Damage",
+}
+
+REQ_ZH_TO_EN: dict[str, str] = {
+    "等级": "Level", "职业：": "Class:", "职业:": "Class:", "力量": "Str", "敏捷": "Dex", "智慧": "Int",
+}
+
+INFLUENCE_WRAPPERS: tuple[tuple[str, str], ...] = (
+    ("传奇怪物在场时，", "While a Unique Enemy is in your Presence, "),
+    ("传奇怪物在场时：", "While a Unique Enemy is in your Presence, "),
+    ("异界终极首领在场时，", "While a Pinnacle Atlas Boss is in your Presence, "),
+    ("异界终极首领在场时：", "While a Pinnacle Atlas Boss is in your Presence, "),
+)

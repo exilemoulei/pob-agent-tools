@@ -50,6 +50,10 @@ _SLOT_MAP: dict[str, str] = {
     "Belt": "Belt",
     "BrequelGrafts": "Graft 1",
     "BrequelGrafts2": "Graft 2",
+    "VisceraHead": "Head",
+    "VisceraBody": "Body",
+    "VisceraArm": "Arm",
+    "VisceraLeg": "Leg",
 }
 
 _CATALYST_PROP_RE = re.compile(r"^Quality \((.+?) Modifiers\)$", re.IGNORECASE)

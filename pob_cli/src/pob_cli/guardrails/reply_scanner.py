@@ -175,30 +175,48 @@ def _scan_sentence_poe2(
             )
 
 
+_LOCAL_NEG_PREFIX_RE = re.compile(r"(?:不|别|勿|并非|没|\b(?:not|never|don't|doesn't|no)\b)", re.IGNORECASE)
+
+
+def _is_clause_negated(sentence: str, start: int, end: int) -> bool:
+    """Check negation within the comma-delimited clause containing `[start:end]`."""
+    left = max(sentence.rfind("，", 0, start), sentence.rfind(",", 0, start))
+    right_candidates = [pos for pos in (sentence.find("，", end), sentence.find(",", end)) if pos != -1]
+    right = min(right_candidates) if right_candidates else len(sentence)
+    clause = sentence[left + 1 : right]
+    if _NEGATION_EXEMPT_RE.search(clause):
+        return True
+    prefix_in_clause = sentence[left + 1 : start]
+    return bool(_LOCAL_NEG_PREFIX_RE.search(prefix_in_clause))
+
+
 def _scan_sentence_legacy_and_fallacies(
     sentence: str, norm: str, zh_compact: str, seen: set[str], issues: list[ReplyIssue]
 ) -> None:
-    if _NEGATION_EXEMPT_RE.search(sentence):
-        return
+    if not _NEGATION_EXEMPT_RE.search(sentence):
+        negated_whole = False
+    else:
+        negated_whole = True
 
-    for prule in LEGACY_PATCH_TRAPS_POE1:
-        if prule.rule_id not in _HARD_REMOVED_LEGACY_IDS or prule.rule_id in seen:
-            continue
-        if prule.rule_id == "PATCH_323_ALT_QUALITY_REMOVED":
-            alt_m = _ALT_QUALITY_REPLY_RE.search(sentence)
-            hit = alt_m.group(0).strip() if alt_m is not None else None
-        else:
-            hit = _match_rule_fields(
-                sentence, norm, norm, zh_compact,
-                en_exact=prule.en_exact, zh_exact=prule.zh_exact, en_words=prule.en_words,
-                zh_phrases=prule.zh_phrases, regex=prule.regex,
-                exclude_en_re=prule.exclude_en_re, exclude_zh_compounds=prule.exclude_zh_compounds,
-            )
-        if hit is not None:
-            seen.add(prule.rule_id)
-            issues.append(
-                ReplyIssue(prule.rule_id, "legacy_removed", hit, sentence, prule.summary, prule.remediation, (hit,))
-            )
+    if not negated_whole:
+        for prule in LEGACY_PATCH_TRAPS_POE1:
+            if prule.rule_id not in _HARD_REMOVED_LEGACY_IDS or prule.rule_id in seen:
+                continue
+            if prule.rule_id == "PATCH_323_ALT_QUALITY_REMOVED":
+                alt_m = _ALT_QUALITY_REPLY_RE.search(sentence)
+                hit = alt_m.group(0).strip() if alt_m is not None else None
+            else:
+                hit = _match_rule_fields(
+                    sentence, norm, norm, zh_compact,
+                    en_exact=prule.en_exact, zh_exact=prule.zh_exact, en_words=prule.en_words,
+                    zh_phrases=prule.zh_phrases, regex=prule.regex,
+                    exclude_en_re=prule.exclude_en_re, exclude_zh_compounds=prule.exclude_zh_compounds,
+                )
+            if hit is not None:
+                seen.add(prule.rule_id)
+                issues.append(
+                    ReplyIssue(prule.rule_id, "legacy_removed", hit, sentence, prule.summary, prule.remediation, (hit,))
+                )
 
     for rule_id, cat, term_re, trig_re, reason, remed, terms in _FALLACY_SPECS:
         if rule_id in seen:
@@ -207,6 +225,8 @@ def _scan_sentence_legacy_and_fallacies(
             continue
         m = trig_re.search(sentence)
         if m is not None:
+            if _is_clause_negated(sentence, m.start(), m.end()):
+                continue
             if (
                 rule_id == "EXCEPTIONAL_SUPPORT_LEVEL_CAP"
                 and _AWAKE_3_RE.search(sentence)

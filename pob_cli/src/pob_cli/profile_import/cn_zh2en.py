@@ -9,45 +9,22 @@ from pathlib import Path
 from typing import Any
 
 from ..game_data import fold_han
-from .pob_xml_helpers import strip_poe_markup
+from . import pob_xml_helpers as _xh
+
+_CLASS_ZH_TO_EN = _xh.CLASS_ZH_TO_EN
+_INFLUENCE_WRAPPERS = _xh.INFLUENCE_WRAPPERS
+_PROP_ZH_TO_EN = _xh.PROP_ZH_TO_EN
+_REQ_ZH_TO_EN = _xh.REQ_ZH_TO_EN
+strip_poe_markup = _xh.strip_poe_markup
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _PLACEHOLDER_RE = re.compile(r"\{(\d+)\}|#")
-_SKELETON_STRIP_RE = re.compile(r"[{}\d.+\-\s\u3000]")
+_SKELETON_STRIP_RE = re.compile(r"[{}\d.+\-\s\u3000#]")
 _S26_WEAPON_ENCHANT_RE = re.compile(r"^元素伤害(提高|降低)\s*\d+%$")
 _GEM_SUFFIX_RE = re.compile(r"(?:\(强辅\)|\(辅\)|强辅|辅助)$")
 _GEM_DOT_RE = re.compile(r"[·‧・•.]")
 _KNOWN_SPECIAL_SUPPORTS = frozenset(
     {"Empower", "Enhance", "Enlighten", "Awakened Empower", "Awakened Enhance", "Awakened Enlighten"}
-)
-
-_CLASS_ZH_TO_EN: dict[str, str] = {
-    "贵族": "Scion", "升华使徒": "Ascendant",
-    "野蛮人": "Marauder", "勇士": "Juggernaut", "暴徒": "Berserker", "酋长": "Chieftain",
-    "游侠": "Ranger", "锐眼": "Deadeye", "侠客": "Raider", "追猎者": "Pathfinder", "守望者": "Warden",
-    "女巫": "Witch", "秘术家": "Occultist", "元素使": "Elementalist", "死灵师": "Necromancer",
-    "决斗者": "Duelist", "处刑者": "Slayer", "卫士": "Gladiator", "冠军": "Champion",
-    "圣堂武僧": "Templar", "判官": "Inquisitor", "圣宗": "Hierophant", "守护者": "Guardian",
-    "暗影刺客": "Shadow", "刺客": "Assassin", "破坏者": "Saboteur", "欺诈师": "Trickster",
-}
-
-_PROP_ZH_TO_EN: dict[str, str] = {
-    "品质": "Quality", "护甲": "Armour", "闪避值": "Evasion Rating", "能量护盾": "Energy Shield",
-    "结界": "Ward", "范围": "Radius", "仅限": "Limited to", "等级": "Level",
-    "格挡几率": "Chance to Block", "暴击几率": "Critical Strike Chance",
-    "每秒攻击次数": "Attacks per Second", "物理伤害": "Physical Damage",
-    "元素伤害": "Elemental Damage", "混沌伤害": "Chaos Damage",
-}
-
-_REQ_ZH_TO_EN: dict[str, str] = {
-    "等级": "Level", "职业：": "Class:", "职业:": "Class:", "力量": "Str", "敏捷": "Dex", "智慧": "Int",
-}
-
-_INFLUENCE_WRAPPERS: tuple[tuple[str, str], ...] = (
-    ("传奇怪物在场时，", "While a Unique Enemy is in your Presence, "),
-    ("传奇怪物在场时：", "While a Unique Enemy is in your Presence, "),
-    ("异界终极首领在场时，", "While a Pinnacle Atlas Boss is in your Presence, "),
-    ("异界终极首领在场时：", "While a Pinnacle Atlas Boss is in your Presence, "),
 )
 
 _BUILTIN_SUPPORT_RE = re.compile(r"^(?:由\s*)?(?:等级\s*(\d+)\s*的?\s*)?(.+?)\s*辅助$|^被等级\s*(\d+)\s*的?\s*(.+?)\s*辅助$")
@@ -289,16 +266,19 @@ class Zh2EnDictionary:
         if not s or not _CJK_RE.search(s):
             return s
         gk = _norm_gem_key(s)
+        is_awakened = gk.endswith(("(强辅)", "强辅")) or gk.startswith(("觉醒·", "觉醒"))
         stem = _GEM_SUFFIX_RE.sub("", gk)
         wants_support = is_support is True or stem != gk
         if wants_support:
-            for cand in (gk, stem):
+            # Never downgrade an unmatched Awakened (`强辅`/`觉醒`) input to its normal support variant.
+            cands = (gk,) if is_awakened else (gk, stem)
+            for cand in cands:
                 if cand and cand in self.support_gem_map:
                     hit = self.support_gem_map[cand]
                     return hit if (hit.endswith("Support") or hit in _KNOWN_SPECIAL_SUPPORTS) else f"{hit} Support"
         if gk in self.gem_map:
             return self.gem_map[gk]
-        if stem and stem != gk and stem in self.gem_map:
+        if not is_awakened and stem and stem != gk and stem in self.gem_map:
             hit = self.gem_map[stem]
             return hit if (hit.endswith("Support") or hit in _KNOWN_SPECIAL_SUPPORTS) else f"{hit} Support"
         # Handle `觉醒·X` / `瓦尔·X` prefixes cleanly

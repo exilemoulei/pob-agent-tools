@@ -517,3 +517,88 @@ def test_cn_330_dict_mods_gem_suffix_variants_and_permanent_league_sort() -> Non
     assert "{crafted}+95 to maximum Life" in xml_text
     assert 'nameSpec="Empower"' in xml_text
     assert any("[CN-TRANSLATE-WARN] Gem: 未知新辅助（辅）" in w for w in warns)
+
+
+def test_coderabbit_major_fixes_league_filter_shell_safe_proxy_cn_hash_viscera_and_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pob_cli.profile_import.site import format_profile_markdown, make_site_client
+
+    # 1. --league with zero matches returns [] instead of falling back to unfiltered Standard character
+    std_only = [{"name": "StdOnly", "league": "Standard", "class": "Witch", "level": 90}]
+    assert sort_profile_characters(std_only, league_filter="Covens") == []
+    target_miss = parse_profile_source("https://www.pathofexile.com/account/view-profile/alice-1234", league="Covens")
+    with pytest.raises(DaemonRequestError, match="未找到"):
+        resolve_target_character(std_only, target=target_miss)
+
+    # 2. Case-insensitive HTTPS:// scheme parses query selectors, and format_profile_markdown strips raw query injection
+    t_inj = parse_profile_source("HTTPS://www.pathofexile.com/account/view-profile/alice-1234?realm=xbox&junk=$(id)")
+    assert t_inj.realm == "xbox"
+    md = format_profile_markdown(t_inj, [{"name": "HeroA", "league": "Covens", "class": "Assassin", "level": 89}])
+    assert "$(id)" not in md
+    assert "'https://www.pathofexile.com/account/view-profile/alice-1234'" in md
+
+    # 3. make_site_client with proxy constructs cleanly
+    c = make_site_client(proxy="http://127.0.0.1:7890")
+    c.close()
+
+    # 4. cn_zh2en: `#` template matches concrete numbers, and unmatched Awakened (`强辅`) is NOT downgraded to normal
+    d = Zh2EnDictionary.from_entries(
+        gems={"Empower": "赋予辅助"},
+        stats={"+#% to Fire Resistance": "+#% 火焰抗性", "+{0}% to Cold Resistance": "+{0}% 冰霜抗性"},
+    )
+    assert d.translate_mod("+30% 火焰抗性") == ("+30% to Fire Resistance", True)
+    assert d.translate_mod("+30% 冰霜抗性") == ("+30% to Cold Resistance", True)
+    assert d.translate_gem("赋予（强辅）", is_support=True) == "赋予（强辅）"
+    assert d.translate_gem("赋予（辅）", is_support=True) == "Empower"
+
+    # 5. Viscera equipment slots survive XML conversion
+    visc_xml = character_bundle_to_pob_xml(
+        {
+            "char": {"name": "V", "class": "Witch", "level": 90},
+            "passiveSkills": {"hashes": [], "items": []},
+            "items": {
+                "items": [
+                    {
+                        "inventoryId": "VisceraHead",
+                        "frameType": 2,
+                        "name": "Graft Skull",
+                        "baseType": "Hubris Circlet",
+                        "typeLine": "Hubris Circlet",
+                        "explicitMods": [{"description": "+50 to maximum Life"}],
+                    }
+                ]
+            },
+        }
+    )
+    assert 'name="Head"' in visc_xml and "+50 to maximum Life" in visc_xml
+
+    # 6. POSIX import_character_json failure restores previous live build via import_code
+    class _FailingPosixWorker(_FakeWorker):
+        def call(self, method: str, params: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
+            self.calls.append((method, dict(params or {})))
+            if method == "import_character_json":
+                raise RuntimeError("boom during posix import")
+            return {"ok": True}
+
+    fw = _FailingPosixWorker(caps={"importCharacterJson": True})
+    fw.last_good_code = "PREV_BUILD_CODE"
+    monkeypatch.setattr(
+        "pob_cli.profile_import.fetch_intl_characters",
+        lambda *_a, **_k: ([{"name": "HeroA", "league": "Covens", "class": "Assassin", "level": 89}], False),
+    )
+    monkeypatch.setattr(
+        "pob_cli.profile_import.fetch_intl_character_bundle",
+        lambda *_a, **_k: {
+            "char": {"name": "HeroA", "league": "Covens", "class": "Assassin", "level": 89},
+            "passiveSkills": {"hashes": [1], "items": []},
+            "items": {"items": []},
+        },
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        importers.load_build_into_worker(
+            fw,
+            source="https://www.pathofexile.com/account/view-profile/alice-1234",
+            char_name="HeroA",
+        )
+    assert any(m == "import_code" and p.get("code") == "PREV_BUILD_CODE" for m, p in fw.calls)

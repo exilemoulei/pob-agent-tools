@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import time
@@ -80,14 +81,15 @@ def parse_profile_source(
 ) -> ProfileTarget:
     """Parse an official profile URL or bare account name into a `ProfileTarget`."""
     raw = str(source or "").strip()
-    if raw.startswith(("http://", "https://")):
+    is_http = raw.lower().startswith(("http://", "https://"))
+    if is_http:
         validate_url(raw, expected_game="poe1", cli_subcommand="load")
 
     eff_realm = (realm or "").strip().lower()
     qs_char: str | None = None
     qs_realm: str | None = None
     parsed_host = ""
-    if raw.startswith(("http://", "https://")):
+    if is_http:
         parsed = urllib.parse.urlparse(raw)
         parsed_host = (parsed.hostname or "").lower()
         qs = urllib.parse.parse_qs(parsed.query)
@@ -193,7 +195,11 @@ def make_site_client(
     }
     resolved_proxy = _resolve_proxy(proxy)
     if resolved_proxy:
-        kwargs["proxy"] = resolved_proxy
+        init_params = inspect.signature(httpx.Client.__init__).parameters
+        if "proxy" in init_params:
+            kwargs["proxy"] = resolved_proxy
+        else:
+            kwargs["proxies"] = resolved_proxy
     return httpx.Client(**kwargs)
 
 
@@ -210,14 +216,16 @@ def classify_http_status_error(
         if server == "cn":
             return DaemonRequestError(
                 f"国服官网返回 HTTP {status_code}（未登录或登录态失效）。\n"
-                "请在环境变量中设置 `POE_CN_SESSID`（或 `POE_CN_COOKIE`）后重试；"
+                "请在环境变量中设置 `POE_CN_SESSID`（或 `POE_CN_COOKIE`）后重试"
+                "（若刚更新环境变量，请先执行 `pob stop` 重启守护进程）；"
                 "严禁在命令行参数、终端打印或报告中输出 Cookie 明文。"
             )
         return DaemonRequestError(
             f"PoE 官网返回 HTTP {status_code}（资料设为私密或触发 Cloudflare 拦截）：{url}\n"
             "处理方式：\n"
             "1. 若为本人账号，建议在 pathofexile.com 隐私设置取消勾选「隐藏角色列表」（公开资料无需 Cookie）。\n"
-            "2. 若需导入私密账号，请在环境变量设置 `POESESSID`（或 `POE_COOKIE`）后重试；"
+            "2. 若需导入私密账号，请在环境变量设置 `POESESSID`（或 `POE_COOKIE`）后重试"
+            "（若刚更新环境变量，请先执行 `pob stop` 重启守护进程）；"
             "严禁通过命令行传参或在终端打印 `POESESSID`。"
         )
     if status_code == 404:
@@ -267,9 +275,7 @@ def sort_profile_characters(
         if exact:
             filtered = exact
         else:
-            partial = [c for c in filtered if lf in str(c.get("league") or "").strip().lower()]
-            if partial:
-                filtered = partial
+            filtered = [c for c in filtered if lf in str(c.get("league") or "").strip().lower()]
 
     def _sort_key(c: dict[str, Any]) -> tuple[int, int, int, str]:
         is_perm = 1 if _is_permanent_league(str(c.get("league") or "")) else 0
@@ -279,6 +285,20 @@ def sort_profile_characters(
         return (is_perm, -level, -(last_login or exp), str(c.get("name") or "").lower())
 
     return sorted(filtered, key=_sort_key)
+
+
+def _canonical_profile_url(target: ProfileTarget) -> str:
+    host = CN_HOST if target.server == "cn" else INTL_HOST
+    if not target.account_name:
+        return f"{host}/"
+    slug = re.sub(r"#(\d{4})$", r"-\1", target.account_name)
+    return f"{host}/account/view-profile/{urllib.parse.quote(slug, safe='-_.~')}"
+
+
+def _safe_cli_quote(value: str) -> str:
+    """Single-quote a display value for copy-paste CLI hints so `$()` / backticks are literal."""
+    cleaned = re.sub(r"[\r\n\x00-\x1f]", " ", str(value or "")).strip()
+    return "'" + cleaned.replace("'", "''") + "'"
 
 
 def format_profile_markdown(
@@ -306,12 +326,11 @@ def format_profile_markdown(
         lines.append(f"\n*(Showing top {limit} of {len(chars)}; pass `--league <name>` to narrow.)*")
     if chars:
         top_name = str(chars[0].get("name") or "")
-        src_arg = target.raw_source or target.account_name
+        safe_url = _canonical_profile_url(target)
         realm_flag = f" --realm {target.realm}" if target.server == "cn" or target.realm != "pc" else ""
-        if src_arg:
-            lines.append(f'\nNext: `pob diagnose "{src_arg}" --char "{top_name}"{realm_flag}`')
-        else:
-            lines.append(f'\nNext: `pob diagnose "https://poe.game.qq.com/" --realm cn --char "{top_name}"`')
+        lines.append(
+            f"\nNext: `pob diagnose {_safe_cli_quote(safe_url)} --char {_safe_cli_quote(top_name)}{realm_flag}`"
+        )
     return "\n".join(lines)
 
 
@@ -443,8 +462,9 @@ def fetch_intl_character_bundle(
 
     def _fetch_pair(c: httpx.Client, acc: str) -> tuple[httpx.Response, httpx.Response]:
         base_params = {"accountName": acc, "character": char_name, "realm": realm}
-        r_tree = c.get(f"{INTL_HOST}/character-window/get-passive-skills", params=base_params)
-        r_items = c.get(f"{INTL_HOST}/character-window/get-items", params=base_params)
+        extra_hdrs = {"Cookie": cookie} if cookie else {}
+        r_tree = c.get(f"{INTL_HOST}/character-window/get-passive-skills", params=base_params, headers=extra_hdrs)
+        r_items = c.get(f"{INTL_HOST}/character-window/get-items", params=base_params, headers=extra_hdrs)
         return r_tree, r_items
 
     try:

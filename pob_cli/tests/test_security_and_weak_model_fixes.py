@@ -695,3 +695,67 @@ def test_verify_stop_does_not_leak_other_slot_when_remote_load_fails(
     assert daemon_calls == []
     assert "gt_assassin" not in res_fab["correctionPrompt"]
     assert "ds_feat_t2" in res_fab["correctionPrompt"]
+
+
+def test_coderabbit_security_and_edge_fixes(tmp_path: Path) -> None:
+    from pob_cli.cli_hook.gates import handle_pre_prompt, handle_pre_tool, handle_verify_stop
+    from pob_cli.guardrails.redact import redact_secrets
+    from pob_cli.guardrails.reply_scanner import scan_assistant_reply
+    from pob_cli.turn_receipts import append_receipt
+
+    # 1. Newline-separated env/set dumps are denied, while multiline env assignment stays allowed
+    assert handle_pre_tool({"toolName": "bash", "commandLine": "echo ok\nenv"})["ruleId"] == "NO_SECRET_ENV_DUMP"
+    assert handle_pre_tool({"toolName": "bash", "commandLine": "echo ok\nset"})["ruleId"] == "NO_SECRET_ENV_DUMP"
+    assert handle_pre_tool({"toolName": "bash", "commandLine": "set POB_OFFLINE=1\npob status"})["decision"] == "allow"
+
+    # 2. Quoted non-hex Cookie values are completely redacted
+    scrubbed = redact_secrets('Cookie: cf_clearance="token_A9.zX"')
+    assert "token_A9.zX" not in scrubbed and "[redacted]" in scrubbed
+
+    # 3. Negation exemption is clause-scoped (does not exempt positive level-20 clause after comma)
+    issues_pos = scan_assistant_reply("别把 Exceptional 辅助停在 3 级，把它升到 20 级。")
+    assert any(i.rule_id == "EXCEPTIONAL_SUPPORT_LEVEL_CAP" for i in issues_pos)
+    issues_neg = scan_assistant_reply("提醒你，别把 Exceptional 辅助点到 20 级。")
+    assert not any(i.rule_id == "EXCEPTIONAL_SUPPORT_LEVEL_CAP" for i in issues_neg)
+
+    # 4. Same-session compute receipt on slot B does NOT satisfy V2 when targetSlot is slot A
+    rt = tmp_path / "rt_same_sess_slot_v2"
+    rt.mkdir()
+    handle_pre_prompt({"sessionId": "same_s", "turnId": "1", "userText": "看下构筑面板"}, runtime_dir=rt)
+    append_receipt(
+        {
+            "ts": 9999999999.0,
+            "cmd": "pob diagnose --target slot_b",
+            "subcommand": "diagnose",
+            "category": "diagnose",
+            "isCompute": True,
+            "hasTickCheck": False,
+            "slot": "slot_b",
+            "rev": 1,
+            "applied": False,
+            "inspectedSlots": [],
+            "exitCode": 0,
+            "sessionId": "same_s",
+        },
+        runtime_dir=rt,
+    )
+    res_a = handle_verify_stop(
+        {
+            "sessionId": "same_s",
+            "turnId": "1",
+            "targetSlot": "slot_a",
+            "userText": "看下构筑面板",
+            "assistantText": "当前 CombinedDPS = 5.0M，换装后 DPS +20%。",
+            "disableV5": True,
+        },
+        runtime_dir=rt,
+    )
+    assert res_a["decision"] == "continue" and "V2" in res_a["failedChecks"]
+
+    # 5. batch_ops rejects malformed assignments entry & handles removeGem=None on skill_rm
+    w = _AliasFakeWorker()
+    cache = _BatchCache(w)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="pair"):
+        _execute_batch_ops(w, [{"op": "config_set", "assignments": [["enemyIsBoss", "Pinnacle"], ["badOnlyOne"]]}], cache)  # type: ignore[arg-type]
+    res_rm = _execute_batch_ops(w, [{"op": "skill_rm", "group": "main", "gem": 1, "removeGem": None}], cache)  # type: ignore[arg-type]
+    assert res_rm and res_rm[0]["op"] == "skill"
