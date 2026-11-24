@@ -216,8 +216,16 @@ def run_matrix(
 
     with worker.lock:
         prev_last_good = getattr(worker, "last_good_code", None)
+        caps = getattr(worker, "caps", None) or {}
+        use_cow = bool(caps.get("cowSnapshot"))
         try:
-            baseline_code = worker.call("export_code", {})["code"]
+            baseline_snap_id: str | None = None
+            pinnacle_snap_id: str | None = None
+            baseline_code: str | None = None
+            if use_cow:
+                baseline_snap_id = str(worker.call("cow_snapshot", {})["snapId"])
+            else:
+                baseline_code = worker.call("export_code", {})["code"]
             baseline_digest: dict[str, Any] | None = (
                 None if first_is_unmutated_original else capture_digest(worker)
             )
@@ -232,22 +240,30 @@ def run_matrix(
             try:
                 for idx, plan in enumerate(parsed_plans):
                     needs_pinnacle = plan["base"] in ("Pinnacle", "Uber")
-                    want_base = "pinnacle" if (needs_pinnacle and pinnacle_code is not None) else "original"
+                    has_pinnacle_cache = (pinnacle_snap_id is not None) if use_cow else (pinnacle_code is not None)
+                    want_base = "pinnacle" if (needs_pinnacle and has_pinnacle_cache) else "original"
 
                     if worker_state != want_base:
-                        target_code = pinnacle_code if want_base == "pinnacle" else baseline_code
                         worker_state = "dirty"
-                        worker.call("import_code", {"code": target_code, "mode": "replace"})
+                        if use_cow:
+                            target_snap = pinnacle_snap_id if want_base == "pinnacle" else baseline_snap_id
+                            worker.call("cow_restore", {"snapId": target_snap, "drop": False})
+                        else:
+                            target_code = pinnacle_code if want_base == "pinnacle" else baseline_code
+                            worker.call("import_code", {"code": target_code, "mode": "replace"})
                         worker_state = want_base
 
                     has_post_mutations = _plan_has_post_base_mutations(plan)
 
-                    if needs_pinnacle and pinnacle_code is None:
+                    if needs_pinnacle and not has_pinnacle_cache:
                         worker_state = "dirty"
                         ever_mutated = True
                         pinnacle_stripped = dewater_build_in_place(worker, keep=keep)
                         if pinnacle_count >= 2:
-                            pinnacle_code = worker.call("export_code", {})["code"]
+                            if use_cow:
+                                pinnacle_snap_id = str(worker.call("cow_snapshot", {})["snapId"])
+                            else:
+                                pinnacle_code = worker.call("export_code", {})["code"]
                             if not has_post_mutations:
                                 worker_state = "pinnacle"
                         applied_info = _comp._apply_matrix_scenario_in_place(
@@ -257,7 +273,7 @@ def run_matrix(
                             already_dewatered=True,
                             cached_stripped=pinnacle_stripped,
                         )
-                    elif needs_pinnacle and pinnacle_code is not None:
+                    elif needs_pinnacle and has_pinnacle_cache:
                         if has_post_mutations:
                             worker_state = "dirty"
                             ever_mutated = True
@@ -306,20 +322,50 @@ def run_matrix(
                         }
                     )
             finally:
-                if worker_state != "original":
+                if use_cow:
+                    if pinnacle_snap_id is not None:
+                        try:
+                            worker.call("cow_drop", {"snapId": pinnacle_snap_id})
+                        except Exception:
+                            pass
+                    if baseline_snap_id is not None:
+                        if worker_state != "original":
+                            worker.call("cow_restore", {"snapId": baseline_snap_id, "drop": True})
+                        else:
+                            worker.call("cow_drop", {"snapId": baseline_snap_id})
+                elif worker_state != "original":
                     worker.call("import_code", {"code": baseline_code, "mode": "replace"})
 
             if not ever_mutated:
                 restore_check: dict[str, Any] = {"verified": True, "detail": "build was not mutated"}
+            elif use_cow:
+                after_restore = capture_digest(worker)
+                restore_check = {
+                    "verified": after_restore.get("primaryDps") == (baseline_digest or {}).get("primaryDps")
+                    and after_restore.get("totalEhp") == (baseline_digest or {}).get("totalEhp"),
+                    "detail": "cow_restore verified",
+                }
             else:
-                restore_check = verify_restored(worker, baseline_code, baseline_digest or {})
+                restore_check = verify_restored(worker, baseline_code or "", baseline_digest or {})
+
+            scenario_envelope: dict[str, Any] | None = None
+            if caps.get("agentProbes"):
+                try:
+                    env_res = worker.call("eval_scenario_envelope", {})
+                    if isinstance(env_res, dict) and not env_res.get("_error"):
+                        scenario_envelope = env_res
+                except Exception:
+                    scenario_envelope = None
         finally:
             if hasattr(worker, "last_good_code"):
                 worker.last_good_code = prev_last_good
 
-        return {
+        out_mat: dict[str, Any] = {
             "baseline": results[0]["name"] if results else "Original",
             "full": bool(full),
             "scenarios": results,
             "restoreCheck": restore_check,
         }
+        if scenario_envelope is not None:
+            out_mat["scenarioEnvelope"] = scenario_envelope
+        return out_mat

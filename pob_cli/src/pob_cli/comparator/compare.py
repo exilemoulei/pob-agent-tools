@@ -14,7 +14,7 @@ from ..analyzer import (
 )
 from ..bridge_client import BridgeWorker
 from ..formatters import _parse_numeric_or_none, fmt_delta, fmt_num, strip_pob_escapes
-from ..importers import load_build_into_worker
+from ..importers import load_build_into_worker, share_code_to_xml
 from ..snapshot import (
     CORE_STAT_KEYS,
     _call_batch,
@@ -347,7 +347,25 @@ def compare_builds(
         _eval_ref_phase2,
     )
 
-    return {
+    power_attribution: dict[str, Any] | None = None
+    if (getattr(main_worker, "caps", None) or {}).get("powerAttribution") and ref_snap:
+        try:
+            ref_xml_str = ref_snap if ref_snap.lstrip().startswith("<") else share_code_to_xml(ref_snap)
+        except Exception:
+            ref_xml_str = ref_snap
+        try:
+            with main_worker.lock:
+                attr_res = main_worker.call(
+                    "power_diff_attribution",
+                    {"compareXml": ref_xml_str, "stat": main_orig.get("primaryDpsKey") or "CombinedDPS"},
+                    timeout=60.0,
+                )
+            if isinstance(attr_res, dict) and not attr_res.get("_error"):
+                power_attribution = attr_res
+        except Exception:
+            power_attribution = None
+
+    out_cmp: dict[str, Any] = {
         "mainBuildInfo": main_orig["buildInfo"],
         "refBuildInfo": ref_orig["buildInfo"],
         "baselines": {
@@ -363,6 +381,9 @@ def compare_builds(
         "skillDiff": skill_diff,
         "itemSlotDiff": slot_comparison,
     }
+    if power_attribution is not None:
+        out_cmp["powerAttribution"] = power_attribution
+    return out_cmp
 
 
 def borrow_from_ref(

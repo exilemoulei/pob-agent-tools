@@ -18,6 +18,7 @@ LAYER_MAP: dict[str, int] = {
     "os_util": 0,
     "compat": 0,
     "json_io": 0,
+    "locale_cfg": 0,
     "guardrails": 0,
     # L1: engine runtime, bridge, importers, and data sources
     "updater": 1,
@@ -46,6 +47,7 @@ LAYER_MAP: dict[str, int] = {
     # L3: daemon server & client
     "daemon": 3,
     # L4: CLI entry points
+    "__main__": 4,
     "cli_common": 4,
     "cli": 4,
     "cli_lifecycle": 4,
@@ -357,6 +359,35 @@ def _check_spec_sync(pob_cli_root: Path, pkg_root: Path) -> list[str]:
     return violations
 
 
+def _check_lua_file_budget(
+    fpath: Path,
+    disp_path: str,
+    violations: list[str],
+    extremes: dict[str, tuple[int, str]],
+) -> None:
+    raw = fpath.read_bytes()
+    text = raw.decode("utf-8").replace("\r\n", "\n")
+    line_count = len(text.splitlines())
+    lf_bytes = len(text.encode("utf-8"))
+    byte_count = max(len(raw), lf_bytes + line_count)
+
+    if line_count > extremes["maxLines"][0]:
+        extremes["maxLines"] = (line_count, disp_path)
+    if byte_count > extremes["maxBytes"][0]:
+        extremes["maxBytes"] = (byte_count, disp_path)
+
+    if line_count > MAX_FILE_LINES or byte_count > MAX_FILE_BYTES:
+        violations.append(
+            _fmt_fail(
+                "file-budget",
+                disp_path,
+                1,
+                f"File has {line_count} lines / {byte_count} bytes (limit: {MAX_FILE_LINES}L / {MAX_FILE_BYTES}B)",
+                "Split cohesive responsibilities into smaller submodules under <=650L and <=24000B.",
+            )
+        )
+
+
 def _check_budget_for_file(
     fpath: Path,
     disp_path: str,
@@ -490,6 +521,12 @@ def run_arch_lint(pob_cli_root: Path) -> tuple[list[str], dict[str, object]]:
         violations.extend(_find_blocked_rpc_calls(tree, rel_posix))
 
     extra_count = 0
+    lua_dir = pkg_root / "lua"
+    if lua_dir.is_dir():
+        for fpath in sorted(lua_dir.glob("*.lua")):
+            disp = fpath.relative_to(pkg_root).as_posix()
+            _check_lua_file_budget(fpath, disp, violations, extremes)
+            extra_count += 1
     for extra_dir_name in ("scripts", "packaging"):
         extra_dir = pob_cli_root / extra_dir_name
         if not extra_dir.is_dir():

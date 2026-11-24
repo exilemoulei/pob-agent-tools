@@ -8,7 +8,82 @@ from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
 from ..snapshot import _call_batch, _finite_float
 from .constants import _DEAD_SUPPORT_EXEMPT_NAMES, _TRIGGER_ATTACK_HINTS
+from .pitfalls_triggers import NON_APS_TRIGGER_KEYS, canonical_trigger_key
 from .summary import _normalize_support_base_name
+
+
+def _worker_caps(worker: Any) -> dict[str, Any]:
+    return getattr(worker, "caps", None) or {}
+
+
+def _probe_agent_build(worker: BridgeWorker) -> dict[str, Any] | None:
+    """Invoke native `<0.25ms` `agent_probe_build` RPC when advertised in `worker.caps`."""
+    if not _worker_caps(worker).get("agentProbes"):
+        return None
+    try:
+        res = worker.call("agent_probe_build", {})
+        return res if isinstance(res, dict) and not res.get("_error") else None
+    except Exception:
+        return None
+
+
+def _gaps_from_agent_probe(probe: dict[str, Any] | None) -> list[dict[str, str]]:
+    """Translate native `agent_probe_build` cliffs and load-bearing gear into diagnosis gaps."""
+    if not isinstance(probe, dict):
+        return []
+    gaps: list[dict[str, str]] = []
+    grouped_cliffs: dict[str, dict[str, Any]] = {}
+    for cliff in probe.get("triggerCliffs") or []:
+        if not isinstance(cliff, dict) or not cliff.get("overspeedCliffExceeded"):
+            continue
+        skill = str(cliff.get("skillName") or "TriggeredSkill")
+        trig = str(cliff.get("triggerName") or "Trigger")
+        tkey = canonical_trigger_key(trig)
+        if tkey in NON_APS_TRIGGER_KEYS:
+            continue
+        bucket = grouped_cliffs.get(tkey)
+        if bucket is None:
+            grouped_cliffs[tkey] = {"skills": [skill], "cliff": cliff, "trig": trig}
+        elif skill not in bucket["skills"]:
+            bucket["skills"].append(skill)
+    for bucket in grouped_cliffs.values():
+        cliff = bucket["cliff"]
+        skill_lbl = ", ".join(bucket["skills"])
+        trig = bucket["trig"]
+        src = _finite_float(cliff.get("sourceAps"), default=0.0)
+        cap = _finite_float(cliff.get("maxSafeAps"), default=0.0)
+        cur_cdr = cliff.get("currentIcdrPct")
+        cdr_at = f" at {int(cur_cdr)}% CDR" if cur_cdr is not None else ""
+        extra = cliff.get("extraIcdrPctNeeded")
+        cdr_hint = f" (need +{extra}% CDR for next server-tick breakpoint)" if extra is not None else ""
+        gaps.append(
+            {
+                "category": "TriggerCliff",
+                "severity": "HIGH",
+                "message": (
+                    f"Trigger overspeed cliff on '{skill_lbl}' ({trig}): "
+                    f"source APS {src:.2f} exceeds max safe {cap:.2f}{cdr_at}{cdr_hint}"
+                ),
+            }
+        )
+    for lb in probe.get("loadBearingGear") or []:
+        if not isinstance(lb, dict):
+            continue
+        bricked_cnt = int(lb.get("brickedCount") or 0)
+        if bricked_cnt > 0:
+            slot = str(lb.get("slot") or "Unknown")
+            item = str(lb.get("itemName") or "Item")
+            gaps.append(
+                {
+                    "category": "LoadBearingGear",
+                    "severity": "LOW",
+                    "message": (
+                        f"Load-bearing slot '{slot}' ({item}): "
+                        f"unequipping bricks {bricked_cnt} item/gem attribute requirement(s)"
+                    ),
+                }
+            )
+    return gaps
 
 
 def _extract_trigger_attack_aps(
@@ -16,8 +91,21 @@ def _extract_trigger_attack_aps(
     skills_res: dict[str, Any],
     items_res: dict[str, Any],
     base_stats: dict[str, Any],
+    *,
+    agent_probe: dict[str, Any] | None = None,
 ) -> float | None:
     """Measure the real PoB Attack Rate (`Speed`) of the trigger attack in CoC/Cospri/Mjolner/Poet's Pen setups."""
+    probe = agent_probe if agent_probe is not None else _probe_agent_build(worker)
+    if isinstance(probe, dict):
+        for cliff in probe.get("triggerCliffs") or []:
+            if isinstance(cliff, dict):
+                tkey = canonical_trigger_key(str(cliff.get("triggerName") or ""))
+                if tkey and tkey in NON_APS_TRIGGER_KEYS:
+                    continue
+                src_aps = _finite_float(cliff.get("sourceAps"), default=0.0)
+                if src_aps > 0.0:
+                    return src_aps
+
     groups = skills_res.get("groups") or []
     main_idx = skills_res.get("mainSocketGroup")
     main_group = next(

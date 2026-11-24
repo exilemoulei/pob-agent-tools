@@ -513,11 +513,26 @@ def audit_build(
             )
             health_issues.extend(mech_gaps)
             audit_core_synergies = list(mech_audit.get("coreSynergies") or [])
+            agent_probe_res: dict[str, Any] | None = None
+            scenario_envelope_res: dict[str, Any] | None = None
+            if (getattr(worker, "caps", None) or {}).get("agentProbes"):
+                try:
+                    p_res = worker.call("agent_probe_build", {})
+                    if isinstance(p_res, dict) and not p_res.get("_error"):
+                        agent_probe_res = p_res
+                except Exception:
+                    pass
+                try:
+                    env_res = worker.call("eval_scenario_envelope", {})
+                    if isinstance(env_res, dict) and not env_res.get("_error"):
+                        scenario_envelope_res = env_res
+                except Exception:
+                    pass
         finally:
             if hasattr(worker, "last_good_code"):
                 worker.last_good_code = prev_last_good
 
-        return {
+        out_audit: dict[str, Any] = {
             "healthIssues": health_issues,
             "core_synergies": audit_core_synergies,
             "inflationStripped": stripped,
@@ -527,3 +542,8 @@ def audit_build(
             "dewateredPinnacle": _build_audit_panel(digest_dewatered),
             "dewaterDiff": dewater_diff,
         }
+        if agent_probe_res is not None:
+            out_audit["agentProbe"] = agent_probe_res
+        if scenario_envelope_res is not None:
+            out_audit["scenarioEnvelope"] = scenario_envelope_res
+        return out_audit

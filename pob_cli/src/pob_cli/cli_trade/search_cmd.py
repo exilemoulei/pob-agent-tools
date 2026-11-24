@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -17,11 +18,16 @@ from ..trade_eval import (
     score_deltas,
     sort_candidates,
 )
+from ..trade_eval.scoring import (
+    MIN_SURROGATE_PREFILTER_K,
+    prefilter_candidates_with_surrogate,
+)
 from ..trade_item import parse_item_text, sanitize_text
 from ..trade_query import (
     VALID_STATUSES,
     category_for_slot,
     infer_weapon_category_from_base,
+    load_local_trade_stats,
     parse_stat_argument,
     parse_sum_group_argument,
     pob_slot_for_slot,
@@ -43,6 +49,165 @@ from .search_exec import (
     _validate_search_inputs,
     _verify_candidates_with_pob,
 )
+
+
+def _enrich_auto_query_result(
+    res: dict[str, Any],
+    parsed: dict[str, Any],
+    *,
+    slot_name: str,
+    rarity: str,
+) -> dict[str, Any]:
+    inner_q = parsed["query"] if isinstance(parsed.get("query"), dict) else parsed
+    if rarity and rarity != "nonunique" and isinstance(inner_q.get("filters"), dict):
+        tf = inner_q["filters"].get("type_filters")
+        if isinstance(tf, dict) and isinstance(tf.get("filters"), dict):
+            if rarity == "any":
+                tf["filters"].pop("rarity", None)
+            else:
+                tf["filters"]["rarity"] = {"option": rarity}
+
+    raw_labels = res.get("statLabels")
+    stat_labels: dict[str, str] = dict(raw_labels) if isinstance(raw_labels, dict) else {}
+    all_ids: list[str] = []
+    for grp in inner_q.get("stats") or []:
+        if isinstance(grp, dict):
+            for f in grp.get("filters") or []:
+                if isinstance(f, dict) and isinstance(f.get("id"), str):
+                    all_ids.append(f["id"])
+
+    if any(fid not in stat_labels for fid in all_ids):
+        local_map: dict[str, str] = {}
+        try:
+            for e in load_local_trade_stats() or []:
+                if isinstance(e, dict) and e.get("id") and e.get("text"):
+                    local_map[str(e["id"])] = str(e["text"])
+        except Exception:
+            pass
+        for fid in all_ids:
+            if fid not in stat_labels:
+                stat_labels[fid] = local_map.get(fid, fid)
+
+    raw_top = res.get("topFilters")
+    top_filters: list[dict[str, Any]] = []
+    if isinstance(raw_top, list) and raw_top:
+        for entry in raw_top:
+            if isinstance(entry, dict) and entry.get("id"):
+                fid = str(entry["id"])
+                top_filters.append(
+                    {
+                        **entry,
+                        "label": str(entry.get("label") or stat_labels.get(fid, fid)),
+                    }
+                )
+    else:
+        first_grp = (inner_q.get("stats") or [None])[0]
+        w_filters = list(first_grp.get("filters") or []) if isinstance(first_grp, dict) else []
+        w_filters.sort(
+            key=lambda f: abs(float((f.get("value") or {}).get("weight") or 0.0)) if isinstance(f, dict) else 0.0,
+            reverse=True,
+        )
+        for f in w_filters[:15]:
+            if isinstance(f, dict) and f.get("id"):
+                fid = str(f["id"])
+                wt = float((f.get("value") or {}).get("weight") or 0.0)
+                top_filters.append({"id": fid, "label": stat_labels.get(fid, fid), "weight": wt})
+
+    raw_sc = res.get("slotConstraints")
+    if isinstance(raw_sc, dict):
+        slot_constraints: dict[str, Any] = {
+            **raw_sc,
+            "loadBearingAttrs": dict(raw_sc.get("loadBearingAttrs") or {"Str": 0, "Dex": 0, "Int": 0}),
+            "attrDeficits": dict(raw_sc.get("attrDeficits") or {}),
+            "resistDeficits": dict(raw_sc.get("resistDeficits") or {}),
+        }
+    else:
+        slot_constraints = {
+            "slot": slot_name,
+            "isLoadBearing": False,
+            "loadBearingAttrs": {"Str": 0, "Dex": 0, "Int": 0},
+            "attrDeficits": {},
+            "resistDeficits": {},
+            "brickedCount": 0,
+            "bricked": [],
+        }
+
+    out: dict[str, Any] = {
+        "query": parsed,
+        "filters": int(res.get("filters") or 0),
+        "complexity": int(res.get("complexity") or 0),
+        "stat": res.get("stat"),
+        "statLabels": stat_labels,
+        "topFilters": top_filters,
+        "slotConstraints": slot_constraints,
+    }
+    if res.get("minWeight") is not None:
+        out["minWeight"] = res["minWeight"]
+    return out
+
+
+def _try_auto_trade_query(
+    *,
+    pob_slot: str | None,
+    slot: str | None,
+    target: str,
+    stat: str | None = None,
+    rarity: str = "nonunique",
+    allow_corrupted: bool = False,
+    league: str | None = None,
+) -> dict[str, Any] | None:
+    """Invoke PoB's `trade_generate_query` kernel via daemon when `--auto-query` is requested."""
+    import pob_cli.cli_trade as _ct
+
+    slot_name = pob_slot or slot
+    if not slot_name:
+        return None
+    req_params: dict[str, Any] = {"target": target, "slotName": slot_name, "stat": stat}
+    if rarity and rarity != "nonunique":
+        req_params["rarity"] = rarity
+    if allow_corrupted:
+        req_params["includeCorrupted"] = True
+    if league:
+        req_params["league"] = league
+    try:
+        res = _ct._daemon_call_safe("trade_generate_query", req_params)
+    except Exception:
+        return None
+    if not isinstance(res, dict) or res.get("error"):
+        return None
+    q_json = res.get("queryJson")
+    if isinstance(q_json, str) and q_json.strip():
+        try:
+            parsed = json.loads(q_json)
+            if isinstance(parsed, dict):
+                return _enrich_auto_query_result(res, parsed, slot_name=slot_name, rarity=rarity)
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _apply_surrogate_prefilter(
+    candidates: list[Any],
+    *,
+    surrogate_k: int | None,
+    pob_mode: str,
+    target: str,
+) -> list[Any]:
+    """Pre-filter large candidate sets with `compute_grad_build` enforcing `K >= 50` (Rule P3)."""
+    if surrogate_k is None or pob_mode == "off":
+        return candidates
+    effective_k = max(MIN_SURROGATE_PREFILTER_K, int(surrogate_k))
+    if len(candidates) <= effective_k:
+        return candidates
+    import pob_cli.cli_trade as _ct
+
+    try:
+        grad = _ct._daemon_call_safe("compute_grad_build", {"target": target})
+    except Exception:
+        return candidates
+    if not isinstance(grad, dict) or not isinstance(grad.get("weights"), dict):
+        return candidates
+    return prefilter_candidates_with_surrogate(candidates, grad, top_k=effective_k)
 
 
 def _resolve_current_and_category(
@@ -216,6 +381,8 @@ def _emit_search_results(
 @click.option("--bench-hint/--no-bench-hint", default=True, show_default=True)
 @click.option("--pob", "pob_mode", type=click.Choice(["auto", "on", "off"]), default="auto", show_default=True)
 @click.option("--pob-limit", type=int, default=5, show_default=True, help="Candidates to PoB-verify.")
+@click.option("--auto-query", is_flag=True, help="Generate weighted trade query via PoB TradeQueryGenerator.")
+@click.option("--surrogate-k", type=int, default=None, help="Surrogate pre-filter pool size (enforces K >= 50).")
 @click.option("--target", type=_TARGET_SLOT_TYPE, default=_default_target_slot)
 @click.option("--current-item-file", type=click.Path(exists=True, dir_okay=False))
 @click.option("--no-compare", is_flag=True, help="Skip reading the currently equipped item.")
@@ -254,6 +421,8 @@ def cmd_trade_search(
     bench_hint: bool,
     pob_mode: str,
     pob_limit: int,
+    auto_query: bool,
+    surrogate_k: int | None,
     target: str,
     current_item_file: str | None,
     no_compare: bool,
@@ -267,19 +436,9 @@ def cmd_trade_search(
     """Search official PoE1 trade listings, compare against equipped gear, and verify in PoB."""
     ctx = click.get_current_context()
     resolved_sort = _validate_search_inputs(
-        ctx,
-        slot=slot,
-        category=category,
-        no_category=no_category,
-        stats=stats,
-        sum_groups=sum_groups,
-        wants=wants,
-        bench_crafts=bench_crafts,
-        pob_mode=pob_mode,
-        pob_limit=pob_limit,
-        no_compare=no_compare,
-        current_item_file=current_item_file,
-        sort_by=sort_by,
+        ctx, slot=slot, category=category, no_category=no_category, stats=stats,
+        sum_groups=sum_groups, wants=wants, bench_crafts=bench_crafts, pob_mode=pob_mode,
+        pob_limit=pob_limit, no_compare=no_compare, current_item_file=current_item_file, sort_by=sort_by,
     )
     if resolved_sort is None:
         return
@@ -296,68 +455,40 @@ def cmd_trade_search(
         return
 
     pob_slot = pob_slot_for_slot(slot or "") if slot else None
+    if auto_query and dump_query:
+        auto_res = _try_auto_trade_query(
+            pob_slot=pob_slot, slot=slot, target=target, rarity=rarity,
+            allow_corrupted=allow_corrupted, league=league,
+        )
+        if auto_res is not None:
+            _emit_json({"slot": slot, "autoQuery": True, **auto_res}, compact=compact, out_path=out_path, sanitize=True)
+            return
     current, current_error, update_warning, build_label, resolved_category = _resolve_current_and_category(
-        dump_query=dump_query,
-        current_item_file=current_item_file,
-        no_compare=no_compare,
-        slot=slot,
-        pob_slot=pob_slot,
-        target=target,
-        no_category=no_category,
-        category=category,
+        dump_query=dump_query, current_item_file=current_item_file, no_compare=no_compare,
+        slot=slot, pob_slot=pob_slot, target=target, no_category=no_category, category=category,
     )
 
     fetched_ctx = _execute_trade_api_query(
-        ctx,
-        proxy=proxy,
-        verbose=verbose,
-        league=league,
-        dump_query=dump_query,
-        slot=slot,
-        resolved_category=resolved_category,
-        requests=requests,
-        weighted_groups=weighted_groups,
-        wants=wants,
-        allow_conversion=allow_conversion,
-        convert_to=convert_to,
-        rarity=rarity,
-        ilvl_min=ilvl_min,
-        status=status,
-        currency=currency,
-        budget=budget,
-        max_age=max_age,
-        bargain=bargain,
-        search_sort=search_sort,
-        sort_by=sort_by,
-        open_prefix=open_prefix,
-        open_suffix=open_suffix,
-        open_affix=open_affix,
-        allow_corrupted=allow_corrupted,
-        bench_hint=bench_hint,
-        fetch_limit=fetch_limit,
-        compact=compact,
-        out_path=out_path,
+        ctx, proxy=proxy, verbose=verbose, league=league, dump_query=dump_query, slot=slot,
+        resolved_category=resolved_category, requests=requests, weighted_groups=weighted_groups,
+        wants=wants, allow_conversion=allow_conversion, convert_to=convert_to, rarity=rarity,
+        ilvl_min=ilvl_min, status=status, currency=currency, budget=budget, max_age=max_age,
+        bargain=bargain, search_sort=search_sort, sort_by=sort_by, open_prefix=open_prefix,
+        open_suffix=open_suffix, open_affix=open_affix, allow_corrupted=allow_corrupted,
+        bench_hint=bench_hint, fetch_limit=fetch_limit, compact=compact, out_path=out_path,
     )
     if fetched_ctx is None:
         return
 
-    plan = fetched_ctx["plan"]
-    rows = fetched_ctx["rows"]
+    plan, rows = fetched_ctx["plan"], fetched_ctx["rows"]
     candidates = _build_candidates_from_rows(
-        rows,
-        plan=plan,
-        current=current,
-        weight_map=weight_map,
-        preferred=preferred,
-        search_url=fetched_ctx["search_url"],
-        league_name=fetched_ctx["league_name"],
-        query=fetched_ctx["query"],
-        rates=fetched_ctx["rates"],
-        market=fetched_ctx["market"],
-        bargain=bargain,
+        rows, plan=plan, current=current, weight_map=weight_map, preferred=preferred,
+        search_url=fetched_ctx["search_url"], league_name=fetched_ctx["league_name"],
+        query=fetched_ctx["query"], rates=fetched_ctx["rates"], market=fetched_ctx["market"], bargain=bargain,
     )
 
     pre_sort = "sum" if (sort_by == "sum" or (search_sort == "sum" and sort_by != "price")) else "score"
+    candidates = _apply_surrogate_prefilter(candidates, surrogate_k=surrogate_k, pob_mode=pob_mode, target=target)
     candidates = sort_candidates(candidates, pre_sort)
     candidates.sort(key=lambda c: not c.bargain)  # stable: bargains get PoB-verified first
 
@@ -374,13 +505,8 @@ def cmd_trade_search(
         verification_limit = len(selected)
 
     if not _verify_candidates_with_pob(
-        ctx,
-        candidates,
-        pob_mode=pob_mode,
-        pob_slot=pob_slot,
-        slot=slot,
-        target=target,
-        verification_limit=verification_limit,
+        ctx, candidates, pob_mode=pob_mode, pob_slot=pob_slot, slot=slot,
+        target=target, verification_limit=verification_limit,
     ):
         return
 
@@ -388,21 +514,8 @@ def cmd_trade_search(
     ordered.sort(key=lambda c: not c.bargain)  # stable: bargains first, order otherwise kept
     ordered = ordered[: max(0, max_results)]
     _emit_search_results(
-        as_json=as_json,
-        ordered=ordered,
-        fetched_ctx=fetched_ctx,
-        plan=plan,
-        current=current,
-        current_error=current_error,
-        update_warning=update_warning,
-        build_label=build_label,
-        slot=slot,
-        resolved_category=resolved_category,
-        status=status,
-        budget=budget,
-        currency=currency,
-        max_age=max_age,
-        bargain=bargain,
-        compact=compact,
-        out_path=out_path,
+        as_json=as_json, ordered=ordered, fetched_ctx=fetched_ctx, plan=plan, current=current,
+        current_error=current_error, update_warning=update_warning, build_label=build_label,
+        slot=slot, resolved_category=resolved_category, status=status, budget=budget,
+        currency=currency, max_age=max_age, bargain=bargain, compact=compact, out_path=out_path,
     )

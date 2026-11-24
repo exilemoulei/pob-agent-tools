@@ -13,6 +13,8 @@ from typing import Any
 
 from .lut import (
     FLAT_TABLES,
+    JEWEL_TYPE_IDS,
+    LUT_STEMS,
     SELF_CHECK,
     STAT_KEYS,
     _is_historic_socket_jewel,
@@ -35,6 +37,8 @@ from .worker import (
     _prevalidate_search,
     _resolve_jewel,
     _seed_nodes,
+    _used_tree_nodes,
+    ensure_lut_files,
 )
 from .worker import (
     describe as describe,
@@ -181,6 +185,162 @@ class _SeedBatchRunner:
                 future.result()
 
 
+def _group_via_prng(
+    first: Engine,
+    name: str,
+    socket: int,
+    seeds: Sequence[int],
+    xml: str,
+    code: str,
+    game_dir: Path,
+) -> tuple[dict[bytes, list[int]], list[int], bool, bytes] | None:
+    """Group seeds via in-engine `timeless_prng_group_hashes` RPC (all 11 jewels, ~0 MiB RSS)."""
+    jtype = JEWEL_TYPE_IDS.get(name)
+    if jtype is None:
+        return None
+    state = first.worker.call("get_tree_state", {}, timeout=60)
+    used_nodes = _used_tree_nodes(first.worker, state, xml, code=code or getattr(first, "code", ""))
+    conquered = {int(k) for k, v in (state.get("overrides") or {}).items() if v.get("why") == "conquered"}
+    used_set = set(used_nodes)
+
+    query_nodes: list[int]
+    if 2 <= jtype <= 6:
+        try:
+            index = load_node_index(game_dir)
+            query_nodes = sorted(n for n in (conquered & used_set) if n in index)
+        except Exception:
+            query_nodes = sorted(conquered & used_set)
+    elif jtype == 1:
+        query_nodes = sorted(conquered & used_set)
+    else:
+        query_nodes = []
+
+    step = (seeds[1] - seeds[0]) if len(seeds) > 1 else 1
+    payload = {
+        "jewel": name,
+        "jewelType": jtype,
+        "socketId": socket,
+        "nodes": query_nodes,
+        "usedNodes": used_nodes,
+        "seedMin": seeds[0],
+        "seedMax": seeds[-1],
+        "seedStep": step,
+    }
+    resp = first.worker.call("timeless_prng_group_hashes", payload, timeout=60.0)
+    if not isinstance(resp, dict) or not resp.get("supported"):
+        return None
+
+    additive = bool(resp.get("additive"))
+    nodes = [int(x) for x in (resp.get("nodes") or [])]
+    groups: dict[bytes, list[int]] = {}
+    seed0_sig = b""
+    for item in resp.get("groups") or []:
+        raw_sig = str(item.get("sig") or "")
+        sig = bytes.fromhex(raw_sig) if additive else raw_sig.encode("utf-8")
+        members = [int(s) for s in (item.get("seeds") or [])]
+        if not members:
+            continue
+        groups[sig] = members
+        if members[0] == seeds[0]:
+            seed0_sig = sig
+    if not groups:
+        return None
+    return groups, nodes, additive, seed0_sig
+
+
+def _resolve_seed_groups(
+    first: Engine,
+    name: str,
+    socket: int,
+    seeds: Sequence[int],
+    xml: str,
+    code: str,
+    game_dir: Path,
+    runtime_dir: Path | str | None,
+) -> tuple[dict[bytes, list[int]], list[int], bool, bytes, bool]:
+    """Compute seed equivalence groups via PRNG RPC (preferred) or flat LUT / 1-per-seed fallback."""
+    prng_active = bool((getattr(first.worker, "caps", None) or {}).get("timelessPrng"))
+    if prng_active:
+        prng_grouped = _group_via_prng(first, name, socket, seeds, xml, code, game_dir)
+        if prng_grouped is not None:
+            groups, nodes, additive, seed0_sig = prng_grouped
+            return groups, nodes, additive, seed0_sig, True
+    if name in FLAT_TABLES:
+        if prng_active:
+            try:
+                ensure_lut_files(game_dir, FLAT_TABLES[name], runtime_dir=runtime_dir)
+            except Exception:
+                pass
+        index = load_node_index(game_dir)
+        table = load_table(game_dir, FLAT_TABLES[name], runtime_dir=runtime_dir)
+        if len(table) != len(index) * len(seeds):
+            raise ValueError(f"{name} lookup table has an unexpected size for its seed range.")
+        nodes = _seed_nodes(first, xml, index, code=code)
+        groups = group_seeds(seeds, table, index, nodes)
+        seed0_sig = bytes(table[index[node] * len(seeds)] for node in nodes)
+        return groups, nodes, True, seed0_sig, False
+    if prng_active:
+        stem = LUT_STEMS.get(name, name.replace(" ", ""))
+        try:
+            ensure_lut_files(game_dir, stem, runtime_dir=runtime_dir)
+        except Exception:
+            pass
+    groups = {str(seed).encode(): [seed] for seed in seeds}
+    return groups, [], False, str(seeds[0]).encode(), False
+
+
+_PRNG_SHORTLIST_THRESHOLD = 200
+_MIN_PRNG_SHORTLIST_K = 50
+
+
+def _shortlist_non_additive_groups(
+    first: Engine,
+    name: str,
+    socket: int,
+    stat: str,
+    top: int,
+    groups: dict[bytes, list[int]],
+    seed0_sig: bytes,
+    say: Callable[[str], None],
+) -> list[bytes] | None:
+    """Shortlist top `K >= max(top*4, 50)` non-additive PRNG groups via PoB's weighted finder."""
+    jtype = JEWEL_TYPE_IDS.get(name)
+    if jtype is None or len(groups) <= _PRNG_SHORTLIST_THRESHOLD:
+        return None
+    target_k = min(len(groups), max(top * 4, _MIN_PRNG_SHORTLIST_K))
+    fetch_top = min(sum(len(v) for v in groups.values()), max(target_k * 2, 120))
+    try:
+        resp = first.worker.call(
+            "timeless_prng_search",
+            {"jewel": name, "jewelType": jtype, "socketId": socket, "stat": stat, "top": fetch_top},
+            timeout=60.0,
+        )
+    except Exception:
+        return None
+    top_seeds = (resp or {}).get("topSeeds") if isinstance(resp, dict) else None
+    if not top_seeds:
+        return None
+
+    seed_to_sig = {s: sig for sig, members in groups.items() for s in members}
+    selected: list[bytes] = []
+    seen: set[bytes] = set()
+    for entry in top_seeds:
+        if not isinstance(entry, dict) or entry.get("seed") is None:
+            continue
+        sig = seed_to_sig.get(int(entry["seed"]))
+        if sig is not None and sig not in seen:
+            seen.add(sig)
+            selected.append(sig)
+            if len(selected) >= target_k:
+                break
+    if not selected:
+        return None
+    if seed0_sig in groups and seed0_sig not in seen and len(selected) < target_k:
+        selected.append(seed0_sig)
+    say(f"shortlisted {len(selected)} of {len(groups)} groups via timeless_prng_search; verifying in PoB")
+    return selected
+
+
 def _build_search_outcomes(
     results: dict[bytes, dict[str, Any]],
     groups: dict[bytes, list[int]],
@@ -296,24 +456,23 @@ def search(
 
         first_stats_raw = first.stats(seeds[0])  # socket one so PoB reports what the jewel conquers
         first_stats = {key: _json_safe_stat(first_stats_raw.get(key)) for key in STAT_KEYS}
-        nodes: list[int] = []
-        if name in FLAT_TABLES:
-            index = load_node_index(game_dir)
-            table = load_table(game_dir, FLAT_TABLES[name])
-            if len(table) != len(index) * len(seeds):
-                raise ValueError(f"{name} lookup table has an unexpected size for its seed range.")
-            nodes = _seed_nodes(first, xml, index, code=code)
-            groups = group_seeds(seeds, table, index, nodes)
-            seed0_sig = bytes(table[index[node] * len(seeds)] for node in nodes)
-        else:
-            groups = {str(seed).encode(): [seed] for seed in seeds}  # no usable signature: one group per seed
-            seed0_sig = str(seeds[0]).encode()
+        groups, nodes, additive, seed0_sig, used_prng = _resolve_seed_groups(
+            first, name, socket, seeds, xml, code, game_dir, runtime_dir
+        )
 
         precomputed: dict[bytes, dict[str, Any]] = {}
         if seed0_sig in groups and groups[seed0_sig][0] == seeds[0]:
             precomputed[seed0_sig] = first_stats
 
-        n_workers = max(1, min(workers or default_workers(), len(groups)))
+        shortlist: list[bytes] | None = None
+        if used_prng and not additive and not exact and len(groups) > _PRNG_SHORTLIST_THRESHOLD:
+            shortlist = _shortlist_non_additive_groups(
+                first, name, socket, stat, top, groups, seed0_sig, say
+            )
+
+        target_count = len(shortlist) if shortlist is not None else len(groups)
+        default_w = 1 if (used_prng and (not exact or len(groups) <= _PRNG_SHORTLIST_THRESHOLD)) else default_workers()
+        n_workers = max(1, min(workers if workers is not None else default_w, max(1, target_count)))
         results: dict[bytes, dict[str, Any]] = {}
         runner = _SeedBatchRunner(
             code=code,
@@ -335,7 +494,10 @@ def search(
         rng = random.Random(1)
         all_sigs = list(groups)
         estimate: dict[str, Any] | None = None
-        if exact or not nodes:
+        if shortlist is not None:
+            runner.calculate(shortlist)
+            estimate = {"calculated": len(results), "maxError": 0.0, "relative": True}
+        elif exact or not nodes or not additive:
             runner.calculate(all_sigs)
         else:
             estimate = narrow_down(all_sigs, results, runner.calculate, stat, top, rng, say)

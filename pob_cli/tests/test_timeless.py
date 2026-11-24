@@ -1118,8 +1118,11 @@ def test_real_engine_tables_match_their_seed_ranges() -> None:
     from pob_cli.bridge_client import BridgeWorker
 
     game_dir = BridgeWorker("test").game_dir
-    if not (game_dir / "Data" / "TimelessJewelData" / "NodeIndexMapping.lua").is_file():
+    lut_dir = game_dir / "Data" / "TimelessJewelData"
+    if not (lut_dir / "NodeIndexMapping.lua").is_file():
         pytest.skip("no local PoB engine data")
+    if not (lut_dir / "LethalPride.zip").is_file():
+        pytest.skip("slim engine install omits static .zip timeless LUTs (uses timeless_prng)")
     jewels = timeless.load_jewels(game_dir)
     index = timeless.load_node_index(game_dir)
     assert set(timeless.FLAT_TABLES) <= set(jewels)

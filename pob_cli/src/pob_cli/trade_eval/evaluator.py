@@ -12,6 +12,9 @@ from .scoring import (
     DEFAULT_WEIGHTS as DEFAULT_WEIGHTS,
 )
 from .scoring import (
+    MIN_SURROGATE_PREFILTER_K as MIN_SURROGATE_PREFILTER_K,
+)
+from .scoring import (
     POB_EHP_WEIGHT as POB_EHP_WEIGHT,
 )
 from .scoring import (
@@ -51,6 +54,9 @@ from .scoring import (
     compare_items as compare_items,
 )
 from .scoring import (
+    compute_grad_weights as compute_grad_weights,
+)
+from .scoring import (
     deltas_for_example as deltas_for_example,
 )
 from .scoring import (
@@ -58,6 +64,12 @@ from .scoring import (
 )
 from .scoring import (
     preferred_templates as preferred_templates,
+)
+from .scoring import (
+    prefilter_candidates_with_surrogate as prefilter_candidates_with_surrogate,
+)
+from .scoring import (
+    score_candidate_surrogate as score_candidate_surrogate,
 )
 from .scoring import (
     score_deltas as score_deltas,
@@ -250,19 +262,127 @@ def _is_complex_trade_item(raw_text: str, slot_name: str | None) -> bool:
     return False
 
 
+def _digest_from_direct_calc(worker: Any, before_digest: dict[str, Any]) -> dict[str, Any]:
+    """Capture fresh stats via `direct_calc` (C1) while preserving digest schema."""
+    res = worker.call("direct_calc", {})
+    stats = res.get("stats", {}) if isinstance(res, dict) else {}
+    primary_dps_key = str(before_digest.get("primaryDpsKey") or "CombinedDPS")
+    if _finite_float(stats.get("FullDPS")) > 0.0:
+        primary_dps_key = "FullDPS"
+    elif _finite_float(stats.get("MinionCombinedDPS")) > _finite_float(stats.get("CombinedDPS")):
+        primary_dps_key = "MinionCombinedDPS"
+    return {
+        "stats": stats,
+        "warnings": list(before_digest.get("warnings") or []),
+        "buildInfo": dict(before_digest.get("buildInfo") or {}),
+        "buildHeader": dict(before_digest.get("buildHeader") or {}),
+        "primaryDpsKey": primary_dps_key,
+        "primaryDps": _json_safe_stat(stats.get(primary_dps_key)),
+        "totalEhp": _json_safe_stat(stats.get("TotalEHP")),
+        "life": _json_safe_stat(stats.get("Life")),
+    }
+
+
+def _prefilter_raw_items_for_eval(
+    worker: Any,
+    items: list[dict[str, Any]],
+    prefilter_k: int | None,
+) -> list[dict[str, Any]]:
+    """Enforce `K >= 50` surrogate pre-filtering before exact PoB evaluation when requested."""
+    if prefilter_k is None:
+        return items
+    effective_k = max(MIN_SURROGATE_PREFILTER_K, int(prefilter_k))
+    if len(items) <= effective_k:
+        return items
+    grad = compute_grad_weights(worker)
+    if not grad:
+        return items
+    from ..trade_item import parse_item_text
+
+    scored: list[tuple[float, int, dict[str, Any]]] = []
+    for idx, entry in enumerate(items):
+        raw_clean = str(entry.get("raw") or "").strip()
+        if not raw_clean:
+            scored.append((-1e30, idx, entry))
+            continue
+        try:
+            parsed = parse_item_text(raw_clean)
+            sc = score_candidate_surrogate(parsed, grad)
+        except Exception:
+            sc = 0.0
+        scored.append((sc, idx, entry))
+    scored.sort(key=lambda row: (-row[0], row[1]))
+    return [row[2] for row in scored[:effective_k]]
+
+
+def _eval_trade_items_cow(
+    worker: Any,
+    *,
+    resolved_slot: str | None,
+    items: list[dict[str, Any]],
+    before_summary: dict[str, Any],
+    digest_before: dict[str, Any],
+    use_direct: bool,
+) -> list[dict[str, Any]]:
+    """Evaluate candidates using `cow_snapshot`/`cow_restore` (C2c) and optional `direct_calc` (C1)."""
+    from ..snapshot import capture_digest, diff_digest
+
+    snap_id = str(worker.call("cow_snapshot", {})["snapId"])
+    results: list[dict[str, Any]] = []
+    total_items = len(items)
+    try:
+        for pos, entry in enumerate(items):
+            item_id = entry.get("id")
+            raw_clean = str(entry.get("raw") or "").strip()
+            if not raw_clean:
+                results.append({"id": item_id, "ok": False, "error": "Empty item text."})
+                continue
+            try:
+                add_params: dict[str, Any] = {"raw": raw_clean, "equip": True}
+                if resolved_slot:
+                    add_params["slotName"] = resolved_slot
+                worker.call("add_item", add_params)
+                digest_after = (
+                    _digest_from_direct_calc(worker, digest_before)
+                    if use_direct
+                    else capture_digest(worker)
+                )
+                diff = diff_digest(digest_before, digest_after)
+                results.append(
+                    {
+                        "id": item_id,
+                        "ok": True,
+                        "before": before_summary,
+                        "after": {
+                            "primaryDpsKey": digest_after["primaryDpsKey"],
+                            "primaryDps": digest_after["primaryDps"],
+                            "totalEhp": digest_after["totalEhp"],
+                            "life": digest_after["life"],
+                            "points": digest_after.get("buildInfo", {}).get("points", {}),
+                        },
+                        "diff": diff,
+                    }
+                )
+            except Exception as exc:
+                results.append({"id": item_id, "ok": False, "error": str(exc)})
+            if pos < total_items - 1:
+                worker.call("cow_restore", {"snapId": snap_id, "drop": False})
+    finally:
+        worker.call("cow_restore", {"snapId": snap_id, "drop": True})
+    return results
+
+
 def eval_trade_items(
     worker: Any,
     *,
     slot_name: str | None,
     items: list[dict[str, Any]],
+    prefilter_k: int | None = None,
 ) -> dict[str, Any]:
     """Read-only batch what-if evaluation of candidate items against a single build snapshot.
 
-    For standard single-item slots (non-2H weapon swap, no granted skills or dynamic sockets,
-    and existing ``prev_item_id`` known), uses fast in-place swap:
-    ``add_item`` -> pipelined ``capture_digest`` -> batched ``equip_item(prev_id)`` + ``delete_item(new_id)``
-    instead of full ``import_code`` per candidate, while always keeping ``import_code(snap_before)``
-    as fallback for complex/2H items and as the final zero-residue safety net.
+    Uses `cow_snapshot`/`cow_restore` (+ `direct_calc`) when advertised in `worker.caps`;
+    otherwise keeps the fast in-place swap and `import_code` fallback path.
     """
     if not items:
         return {"slotName": slot_name, "before": None, "results": []}
@@ -270,8 +390,42 @@ def eval_trade_items(
     from ..analyzer import resolve_slot_name
     from ..snapshot import _call_batch, capture_digest, diff_digest
 
+    caps = getattr(worker, "caps", None) or {}
+    use_cow = bool(caps.get("cowSnapshot"))
+    use_direct = bool(caps.get("directCalc"))
+
     with worker.lock:
+        eval_items = _prefilter_raw_items_for_eval(worker, items, prefilter_k)
         prev_last_good = getattr(worker, "last_good_code", None)
+        if use_cow:
+            items_res = worker.call("list_items", {})
+            resolved_slot = resolve_slot_name(worker, slot_name, items_res=items_res) if slot_name else None
+            digest_before = capture_digest(worker)
+            before_summary = {
+                "primaryDpsKey": digest_before["primaryDpsKey"],
+                "primaryDps": digest_before["primaryDps"],
+                "totalEhp": digest_before["totalEhp"],
+                "life": digest_before["life"],
+                "points": digest_before.get("buildInfo", {}).get("points", {}),
+            }
+            try:
+                results = _eval_trade_items_cow(
+                    worker,
+                    resolved_slot=resolved_slot,
+                    items=eval_items,
+                    before_summary=before_summary,
+                    digest_before=digest_before,
+                    use_direct=use_direct,
+                )
+            finally:
+                if hasattr(worker, "last_good_code"):
+                    worker.last_good_code = prev_last_good
+            return {
+                "slotName": resolved_slot or slot_name,
+                "before": before_summary,
+                "results": results,
+            }
+
         items_res, export_res, skills_res = _call_batch(
             worker,
             [
@@ -327,13 +481,13 @@ def eval_trade_items(
             and not prev_has_abyssal
         )
 
-        results: list[dict[str, Any]] = []
+        results = []
         needs_full_restore = False
         any_mutation = False
-        total_items = len(items)
+        total_items = len(eval_items)
 
         try:
-            for pos, entry in enumerate(items):
+            for pos, entry in enumerate(eval_items):
                 item_id = entry.get("id")
                 raw_clean = str(entry.get("raw") or "").strip()
                 if not raw_clean:

@@ -15,9 +15,15 @@ from .diagnose_compare import (
     _merge_traps_and_ask_grounding,
     _run_diagnose_rankings,
 )
-from .diagnose_probes import _detect_dead_main_supports, _extract_trigger_attack_aps
+from .diagnose_probes import (
+    _detect_dead_main_supports,
+    _extract_trigger_attack_aps,
+    _gaps_from_agent_probe,
+    _probe_agent_build,
+)
 from .inspectors import inspect_items
 from .pitfalls_core import _detect_build_mechanics_and_pitfalls
+from .pitfalls_triggers import deduplicate_trigger_gaps
 from .summary import _is_tincture_item, extract_summary
 from .tree_inspect import inspect_tree
 
@@ -196,7 +202,10 @@ def _assemble_diagnose_mechanics(
     except Exception:
         pass
 
-    trig_aps = _extract_trigger_attack_aps(worker, all_skills_res, items_raw_res, stats_full)
+    agent_probe = _probe_agent_build(worker)
+    trig_aps = _extract_trigger_attack_aps(
+        worker, all_skills_res, items_raw_res, stats_full, agent_probe=agent_probe
+    )
     stripped_flasks = list(((audit.get("inflationStripped") or {}).get("flasks")) or [])
     diag_mech_gaps, build_mechanics = _detect_build_mechanics_and_pitfalls(
         stats=stats_full,
@@ -214,6 +223,10 @@ def _assemble_diagnose_mechanics(
     dead_sup_gaps, dead_sup_records = _detect_dead_main_supports(worker, mg, stats_full)
     if dead_sup_records:
         build_mechanics["deadSupports"] = dead_sup_records
+    probe_gaps = _gaps_from_agent_probe(agent_probe)
+    if agent_probe is not None:
+        build_mechanics["agentProbe"] = agent_probe
+    diag_mech_gaps = deduplicate_trigger_gaps(diag_mech_gaps, agent_probe)
 
     core_synergies: list[str] = []
     seen_syn_keys: set[str] = set()
@@ -230,7 +243,7 @@ def _assemble_diagnose_mechanics(
     amulet_7th_link = list(build_mechanics.get("amulet7thLink") or [])
 
     existing_gap_msgs = {str(g.get("message") or "") for g in gaps}
-    for mgap in (*diag_mech_gaps, *dead_sup_gaps):
+    for mgap in (*diag_mech_gaps, *dead_sup_gaps, *probe_gaps):
         if mgap["message"] not in existing_gap_msgs:
             existing_gap_msgs.add(mgap["message"])
             gaps.append(mgap)
@@ -280,7 +293,7 @@ def diagnose_build(
     pts = info.get("points") or {}
     used_pts, used_max = int(pts.get("used") or 0), int(pts.get("usedMax") or 0)
 
-    gaps = list(audit.get("healthIssues") or [])
+    gaps = [g for g in (audit.get("healthIssues") or []) if g.get("category") != "TriggerOverspeed"]
     if used_max > 0 and used_pts < used_max:
         gaps.append(
             {
@@ -394,6 +407,8 @@ def diagnose_build(
         "rankErrors": rank_errors,
         "restoreCheck": audit.get("restoreCheck"),
     }
+    if build_mechanics.get("agentProbe") is not None:
+        out_diag["agentProbe"] = build_mechanics["agentProbe"]
     if ask_grounding is not None:
         out_diag["askGrounding"] = ask_grounding
     return out_diag

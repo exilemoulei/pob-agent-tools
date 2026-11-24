@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from ..guardrails import get_auth_env_status
+from ..locale_cfg import get_active_lang, normalize_lang, set_active_lang
 from ..updater import (
     is_valid_engine_dir,
     resolve_engine_root,
@@ -193,25 +194,93 @@ def handle_update_action(manager: DaemonManager, params: dict[str, Any]) -> dict
     return manager._attach_warning_if_degraded(dict(updated))
 
 
+def _available_locales(pob_dir: Any) -> list[str]:
+    avail: list[str] = ["en"]
+    try:
+        from pathlib import Path
+
+        base = Path(pob_dir) / "Data" / "poe1"
+        if (base / "zh-rCN").is_dir():
+            avail.insert(0, "zh-CN")
+        if (base / "zh-rTW").is_dir():
+            idx = 1 if "zh-CN" in avail else 0
+            avail.insert(idx, "zh-TW")
+    except Exception:
+        pass
+    return avail
+
+
+def handle_set_lang_action(manager: DaemonManager, params: dict[str, Any]) -> dict[str, Any]:
+    rt_dir = getattr(manager, "runtime_dir", None)
+    raw_lang = params.get("lang")
+    persisted_info: dict[str, Any] | None = None
+    if raw_lang is not None and str(raw_lang).strip():
+        norm = normalize_lang(str(raw_lang))
+        if params.get("persist", True):
+            persisted_info = set_active_lang(norm, runtime_dir=rt_dir)
+        target_lang = norm
+    else:
+        target_lang, _ = get_active_lang(rt_dir)
+
+    updated_slots: dict[str, Any] = {}
+    if raw_lang is not None and str(raw_lang).strip():
+        with manager._reader_barrier():
+            with manager._lock:
+                workers_snap = list(manager._workers.items())
+            for sname, w in workers_snap:
+                slock = manager._get_slot_lock(sname)
+                with slock:
+                    set_fn = getattr(w, "set_locale", None)
+                    if callable(set_fn):
+                        try:
+                            updated_slots[sname] = set_fn(target_lang)
+                        except Exception as exc:
+                            updated_slots[sname] = {"ok": False, "error": str(exc)}
+
+    eff_lang, eff_src = get_active_lang(rt_dir)
+    out: dict[str, Any] = {
+        "lang": eff_lang if raw_lang is None else target_lang,
+        "effectiveLang": eff_lang,
+        "source": eff_src,
+        "availableLocales": _available_locales(getattr(manager, "pob_dir", None)),
+        "slotsUpdated": updated_slots,
+    }
+    if persisted_info:
+        out["persistedLang"] = persisted_info["lang"]
+        out["configPath"] = persisted_info["configPath"]
+    return out
+
+
 def build_status_payload(manager: DaemonManager) -> dict[str, Any]:
     with manager._reader_barrier():
         with manager._lock:
             workers_snap = dict(manager._workers)
-            pob_dir_str = str(manager.pob_dir)
+            pob_dir_val = getattr(manager, "pob_dir", None)
+            pob_dir_str = str(pob_dir_val)
             upd_copy = dict(manager.update_status)
         slots_status = {sname: manager._slot_status_entry(sname, w) for sname, w in workers_snap.items()}
+        main_w = workers_snap.get("main")
+        main_caps = dict(getattr(main_w, "caps", None) or {})
         main_entry = slots_status.get("main") or manager._slot_status_entry("main", None)
+        if main_caps and isinstance(main_entry, dict):
+            main_entry.setdefault("caps", main_caps)
         ref_entry = slots_status.get("ref") or {
             "alive": False,
             "buildInfo": None,
             "hasLoadedBuild": False,
         }
+        eff_lang, eff_src = get_active_lang(getattr(manager, "runtime_dir", None))
         res: dict[str, Any] = {
             "game": GAME_ID,
             "pid": os.getpid(),
             "uptimeSec": round(time.time() - manager.started_at, 1),
             "idleSec": round(time.time() - manager.last_active_ts, 1),
             "engineDir": pob_dir_str,
+            "lang": eff_lang,
+            "langSource": eff_src,
+            "availableLocales": _available_locales(pob_dir_val),
+            "winLuaHost": bool(main_caps.get("winLuaHost")),
+            "caps": main_caps,
             "updateStatus": upd_copy,
             "auth": get_auth_env_status(),
             "main": main_entry,

@@ -138,6 +138,20 @@ def validate_import_xml_guardrail(code: str) -> None:
         validate_build_xml(xml_text, expected_game="poe1")
 
 
+def parse_version_caps(ver_info: Any) -> dict[str, Any]:
+    """Extract capability flags from a `version` RPC result (always returns a dict)."""
+    if not isinstance(ver_info, dict):
+        return {}
+    raw = ver_info.get("caps")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def get_worker_caps(worker: Any) -> dict[str, Any]:
+    """Return a worker's parsed `version` RPC capability dict (defaulting to {} for FakeWorker)."""
+    raw = getattr(worker, "caps", None)
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
 def validate_rpc_method(method: str, caps: dict[str, Any]) -> None:
     """Enforce static R1/R3/R4/R7/R11 blocklist and dynamic R2 sidebarBreakdown capability."""
     if method in FORBIDDEN_METHODS:

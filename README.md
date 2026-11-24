@@ -103,7 +103,8 @@ pob status
 ```
 
 - 需代理时加 `--proxy http://127.0.0.1:<端口>`；若本机已有 `PobTools` 目录，可用 `pob bootstrap --from-dir "<本地路径>"` 离线导入。
-- macOS / Linux 独立版会自动使用内置或经 Ed25519 校验下载的预编译 LuaJIT 运行时，无需手动编译。
+- Windows 采用精简原生 LuaJIT 托管引擎（无需 `pob-zh.exe` 或数百 MB 永恒珠宝 LUT 压缩包），macOS / Linux 独立版会自动使用内置或经 Ed25519 校验下载的预编译 LuaJIT 运行时，无需手动编译。
+- 默认显示语言为简体中文（`zh-CN`），国际服/台服繁体玩家可运行 `pob lang zh-TW`（或设置环境变量 `POB_LANG=zh-TW`）切换为固定繁体中文（支持简繁双词库离线秒切与互查）。
 - 确认 `pob status` 返回版本与引擎就绪状态后再进入下一步。
 
 ### 3. 挂载 Skill（必做，不可跳过）

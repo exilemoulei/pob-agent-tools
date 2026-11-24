@@ -443,6 +443,8 @@ def test_clean_bootstrap_from_github_dual_upstream(tmp_path: Path, monkeypatch: 
         {
             "Data/translations_version.json": json.dumps({"dataVersion": "data-24"}).encode("utf-8"),
             "Data/poe1/zh-rCN/gems.json": b"{}",
+            "Data/poe1/zh-rTW/gems.json": b"{}",
+            "Data/poe1/ko-KR/gems.json": b"{}",
         }
     )
     pob_main = b"-- official PoB 2.68.1\n"
@@ -509,12 +511,11 @@ def test_clean_bootstrap_from_github_dual_upstream(tmp_path: Path, monkeypatch: 
     assert res["localPobVersion"] == "2.68.1"
     assert res["pobToolsVersion"] == "1.8.12"
     assert res["dataVersion"] == "data-24"
-    if upd_mod.is_windows():
-        assert (target / "pob-zh.exe").read_bytes() == b"MZ-new-host"
-    else:
-        assert not (target / "pob-zh.exe").exists()
-        assert (target / "Data" / "bridge" / "bridge.lua").read_bytes() == b"-- bridge"
+    assert not (target / "pob-zh.exe").exists()
+    assert (target / "Data" / "bridge" / "bridge.lua").read_bytes() == b"-- bridge"
     assert (target / "Data" / "poe1" / "zh-rCN" / "gems.json").is_file()
+    assert (target / "Data" / "poe1" / "zh-rTW" / "gems.json").is_file()
+    assert not (target / "Data" / "poe1" / "ko-KR").exists()
     assert (target / "PoE1" / "Modules" / "Main.lua").read_bytes() == pob_main
 
 

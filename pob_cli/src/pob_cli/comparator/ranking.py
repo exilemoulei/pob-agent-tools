@@ -220,11 +220,17 @@ def rank_nodes(
         equipped_weapons = _detect_equipped_weapon_types(worker)
 
         candidates: list[dict[str, Any]] = []
+        cluster_candidates: list[dict[str, Any]] = []
         filtered_masteries: list[str] = []
         for r in report:
             if r.get("allocated"):
                 continue
-            if _safe_dist(r.get("pathDist")) > max_dist:
+            raw_dist = r.get("pathDist")
+            if isinstance(raw_dist, str) and raw_dist.strip().lower() == "cluster":
+                if _safe_float(r.get("power")) > 0:
+                    cluster_candidates.append(r)
+                continue
+            if _safe_dist(raw_dist) > max_dist:
                 continue
             if not (_safe_float(r.get("pathPower")) > 0 or _safe_float(r.get("power")) > 0):
                 continue
@@ -245,6 +251,11 @@ def rank_nodes(
             key=lambda r: (_safe_float(r.get("power")), _safe_float(r.get("pathPower"))),
             reverse=True,
         )[:top]
+        by_cluster = sorted(
+            cluster_candidates,
+            key=lambda r: _safe_float(r.get("power")),
+            reverse=True,
+        )[:top]
 
         out: dict[str, Any] = {
             "stat": res.get("stat") or eff_stat,
@@ -254,6 +265,8 @@ def rank_nodes(
             "byPerPoint": by_per_point,
             "byTotalGain": by_single_node,
         }
+        if by_cluster:
+            out["topCluster"] = by_cluster
         if stat_fallback is not None:
             out["stat_fallback"] = stat_fallback
         if filtered_masteries:

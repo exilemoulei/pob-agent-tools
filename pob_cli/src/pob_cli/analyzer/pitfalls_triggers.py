@@ -12,6 +12,141 @@ from ..ticks import compute_server_tick_cooldown
 from .pitfalls_offence import _item_names_low
 from .summary import _awakened_coc_gem_cdr, _cwc_interval_ms
 
+NON_APS_TRIGGER_KEYS: frozenset[str] = frozenset(
+    {
+        "automation",
+        "autoexertion",
+        "call to arms",
+        "cast when damage taken",
+        "cast when stunned",
+        "cast on ward break",
+        "cast on death",
+        "cast on melee kill",
+        "vengeance",
+        "riposte",
+        "reckoning",
+        "counterattack",
+        "mark on hit",
+        "hextouch",
+        "arcanist brand",
+        "focus",
+        "tempest shield",
+        "shattershard",
+        "svalinn cast on block",
+        "festering resentment cast on block",
+        "battlemage's cry",
+        "combust",
+        "seize the flesh",
+        "intuitive link",
+        "avenging flame",
+        "hex on trap",
+        "snipe",
+        "trigger craft",
+        "hidden blade",
+        "unseen strike",
+        "kitava's thirst",
+        "foulborn kitava's thirst",
+    }
+)
+
+_OVERSPEED_TRIG_RE = re.compile(r"^Trigger Overspeed \(([^,)]+)(?:,\s*([^)]+))?\)")
+_OVERSPEED_CDR_RE = re.compile(r"at\s+([0-9]+(?:\.[0-9]+)?)%\s+CDR")
+
+
+def canonical_trigger_key(name: str) -> str:
+    """Normalize gem/item trigger names for cross-source deduplication."""
+    s = strip_pob_escapes(str(name or "")).strip().lower()
+    if s.startswith("awakened "):
+        s = s[len("awakened ") :].strip()
+    if s.endswith(" support"):
+        s = s[: -len(" support")].strip()
+    if s.startswith("the "):
+        s = s[len("the ") :].strip()
+    return s.replace("ö", "o")
+
+
+def deduplicate_trigger_gaps(
+    mech_gaps: list[dict[str, str]],
+    agent_probe: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    """Suppress conflicting or duplicate `TriggerOverspeed` entries covered by `agent_probe`."""
+    cliff_exceeded: set[str] = set()
+    cliff_by_key: dict[str, dict[str, Any]] = {}
+    if isinstance(agent_probe, dict):
+        for cliff in agent_probe.get("triggerCliffs") or []:
+            if not isinstance(cliff, dict):
+                continue
+            tkey = canonical_trigger_key(str(cliff.get("triggerName") or ""))
+            if not tkey or tkey in NON_APS_TRIGGER_KEYS:
+                continue
+            if cliff.get("overspeedCliffExceeded"):
+                cliff_exceeded.add(tkey)
+            prev = cliff_by_key.get(tkey)
+            if prev is None or _finite_float(cliff.get("currentIcdrPct"), default=-1.0) > _finite_float(
+                prev.get("currentIcdrPct"), default=-1.0
+            ):
+                cliff_by_key[tkey] = cliff
+
+    out: list[dict[str, str]] = []
+    seen_trig_idx: dict[str, int] = {}
+    for gap in mech_gaps:
+        if gap.get("category") != "TriggerOverspeed":
+            out.append(gap)
+            continue
+        msg = str(gap.get("message") or "")
+        m_trig = _OVERSPEED_TRIG_RE.match(msg)
+        tkey = canonical_trigger_key(m_trig.group(1)) if m_trig else ""
+        if not tkey:
+            out.append(gap)
+            continue
+        if tkey in NON_APS_TRIGGER_KEYS or tkey in cliff_exceeded:
+            continue
+
+        m_cdr = _OVERSPEED_CDR_RE.search(msg)
+        msg_cdr = float(m_cdr.group(1)) if m_cdr else 0.0
+        cliff_info = cliff_by_key.get(tkey)
+        if cliff_info is not None:
+            probe_cdr = _finite_float(cliff_info.get("currentIcdrPct"), default=-1.0)
+            linked = int(cliff_info.get("linkedTriggeredSpells") or 1)
+            if probe_cdr > msg_cdr:
+                if linked <= 1:
+                    continue
+                b_cd = _finite_float(cliff_info.get("baseActionCd"), default=0.25)
+                src_aps = _finite_float(cliff_info.get("sourceAps"), default=0.0)
+                if b_cd > 0.0 and src_aps > 0.0:
+                    tick = compute_server_tick_cooldown(b_cd, probe_cdr, aps=src_aps)
+                    if not tick.get("overspeed"):
+                        continue
+                    disp = m_trig.group(1) if m_trig else tkey
+                    loc = m_trig.group(2) if (m_trig and m_trig.group(2)) else "-"
+                    nb = tick.get("nextBreakpoint") or {}
+                    next_hint = (
+                        f" or reach {nb['requiredCdrPct']}% CDR ({nb['targetTicks']}t={nb['effectiveCdMs']}ms, cap {nb['effectiveCapPerSec']:.2f}/s)"
+                        if nb
+                        else ""
+                    )
+                    gap = {
+                        "category": "TriggerOverspeed",
+                        "severity": "HIGH",
+                        "message": (
+                            f"Trigger Overspeed ({disp}, {loc}): Attack rate ({src_aps:.2f}/s) "
+                            f"exceeds trigger cap ({tick['effectiveCapPerSec']:.2f}/s at {probe_cdr:g}% CDR, "
+                            f"{tick['ticks']}t = {tick['effectiveCdMs']}ms) — lower APS <= {tick['effectiveCapPerSec']:.2f}/s{next_hint}."
+                        ),
+                    }
+                    msg_cdr = probe_cdr
+
+        if tkey in seen_trig_idx:
+            prev_idx = seen_trig_idx[tkey]
+            prev_m = _OVERSPEED_CDR_RE.search(str(out[prev_idx].get("message") or ""))
+            prev_cdr = float(prev_m.group(1)) if prev_m else -1.0
+            if msg_cdr >= prev_cdr:
+                out[prev_idx] = gap
+            continue
+        seen_trig_idx[tkey] = len(out)
+        out.append(gap)
+    return out
+
 
 def _check_sword_of_ages_and_triggers(
     ctx: dict[str, Any],

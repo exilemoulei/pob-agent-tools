@@ -20,7 +20,8 @@ from ..formatters import _parse_numeric_or_none
 from ..game_data import fold_han
 from ..guardrails import validate_engine_root
 from ..importers import share_code_to_xml
-from ..updater import resolve_engine_root
+from ..locale_cfg import current_lang
+from ..updater import get_shared_cache_dir, resolve_engine_root
 
 # Jewels stored as one byte per (notable, seed) in `Data/TimelessJewelData/<stem>.zip`.
 # The others (Glorious Vanity, the Abyss family) use variable-length records: every seed is calculated.
@@ -31,6 +32,19 @@ FLAT_TABLES = {
     "Elegant Hubris": "ElegantHubris",
     "Heroic Tragedy": "HeroicTragedy",
 }
+JEWEL_TYPE_IDS: dict[str, int] = {
+    "Glorious Vanity": 1, "Lethal Pride": 2, "Brutal Restraint": 3,
+    "Militant Faith": 4, "Elegant Hubris": 5, "Heroic Tragedy": 6,
+    "Festering Vengeance": 7, "Extinguishing Grasp": 8,
+    "Baleful Dominion": 9, "Destructive Aspiration": 10, "Reclaimed Malevolence": 11,
+}
+LUT_STEMS: dict[str, str] = {
+    **FLAT_TABLES,
+    "Glorious Vanity": "GloriousVanity",
+    "Festering Vengeance": "AbyssTecrod", "Extinguishing Grasp": "AbyssUlaman",
+    "Baleful Dominion": "AbyssKurgal", "Destructive Aspiration": "AbyssAmanamu",
+    "Reclaimed Malevolence": "AbyssZorath",
+}
 SEED_STEP = {"Elegant Hubris": 20}  # PoB Modules/Data.lua: this one only exists in multiples of 20
 STAT_KEYS = (
     "CombinedDPS", "FullDPS", "TotalDPS", "TotalDotDPS", "MinionCombinedDPS",
@@ -40,36 +54,25 @@ STAT_KEYS = (
     "EffectiveBlockChance", "EffectiveSpellBlockChance", "EffectiveSpellSuppressionChance",
     "Str", "Dex", "Int",
 )
-# Static Chinese display-name fallback for the 11 Historic jewels (matches PobTools-zh zh-rCN),
-# so Chinese `--jewel` input and localized `timeless list` names work even on POSIX `headless_runner.lua`
-# where `tj_open` returns `labelZh == label`.
+# Static Simplified & Traditional Chinese display names and aliases for the 11 Historic jewels.
 JEWEL_ZH_NAMES: dict[str, str] = {
-    "Brutal Restraint": "残酷的约束",
-    "Elegant Hubris": "优雅的狂妄",
-    "Glorious Vanity": "光彩夺目",
-    "Lethal Pride": "致命的骄傲",
-    "Militant Faith": "好战的信仰",
-    "Heroic Tragedy": "英勇悲剧",
-    "Festering Vengeance": "溃烂复仇",
-    "Extinguishing Grasp": "熄灭之握",
-    "Baleful Dominion": "噩兆统御",
-    "Destructive Aspiration": "毁灭渴望",
-    "Reclaimed Malevolence": "再造恶意",
+    "Brutal Restraint": "残酷的约束", "Elegant Hubris": "优雅的狂妄", "Glorious Vanity": "光彩夺目",
+    "Lethal Pride": "致命的骄傲", "Militant Faith": "好战的信仰", "Heroic Tragedy": "英勇悲剧",
+    "Festering Vengeance": "溃烂复仇", "Extinguishing Grasp": "熄灭之握", "Baleful Dominion": "噩兆统御",
+    "Destructive Aspiration": "毁灭渴望", "Reclaimed Malevolence": "再造恶意",
+}
+JEWEL_ZH_TW_NAMES: dict[str, str] = {
+    "Brutal Restraint": "殘酷的紀律", "Elegant Hubris": "優雅的高傲", "Glorious Vanity": "輝煌的虛榮",
+    "Lethal Pride": "致命的驕傲", "Militant Faith": "激進的信仰", "Heroic Tragedy": "英勇的悲劇",
+    "Festering Vengeance": "潰爛復仇", "Extinguishing Grasp": "撲滅之握", "Baleful Dominion": "邪惡統治",
+    "Destructive Aspiration": "滅亡之願", "Reclaimed Malevolence": "重奪惡意",
 }
 _JEWEL_ZH_ALIASES: dict[str, str] = {
     **{zh: en for en, zh in JEWEL_ZH_NAMES.items()},
-    # Common community / PoEDB / Traditional Chinese aliases
-    "残酷的纪律": "Brutal Restraint",
-    "殘酷的紀律": "Brutal Restraint",
-    "优雅的高傲": "Elegant Hubris",
-    "優雅的高傲": "Elegant Hubris",
-    "辉煌的虚荣": "Glorious Vanity",
-    "輝煌的虛榮": "Glorious Vanity",
-    "致命的驕傲": "Lethal Pride",
-    "激进的信仰": "Militant Faith",
-    "激進的信仰": "Militant Faith",
-    "英勇的悲剧": "Heroic Tragedy",
-    "英勇的悲劇": "Heroic Tragedy",
+    **{zh: en for en, zh in JEWEL_ZH_TW_NAMES.items()},
+    **{fold_han(zh): en for en, zh in JEWEL_ZH_TW_NAMES.items()},
+    "优雅的傲慢": "Elegant Hubris", "军团的荣耀": "Glorious Vanity",
+    "军团的信仰": "Militant Faith", "英雄悲剧": "Heroic Tragedy",
 }
 # PoE 3.30 renamed Glorious Vanity's Ahuana -> Mazcotl; accept either name against either PoB version.
 _CONQUEROR_ALIASES: dict[str, str] = {
@@ -258,9 +261,14 @@ def load_node_index(game_dir: Path) -> dict[int, int]:
     return {node: row for node, row in rows.items() if row < n_notable}
 
 
-def load_table(game_dir: Path, stem: str) -> bytes:
-    """Decompressed lookup table. Reads PoB's file only; never writes next to it."""
+def load_table(game_dir: Path, stem: str, *, runtime_dir: Path | str | None = None) -> bytes:
+    """Decompressed lookup table. Reads PoB's file (or shared timeless cache); never writes next to PoB."""
     table_path = Path(game_dir) / "Data" / "TimelessJewelData" / f"{stem}.zip"
+    if not table_path.is_file():
+        rt = Path(runtime_dir) if runtime_dir else None
+        cached = get_shared_cache_dir(rt) / "timeless_lut" / f"{stem}.zip"
+        if cached.is_file():
+            table_path = cached
     try:
         return zlib.decompress(table_path.read_bytes())
     except zlib.error as exc:
@@ -386,9 +394,14 @@ def narrow_down(
 
 
 def _local_jewel_name(name: str, dialog_local: dict[str, str]) -> str:
+    lang = current_lang()
+    if lang == "en":
+        return name
     local = dialog_local.get(name)
     if local and local != name:
         return local
+    if lang == "zh-TW":
+        return JEWEL_ZH_TW_NAMES.get(name, JEWEL_ZH_NAMES.get(name, name))
     return JEWEL_ZH_NAMES.get(name, name)
 
 

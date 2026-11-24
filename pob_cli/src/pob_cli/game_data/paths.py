@@ -11,12 +11,15 @@ from pathlib import Path
 from typing import Any
 
 from .. import updater as _updater
+from ..locale_cfg import current_lang, normalize_lang
 from ..os_util import _is_pid_alive as _is_pid_alive
 from ..updater import detect_source_checkout_root, get_runtime_dir
 from .constants import (
     _MANIFEST_VER_CACHE,
     _ZH_META_VER_CACHE,
 )
+
+CHINESE_DATA_SUBDIRS: tuple[str, str] = ("zh-rCN", "zh-rTW")
 
 
 def _sqlite_ro_uri(db_path: Path) -> str:
@@ -36,9 +39,16 @@ def _prune_old_indexes(cache_dir: Path, pattern: str, keep: Path) -> None:
     over 50 MB) and nothing removed the old ones. One older file stays, so a second engine that
     shares this cache dir does not rebuild each time the two take turns.
     """
+    is_tw = keep.name.endswith("_zh_rtw.sqlite")
     try:
         others = sorted(
-            (p for p in cache_dir.glob(pattern) if p != keep), key=lambda p: p.stat().st_mtime, reverse=True
+            (
+                p
+                for p in cache_dir.glob(pattern)
+                if p != keep and (p.name.endswith("_zh_rtw.sqlite") == is_tw)
+            ),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
         )
     except OSError:
         return
@@ -129,8 +139,24 @@ def resolve_pob_dir(pob_dir: Path | None = None, runtime_dir: Path | None = None
     return managed_engine
 
 
-def _resolve_poe1_data_dirs(pob_dir: Path) -> tuple[Path, Path | None]:
-    """Return `(poe1_dir, zh_dir_or_none)` for a given PoB root directory."""
+def list_available_zh_dirs(pob_dir: Path) -> list[Path]:
+    """Return existing `Data/poe1/<zh-rCN|zh-rTW>` locale directories under `pob_dir`."""
+    base = Path(pob_dir)
+    poe1_tr_root = base / "Data" / "poe1"
+    if not poe1_tr_root.is_dir() and base.name.lower() == "poe1":
+        parent_tr = base.parent / "Data" / "poe1"
+        if parent_tr.is_dir():
+            poe1_tr_root = parent_tr
+    return [cand for sub in CHINESE_DATA_SUBDIRS if (cand := poe1_tr_root / sub).is_dir()]
+
+
+def _resolve_poe1_data_dirs(
+    pob_dir: Path,
+    *,
+    runtime_dir: Path | None = None,
+    lang: str | None = None,
+) -> tuple[Path, Path | None]:
+    """Return `(poe1_dir, zh_dir_or_none)` for `pob_dir`, preferring the active Chinese locale."""
     if (pob_dir / "PoE1" / "Data").is_dir():
         poe1_dir = pob_dir / "PoE1"
     elif (pob_dir / "Data").is_dir():
@@ -138,8 +164,17 @@ def _resolve_poe1_data_dirs(pob_dir: Path) -> tuple[Path, Path | None]:
     else:
         raise FileNotFoundError(f"PoE1/Data directory not found under {pob_dir}")
 
-    zh_candidate = pob_dir / "Data" / "poe1" / "zh-rCN"
-    zh_dir = zh_candidate if zh_candidate.is_dir() else None
+    available = {d.name: d for d in list_available_zh_dirs(pob_dir)}
+    eff_rt = runtime_dir
+    if eff_rt is None:
+        env_rt = resolve_runtime_dir()
+        if (env_rt / "config.json").is_file() or os.environ.get("POB_RUNTIME_DIR") or os.environ.get("POB_HOME"):
+            eff_rt = env_rt
+        elif (Path(pob_dir).parent / "config.json").is_file():
+            eff_rt = Path(pob_dir).parent
+    eff_lang = normalize_lang(lang) if lang is not None else current_lang(eff_rt)
+    sub_order = ("zh-rTW", "zh-rCN") if eff_lang == "zh-TW" else ("zh-rCN", "zh-rTW")
+    zh_dir = next((available[sub] for sub in sub_order if sub in available), None)
     return poe1_dir, zh_dir
 
 
@@ -214,5 +249,10 @@ def detect_versions(poe1_dir: Path, zh_dir: Path | None) -> tuple[str, str]:
         zh_prefix = f"zh-{zh_ver}"
         _scan_dir_entries(hasher, zh_dir, ".json")
 
-    safe_data = re.sub(r"[^A-Za-z0-9._-]", "_", f"{zh_prefix}-{hasher.hexdigest()}")
+    locale_suffix = "_zh_rtw" if (zh_dir is not None and zh_dir.name.lower() == "zh-rtw") else ""
+    safe_data = re.sub(
+        r"[^A-Za-z0-9._-]",
+        "_",
+        f"{zh_prefix}-{hasher.hexdigest()}{locale_suffix}",
+    )
     return pob_version, safe_data

@@ -270,6 +270,24 @@ def query_local_data(
                 if slang_res:
                     results = slang_res
                     resolved_alias = {"from": q_clean, "to": canon_en}
+            if not results and kind_norm != "translate":
+                from .zh_match import english_for_zh
+
+                en_canon = english_for_zh(q_clean, pob_dir=pob_dir)
+                if en_canon and _fold_search_text(en_canon) != q_lower:
+                    sib_res = _dispatch_query(
+                        conn,
+                        kind_norm,
+                        _fold_search_text(en_canon),
+                        slot=slot,
+                        ilvl=ilvl,
+                        limit=limit,
+                        zh_available=zh_available,
+                        mod_filter=mod_tw,
+                    )
+                    if sib_res:
+                        results = sib_res
+                        resolved_alias = {"from": q_clean, "to": en_canon}
             if not results and not mod_tw:
                 suggestions = _suggest_similar(conn, kind_norm, q_lower, limit=5, zh_available=zh_available)
                 hint = _build_zero_result_hint(kind_norm, q_clean, suggestions)

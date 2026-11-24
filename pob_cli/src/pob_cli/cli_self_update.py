@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
-import shutil
 import sys
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 
 from . import __version__
 from .cli_common import DAEMON_FAILURE_EXIT_CODE, _echo_stderr_utf8, _emit_json, _emit_text, _output_options
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 # Commands whose output an agent harness parses, or that run in the background: no notice there.
-_QUIET_COMMANDS = frozenset({"_daemon", "_release-check", "serve", "hook", "self-update"})
+_QUIET_COMMANDS = frozenset({"_daemon", "_lua-host", "_release-check", "serve", "hook", "self-update"})
 # Background commands, which nobody reads: a failed Windows swap is reported by the next other one.
-_BACKGROUND_COMMANDS = frozenset({"_daemon", "_release-check"})
+_BACKGROUND_COMMANDS = frozenset({"_daemon", "_lua-host", "_release-check"})
 
 
 def _stderr_is_terminal() -> bool:
@@ -76,6 +77,8 @@ def maybe_show_update_notice(ctx: click.Context) -> None:
 @click.option("--runtime-dir", type=click.Path(), default=None)
 def cmd_release_check(runtime_dir: str | None) -> None:
     """Refresh the cached latest-release lookup behind the update notice."""
+    from pathlib import Path
+
     from .updater.paths import get_runtime_dir
     from .updater.self_update import refresh_check
 
@@ -104,6 +107,8 @@ def _fault(message: str) -> click.ClickException:
 
 def _install(current: Path, target: str | None, proxy: str | None, mirror: str | None) -> dict[str, Any]:
     """Download, verify and swap in a release under the update lock; return what happened."""
+    import shutil
+
     from .updater import UpdateError
     from .updater import self_update as su
 

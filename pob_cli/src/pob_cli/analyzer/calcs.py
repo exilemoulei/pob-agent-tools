@@ -63,6 +63,10 @@ _CALC_TOKEN_SYNONYMS: dict[str, tuple[str, ...]] = {
     "block": ("格挡",),
     "leech": ("偷取",),
     "cost": ("消耗",),
+    "回复": ("recovery", "regen", "regeneration"),
+    "魔力回复": ("mana recovery", "mana regen"),
+    "生命回复": ("life recovery", "life regen"),
+    "有效生命": ("effective hit pool", "effective health pool", "ehp"),
 }
 
 

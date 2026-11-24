@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import sys
 import threading
@@ -20,6 +21,62 @@ from .constants import (
     UpdateError,
     rewrite_github_url,
 )
+
+SLIM_IMAGE_EXTS: frozenset[str] = frozenset(
+    {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".ico", ".gif", ".dds", ".tga"}
+)
+SLIM_WIN32_RUNTIME_DLLS: frozenset[str] = frozenset(
+    {"lua51.dll", "zlib1.dll", "lua-utf8.dll", "vcruntime140.dll"}
+)
+_TREE_LUA_VER_RE = re.compile(r"^TreeData/(\d+)_(\d+)/tree\.lua$", re.IGNORECASE)
+
+
+def _detect_latest_tree_versions(raw_names: list[str], *, count: int = 2) -> tuple[str, ...]:
+    found: dict[tuple[int, int], str] = {}
+    for name in raw_names:
+        m = _TREE_LUA_VER_RE.match(name.replace("\\", "/"))
+        if m:
+            found[(int(m.group(1)), int(m.group(2)))] = f"{m.group(1)}_{m.group(2)}"
+    ordered = sorted(found.items(), key=lambda item: item[0], reverse=True)
+    return tuple(ver for _, ver in ordered[:count])
+
+
+def is_slim_manifest_entry(
+    local_rel: str,
+    *,
+    keep_win32: bool,
+    latest_trees: tuple[str, ...] | str | None,
+) -> bool:
+    """Return True if a PoB manifest entry belongs in the ~48 MiB headless slim runtime."""
+    posix = local_rel.replace("\\", "/")
+    low = posix.lower()
+    if any(low.endswith(ext) for ext in SLIM_IMAGE_EXTS):
+        return False
+    parts = posix.split("/")
+    if len(parts) == 1:
+        if low.endswith(".lua"):
+            return True
+        return keep_win32 and low in SLIM_WIN32_RUNTIME_DLLS
+    top = parts[0].lower()
+    if top in ("simplegraphic", "assets"):
+        return False
+    if top in ("modules", "classes"):
+        return True
+    if top == "lua":
+        return low.endswith(".lua")
+    if top == "data":
+        if low.startswith("data/timelessjeweldata/") and ".zip" in parts[-1].lower():
+            return False
+        return True
+    if top == "treedata":
+        allowed = {"treedata/3_19/assets.lua", "treedata/legion/tree-legion.lua"}
+        vers = (latest_trees,) if isinstance(latest_trees, str) else (latest_trees or ())
+        for ver in vers:
+            lt = ver.lower()
+            allowed.add(f"treedata/{lt}/tree.lua")
+            allowed.add(f"treedata/{lt}/sprites.lua")
+        return low in allowed
+    return False
 
 
 def _pkg() -> Any:
@@ -41,7 +98,12 @@ def verify_pob_sha1(data: bytes, expected_sha1: str) -> bool:
     return False
 
 
-def parse_pob_manifest(xml_text: str, *, include_win32_runtime: bool | None = None) -> PobManifest:
+def parse_pob_manifest(
+    xml_text: str,
+    *,
+    include_win32_runtime: bool | None = None,
+    slim: bool = False,
+) -> PobManifest:
     """Parse a PathOfBuilding manifest.xml string into structured metadata & file entries."""
     import xml.etree.ElementTree as ET
 
@@ -66,8 +128,15 @@ def parse_pob_manifest(xml_text: str, *, include_win32_runtime: bool | None = No
         if part and url:
             sources.setdefault(part, {})[plat] = url
 
+    file_elems = root.findall("File")
+    latest_trees = (
+        _detect_latest_tree_versions([(e.attrib.get("name") or "").strip() for e in file_elems], count=2)
+        if slim
+        else ()
+    )
+
     files: dict[str, ManifestFileEntry] = {}
-    for f_elem in root.findall("File"):
+    for f_elem in file_elems:
         raw_name = (f_elem.attrib.get("name") or "").strip()
         part = (f_elem.attrib.get("part") or "program").strip()
         sha1 = (f_elem.attrib.get("sha1") or "").strip().lower()
@@ -93,6 +162,12 @@ def parse_pob_manifest(xml_text: str, *, include_win32_runtime: bool | None = No
         norm_parts = Path(local_rel).parts
         if Path(local_rel).is_absolute() or ".." in norm_parts:
             raise UpdateError(f"Unsafe manifest path: {raw_name}")
+        if slim and not is_slim_manifest_entry(
+            local_rel,
+            keep_win32=keep_win32,
+            latest_trees=latest_trees,
+        ):
+            continue
         files[raw_name] = ManifestFileEntry(
             raw_name=raw_name,
             local_rel=local_rel,
@@ -194,6 +269,7 @@ def find_local_manifest_mismatches(
     *,
     fast_stat: bool = False,
     cache_dir: Path | None = None,
+    slim: bool = False,
 ) -> list[ManifestFileEntry]:
     """Verify local PoE1/ files against local PoE1/manifest.xml and return missing/tampered entries.
 
@@ -207,7 +283,8 @@ def find_local_manifest_mismatches(
         return []
     manifest_bytes = manifest_path.read_bytes()
     manifest_sha1 = hashlib.sha1(manifest_bytes).hexdigest()
-    manifest = parse_pob_manifest(manifest_bytes.decode("utf-8", errors="replace"))
+    cache_manifest_key = f"{manifest_sha1}:slim" if slim else manifest_sha1
+    manifest = parse_pob_manifest(manifest_bytes.decode("utf-8", errors="replace"), slim=slim)
 
     use_cache = fast_stat or cache_dir is not None
     cache_path = _stat_cache_path(cache_dir) if use_cache else None
@@ -217,7 +294,7 @@ def find_local_manifest_mismatches(
         poe1_key = str(poe1)
 
     cached_files = (
-        _load_manifest_stat_cache(cache_path, poe1_key, manifest_sha1)
+        _load_manifest_stat_cache(cache_path, poe1_key, cache_manifest_key)
         if (fast_stat and cache_path is not None)
         else {}
     )
@@ -258,7 +335,7 @@ def find_local_manifest_mismatches(
             cache_dirty = True
 
     if cache_path is not None and cache_dirty:
-        _save_manifest_stat_cache(cache_path, poe1_key, manifest_sha1, updated_cache)
+        _save_manifest_stat_cache(cache_path, poe1_key, cache_manifest_key, updated_cache)
 
     return mismatched
 
@@ -270,6 +347,7 @@ def diff_pob_manifest(
     verify_local_sha1: bool = True,
     fast_stat: bool = False,
     cache_dir: Path | None = None,
+    slim: bool = False,
 ) -> tuple[list[ManifestFileEntry], list[Path]]:
     """Compute PoE1/ files to download and obsolete files to delete against remote_manifest.
 
@@ -285,8 +363,9 @@ def diff_pob_manifest(
     if local_manifest_path.is_file():
         try:
             local_bytes = local_manifest_path.read_bytes()
-            local_manifest_sha1 = hashlib.sha1(local_bytes).hexdigest()
-            local_manifest = parse_pob_manifest(local_bytes.decode("utf-8", errors="replace"))
+            raw_sha1 = hashlib.sha1(local_bytes).hexdigest()
+            local_manifest_sha1 = f"{raw_sha1}:slim" if slim else raw_sha1
+            local_manifest = parse_pob_manifest(local_bytes.decode("utf-8", errors="replace"), slim=slim)
         except Exception:
             local_manifest = None
 

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import functools
 import hashlib
+import os
+import re
 import shutil
 import sys
+import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +34,18 @@ from .constants import (
     rewrite_github_url,
 )
 from .manifest import build_manifest_file_url, parse_pob_manifest
+
+POBTOOLS_APP_ONLY_PREFIXES: tuple[str, ...] = (
+    "Data/bridge",
+    "Data/poe1/zh-rCN",
+    "Data/poe1/zh-rTW",
+)
+POBTOOLS_DATA_ONLY_PREFIXES: tuple[str, ...] = (
+    "Data/poe1/zh-rCN",
+    "Data/poe1/zh-rTW",
+    "Data/translations_version.json",
+)
+_SAFE_TREE_VER_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _pkg() -> Any:
@@ -132,6 +149,7 @@ def fetch_pob_manifest_remote(
     proxy: str | None = None,
     mirror: str | None = None,
     timeout: Any = None,
+    slim: bool = False,
 ) -> tuple[str, PobManifest | None, str | None]:
     """Fetch official PathOfBuilding manifest.xml with optional If-None-Match ETag.
 
@@ -149,7 +167,7 @@ def fetch_pob_manifest_remote(
                 return ("not_modified", None, resp.headers.get("etag") or etag)
             resp.raise_for_status()
             new_etag = resp.headers.get("etag") or etag
-            return ("ok", parse_pob_manifest(resp.text), new_etag)
+            return ("ok", parse_pob_manifest(resp.text, slim=slim), new_etag)
 
     result = _fetch(functools.partial(rewrite_github_url, mirror=mirror))
     if result[0] != "ok" or not resolve_mirror(mirror):
@@ -227,6 +245,13 @@ def _download_pob_files_to_staging(
     return staged
 
 
+def _rel_matches_prefix(rel_posix_lower: str, prefix: str) -> bool:
+    p = prefix.replace("\\", "/").strip("/").lower()
+    if not p:
+        return False
+    return rel_posix_lower == p or rel_posix_lower.startswith(p + "/")
+
+
 def _extract_zip_safely(
     zip_path: Path,
     dest_dir: Path,
@@ -261,11 +286,11 @@ def _extract_zip_safely(
             rel = Path(*parts)
             if rel.is_absolute():
                 raise UpdateError(f"Unsafe zip member path: {info.filename}")
-            first_lower = rel.parts[0].lower()
+            rel_posix_lower = rel.as_posix().lower()
             if only_prefixes:
-                if not any(first_lower == op.lower() for op in only_prefixes):
+                if not any(_rel_matches_prefix(rel_posix_lower, op) for op in only_prefixes):
                     continue
-            if any(first_lower == sp.lower() for sp in skip_prefixes):
+            if any(_rel_matches_prefix(rel_posix_lower, sp) for sp in skip_prefixes):
                 continue
             out = (dest_dir / rel).resolve()
             try:
@@ -351,3 +376,125 @@ def _download_and_stage_release_zip(
         skip_prefixes=skip_prefixes,
         only_prefixes=only_prefixes,
     )
+
+
+def fetch_pob_manifest_subset(
+    poe1_dir: Path,
+    predicate: Callable[[ManifestFileEntry], bool],
+    *,
+    dest_dir: Path | None = None,
+    proxy: str | None = None,
+    mirror: str | None = None,
+    max_workers: int = 6,
+) -> list[Path]:
+    """Fetch SHA1-verified files matching `predicate` from local `PoE1/manifest.xml` on demand.
+
+    Parses `manifest.xml` with `slim=False` so skipped optional assets (legacy `TreeData/<ver>/`
+    or single-jewel `Data/TimelessJewelData/*.zip*`) can be materialized on demand without
+    leaving a full ~500 MiB install on disk.
+    """
+    poe1 = Path(poe1_dir)
+    manifest_path = poe1 / "manifest.xml"
+    if not manifest_path.is_file():
+        return []
+    manifest = parse_pob_manifest(manifest_path.read_text(encoding="utf-8", errors="replace"), slim=False)
+    target_root = Path(dest_dir) if dest_dir is not None else poe1
+
+    pkg = _pkg()
+    verify_fn = pkg.verify_pob_sha1
+    matched = [e for e in manifest.files.values() if predicate(e)]
+    if not matched:
+        return []
+
+    to_fetch: list[ManifestFileEntry] = []
+    ready: list[Path] = []
+    for entry in matched:
+        dst = target_root / entry.local_rel
+        if dst.is_file():
+            try:
+                if verify_fn(dst.read_bytes(), entry.sha1):
+                    ready.append(dst)
+                    continue
+            except OSError:
+                pass
+        to_fetch.append(entry)
+
+    if not to_fetch:
+        return ready
+    if os.environ.get("POB_OFFLINE") == "1":
+        raise UpdateError("POB_OFFLINE=1: cannot fetch missing optional PoB assets on demand")
+
+    with pkg._make_http_client(
+        timeout=_to_httpx_timeout(_ASSET_TIMEOUT_SPEC),
+        proxy=proxy,
+        follow_redirects=True,
+        max_connections=max(max_workers, 4),
+    ) as client:
+
+        def _fetch_one(entry: ManifestFileEntry) -> Path:
+            url = build_manifest_file_url(manifest, entry, mirror=mirror)
+            data = _download_bytes_with_retry(client, url, retries=ASSET_MAX_RETRIES)
+            if not verify_fn(data, entry.sha1):
+                raise UpdateError(
+                    f"SHA1 mismatch for '{entry.local_rel}': expected {entry.sha1}, "
+                    f"got {hashlib.sha1(data).hexdigest()}"
+                )
+            dst = target_root / entry.local_rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dst.with_name(f".{dst.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            try:
+                tmp.write_bytes(data)
+                os.replace(tmp, dst)
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                raise
+            return dst
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(to_fetch))) as pool:
+            for fut in concurrent.futures.as_completed([pool.submit(_fetch_one, e) for e in to_fetch]):
+                ready.append(fut.result())
+
+    return ready
+
+
+def ensure_tree_data_files(
+    poe1_dir: Path,
+    tree_version: str,
+    *,
+    dest_dir: Path | None = None,
+    proxy: str | None = None,
+    mirror: str | None = None,
+) -> list[Path]:
+    """Ensure `TreeData/<tree_version>/*.lua` (tree.lua, sprites.lua, Assets.lua) exist via manifest SHA1."""
+    ver = tree_version.strip()
+    if not ver or not _SAFE_TREE_VER_RE.match(ver):
+        raise UpdateError(f"Invalid tree_version: {tree_version!r}")
+    prefix = f"treedata/{ver.lower()}/"
+
+    def _want(entry: ManifestFileEntry) -> bool:
+        low = entry.local_rel.replace("\\", "/").lower()
+        return low.startswith(prefix) and low.endswith(".lua")
+
+    return fetch_pob_manifest_subset(poe1_dir, _want, dest_dir=dest_dir, proxy=proxy, mirror=mirror)
+
+
+def ensure_timeless_lut_files(
+    poe1_dir: Path,
+    stem: str,
+    *,
+    dest_dir: Path | None = None,
+    proxy: str | None = None,
+    mirror: str | None = None,
+) -> list[Path]:
+    """Ensure `Data/TimelessJewelData/<stem>.zip*` exist on demand for fallback mmap lookups."""
+    clean = stem.strip()
+    if not clean or not _SAFE_TREE_VER_RE.match(clean):
+        raise UpdateError(f"Invalid timeless LUT stem: {stem!r}")
+    exact = f"data/timelessjeweldata/{clean.lower()}.zip"
+    part_prefix = f"{exact}.part"
+
+    def _want(entry: ManifestFileEntry) -> bool:
+        low = entry.local_rel.replace("\\", "/").lower()
+        return low == exact or low.startswith(part_prefix)
+
+    return fetch_pob_manifest_subset(poe1_dir, _want, dest_dir=dest_dir, proxy=proxy, mirror=mirror)

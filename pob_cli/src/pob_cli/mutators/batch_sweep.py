@@ -12,7 +12,16 @@ from ..bridge_client import BridgeWorker
 from ..errors import CrossGameHallucinationError
 from ..formatters import _parse_numeric_or_none, fmt_num, strip_pob_escapes
 from ..guardrails import GuardrailScope, check_input
-from ..snapshot import diff_digest, run_mutation
+from ..snapshot import (
+    capture_direct_digest,
+    diff_digest,
+    drop_snapshot,
+    restore_snapshot,
+    run_mutation,
+    supports_direct_calc,
+    take_snapshot,
+    verify_cow_restored,
+)
 from .batch_ops import _execute_batch_ops
 from .common import _BatchCache, _call_compat, _merge_cautions, _normalize_keep_list
 
@@ -404,7 +413,9 @@ def run_sweep(
 
     with worker.lock:
         prev_last_good = getattr(worker, "last_good_code", None)
-        orig_code = worker.call("export_code", {})["code"]
+        use_direct = supports_direct_calc(worker)
+        orig_snap = take_snapshot(worker)
+        base_snap = orig_snap
         results: list[dict[str, Any]] = []
         base_steps: list[dict[str, Any]] = []
         scenario_applied: dict[str, Any] | None = None
@@ -417,9 +428,12 @@ def run_sweep(
         try:
             try:
                 if will_mutate_base:
-                    orig_digest = _mut.capture_digest(worker)
+                    orig_digest = (
+                        capture_direct_digest(worker)
+                        if (use_direct and orig_snap.kind == "cow")
+                        else _mut.capture_digest(worker)
+                    )
 
-                sweep_base_code = orig_code
                 mutated_base = False
 
                 if base_ops:
@@ -436,7 +450,7 @@ def run_sweep(
                     mutated_base = True
 
                 if mutated_base:
-                    sweep_base_code = worker.call("export_code", {})["code"]
+                    base_snap = take_snapshot(worker)
 
                 base_digest = _mut.capture_digest(worker)
                 if orig_digest is None:
@@ -459,7 +473,7 @@ def run_sweep(
                     v_ops = var.get("ops") or []
 
                     if dirty:
-                        worker.call("import_code", {"code": sweep_base_code, "mode": "replace"})
+                        restore_snapshot(worker, base_snap, rebuild=not use_direct)
                         dirty = False
 
                     try:
@@ -470,7 +484,11 @@ def run_sweep(
                             dirty = True
                             step_results = _execute_batch_ops(worker, v_ops, _BatchCache(worker))
 
-                        v_digest = _mut.capture_digest(worker)
+                        v_digest = (
+                            capture_direct_digest(worker, base_digest=base_digest)
+                            if use_direct
+                            else _mut.capture_digest(worker)
+                        )
                         v_diff = diff_digest(base_digest, v_digest)
                         v_calcs = _extract_compact_calcs(worker, kw_list) if kw_list else None
 
@@ -492,11 +510,16 @@ def run_sweep(
                         dirty = True
                         results.append({"name": v_name, "ok": False, "error": str(exc)})
             finally:
-                worker.call("import_code", {"code": orig_code, "mode": "replace"})
+                if base_snap is not orig_snap:
+                    drop_snapshot(worker, base_snap)
+                restore_snapshot(worker, orig_snap, drop=True)
 
-            from ..analyzer import verify_restored
+            if orig_snap.kind == "cow":
+                restore_check = verify_cow_restored(worker, orig_digest or {})
+            else:
+                from ..analyzer import verify_restored
 
-            restore_check = verify_restored(worker, orig_code, orig_digest or {})
+                restore_check = verify_restored(worker, orig_snap.token, orig_digest or {})
         finally:
             if hasattr(worker, "last_good_code"):
                 worker.last_good_code = prev_last_good

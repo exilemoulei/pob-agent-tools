@@ -20,7 +20,7 @@ env:
 
 jobs:
   windows:
-    name: Engine (Windows, pob-zh)
+    name: Engine (Windows, native LuaJIT _lua-host)
     runs-on: windows-latest
     defaults:
       run:
@@ -51,7 +51,7 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean pob_cli/packaging/pob.spec
 
-      - name: Bootstrap live pob-zh engine
+      - name: Bootstrap live slim PoB engine
         env:
           POB_RUNTIME_DIR: ${{ runner.temp }}/pob-win-rt
           POB_LEGACY_DIR: ""
@@ -65,6 +65,12 @@ jobs:
             Start-Sleep -Seconds ($attempt * 20)
           }
           Get-ChildItem "$env:POB_RUNTIME_DIR/engine" | Select-Object Name, Length
+          if (Test-Path "$env:POB_RUNTIME_DIR/engine/pob-zh.exe") {
+            throw "Slim Windows engine unexpectedly contains pob-zh.exe"
+          }
+          if (-not (Test-Path "$env:POB_RUNTIME_DIR/engine/PoE1/lua51.dll")) {
+            throw "Slim Windows engine is missing PoE1/lua51.dll"
+          }
 
       # The release artifact users actually run, driven against a real engine end to end.
       - name: Smoke-test standalone pob.exe against the real engine
@@ -99,12 +105,12 @@ jobs:
           Invoke-Pob stop --json | Out-Null
           Write-Host "Frozen pob.exe real-engine smoke test passed."
 
-      # Expected skips: 3 legacy 2.67.2 snapshot, 1 network.
+      # Expected skips: 3 legacy 2.67.2 snapshot, 1 pob-zh UI labels, 1 slim timeless LUT zip, POSIX-only, 1 network.
       - name: Run full gate against the real engine
         env:
           POB_ROOT: ${{ runner.temp }}/pob-win-rt/engine
         run: |
-          python pob_cli/scripts/check.py --min-passed 977 --max-skipped 28
+          python pob_cli/scripts/check.py --min-passed 1200 --max-skipped 32
           if ($LASTEXITCODE -ne 0) { throw "check.py full gate failed (exit $LASTEXITCODE)" }
 
   posix:
@@ -182,7 +188,7 @@ jobs:
           <?xml version="1.0" encoding="UTF-8"?>
           <PathOfBuilding>
             <Build level="90" targetVersion="3_0" className="Witch" ascendClassName="Elementalist" mainSocketGroup="1" viewMode="SKILLS"/>
-            <Tree activeSpec="1"><Spec title="Default" treeVersion="3_25" classId="3" ascendClassId="2" nodes="54447"/></Tree>
+            <Tree activeSpec="1"><Spec title="Default" treeVersion="3_30" classId="3" ascendClassId="2" nodes="54447"/></Tree>
             <Skills activeSkillSet="1">
               <SkillSet id="1">
                 <Skill mainActiveSkill="1" enabled="true" label="Main">
@@ -239,10 +245,10 @@ jobs:
           pob trade convert --text $'Rarity: RARE\nDoom Hand\nSlink Gloves\nImplicits: 0\n+42% to Fire Resistance' --to cold --json
           pob stop --json
 
-      # Expected skips: 3 legacy 2.67.2 snapshot, 1 pob-zh UI labels, 1 Win32-only, 1 network.
+      # Expected skips: 3 legacy 2.67.2 snapshot, 1 pob-zh UI labels, 1 slim timeless LUT zip, 2 Win32-only, 1 network.
       - name: Run full gate against the real engine
         env:
           POB_ROOT: ${{ runner.temp }}/pob-e2e-rt/engine
           POB_TEST_PERF_SLACK: ${{ matrix.perf_slack }}
         run: |
-          python3 pob_cli/scripts/check.py --min-passed 975 --max-skipped 7
+          python3 pob_cli/scripts/check.py --min-passed 1200 --max-skipped 10

@@ -17,10 +17,29 @@ if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 entry_script = os.path.join(spec_dir, "pyinstaller_entry.py")
 
+_LUA_FILES = (
+    "headless_runner.lua",
+    "import_char_json.lua",
+    "zh_translate.lua",
+    "win32_ffi.lua",
+    "lazy_hooks.lua",
+    "timeless_prng.lua",
+    "timeless_mmap.lua",
+    "fast_calc_cow.lua",
+    "upstream_kernels.lua",
+    "agent_probes.lua",
+)
+_DATA_FILES = (
+    "bench_costs.json",
+    "timeless_meta_3_30.lua.gz",
+)
+
 datas = collect_data_files("certifi") + [
-    (os.path.join(src_dir, "pob_cli", "data", "bench_costs.json"), os.path.join("pob_cli", "data")),
-    (os.path.join(src_dir, "pob_cli", "lua", "headless_runner.lua"), os.path.join("pob_cli", "lua")),
-    (os.path.join(src_dir, "pob_cli", "lua", "import_char_json.lua"), os.path.join("pob_cli", "lua")),
+    (os.path.join(src_dir, "pob_cli", "data", name), os.path.join("pob_cli", "data"))
+    for name in _DATA_FILES
+] + [
+    (os.path.join(src_dir, "pob_cli", "lua", name), os.path.join("pob_cli", "lua"))
+    for name in _LUA_FILES
 ]
 bundle_runtime = os.environ.get("POB_BUNDLE_RUNTIME", "").strip()
 if bundle_runtime:

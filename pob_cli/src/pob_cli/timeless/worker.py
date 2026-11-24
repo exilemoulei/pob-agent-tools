@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import tempfile
 import threading
 from collections.abc import Sequence
 from pathlib import Path
@@ -9,8 +12,14 @@ from typing import Any
 
 from ..errors import CrossGameHallucinationError
 from ..guardrails import GuardrailScope, check_input, check_poe2_timeless_jewel
+from ..updater import (
+    _download_pob_files_to_staging,
+    fetch_pob_manifest_remote,
+    get_shared_cache_dir,
+)
 from .lut import (
     FLAT_TABLES,
+    JEWEL_TYPE_IDS,
     RESET_EVERY,
     STAT_KEYS,
     _extract_allocated_notable_names,
@@ -148,6 +157,7 @@ def describe_worker(
         for node, opt in zip(socket_ids, socket_opts, strict=False)
         if isinstance(node, (int, float)) and int(node) > 0 and int(node) in allocated and int(node) not in charm_ids
     ]
+    prng_active = bool((getattr(worker, "caps", None) or {}).get("timelessPrng"))
     return {
         "jewels": [
             {
@@ -155,7 +165,7 @@ def describe_worker(
                 "nameLocal": _local_jewel_name(name, dialog_local),
                 "seeds": len(j["seeds"]),
                 "conquerors": list(j["conquerors"]),
-                "grouped": name in FLAT_TABLES,
+                "grouped": (name in FLAT_TABLES) or (prng_active and name in JEWEL_TYPE_IDS),
             }
             for name, j in jewels.items()
         ],
@@ -278,6 +288,63 @@ def _prevalidate_search(
         raise ValueError(f"Node {socket} is not an allocated jewel socket of this build (see `pob timeless list`).")
 
     return pre_game_dir, pre_jewels, conqueror
+
+
+def _used_tree_nodes(worker: Any, state: dict[str, Any], xml: str, code: str = "") -> list[int]:
+    """Return sorted node IDs allocated on the tree or granted via `Allocates <Notable>`."""
+    used = {int(x) for x in (state.get("allocatedNodes") or [])}
+    granted = _extract_allocated_notable_names(xml, code)
+    if granted:
+        tree = worker.get_cached_tree_data(state.get("treeVersion")).get("nodes", {})
+        used |= {int(node) for node, info in tree.items() if info.get("name") in granted}
+    return sorted(used)
+
+
+def ensure_lut_files(
+    game_dir: Path,
+    stem: str,
+    *,
+    runtime_dir: Path | str | None = None,
+    proxy: str | None = None,
+    mirror: str | None = None,
+) -> Path | None:
+    """Ensure a single jewel's `.zip` / `.zip.part*` LUT exists locally or in shared cache.
+
+    Used only for fallback (`jewelType > 11` or tree-version mismatch on slim installs);
+    never writes into `game_dir` (safe for read-only seeds and ETag-304 slim installs).
+    """
+    data_dir = Path(game_dir) / "Data" / "TimelessJewelData"
+    if (data_dir / f"{stem}.zip").is_file() or (data_dir / f"{stem}.zip.part0").is_file():
+        return data_dir
+
+    rt = Path(runtime_dir) if runtime_dir else None
+    cache_dir = get_shared_cache_dir(rt) / "timeless_lut"
+    if (cache_dir / f"{stem}.zip").is_file() or (cache_dir / f"{stem}.zip.part0").is_file():
+        return cache_dir
+
+    if os.environ.get("POB_OFFLINE", "").strip() == "1":
+        return None
+
+    status, manifest, _etag = fetch_pob_manifest_remote(proxy=proxy, mirror=mirror)
+    if status != "ok" or manifest is None:
+        return None
+    prefix = f"data/timelessjeweldata/{stem.lower()}.zip"
+    all_entries = manifest.files.values() if isinstance(manifest.files, dict) else manifest.files
+    entries = [e for e in all_entries if e.local_rel.replace("\\", "/").lower().startswith(prefix)]
+    if not entries:
+        return None
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="pob_lut_stage_") as stage_str:
+        staged = _download_pob_files_to_staging(
+            manifest, entries, Path(stage_str), proxy=proxy, mirror=mirror, max_workers=4
+        )
+        for _rel, src_path in staged.items():
+            dst = cache_dir / src_path.name
+            tmp_dst = cache_dir / f".{src_path.name}.{os.getpid()}.tmp"
+            shutil.copy2(src_path, tmp_dst)
+            os.replace(tmp_dst, dst)
+    return cache_dir
 
 
 def _abort_engines(

@@ -81,6 +81,7 @@ def _h_item_edit(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> 
         replace_mods=rep_tuples or None,
         add_mods=params.get("add_mods") or params.get("addMods"),
         remove_mods=params.get("remove_mods") or params.get("removeMods"),
+        allow_illegal_affixes=bool(params.get("allow_illegal_affixes", params.get("allowIllegalAffixes", False))),
         apply=bool(params.get("apply", False)),
     )
 

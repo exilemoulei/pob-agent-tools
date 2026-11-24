@@ -11,7 +11,12 @@ from .cli_common import (
     _target_option,
     invoke_daemon,
 )
-from .formatters import format_mutation_report
+
+
+def _format_mutation_report(title: str, res: dict[str, object]) -> str:
+    from .formatters import format_mutation_report
+
+    return format_mutation_report(title, res)
 
 
 @click.group("item")
@@ -142,7 +147,7 @@ def cmd_item_try(
                     lines.append(f"  {txt}")
 
     if res.get("mutation"):
-        lines.append("\n" + format_mutation_report("Snapshot Full Simulation", res["mutation"]))
+        lines.append("\n" + _format_mutation_report("Snapshot Full Simulation", res["mutation"]))
     _emit_text("\n".join(lines), out_path=out_path)
 
 
@@ -158,6 +163,7 @@ def cmd_item_try(
 )
 @click.option("--add-mod", "add_mods", multiple=True, help="Append an explicit mod line (repeatable).")
 @click.option("--remove-mod", "remove_mods", multiple=True, help="Remove matching mod line(s) (repeatable).")
+@click.option("--allow-illegal-affixes", is_flag=True, help="Bypass 3P/3S rare affix cap check for synthetic tests.")
 @click.option("--apply", is_flag=True, help="Persist edited item into build.")
 @_target_option(allow_slot_alias=False)
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
@@ -167,6 +173,7 @@ def cmd_item_edit(
     replace_mods: tuple[tuple[str, str], ...],
     add_mods: tuple[str, ...],
     remove_mods: tuple[str, ...],
+    allow_illegal_affixes: bool,
     apply: bool,
     target: str,
     as_json: bool,
@@ -195,6 +202,7 @@ def cmd_item_edit(
             "replace_mods": [list(p) for p in replace_mods],
             "add_mods": list(add_mods),
             "remove_mods": list(remove_mods),
+            "allow_illegal_affixes": allow_illegal_affixes,
             "apply": apply,
         },
     )
@@ -216,7 +224,7 @@ def cmd_item_edit(
         ]
         lines.append(render_table(["Action", "Section", "Before", "After"], c_rows))
     if res.get("mutation"):
-        lines.append("\n" + format_mutation_report(f"Item Edit Impact ({res.get('slotName')})", res["mutation"]))
+        lines.append("\n" + _format_mutation_report(f"Item Edit Impact ({res.get('slotName')})", res["mutation"]))
     _emit_text("\n".join(lines), out_path=out_path)
 
 
@@ -242,7 +250,7 @@ def cmd_item_unequip(
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)
     else:
-        _emit_text(format_mutation_report(f"Unequip Slot `{slot}`", res), out_path=out_path)
+        _emit_text(_format_mutation_report(f"Unequip Slot `{slot}`", res), out_path=out_path)
 
 
 @grp_item.command("db")
@@ -337,7 +345,7 @@ def cmd_item_db(
             if txt:
                 lines.append(f"  {txt}")
     if res.get("mutation"):
-        lines.append("\n" + format_mutation_report(f"Item DB Simulation ({sel_name})", res["mutation"]))
+        lines.append("\n" + _format_mutation_report(f"Item DB Simulation ({sel_name})", res["mutation"]))
     _emit_text("\n".join(lines), out_path=out_path)
 
 
@@ -370,7 +378,7 @@ def cmd_item_flask(
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)
     else:
-        _emit_text(format_mutation_report(f"Flask {index} -> {state.upper()}", res), out_path=out_path)
+        _emit_text(_format_mutation_report(f"Flask {index} -> {state.upper()}", res), out_path=out_path)
 
 
 @grp_item.command("anoint")
@@ -413,7 +421,7 @@ def cmd_item_anoint(
     else:
         notable_obj = res.get("detail", {}).get("notable", {})
         lbl = strip_pob_escapes(notable_obj.get("labelZh") or notable_obj.get("label") or notable)
-        _emit_text(format_mutation_report(f"Anoint {slot} (#{anoint_idx}) -> {lbl}", res), out_path=out_path)
+        _emit_text(_format_mutation_report(f"Anoint {slot} (#{anoint_idx}) -> {lbl}", res), out_path=out_path)
 
 
 def _extract_trap_opt(raw_args: tuple[str, ...], names: tuple[str, ...]) -> str | None:

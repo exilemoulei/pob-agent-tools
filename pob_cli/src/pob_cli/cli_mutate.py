@@ -16,8 +16,12 @@ from .cli_common import (
     _target_option,
     invoke_daemon,
 )
-from .cli_inspect_parts import _run_tree_inspect
-from .formatters import format_mutation_report
+
+
+def _format_mutation_report(title: str, res: dict[str, Any]) -> str:
+    from .formatters import format_mutation_report
+
+    return format_mutation_report(title, res)
 
 
 @click.group("skill")
@@ -76,7 +80,7 @@ def cmd_skill_set(
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)
     else:
-        _emit_text(format_mutation_report(f"Skill Set (Group: {group}, Gem: {gem or 'Group'})", res), out_path=out_path)
+        _emit_text(_format_mutation_report(f"Skill Set (Group: {group}, Gem: {gem or 'Group'})", res), out_path=out_path)
 
 
 @grp_skill.command("add")
@@ -129,7 +133,7 @@ def cmd_skill_add(
             gem_obj = added_gem.get("gem") if isinstance(added_gem, dict) else None
             eff_lv = (gem_obj or {}).get("level") or detail.get("effectiveLevel") or "auto"
         _emit_text(
-            format_mutation_report(f"Add Gem '{gem}' ({eff_lv}/{quality}%) to Group '{group}'", res),
+            _format_mutation_report(f"Add Gem '{gem}' ({eff_lv}/{quality}%) to Group '{group}'", res),
             out_path=out_path,
         )
 
@@ -163,7 +167,7 @@ def cmd_skill_rm(
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)
     else:
-        _emit_text(format_mutation_report(f"Remove Gem '{gem}' from Group '{group}'", res), out_path=out_path)
+        _emit_text(_format_mutation_report(f"Remove Gem '{gem}' from Group '{group}'", res), out_path=out_path)
 
 
 @grp_skill.command("new-group")
@@ -212,7 +216,7 @@ def cmd_skill_new_group(
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)
     else:
-        _emit_text(format_mutation_report(f"New Skill Group ({label or slot or 'Unnamed'})", res), out_path=out_path)
+        _emit_text(_format_mutation_report(f"New Skill Group ({label or slot or 'Unnamed'})", res), out_path=out_path)
 
 
 @grp_skill.command("replace-group")
@@ -283,7 +287,7 @@ def cmd_skill_replace_group(
         _emit_json(res, compact=compact, out_path=out_path)
     else:
         _emit_text(
-            format_mutation_report(f"Replace Skill Group '{group}' ({len(parsed_gems)} gems)", res),
+            _format_mutation_report(f"Replace Skill Group '{group}' ({len(parsed_gems)} gems)", res),
             out_path=out_path,
         )
 
@@ -316,6 +320,8 @@ def grp_tree(
 ) -> None:
     """Inspect passive tree (`pob tree [--search ...]`), mutate nodes (`change`), or switch class/ascendancy (`set-class`)."""
     if ctx.invoked_subcommand is None:
+        from .cli_inspect_parts import _run_tree_inspect
+
         _run_tree_inspect(
             searches=searches,
             node_types=node_types,
@@ -414,7 +420,7 @@ def cmd_tree_change(
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)
         return
-    _emit_text(format_mutation_report("Passive Tree Change", res), out_path=out_path)
+    _emit_text(_format_mutation_report("Passive Tree Change", res), out_path=out_path)
 
 
 @grp_tree.command("set-class")
@@ -466,7 +472,7 @@ def cmd_tree_set_class(
     detail = res.get("detail") or {}
     changes = detail.get("changes") or []
     title = f"Set Class / Ascendancy ({'; '.join(changes) or 'no-op'})"
-    _emit_text(format_mutation_report(title, res), out_path=out_path)
+    _emit_text(_format_mutation_report(title, res), out_path=out_path)
 
 
 @click.group("config")
@@ -589,7 +595,7 @@ def cmd_config_set(
             desc_parts.append(f"customMods={custom_mods!r}")
         if append_mods is not None:
             desc_parts.append(f"appendMods={append_mods!r}")
-        _emit_text(format_mutation_report(f"Config Set ({', '.join(desc_parts)})", res), out_path=out_path)
+        _emit_text(_format_mutation_report(f"Config Set ({', '.join(desc_parts)})", res), out_path=out_path)
 
 
 def register_mutate_commands(group: click.Group) -> None:

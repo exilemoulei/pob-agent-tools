@@ -350,12 +350,84 @@ def cmd_status(as_json: bool, compact: bool, out_path: str | None) -> None:
         f"POE_CN_SESSID={'set' if auth.get('poeCnSessid') else 'unset'}, "
         f"POE_CN_COOKIE={'set' if auth.get('poeCnCookie') else 'unset'}\n"
     )
+    lang_lbl = res.get("lang") or "-"
     header = (
         f"Daemon PID: `{res.get('pid')}` | Uptime: `{res.get('uptimeSec')}s` | "
-        f"PoB: `{pob_ver}` | PobTools: `{tools_ver}` | Data: `{data_ver}` | Update: `{upd_state}`\n"
+        f"PoB: `{pob_ver}` | PobTools: `{tools_ver}` | Data: `{data_ver}` | Lang: `{lang_lbl}` | Update: `{upd_state}`\n"
     )
     body = header + auth_line + render_table(["Slot", "State", "Class", "Ascendancy", "Level", "Undo/Redo"], rows)
     _emit_text(_prepend_warning(body, res), out_path=out_path)
+
+
+@click.command("lang")
+@click.argument("language", required=False, default=None)
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
+@_output_options
+def cmd_lang(language: str | None, as_json: bool, compact: bool, out_path: str | None) -> None:
+    """Get or set display language (`zh-CN` default Simplified, `zh-TW` fixed Traditional, `en` English)."""
+    from .daemon import call_daemon, read_daemon_state
+    from .locale_cfg import get_active_lang, normalize_lang, resolve_runtime_dir_l0, set_active_lang
+    from .updater import resolve_engine_root
+
+    rt_dir = resolve_runtime_dir_l0()
+    persisted_info: dict[str, Any] | None = None
+    target_lang: str | None = None
+    if language is not None and language.strip():
+        try:
+            target_lang = normalize_lang(language)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        persisted_info = set_active_lang(target_lang, runtime_dir=rt_dir)
+
+    daemon_res: dict[str, Any] | None = None
+    if read_daemon_state(rt_dir) is not None:
+        try:
+            daemon_res = call_daemon(
+                "lang",
+                {"lang": target_lang, "persist": False} if target_lang else {},
+                auto_start=False,
+            )
+        except Exception:
+            daemon_res = None
+
+    eff_lang, eff_src = get_active_lang(rt_dir)
+    avail: list[str] = ["en"]
+    if isinstance(daemon_res, dict) and isinstance(daemon_res.get("availableLocales"), list):
+        avail = list(daemon_res["availableLocales"])
+    else:
+        try:
+            eng = resolve_engine_root(runtime_dir=rt_dir)
+            base = eng / "Data" / "poe1"
+            if (base / "zh-rCN").is_dir():
+                avail.insert(0, "zh-CN")
+            if (base / "zh-rTW").is_dir():
+                avail.insert(1 if "zh-CN" in avail else 0, "zh-TW")
+        except Exception:
+            pass
+
+    payload: dict[str, Any] = {
+        "lang": eff_lang,
+        "source": eff_src,
+        "availableLocales": avail,
+        "daemonSynced": daemon_res is not None,
+    }
+    if persisted_info is not None:
+        payload["persistedLang"] = persisted_info["lang"]
+        payload["configPath"] = persisted_info["configPath"]
+    if isinstance(daemon_res, dict) and daemon_res.get("slotsUpdated"):
+        payload["slotsUpdated"] = daemon_res["slotsUpdated"]
+
+    if as_json:
+        _emit_json(payload, compact=compact, out_path=out_path)
+        return
+
+    msg = (
+        f"Language: `{eff_lang}` (source: `{eff_src}`) | "
+        f"Available: `{', '.join(avail)}` | Daemon synced: `{'yes' if daemon_res is not None else 'no (will apply on start)'}`"
+    )
+    if persisted_info is not None and eff_lang != persisted_info["lang"]:
+        msg += f"\nNote: Persisted `{persisted_info['lang']}`, but `POB_LANG={eff_lang}` environment variable currently overrides it."
+    _emit_text(msg, out_path=out_path)
 
 
 @click.command("stop")
@@ -393,6 +465,6 @@ def cmd_stop(as_json: bool, compact: bool, out_path: str | None) -> None:
 
 
 def register_lifecycle_commands(group: click.Group) -> None:
-    for cmd in (cmd_internal_daemon, cmd_serve, cmd_bootstrap, cmd_update, cmd_status, cmd_stop):
+    for cmd in (cmd_internal_daemon, cmd_serve, cmd_bootstrap, cmd_update, cmd_status, cmd_lang, cmd_stop):
         group.add_command(cmd)
     register_build_io_commands(group)

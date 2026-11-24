@@ -8,9 +8,10 @@ Every subcommand with its flags, in one place. For when to use which, start with
 
 # Lifecycle, Foreground Daemon, Engine Bootstrap/Update & Build I/O (127.0.0.1 + X-PoB-Token)
 pob serve [--offline] [--proxy <url>] [--port N] [--runtime-dir <dir>]                 # Foreground persistent daemon (use IsDaemon:true in job-reaped shells)
-pob bootstrap [--proxy <url>] [--mirror <url>] [--no-zh] [--from-dir <dir>] [--json]   # Install/seed managed engine (PobTools-zh + PoB master)
+pob bootstrap [--proxy <url>] [--mirror <url>] [--no-zh] [--from-dir <dir>] [--json]   # Install/seed slim managed engine (native LuaJIT _lua-host on Windows, zero pob-zh.exe; PobTools-zh bridge + zh-rCN/zh-rTW + PoB master)
 pob update [--check] [--force] [--proxy <url>] [--mirror <url>] [--offline] [--json]   # Incremental SHA1 update (hot-reloads live daemon slots)
-pob status [--json]                                                                    # Daemon PID, PoB/PobTools/Data versions, boolean Auth env status, updateStatus, all named slots
+pob status [--json]                                                                    # Daemon PID, PoB/PobTools/Data versions, active lang, caps/winLuaHost, boolean Auth env status, updateStatus, all named slots
+pob lang [zh-CN|zh-TW|en] [--json]                                                     # Get or persist display language (default zh-CN Simplified, switchable to fixed zh-TW Traditional or en; POB_LANG env overrides)
 pob self-update [--check] [--version X.Y.Z] [--proxy <url>] [--mirror <url>] [--json]  # Update pob itself (standalone builds; signed release only); --check reports latest + the update command for this install; network/disk/swap failure exits 5
 pob profile [ACCOUNT_OR_URL] [--realm pc|xbox|sony|cn] [--league L] [--proxy U] [--json] # 0-engine official profile character list (pathofexile.com public no-cookie, or poe.game.qq.com via env POE_CN_SESSID)
 pob new [--class C] [--asc A] [--secondary-asc S] [--level N] [--target <slug>] [--json]
@@ -68,12 +69,12 @@ pob wiki "<q1>" ["<q2>" ...] [--proxy <url>] [--json]                           
 
 # Official PoE1 Trade (Read-Only, PoB-Verified) & Crafting Bench
 pob trade stats "<text|中文>" [--slot S] [--limit 5] [--proxy U] [--json]              # Local TradeSiteStats.lua (0ms) or API fallback
-pob trade search --slot S [--stat "text|中文=min"]... [--sum "a[*w]|b[*w]>=min"]... [--want T]... [--bench-craft "<stat>"]... [--budget N] [--currency chaos_equiv|chaos|divine] [--status available|securable|online|any] [--max-age HOURS] [--bargain PCT] [--search-sort asc|desc|sum] [--sort score|price|pob|sum] [--allow-conversion [--convert-to E]] [--open-prefix|--open-suffix|--open-affix] [--pob auto|on|off] [--target <slug>] [--dump-query] [--proxy U] [--json] # --bench-craft keeps originals + max-roll bench variants (PoB-ranked; budget=listing only; hard --stat pre-craft)
+pob trade search --slot S [--stat "text|中文=min"]... [--sum "a[*w]|b[*w]>=min"]... [--want T]... [--bench-craft "<stat>"]... [--budget N] [--currency chaos_equiv|chaos|divine] [--status available|securable|online|any] [--max-age HOURS] [--bargain PCT] [--search-sort asc|desc|sum] [--sort score|price|pob|sum] [--allow-conversion [--convert-to E]] [--open-prefix|--open-suffix|--open-affix] [--pob auto|on|off] [--auto-query] [--surrogate-k N] [--target <slug>] [--dump-query] [--proxy U] [--json] # --bench-craft keeps originals + max-roll bench variants (PoB-ranked; budget=listing only; hard --stat pre-craft); --surrogate-k enforces K>=50 floor
 pob trade convert (--text T | --file f) --to fire|cold|lightning [--out f] [--json]    # Harvest 3.30 swap preview (same tier, rerolled)
 pob bench list --slot S [--search "<text|中文>"] [--affix prefix|suffix] [--limit 25] [--json]
 pob bench suggest --slot S --stat "<text|中文>" [--affix prefix|suffix] [--limit 5] [--json]
 
-# Timeless Jewel Seed Search (PoB-verified on parallel throwaway engines; other Historic jewels removed)
+# Timeless Jewel Seed Search (hybrid PRNG+mmap in-engine synthesis for Legion & 3.30 Abyss, PoB-verified; other Historic jewels removed)
 pob timeless list [--target <slug>] [--json]                                           # 11 timeless jewels (EN/ZH) + build's allocated sockets
 pob timeless search --jewel "<name|中文>" --socket <nodeId> [--conqueror C] [--stat CombinedDPS|FullDPS|TotalEHP|...] [--mod "<ln>"]... [--top 15] [--workers N] [--exact] [--idle] [--target <slug>] [--json]
 ```

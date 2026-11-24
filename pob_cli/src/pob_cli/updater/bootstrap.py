@@ -26,6 +26,8 @@ from .constants import (
 from .manifest import _render_local_manifest_xml, diff_pob_manifest
 from .paths import _find_legacy_dir, _get_runtime_dir, is_valid_engine_dir, seed_from_legacy_dir
 from .remote import (
+    POBTOOLS_APP_ONLY_PREFIXES,
+    POBTOOLS_DATA_ONLY_PREFIXES,
     _download_and_stage_release_zip,
     _download_pob_files_to_staging,
     _pick_data_asset,
@@ -142,7 +144,11 @@ def _bootstrap_from_dir(
 
     validate_engine_root(src, expected_game="poe1", source_label="--from-dir")
     if not is_valid_engine_dir(src):
-        req_desc = "pob-zh.exe and PoE1/" if _pkg().is_windows() else "PoE1/, Data/bridge/bridge.lua, and LuaJIT"
+        req_desc = (
+            "PoE1/lua51.dll + Data/bridge/bridge.lua (or legacy pob-zh.exe + PoE1/)"
+            if _pkg().is_windows()
+            else "PoE1/, Data/bridge/bridge.lua, and LuaJIT"
+        )
         raise UpdateError(f"Offline source directory is invalid (requires {req_desc}): {src}")
     eng_dir.mkdir(parents=True, exist_ok=True)
     for fname in LEGACY_SEED_FILES:
@@ -187,7 +193,7 @@ def _stage_bootstrap_assets(
     pkg = _pkg()
     staged_files: dict[Path, Path] = {}
 
-    # Download & stage PobTools-zh host zip (Windows: full host; POSIX: Data/bridge + Data/ only)
+    # Download & stage PobTools-zh zip (extract ONLY Data/bridge/, Data/poe1/zh-rCN/, and Data/poe1/zh-rTW/ on all OSes)
     tools_manifest = tools_info.get("manifest")
     if not isinstance(tools_manifest, dict):
         raise UpdateError("PobTools-zh release manifest JSON missing.")
@@ -202,7 +208,7 @@ def _stage_bootstrap_assets(
             proxy=proxy,
             mirror=mirror,
             skip_prefixes=("PoE1",),
-            only_prefixes=() if pkg.is_windows() else ("Data",),
+            only_prefixes=POBTOOLS_APP_ONLY_PREFIXES,
         )
     )
 
@@ -234,12 +240,13 @@ def _stage_bootstrap_assets(
                         proxy=proxy,
                         mirror=mirror,
                         skip_prefixes=("PoE1",),
+                        only_prefixes=POBTOOLS_DATA_ONLY_PREFIXES,
                     )
                 )
                 installed_data_ver = data_tag or None
 
-    # Download & stage official PoB PoE1/ files
-    to_download, _ = diff_pob_manifest(eng_dir / "PoE1", pob_manifest, verify_local_sha1=True)
+    # Download & stage official PoB PoE1/ slim files
+    to_download, _ = diff_pob_manifest(eng_dir / "PoE1", pob_manifest, verify_local_sha1=True, slim=True)
     staged_files.update(
         _download_pob_files_to_staging(
             pob_manifest,
@@ -310,6 +317,7 @@ def bootstrap_engine(
                 proxy=proxy,
                 mirror=mirror,
                 timeout=check_timeout,
+                slim=True,
             )
             tools_info = fut_tools.result()
             _, pob_manifest, pob_etag = fut_pob.result()

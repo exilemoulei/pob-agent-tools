@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..game_data import fold_han
+from ..locale_cfg import current_lang
 from . import pob_xml_helpers as _xh
 
 _CLASS_ZH_TO_EN = _xh.CLASS_ZH_TO_EN
@@ -22,7 +23,7 @@ _PLACEHOLDER_RE = re.compile(r"\{(\d+)\}|#")
 _SKELETON_STRIP_RE = re.compile(r"[{}\d.+\-\s\u3000#]")
 _S26_WEAPON_ENCHANT_RE = re.compile(r"^元素伤害(提高|降低)\s*\d+%$")
 _GEM_SUFFIX_RE = re.compile(r"(?:\(强辅\)|\(辅\)|强辅|辅助)$")
-_GEM_DOT_RE = re.compile(r"[·‧・•.]")
+_GEM_DOT_RE = re.compile(r"[·‧・•.．]")
 _KNOWN_SPECIAL_SUPPORTS = frozenset(
     {"Empower", "Enhance", "Enlighten", "Awakened Empower", "Awakened Enhance", "Awakened Enlighten"}
 )
@@ -33,11 +34,11 @@ _ANOINT_REF_RE = re.compile(r"^配置\s*(.+)$")
 
 _BASE_FILES = ("items.json", "Items_Accessories.txt.json", "Items_Armour.txt.json", "Items_Flasks.txt.json", "Items_Jewels.txt.json", "Items_Weapons.txt.json", "Z-Item.json", "Z-Flask.json", "Z-Jewel.json", "Z-Addition.json", "Z-S28.json", "Z-S29.json", "Z-S30.json")
 _UNIQUE_FILES = ("uniques.json", "Uniques.txt.json", "Z-S28-Foulborn.json", "Z-S28.json", "Z-S29.json", "Z-S30.json", "Z-Addition.json")
-_GEM_FILES = ("gems.json", "Gems_data.txt.json", "Items_Gems.txt.json", "Z-Skills.json", "Z-Skills_Gems_Overview.json", "Z-Support_Gems_Overview.json", "Z-S28.json", "Z-S29.json", "Z-S30.json")
+_GEM_FILES = ("gems.json", "gem_names.json", "gem_names_support.json", "gem_names_nonactive.json", "Gems_data.txt.json", "Items_Gems.txt.json", "Z-Skills.json", "Z-Skills_Gems_Overview.json", "Z-Support_Gems_Overview.json", "Z-S28.json", "Z-S29.json", "Z-S30.json")
 _GEM_COLON_FILES = ("A-Skills2.json", "A-Skills1.json")
 _GEM_FALLBACK_FILES = ("A-1a.json",)
-_PASSIVE_FILES = ("passives.json", "passiveTree.json", "tree_dn.json", "A-Forbidden.json", "Tatto.json", "TattooPassives.json", "Z-Phrecia.json", "Z-S30-Pearl_of_Tsoatha-Passive_Tree.json")
-_STAT_FILES = ("stats.json", "statDescriptions.json", "ModMap.json", "A-Forbidden.json", "Z-S30.json", "Z-S30-Pearl_of_Tsoatha-Boots.json", "Z-S30-Pearl_of_Tsoatha-Gloves.json", "Z-S30-Pearl_of_Tsoatha-Helmet.json", "Z-S29.json", "Z-S28.json", "Z-S28-Foulborn.json", "Z-Addition.json", "Z-Other.json")
+_PASSIVE_FILES = ("passives.json", "passiveTree.json", "tree_dn.json", "anoint.json", "tattoo.json", "legion.json", "A-Forbidden.json", "Tatto.json", "TattooPassives.json", "Z-Phrecia.json", "Z-S30-Pearl_of_Tsoatha-Passive_Tree.json")
+_STAT_FILES = ("stats.json", "statDescriptions.json", "affixes.json", "ModMap.json", "A-Forbidden.json", "Z-S30.json", "Z-S30-Pearl_of_Tsoatha-Boots.json", "Z-S30-Pearl_of_Tsoatha-Gloves.json", "Z-S30-Pearl_of_Tsoatha-Helmet.json", "Z-S29.json", "Z-S28.json", "Z-S28-Foulborn.json", "Z-Addition.json", "Z-Other.json")
 
 
 def _norm_key(text: str) -> str:
@@ -92,11 +93,11 @@ def _render_en_template(en_tmpl: str, values: dict[str, str]) -> str:
     return out
 
 
-_DICT_CACHE: dict[tuple[str, float], Zh2EnDictionary] = {}
+_DICT_CACHE: dict[tuple[tuple[str, float], ...], Zh2EnDictionary] = {}
 
 
 class Zh2EnDictionary:
-    """Reverse ZH -> EN dictionary loaded from local PobTools-zh `Data/poe1/zh-rCN/*.json`."""
+    """Reverse ZH -> EN dictionary loaded from local PobTools-zh `Data/poe1/<zh-rCN|zh-rTW>/*.json`."""
 
     def __init__(self) -> None:
         self.base_map: dict[str, str] = {}
@@ -129,51 +130,58 @@ class Zh2EnDictionary:
 
     @classmethod
     def from_engine_dir(cls, pob_root: Path | None) -> Zh2EnDictionary:
-        """Load & cache 3.30 `Data/poe1/zh-rCN` dictionaries from a PoB engine root."""
+        """Load & cache 3.30 `Data/poe1/<active_locale>` + sibling Chinese dictionaries from `pob_root`."""
         if pob_root is None:
             return cls()
-        zh_dir = Path(pob_root) / "Data" / "poe1" / "zh-rCN"
-        if not zh_dir.is_dir():
+        root_tr = Path(pob_root) / "Data" / "poe1"
+        sub_order = ("zh-rTW", "zh-rCN") if current_lang() == "zh-TW" else ("zh-rCN", "zh-rTW")
+        zh_dirs = [cand for sub in sub_order if (cand := root_tr / sub).is_dir()]
+        if not zh_dirs:
             return cls()
-        meta = zh_dir / "meta.json"
-        mtime = meta.stat().st_mtime if meta.is_file() else zh_dir.stat().st_mtime
-        cache_key = (str(zh_dir.resolve()), mtime)
+
+        key_parts: list[tuple[str, float]] = []
+        for zd in zh_dirs:
+            meta = zd / "meta.json"
+            mtime = meta.stat().st_mtime if meta.is_file() else zd.stat().st_mtime
+            key_parts.append((str(zd.resolve()), mtime))
+        cache_key = tuple(key_parts)
         if cache_key in _DICT_CACHE:
             return _DICT_CACHE[cache_key]
 
         d = cls()
+        for zh_dir in zh_dirs:
 
-        def _load_entries(filename: str) -> dict[str, str]:
-            p = zh_dir / filename
-            if not p.is_file():
-                return {}
-            try:
-                raw = json.loads(p.read_text(encoding="utf-8"))
-                ent = raw.get("entries") if isinstance(raw, dict) else None
-                return ent if isinstance(ent, dict) else {}
-            except Exception:
-                return {}
+            def _load_entries(filename: str, _dir: Path = zh_dir) -> dict[str, str]:
+                p = _dir / filename
+                if not p.is_file():
+                    return {}
+                try:
+                    raw = json.loads(p.read_text(encoding="utf-8"))
+                    ent = raw.get("entries") if isinstance(raw, dict) else None
+                    return ent if isinstance(ent, dict) else {}
+                except Exception:
+                    return {}
 
-        for fn in _BASE_FILES:
-            d._ingest_exact(d.base_map, _load_entries(fn))
-        for fn in _UNIQUE_FILES:
-            d._ingest_exact(d.unique_map, _load_entries(fn))
-        for fn in _GEM_FILES:
-            d._ingest_gems(_load_entries(fn))
-        for fn in _GEM_COLON_FILES:
-            colon_raw = _load_entries(fn)
-            cleaned_colon = {
-                k.rstrip(":").strip(): v.rstrip(":：").strip()
-                for k, v in colon_raw.items()
-                if isinstance(k, str) and isinstance(v, str) and ":" in k and not k.startswith("from ")
-            }
-            d._ingest_gems(cleaned_colon, fallback=True)
-        for fn in _GEM_FALLBACK_FILES:
-            d._ingest_gems(_load_entries(fn), fallback=True)
-        for fn in _PASSIVE_FILES:
-            d._ingest_exact(d.passive_map, _load_entries(fn))
-        for fn in _STAT_FILES:
-            d._ingest_stats(_load_entries(fn))
+            for fn in _BASE_FILES:
+                d._ingest_exact(d.base_map, _load_entries(fn))
+            for fn in _UNIQUE_FILES:
+                d._ingest_exact(d.unique_map, _load_entries(fn))
+            for fn in _GEM_FILES:
+                d._ingest_gems(_load_entries(fn))
+            for fn in _GEM_COLON_FILES:
+                colon_raw = _load_entries(fn)
+                cleaned_colon = {
+                    k.rstrip(":").strip(): v.rstrip(":：").strip()
+                    for k, v in colon_raw.items()
+                    if isinstance(k, str) and isinstance(v, str) and ":" in k and not k.startswith("from ")
+                }
+                d._ingest_gems(cleaned_colon, fallback=True)
+            for fn in _GEM_FALLBACK_FILES:
+                d._ingest_gems(_load_entries(fn), fallback=True)
+            for fn in _PASSIVE_FILES:
+                d._ingest_exact(d.passive_map, _load_entries(fn))
+            for fn in _STAT_FILES:
+                d._ingest_stats(_load_entries(fn))
 
         _DICT_CACHE[cache_key] = d
         return d

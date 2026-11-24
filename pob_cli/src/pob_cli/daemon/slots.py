@@ -35,6 +35,7 @@ from .runtime import (
 )
 from .slot_updates import (
     build_status_payload,
+    handle_set_lang_action,
     handle_update_action,
     hot_reload_update,
     maybe_periodic_update_check,
@@ -445,6 +446,9 @@ class DaemonManager:
 
         if action == "update":
             return handle_update_action(self, params)
+
+        if action == "lang":
+            return handle_set_lang_action(self, params)
 
         if action in ("status", "load") and not params.get("skip_periodic_check"):
             self._maybe_periodic_update_check()

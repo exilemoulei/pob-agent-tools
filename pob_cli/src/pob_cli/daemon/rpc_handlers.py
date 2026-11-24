@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from ..bridge_client import BridgeError, BridgeWorker
+from ..bridge_protocol import get_worker_caps
 from ..errors import CrossGameHallucinationError, DaemonRequestError
 from .rpc_mutate import MUTATE_ACTION_HANDLERS, norm_keep
 from .runtime import _call_compat, normalize_slot_name
@@ -350,6 +351,28 @@ def _h_trade_eval_items(_m: DaemonManager, params: dict[str, Any], w: BridgeWork
     )
 
 
+def _h_trade_generate_query(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    if not get_worker_caps(w).get("tradeAutoQuery"):
+        return {"error": "tradeAutoQuery capability unavailable on this engine worker"}
+    rpc_params: dict[str, Any] = {
+        "slotName": params.get("slotName") or params.get("slot_name") or params.get("slot") or "",
+    }
+    for key in ("stat", "includeEhp", "ehpWeight", "includeCorrupted", "league", "reuseModData", "rarity", "maxFilters"):
+        if params.get(key) is not None:
+            rpc_params[key] = params[key]
+    return w.call("trade_generate_query", rpc_params, timeout=60.0)
+
+
+def _h_compute_grad_build(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    if not get_worker_caps(w).get("agentProbes"):
+        return {"weights": {}, "error": "agentProbes capability unavailable on this engine worker"}
+    rpc_params: dict[str, Any] = {}
+    for key in ("stat", "ehpWeight", "includeResists"):
+        if params.get(key) is not None:
+            rpc_params[key] = params[key]
+    return w.call("compute_grad_build", rpc_params, timeout=30.0)
+
+
 _SLOT_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "load": _h_load,
     "export": _h_export,
@@ -368,6 +391,8 @@ _SLOT_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "rank_gems": _h_rank_gems,
     "timeless_list": _h_timeless_list,
     "trade_eval_items": _h_trade_eval_items,
+    "trade_generate_query": _h_trade_generate_query,
+    "compute_grad_build": _h_compute_grad_build,
     **MUTATE_ACTION_HANDLERS,
 }
 

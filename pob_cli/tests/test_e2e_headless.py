@@ -261,9 +261,17 @@ def test_e2e_v02_build_ops_deadlock_recovery_and_local_data(e2e_runtime_dir: Pat
     equipped_with_raw = [s for s in items_all["equippedSlots"] if s.get("raw")]
     assert len(equipped_with_raw) >= 5
 
-    # 3. item edit (0-residue what-if)
+    # 3. item edit (affix guardrail blocks illegal overflow; --allow-illegal-affixes runs 0-residue what-if)
+    blocked = _run_pob_proc(
+        "item", "edit", "--slot", "Ring 1", "--add-mod", "+80 to maximum Life",
+        runtime_dir=e2e_runtime_dir,
+    )
+    assert blocked.returncode == 1
+    assert "3/3" in (blocked.stdout + blocked.stderr) or "capacity" in (blocked.stdout + blocked.stderr)
+
     edit_res = _run_pob(
         "item", "edit", "--slot", "Ring 1", "--add-mod", "+80 to maximum Life",
+        "--allow-illegal-affixes",
         runtime_dir=e2e_runtime_dir,
     )
     assert edit_res["applied"] is False

@@ -31,6 +31,7 @@ from .bridge_protocol import (
     validate_rpc_method,
     write_slot_state,
 )
+from .locale_cfg import current_lang, normalize_lang
 from .updater import (
     build_engine_command,
     detect_source_checkout_root,
@@ -97,6 +98,7 @@ class BridgeWorker:
         self.bridge_version: str | None = None
         self.hello_info: dict[str, Any] = {}
         self.caps: dict[str, Any] = {}
+        self.locale: str | None = None
         self.translate_enabled: bool | None = None
         self.last_used: float = time.time()
         self.source_label: str | None = None
@@ -147,8 +149,10 @@ class BridgeWorker:
             self._stderr_tail.clear()
 
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            active_lang = self.locale or current_lang(self.runtime_dir)
             proc_env = os.environ.copy()
             proc_env.update(extra_env)
+            proc_env["POB_LANG"] = active_lang
             # Mirror POB_PROXY into HTTPS_PROXY/HTTP_PROXY so Windows pob-zh.exe lcurl honors it.
             pob_proxy = proc_env.get("POB_PROXY", "").strip()
             if pob_proxy:
@@ -194,10 +198,13 @@ class BridgeWorker:
                 self.caps = ver_info.get("caps") or {}
                 self.pob_version = ver_info.get("pobVersion") or self.pob_version
 
-                if self.caps.get("translateToggle", True) and self.translate_enabled is not True:
-                    self._raw_call_unlocked("set_translate", {"enabled": True}, timeout=5.0)
+                want_translate = active_lang != "en"
+                if self.caps.get("localeSwitch") or self.caps.get("zhTranslate") or self.caps.get("setLocale"):
+                    self._raw_call_unlocked("set_locale", {"lang": active_lang}, timeout=5.0)
+                elif self.caps.get("translateToggle", True) and self.translate_enabled != want_translate:
+                    self._raw_call_unlocked("set_translate", {"enabled": want_translate}, timeout=5.0)
                     if self.translate_enabled is None:
-                        self.translate_enabled = True
+                        self.translate_enabled = want_translate
 
                 if restore_code is not None:
                     target_code = restore_code or None
@@ -308,6 +315,13 @@ class BridgeWorker:
                 self.translate_enabled = result["translate"]
             elif params is not None and "enabled" in params:
                 self.translate_enabled = bool(params["enabled"])
+        elif method == "set_locale":
+            if isinstance(result.get("lang"), str):
+                self.locale = result["lang"]
+            if isinstance(result.get("translate"), bool):
+                self.translate_enabled = result["translate"]
+            elif isinstance(result.get("enabled"), bool):
+                self.translate_enabled = result["enabled"]
         elif method == "version":
             if isinstance(result.get("translate"), bool):
                 self.translate_enabled = result["translate"]
@@ -522,6 +536,28 @@ class BridgeWorker:
                         raise BridgeError(f"{exc} | {tv_hint}") from exc
                     raise
             return self._raw_call_unlocked(method, params, timeout=timeout)
+
+    def set_locale(self, lang: str) -> dict[str, Any]:
+        """Switch active display locale (`'zh-CN'`, `'zh-TW'`, or `'en'`) on this worker."""
+        norm = normalize_lang(lang)
+        want_translate = norm != "en"
+        with self._lock:
+            self.locale = norm
+            if not self.is_running:
+                return {"ok": True, "lang": norm, "translate": want_translate, "started": False}
+            try:
+                return self._raw_call_unlocked("set_locale", {"lang": norm}, timeout=5.0)
+            except BridgeError:
+                if self.caps.get("translateToggle", True):
+                    tr_res = self._raw_call_unlocked("set_translate", {"enabled": want_translate}, timeout=5.0)
+                    return {
+                        "ok": True,
+                        "lang": norm,
+                        "translate": bool(tr_res.get("enabled", want_translate)),
+                        "fallback": "set_translate",
+                    }
+                self.translate_enabled = want_translate
+                return {"ok": True, "lang": norm, "translate": want_translate, "fallback": "noop"}
 
     def update_checkpoint(self) -> str:
         """Export current build code into last_good_code for crash recovery."""
