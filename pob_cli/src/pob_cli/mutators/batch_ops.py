@@ -145,6 +145,7 @@ def _op_item_edit(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: 
         replace_mods=rep_tuples or None,
         add_mods=op.get("addMods") or op.get("add_mods"),
         remove_mods=op.get("removeMods") or op.get("remove_mods"),
+        allow_illegal_affixes=bool(op.get("allowIllegalAffixes", op.get("allow_illegal_affixes", False))),
         cache=cache,
     )
     return {"step": idx, "op": "item_edit", "slotName": edit_res["slotName"], "changes": edit_res["changes"]}
@@ -403,6 +404,29 @@ _BATCH_OP_HANDLERS: dict[str, _BatchOpHandler] = {
     "skill_add": _op_skill_add,
     "skill_rm": _op_skill_rm,
 }
+
+
+# Lua CoW snapshots restore only the active spec and sets of the build they came from, so ops
+# that switch or add a spec, item/skill/config set or loadout, or replace the build, need an
+# export_code checkpoint instead (a stale CoW restore would otherwise be refused mid-run).
+_LOSSLESS_OPS = frozenset({"new_build", "import_tree_url"})
+_SET_SWITCH_KEYS = (
+    "spec", "specIndex", "spec_index", "itemSet", "itemSetId", "item_set_id", "skillSet", "skillSetId",
+    "skill_set_id", "configSet", "configSetId", "config_set_id", "loadout", "loadoutIndex", "loadout_index",
+)
+
+
+def ops_need_lossless_snapshot(ops: list[dict[str, Any]] | None) -> bool:
+    """Return True when any batch op switches/adds a set, spec or loadout, or replaces the build."""
+    for op in ops or []:
+        if not isinstance(op, dict):
+            continue
+        kind = str(op.get("op") or op.get("type") or op.get("action") or "").strip().lower().replace("-", "_")
+        if kind in _LOSSLESS_OPS:
+            return True
+        if kind == "switch_main" and any(op.get(k) is not None for k in _SET_SWITCH_KEYS):
+            return True
+    return False
 
 
 def _execute_batch_ops(

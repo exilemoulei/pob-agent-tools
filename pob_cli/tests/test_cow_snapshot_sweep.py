@@ -523,14 +523,19 @@ def test_live_direct_calc_parity_and_skip_ehp(live_cow_worker: BridgeWorker) -> 
     got_stats = got["stats"]
     assert isinstance(got.get("skillFlags"), dict)
 
+    assert "TotalEHP" in got_stats
     for key, _, _ in CORE_STAT_KEYS:
         rv = ref.get(key)
         gv = got_stats.get(key)
+        assert (rv is None) == (gv is None), f"direct_calc and get_stats disagree on whether {key} exists"
         if isinstance(rv, (int, float)) and isinstance(gv, (int, float)) and math.isfinite(rv) and math.isfinite(gv):
             rel = abs(gv - rv) / max(1.0, abs(rv))
             assert rel < 1e-9, f"direct_calc drift on {key}: ref={rv}, got={gv}"
+        else:
+            assert gv == rv, f"direct_calc drift on {key}: ref={rv}, got={gv}"
 
     skip = live_cow_worker.call("direct_calc", {"skipEHP": True})["stats"]
+    assert "TotalEHP" not in skip
     for key in ("CombinedDPS", "TotalDPS", "Life", "Mana", "FireResist", "ColdResist"):
         rv = ref.get(key)
         sv = skip.get(key)

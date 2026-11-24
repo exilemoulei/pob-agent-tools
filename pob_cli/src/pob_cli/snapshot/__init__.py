@@ -6,7 +6,7 @@ import math
 from collections.abc import Callable
 from typing import Any
 
-from ..bridge_client import MAX_UNDO_STEPS, BridgeWorker
+from ..bridge_client import MAX_UNDO_STEPS, BridgeError, BridgeWorker
 from ..errors import DaemonRequestError
 from ..formatters import _parse_numeric_or_none, fmt_delta, fmt_num, strip_pob_escapes
 from .helpers import (
@@ -36,6 +36,7 @@ __all__ = [
     "diff_digest",
     "digest_from_stats",
     "drop_snapshot",
+    "fall_back_to_code",
     "redo_build",
     "restore_snapshot",
     "run_mutation",
@@ -105,16 +106,32 @@ def take_snapshot(worker: Any, *, prefer_cow: bool = True) -> BuildSnapshot:
     return BuildSnapshot("code", str(worker.call("export_code", {})["code"]))
 
 
+def fall_back_to_code(worker: Any, snap: BuildSnapshot, reason: str) -> str:
+    """Re-import `snap.fallback_code` and turn `snap` into a code snapshot; return a note for the result."""
+    if not snap.fallback_code:
+        raise BridgeError(f"{reason}; no saved build code to restore from")
+    drop_snapshot(worker, snap)
+    worker.call("import_code", {"code": snap.fallback_code, "mode": "replace"})
+    snap.kind, snap.token, snap.proc_tag = "code", snap.fallback_code, None
+    return f"{reason}; restored by re-importing the saved build code"
+
+
 def restore_snapshot(
     worker: Any,
     snap: BuildSnapshot,
     *,
     drop: bool = False,
     rebuild: bool = True,
-) -> None:
-    """Restore a `BuildSnapshot` (CoW or `import_code`), falling back cleanly if CoW or subprocess fails."""
+) -> str | None:
+    """Restore a `BuildSnapshot` (CoW or `import_code`), falling back cleanly if CoW or subprocess fails.
+
+    Returns None after a clean restore, else a note on the fallback used: a failed CoW restore
+    (stale or evicted snapshot, Lua error) or a restarted engine re-imports `fallback_code`, and
+    `snap` becomes a code snapshot so later restores of the same checkpoint skip the dead CoW id.
+    """
     if snap.kind == "cow":
         cur_proc = getattr(worker, "_proc", None)
+        reason = "the engine restarted since the CoW snapshot"
         if cur_proc is snap.proc_tag:
             params: dict[str, Any] = {"snapId": snap.token}
             if drop:
@@ -123,21 +140,20 @@ def restore_snapshot(
                 params["rebuild"] = False
             try:
                 worker.call("cow_restore", params)
-                return
-            except Exception:
+                return None
+            except Exception as exc:
                 if not snap.fallback_code:
                     raise
-        if snap.fallback_code:
-            worker.call("import_code", {"code": snap.fallback_code, "mode": "replace"})
-            return
+                first_line = (strip_pob_escapes(str(exc)).strip().splitlines() or [type(exc).__name__])[0]
+                reason = f"CoW restore failed ({first_line[:200]})"
+        return fall_back_to_code(worker, snap, reason)
     worker.call("import_code", {"code": snap.token, "mode": "replace"})
+    return None
 
 
 def drop_snapshot(worker: Any, snap: BuildSnapshot | None) -> None:
     """Best-effort release of a Lua CoW snapshot (no-op for `export_code` or restarted subprocess)."""
-    if snap is None or snap.kind != "cow":
-        return
-    if getattr(worker, "_proc", None) is not snap.proc_tag:
+    if snap is None or snap.kind != "cow" or getattr(worker, "_proc", None) is not snap.proc_tag:
         return
     try:
         worker.call("cow_drop", {"snapId": snap.token})
@@ -205,7 +221,7 @@ def capture_direct_digest(
     build_header = dict(base_digest.get("buildHeader") or {}) if isinstance(base_digest, dict) else {}
     warns: list[str] = []
     for w in (res.get("warnings") or []) if isinstance(res, dict) else []:
-        txt = strip_pob_escapes(w if isinstance(w, str) else (w.get("text") or w.get("raw") or "") if isinstance(w, dict) else "")
+        txt = strip_pob_escapes(w if isinstance(w, str) else (w.get("raw") or w.get("text") or "") if isinstance(w, dict) else "")
         if txt:
             warns.append(txt)
     return digest_from_stats(
@@ -289,9 +305,9 @@ def capture_digest(worker: BridgeWorker) -> dict[str, Any]:
         info_dict["points"] = stats_res["points"]
     sidebar_warnings = sidebar_res.get("warnings", []) if isinstance(sidebar_res, dict) else []
     warnings = [
-        strip_pob_escapes(w.get("text") or w.get("raw") or "")
+        strip_pob_escapes(w.get("raw") or w.get("text") or "")
         for w in sidebar_warnings
-        if isinstance(w, dict) and (w.get("text") or w.get("raw"))
+        if isinstance(w, dict) and (w.get("raw") or w.get("text"))
     ]
     return digest_from_stats(
         stats,
@@ -435,16 +451,19 @@ def run_mutation(
     mutate_fn: Callable[[BridgeWorker], Any],
     *,
     apply: bool = False,
+    lossless: bool = False,
 ) -> dict[str, Any]:
     """Execute `mutate_fn(worker)` with full snapshot rollback (what-if) or undo-stack commit (`--apply`).
 
     Uses Lua CoW snapshots for `apply=False` when `worker.caps.get("cowSnapshot")` is true;
-    `apply=True` always exports lossless XML for `undo_stack` and `slot_<slug>.json`.
+    `apply=True` always exports lossless XML for `undo_stack` and `slot_<slug>.json`, and so
+    does `lossless=True`, for mutations that switch or add a tree spec, item/skill/config set
+    or loadout, or replace the build (CoW only tracks the active sets of one build).
     Guarantees atomic restore even if `mutate_fn` raises an exception.
     """
     with worker.lock:
         prev_last_good = getattr(worker, "last_good_code", None)
-        snap = take_snapshot(worker, prefer_cow=not apply)
+        snap = take_snapshot(worker, prefer_cow=not (apply or lossless))
         try:
             digest_before = capture_digest(worker)
         except Exception:
@@ -457,12 +476,17 @@ def run_mutation(
             action_detail = mutate_fn(worker)
             digest_after = capture_digest(worker)
             diff = diff_digest(digest_before, digest_after)
-        except Exception:
-            restore_snapshot(worker, snap, drop=True)
-            if hasattr(worker, "last_good_code"):
-                worker.last_good_code = prev_last_good
+        except Exception as exc:
+            try:
+                restore_snapshot(worker, snap, drop=True)
+            except Exception as restore_exc:
+                exc.add_note(f"Restoring the build afterwards also failed: {restore_exc}")
+            finally:
+                if hasattr(worker, "last_good_code"):
+                    worker.last_good_code = prev_last_good
             raise
 
+        restore_note = None
         if apply:
             snap_after = worker.call("export_code", {})["code"]
             worker.undo_stack.append(snap.token)
@@ -473,12 +497,14 @@ def run_mutation(
             worker.save_slot_state()
             mode_str = "APPLIED"
         else:
-            restore_snapshot(worker, snap, drop=True)
-            if hasattr(worker, "last_good_code"):
-                worker.last_good_code = prev_last_good
+            try:
+                restore_note = restore_snapshot(worker, snap, drop=True)
+            finally:
+                if hasattr(worker, "last_good_code"):
+                    worker.last_good_code = prev_last_good
             mode_str = "WHAT-IF (not applied; pass --apply to persist)"
 
-        return {
+        out = {
             "applied": apply,
             "mode": mode_str,
             "detail": action_detail,
@@ -500,6 +526,9 @@ def run_mutation(
             "undoDepth": len(worker.undo_stack),
             "redoDepth": len(worker.redo_stack),
         }
+        if restore_note:
+            out["restoreFallback"] = restore_note
+        return out
 
 
 def _shift_history(worker: BridgeWorker, *, action: str) -> dict[str, Any]:

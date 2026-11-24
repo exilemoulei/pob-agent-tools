@@ -6,11 +6,7 @@ from ..snapshot import capture_digest
 from .batch_ops import _execute_batch_ops
 from .batch_sweep import (
     _collect_return_sections,
-    _compact_sweep_summary,
-    _extract_compact_calcs,
-    _json_safe_num,
     _normalize_return_sections,
-    _safe_ele_max_hit,
     run_batch,
     run_sweep,
     trade_eval_items,
@@ -90,6 +86,7 @@ from .skills_resolve import (
     _resolve_gem_in_group,
     _resolve_gem_specs_batch,
 )
+from .sweep_report import _compact_sweep_summary, _extract_compact_calcs, _json_safe_num, _safe_ele_max_hit
 from .tree import (
     _apply_tree_changes_in_place,
     _resolve_node_token,

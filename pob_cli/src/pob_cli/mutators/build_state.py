@@ -285,7 +285,7 @@ def create_new_build(
             name=name,
         )
 
-    res = run_mutation(worker, _do_new_build, apply=apply)
+    res = run_mutation(worker, _do_new_build, apply=apply, lossless=True)
     res["buildInfo"] = (res.get("detail") or {}).get("buildInfo")
     return res
 
@@ -440,4 +440,7 @@ def switch_main(
             loadout_index=loadout_index,
         )
 
-    return run_mutation(worker, _do_switch, apply=apply)
+    switches_set = any(
+        v is not None for v in (spec_index, item_set_id, skill_set_id, config_set_id, loadout_index)
+    )
+    return run_mutation(worker, _do_switch, apply=apply, lossless=switches_set)

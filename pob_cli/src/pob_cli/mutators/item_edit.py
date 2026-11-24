@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -227,15 +228,37 @@ def _validate_item_edit_affixes(
     pob_dir: Path | None = None,
     runtime_dir: Path | None = None,
 ) -> None:
-    """Enforce PoE1 Rare affix capacity (3 prefixes / 3 suffixes; 2P/2S on jewels) and crafted mod limits."""
+    """Enforce PoE1 affix capacity (Rare 3P/3S, Rare jewels 2P/2S, Magic 1P/1S) and crafted mod limits."""
+    try:
+        _check_affix_capacity(
+            before_raw, after_raw, slot_name=slot_name, changes=changes, pob_dir=pob_dir, runtime_dir=runtime_dir
+        )
+    except sqlite3.Error as exc:
+        raise DaemonRequestError(
+            f"Cannot check the affix capacity of the item on '{slot_name}': the game-data index could not be "
+            f"read ({exc}). Pass --allow-illegal-affixes (batch/sweep op key \"allowIllegalAffixes\": true) "
+            "to skip the check."
+        ) from None
+
+
+def _check_affix_capacity(
+    before_raw: str,
+    after_raw: str,
+    *,
+    slot_name: str,
+    changes: list[dict[str, Any]],
+    pob_dir: Path | None,
+    runtime_dir: Path | None,
+) -> None:
     touched_add_or_rep = [
         c for c in changes if c.get("section") == "explicit" and c.get("action") in ("add", "replace")
     ]
     if not touched_add_or_rep:
         return
     after_item = parse_item_text(after_raw)
-    if after_item.rarity != "RARE" or after_item.unidentified:
+    if after_item.rarity not in ("RARE", "MAGIC") or after_item.unidentified:
         return
+    rarity = after_item.rarity.capitalize()
 
     has_add = any(c.get("action") == "add" for c in touched_add_or_rep)
     added_crafted = any(
@@ -256,7 +279,7 @@ def _validate_item_edit_affixes(
         crafted_lines = [m.raw for m in after_item.mods if m.kind == "crafted"]
         if check_crafted and len(crafted_lines) > max_crafted:
             raise DaemonRequestError(
-                f"Cannot edit Rare item on {item_label}: {len(crafted_lines)} crafted modifiers exceed limit ({max_crafted}). "
+                f"Cannot edit {rarity} item on {item_label}: {len(crafted_lines)} crafted modifiers exceed limit ({max_crafted}). "
                 "Remove or replace the existing {crafted} modifier first."
             ) from None
         return
@@ -324,20 +347,20 @@ def _validate_item_edit_affixes(
         if s_over:
             cur_s = f"{before_cnt['suffix']}/{s_cap} suffixes"
             head = (
-                f"Cannot edit Rare item on {item_label}: item already has {cur_s} "
+                f"Cannot edit {rarity} item on {item_label}: item already has {cur_s} "
                 f"(post-edit would be {p_cnt}/{p_cap} prefixes, {s_cnt}/{s_cap} suffixes)."
             )
             target_side = "suffix"
         elif p_over:
             cur_p = f"{before_cnt['prefix']}/{p_cap} prefixes"
             head = (
-                f"Cannot edit Rare item on {item_label}: item already has {cur_p} "
+                f"Cannot edit {rarity} item on {item_label}: item already has {cur_p} "
                 f"(post-edit would be {p_cnt}/{p_cap} prefixes, {s_cnt}/{s_cap} suffixes)."
             )
             target_side = "prefix"
         else:
             head = (
-                f"Cannot edit Rare item on {item_label}: item already has "
+                f"Cannot edit {rarity} item on {item_label}: item already has "
                 f"{before_cnt['prefix']}/{p_cap} prefixes and {before_cnt['suffix']}/{s_cap} suffixes "
                 f"({total_after}/{p_cap + s_cap} explicit modifiers post-edit)."
             )
@@ -363,7 +386,7 @@ def _validate_item_edit_affixes(
     unmatched_crafted = [m.raw for m in after_item.mods if m.kind == "crafted" and m.raw in after_unmatched]
     if check_crafted and crafted_affix_cnt + len(unmatched_crafted) > max_crafted:
         raise DaemonRequestError(
-            f"Cannot edit Rare item on {item_label}: {crafted_affix_cnt + len(unmatched_crafted)} crafted modifiers "
+            f"Cannot edit {rarity} item on {item_label}: {crafted_affix_cnt + len(unmatched_crafted)} crafted modifiers "
             f"exceed limit ({max_crafted}). Remove or replace the existing {{crafted}} modifier first "
             f"(inspect via `pob item inspect --slot \"{slot_name}\"`)."
         )
@@ -376,6 +399,7 @@ def _apply_edit_item_mods_in_place(
     replace_mods: list[tuple[str, str]] | None = None,
     add_mods: list[str] | None = None,
     remove_mods: list[str] | None = None,
+    allow_illegal_affixes: bool = False,
     cache: _BatchCache | None = None,
 ) -> dict[str, Any]:
     check_input(slot_name, scope=GuardrailScope.SLOT, expected_game="poe1")
@@ -394,14 +418,15 @@ def _apply_edit_item_mods_in_place(
     after_raw, changes = _edit_raw_item_mods(
         before_raw, replace_mods=replace_mods, add_mods=add_mods, remove_mods=remove_mods
     )
-    _validate_item_edit_affixes(
-        before_raw,
-        after_raw,
-        slot_name=resolved_slot,
-        changes=changes,
-        pob_dir=getattr(w, "pob_root", None) or getattr(w, "pob_dir", None),
-        runtime_dir=getattr(w, "runtime_dir", None),
-    )
+    if not allow_illegal_affixes:
+        _validate_item_edit_affixes(
+            before_raw,
+            after_raw,
+            slot_name=resolved_slot,
+            changes=changes,
+            pob_dir=getattr(w, "pob_root", None) or getattr(w, "pob_dir", None),
+            runtime_dir=getattr(w, "runtime_dir", None),
+        )
     res = w.call("add_item", {"raw": after_raw, "slotName": resolved_slot, "equip": True})
     if cache is not None:
         cache.invalidate("items", "skills")

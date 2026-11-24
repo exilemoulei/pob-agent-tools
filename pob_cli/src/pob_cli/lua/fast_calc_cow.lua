@@ -1,7 +1,10 @@
--- Single-pass direct calc (C1/C3) and Lua CoW snapshot/restore (C2c).
+-- Lua CoW snapshot/restore (C2c); direct_calc (C1/C3) lives in fast_calc_direct.lua.
 local M = {}
-local t_insert, t_remove, m_huge = table.insert, table.remove, math.huge
-local snapshots, next_seq = {}, 0
+local t_insert, t_remove = table.insert, table.remove
+-- Callers drop their snapshots, but a skipped drop (error path, killed client) must not pin
+-- whole item/tree copies for the process lifetime: keep only the most recently used few.
+local MAX_SNAPS = 16
+local snapshots, snap_order, next_seq = {}, {}, 0
 
 local function get_build()
 	local m = _G.main or (__mainObject__ and (__mainObject__.modes and __mainObject__ or __mainObject__.main))
@@ -44,30 +47,18 @@ local function keys_eq(a, b)
 	return true
 end
 
+-- Plain fields only: derived sub-tables (gemData, displayEffect, ...) are rebuilt by PoB.
+local function prims_eq(a, b)
+	for k, v in pairs(a) do if type(v) ~= "table" and b[k] ~= v then return false end end
+	for k, v in pairs(b) do if type(v) ~= "table" and a[k] ~= v then return false end end
+	return true
+end
+
 local function replace_tbl(dst, src)
 	if type(dst) == "table" then
 		for k in pairs(dst) do if src[k] == nil then dst[k] = nil end end
 		for k, v in pairs(src) do dst[k] = v end
 	end
-end
-
-local function sanitize(v)
-	local vt = type(v)
-	if vt == "number" then
-		return (v ~= v and "nan") or (v == m_huge and "inf") or (v == -m_huge and "-inf") or v
-	end
-	if vt == "boolean" or vt == "string" then return v end
-	return nil
-end
-
-local function has_full_dps_skills(b)
-	local list = b.skillsTab and b.skillsTab.socketGroupList
-	if type(list) ~= "table" then return false end
-	for i = 1, #list do
-		local g = list[i]
-		if g and g.enabled and g.includeInFullDPS then return true end
-	end
-	return false
 end
 
 local function copy_sg(sg)
@@ -169,8 +160,7 @@ local function restore_items(b, snap)
 	local itab = b.itemsTab
 	if type(itab) ~= "table" then return false, false end
 	local aset = itab.activeItemSet or {}
-	local dirty = (itab ~= snap.itemsTabRef) or (itab.activeItemSetId ~= snap.activeItemSetId)
-	local tbl_dirty, j_dirty = (itab ~= snap.itemsTabRef), false
+	local dirty, tbl_dirty, j_dirty = false, false, false
 
 	for id in pairs(itab.items) do
 		if snap.itemsRef[id] == nil then dirty, tbl_dirty = true, true; break end
@@ -206,10 +196,6 @@ local function restore_items(b, snap)
 	end
 	if not dirty then return false, false end
 
-	if itab.activeItemSetId ~= snap.activeItemSetId and itab.itemSets and itab.itemSets[snap.activeItemSetId] then
-		itab.activeItemSetId = snap.activeItemSetId
-		itab.activeItemSet = itab.itemSets[snap.activeItemSetId]
-	end
 	for id in pairs(itab.items) do if snap.itemsRef[id] == nil then itab.items[id] = nil end end
 	for id, orig in pairs(snap.itemsRef) do
 		if type(orig) == "table" and orig.raw ~= snap.itemRaw[id] and type(snap.itemRaw[id]) == "string" then
@@ -255,13 +241,6 @@ local function rebuild_cluster_graphs(spec, snap)
 end
 
 local function restore_spec(b, snap, j_dirty)
-	local tt = b.treeTab
-	if type(tt) == "table" and type(tt.specList) == "table" then
-		while #tt.specList > snap.specListLen do t_remove(tt.specList) end
-		if snap.activeSpec and tt.activeSpec ~= snap.activeSpec and type(tt.SetActiveSpec) == "function" then
-			tt:SetActiveSpec(snap.activeSpec)
-		end
-	end
 	local spec = b.spec
 	if type(spec) ~= "table" then return false end
 
@@ -310,23 +289,21 @@ local function restore_spec(b, snap, j_dirty)
 	return true
 end
 
-local SG_KEYS = { "label", "enabled", "includeInFullDPS", "slot", "mainActiveSkill", "mainActiveSkillCalcs", "groupCount", "source" }
-local GEM_KEYS = { "nameSpec", "gemId", "variantId", "skillId", "level", "quality", "qualityId", "enabled", "count", "enableGlobal1", "enableGlobal2" }
-
+-- Every plain field counts: set_build_field writes skillPart, skillStageCount, skillMinion*, ...
+-- on the gem tables and mainActiveSkill* on the group, and a fixed key list misses new ones.
 local function skills_differ(b, snap)
 	local st = b.skillsTab
-	if st ~= snap.skillsTabRef or st.activeSkillSetId ~= snap.activeSkillSetId then return true end
 	if b.mainSocketGroup ~= snap.mainSG then return true end
 	if (b.calcsTab and b.calcsTab.input and b.calcsTab.input.skill_number) ~= snap.calcsSkillNum then return true end
 	local cur = st.socketGroupList or {}
 	if #cur ~= #snap.groups then return true end
 	for gi = 1, #snap.groups do
 		local sg, ssg = cur[gi], snap.groups[gi]
-		for _, f in ipairs(SG_KEYS) do if sg[f] ~= ssg[f] then return true end end
+		if not prims_eq(sg, ssg) then return true end
 		local cgl, sgl = sg.gemList or {}, ssg.gemList or {}
 		if #cgl ~= #sgl then return true end
 		for ji = 1, #sgl do
-			for _, f in ipairs(GEM_KEYS) do if cgl[ji][f] ~= sgl[ji][f] then return true end end
+			if not prims_eq(cgl[ji], sgl[ji]) then return true end
 		end
 	end
 	return false
@@ -335,7 +312,6 @@ end
 local function restore_skills(b, snap)
 	local st = b.skillsTab
 	if type(st) ~= "table" or not skills_differ(b, snap) then return false end
-	if st.activeSkillSetId ~= snap.activeSkillSetId and type(st.SetActiveSkillSet) == "function" then st:SetActiveSkillSet(snap.activeSkillSetId) end
 	local list = st.socketGroupList
 	for i = 1, #snap.groups do list[i] = copy_sg(snap.groups[i]) end
 	while #list > #snap.groups do t_remove(list) end
@@ -361,18 +337,33 @@ local function restore_config(b, snap)
 	if type(ct) ~= "table" then return false end
 	local cs = ct.configSets and ct.activeConfigSetId and ct.configSets[ct.activeConfigSetId]
 	local ci = (cs and cs.input) or ct.input
-	if ct == snap.configTabRef and ct.activeConfigSetId == snap.activeCfgId and tables_eq(ci, snap.cfgIn) and not cmods_differ(cs and cs.customModsList, snap.cmods) then return false end
-	if ct.activeConfigSetId ~= snap.activeCfgId and type(ct.SetActiveConfigSet) == "function" then
-		ct:SetActiveConfigSet(snap.activeCfgId)
-		cs = ct.configSets and ct.activeConfigSetId and ct.configSets[ct.activeConfigSetId]
-		ci = (cs and cs.input) or ct.input
-	end
+	if tables_eq(ci, snap.cfgIn) and not cmods_differ(cs and cs.customModsList, snap.cmods) then return false end
 	replace_tbl(ci, snap.cfgIn)
 	if ct.input and ct.input ~= ci then replace_tbl(ct.input, snap.cfgIn) end
 	if cs and snap.cmods ~= nil then cs.customModsList = clone_cmods(snap.cmods) end
 	if type(ct.UpdateControls) == "function" then ct:UpdateControls() end
 	if type(ct.BuildModList) == "function" then ct:BuildModList() end
 	return true
+end
+
+-- Restore only rewrites the active spec and sets of the build it was taken from; anything
+-- else (a new build, a switched or added set) makes the snapshot unusable, never mis-restored.
+local function set_sig(b)
+	local tt, it, st, ct = b.treeTab or {}, b.itemsTab or {}, b.skillsTab or {}, b.configTab or {}
+	return table.concat({ tostring(tt.activeSpec), #(tt.specList or {}), tostring(it.activeItemSetId), #(it.itemSetOrderList or {}),
+		tostring(st.activeSkillSetId), #(st.skillSetOrderList or {}), tostring(ct.activeConfigSetId), #(ct.configSetOrderList or {}) }, ",")
+end
+
+local function forget(sid)
+	snapshots[sid] = nil
+	for i = #snap_order, 1, -1 do if snap_order[i] == sid then t_remove(snap_order, i) end end
+end
+
+local function remember(sid, snap)
+	forget(sid)
+	snapshots[sid] = snap
+	t_insert(snap_order, sid)
+	while #snap_order > MAX_SNAPS do snapshots[t_remove(snap_order, 1)] = nil end
 end
 
 local function rpc_cow_snapshot(_)
@@ -394,22 +385,20 @@ local function rpc_cow_snapshot(_)
 	for gi, sg in ipairs(st.socketGroupList or {}) do grps[gi] = copy_sg(sg) end
 	next_seq = next_seq + 1
 	local sid = "cow_" .. next_seq
-	snapshots[sid] = {
-		specRef = sp, itemsTabRef = it, skillsTabRef = st, configTabRef = ct,
+	remember(sid, {
+		build = b, treeTabRef = b.treeTab, specRef = sp, itemsTabRef = it, skillsTabRef = st, configTabRef = ct, sets = set_sig(b),
 		charLvl = b.characterLevel, charLvlAuto = b.characterLevelAutoMode, bandit = b.bandit, pMajor = b.pantheonMajorGod, pMinor = b.pantheonMinorGod,
 		mainSG = b.mainSocketGroup, calcsSkillNum = b.calcsTab and b.calcsTab.input and b.calcsTab.input.skill_number,
-		activeSpec = b.treeTab and b.treeTab.activeSpec, specListLen = (b.treeTab and b.treeTab.specList) and #b.treeTab.specList or 0,
 		classId = sp.curClassId, ascId = sp.curAscendClassId, secAscId = sp.curSecondaryAscendClassId or sp.secondaryAscendClassId or 0, treeVer = sp.treeVersion,
 		allocNodes = shallow_copy(sp.allocNodes), allocIds = a_ids, allocExt = copy_array(sp.allocExtendedNodes),
 		jewels = shallow_copy(sp.jewels), subKeys = sub_k, notableCnt = sp.allocatedNotableCount, keystoneCnt = sp.allocatedKeystoneCount,
 		masteryCnt = sp.allocatedMasteryCount, masteryTypeCnt = sp.allocatedMasteryTypeCount,
 		masteryTypes = shallow_copy(sp.allocatedMasteryTypes), tattooTypes = shallow_copy(sp.allocatedTattooTypes),
 		masterySel = shallow_copy(sp.masterySelections), hashOvr = shallow_copy(sp.hashOverrides),
-		activeItemSetId = it.activeItemSetId, slotSel = sl_s, slotAct = sl_a, setSel = st_s, setAct = st_a,
+		slotSel = sl_s, slotAct = sl_a, setSel = st_s, setAct = st_a,
 		jewelIds = j_ids, itemsRef = i_ref, itemRaw = i_raw, itemOrderList = copy_array(it.itemOrderList),
-		activeSkillSetId = st.activeSkillSetId, groups = grps, activeCfgId = ct.activeConfigSetId,
-		cfgIn = shallow_copy((cs and cs.input) or ct.input), cmods = clone_cmods(cs and cs.customModsList), party = snap_party(b.partyTab),
-	}
+		groups = grps, cfgIn = shallow_copy((cs and cs.input) or ct.input), cmods = clone_cmods(cs and cs.customModsList), party = snap_party(b.partyTab),
+	})
 	return { snapId = sid }
 end
 
@@ -423,6 +412,9 @@ local function rpc_cow_restore(params)
 	local sid = req_sid(params, "cow_restore")
 	local snap = snapshots[sid] or error("Unknown cow snapshot: " .. sid, 0)
 	local b = get_build()
+	local stale = (b ~= snap.build or b.treeTab ~= snap.treeTabRef or b.itemsTab ~= snap.itemsTabRef or b.skillsTab ~= snap.skillsTabRef
+		or b.configTab ~= snap.configTabRef) and "the build was replaced" or (set_sig(b) ~= snap.sets and "the active tree, item, skill or config set changed")
+	if stale then forget(sid); error("Stale cow snapshot " .. sid .. ": " .. stale .. " since it was taken", 0) end
 	local sc_d = b.characterLevel ~= snap.charLvl or b.characterLevelAutoMode ~= snap.charLvlAuto or b.bandit ~= snap.bandit or b.pantheonMajorGod ~= snap.pMajor or b.pantheonMinorGod ~= snap.pMinor
 	if sc_d then
 		b.characterLevel, b.characterLevelAutoMode, b.bandit, b.pantheonMajorGod, b.pantheonMinorGod = snap.charLvl, snap.charLvlAuto, snap.bandit, snap.pMajor, snap.pMinor
@@ -444,6 +436,8 @@ local function rpc_cow_restore(params)
 		if type(it.UpdateSockets) == "function" then it:UpdateSockets() end
 	end
 	local sk_d, cf_d, pt_d = restore_skills(b, snap), restore_config(b, snap), restore_party(b, snap.party)
+	-- The config mod list bakes in the character level (set_build_field "level" rebuilds it too).
+	if sc_d and not cf_d and type(b.configTab.BuildModList) == "function" then b.configTab:BuildModList() end
 	if sc_d or it_d or sp_d or sk_d or cf_d or pt_d then
 		if type(wipeGlobalCache) == "function" then wipeGlobalCache() end
 		b.buildFlag = true
@@ -457,76 +451,28 @@ local function rpc_cow_restore(params)
 			end
 		end
 	end
-	if params.drop == true then snapshots[sid] = nil end
+	if params.drop == true then forget(sid) else remember(sid, snap) end
 	return { ok = true }
 end
 
 local function rpc_cow_drop(params)
-	snapshots[req_sid(params, "cow_drop")] = nil
+	forget(req_sid(params, "cow_drop"))
 	return { ok = true }
-end
-
-local function rpc_direct_calc(params)
-	local b = get_build()
-	local skip_ehp = type(params) == "table" and params.skipEHP == true
-	local calcs = b.calcsTab.calcs
-	if b.buildFlag and b.skillsTab and type(b.skillsTab.UpdateSocketGroups) == "function" then b.skillsTab:UpdateSocketGroups() end
-	if b.spec and type(b.spec.nodes) == "table" then for _, nd in pairs(b.spec.nodes) do nd.finalModList = nd.modList end end
-	if type(wipeGlobalCache) == "function" then wipeGlobalCache() end
-	local env, cP, cE, cM = calcs.initEnv(b, "CALCULATOR")
-	env.triggerSourceCache = {}
-	calcs.perform(env, skip_ehp and true or nil)
-	local out = env.player.output
-	if has_full_dps_skills(b) then
-		if env.player.mainSkill and type(cacheSkillUUID) == "function" then
-			local uid = cacheSkillUUID(env.player.mainSkill, env)
-			local cd = GlobalCache and GlobalCache.cachedData and GlobalCache.cachedData["CALCULATOR"]
-			local me = cd and cd[uid]
-			if me and me.Env == env then env.triggerSourceCache[uid] = me end
-		end
-		local fd = calcs.calcFullDPS(b, "CALCULATOR", {}, { cachedPlayerDB = cP, cachedEnemyDB = cE, cachedMinionDB = cM, env = nil, triggerSourceCache = env.triggerSourceCache })
-		out.SkillDPS, out.FullDPS, out.FullDotDPS = fd.skills, fd.combinedDPS, fd.TotalDotDPS
-	else out.FullDPS, out.FullDotDPS = 0, 0 end
-	local mdb = env.modDB
-	if mdb and type(mdb.Sum) == "function" then
-		out.ExtraPoints = mdb:Sum("BASE", nil, "ExtraPoints")
-		local sc = { source = "Tree" }
-		out["Spec:LifeInc"], out["Spec:ManaInc"], out["Spec:EnergyShieldInc"] = mdb:Sum("INC", sc, "Life"), mdb:Sum("INC", sc, "Mana"), mdb:Sum("INC", sc, "EnergyShield")
-		out["Spec:ArmourInc"], out["Spec:EvasionInc"] = mdb:Sum("INC", sc, "Armour", "ArmourAndEvasion"), mdb:Sum("INC", sc, "Evasion", "ArmourAndEvasion")
-	end
-	local stats, sflags, warns = {}, {}, {}
-	for k, v in pairs(out) do if type(k) == "string" then local sv = sanitize(v); if sv ~= nil then stats[k] = sv end end end
-	local mo = (type(out.Minion) == "table" and out.Minion) or (env.minion and type(env.minion.output) == "table" and env.minion.output) or nil
-	if mo then
-		for mk, mv in pairs(mo) do
-			if type(mk) == "string" and stats["Minion" .. mk] == nil then local sv = sanitize(mv); if sv ~= nil then stats["Minion" .. mk] = sv end end
-		end
-	end
-	local rf = env.player.mainSkill and env.player.mainSkill.skillFlags
-	if type(rf) == "table" then for fk, fv in pairs(rf) do if type(fk) == "string" and type(fv) == "boolean" then sflags[fk] = fv end end end
-	if not skip_ehp and type(b.RefreshStatList) == "function" and b.controls and b.controls.warnings then
-		local pe, po = b.calcsTab.mainEnv, b.calcsTab.mainOutput
-		b.calcsTab.mainEnv, b.calcsTab.mainOutput = env, out
-		pcall(b.RefreshStatList, b)
-		b.calcsTab.mainEnv, b.calcsTab.mainOutput = pe, po
-		local tr = (type(PobToolsGetTranslate) == "function" and PobToolsGetTranslate() and type(PobToolsTranslateDisplay) == "function") and PobToolsTranslateDisplay or nil
-		for _, wl in ipairs(b.controls.warnings.lines or {}) do
-			if type(wl) == "string" and wl ~= "" then warns[#warns + 1] = tr and tr(wl) or wl end
-		end
-	end
-	local pts = nil
-	if b.spec and type(b.spec.CountAllocNodes) == "function" then
-		local u, a = b.spec:CountAllocNodes()
-		pts = { used = u, usedMax = 122 + (tonumber(out.ExtraPoints) or 0), ascUsed = a, ascMax = 8 }
-	end
-	return { stats = stats, skillFlags = sflags, points = pts, warnings = warns }
 end
 
 M.rpc_handlers = {
 	cow_snapshot = rpc_cow_snapshot,
 	cow_restore = rpc_cow_restore,
 	cow_drop = rpc_cow_drop,
-	direct_calc = rpc_direct_calc,
 }
+
+-- Loaded from beside this file because headless_runner only loads fast_calc_cow.lua.
+do
+	local dir = ((debug.getinfo(1, "S") or {}).source or ""):match("^@(.*[/\\])") or ""
+	local chunk = loadfile(dir .. "fast_calc_direct.lua")
+	local ok, mk = false, nil
+	if chunk then ok, mk = pcall(chunk) end
+	if ok and type(mk) == "function" then M.rpc_handlers.direct_calc = mk(get_build) end
+end
 
 return M
