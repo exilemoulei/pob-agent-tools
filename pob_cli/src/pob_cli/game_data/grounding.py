@@ -14,7 +14,11 @@ from ..guardrails import normalize_guardrail_text, normalize_zh_compact, scan_te
 from .constants import (
     _CJK_RE,
     _REMOVED_LEGACY_GEM_NAMES_LOWER,
-    MOD_TAG_PREFIX_RE,
+)
+from .fact_cards import (
+    _format_gem_fact_card,
+    _format_ground_context_block,
+    _format_unique_fact_card,
 )
 from .paths import _sqlite_ro_uri
 from .queries_core import _query_gems
@@ -139,69 +143,6 @@ def _build_zero_result_hint(kind_norm: str, query: str, suggestions: list[dict[s
     )
 
 
-def _format_gem_fact_card(gem_obj: dict[str, Any], *, matched_by: str | None = None) -> dict[str, Any]:
-    lvls = gem_obj.get("levels") or {}
-    lv20 = lvls.get("20") or lvls.get("1") or (next(iter(lvls.values())) if lvls else {})
-    q_stats = gem_obj.get("quality_stats") or []
-    card: dict[str, Any] = {
-        "kind": "gem",
-        "name": gem_obj.get("display_name") or gem_obj.get("name"),
-        "zhName": gem_obj.get("zh_name"),
-        "isSupport": bool(gem_obj.get("is_support")),
-        "color": gem_obj.get("color"),
-        "tags": gem_obj.get("tag_string"),
-        "castTime": gem_obj.get("cast_time"),
-        "cooldown": gem_obj.get("cooldown"),
-        "storedUses": gem_obj.get("stored_uses"),
-        "isExceptional": bool(gem_obj.get("is_exceptional")),
-        "legacyRemoved328": bool(gem_obj.get("legacy_removed_328")),
-        "naturalMaxLevel": gem_obj.get("natural_max_level"),
-        "corruptedMaxLevel": gem_obj.get("corrupted_max_level"),
-        "critChance": gem_obj.get("crit_chance") or lv20.get("critChance"),
-        "damageEffectiveness": gem_obj.get("damage_effectiveness") or lv20.get("damageEffectiveness"),
-        "manaMultiplier": gem_obj.get("mana_multiplier"),
-        "lv20Cost": lv20.get("cost"),
-        "lv20Stats": dict(list((lv20.get("stats") or {}).items())[:6]),
-        "quality20": [
-            {
-                "stat": q.get("stat"),
-                "perQuality": q.get("per_quality"),
-                "at20": q.get("at_20_quality"),
-                "at40": round(float(q.get("per_quality") or 0.0) * 40, 4),
-            }
-            for q in q_stats[:3]
-        ],
-    }
-    variants = gem_obj.get("variants") or []
-    if variants:
-        card["variants"] = [
-            f"{v.get('name')} ({v['zh_name']})" if v.get("zh_name") else str(v.get("name"))
-            for v in variants[:4]
-        ]
-    if matched_by:
-        card["matchedBy"] = matched_by
-    return card
-
-
-def _format_unique_fact_card(u_obj: dict[str, Any], *, matched_by: str | None = None) -> dict[str, Any]:
-    implicits = [MOD_TAG_PREFIX_RE.sub("", s).strip() for s in (u_obj.get("implicits") or [])[:3]]
-    explicits = [MOD_TAG_PREFIX_RE.sub("", s).strip() for s in (u_obj.get("explicits") or [])[:8]]
-    card: dict[str, Any] = {
-        "kind": "unique",
-        "name": u_obj.get("name"),
-        "zhName": u_obj.get("zh_name"),
-        "baseType": u_obj.get("base_type"),
-        "baseTypeZh": u_obj.get("base_type_zh"),
-        "itemClass": u_obj.get("item_class"),
-        "reqLevel": u_obj.get("req_level"),
-        "implicits": [s for s in implicits if s],
-        "explicits": [s for s in explicits if s],
-    }
-    if matched_by:
-        card["matchedBy"] = matched_by
-    return card
-
-
 def _get_ground_entity_index(conn: sqlite3.Connection, db_key: str) -> dict[str, Any]:
     cached = _GROUND_ENTITY_INDEX_CACHE.get(db_key)
     if cached is not None:
@@ -237,11 +178,44 @@ def lookup_fact_cards_for_build(
     *,
     pob_dir: Path | None = None,
     runtime_dir: Path | None = None,
+    equipped_uniques: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Fetch compact live 3.30 gem & unique fact cards from SQLite for `pob diagnose` (<5ms)."""
+    """Fetch compact live 3.30 gem & unique fact cards from SQLite (with equipped unique mod overrides)."""
     import pob_cli.game_data as _gd
 
-    db_path = _gd.ensure_gamedata_index(pob_dir=pob_dir, runtime_dir=runtime_dir)
+    eq_map: dict[str, dict[str, Any]] = {}
+    for eq in equipped_uniques or []:
+        if not isinstance(eq, dict):
+            continue
+        for key_field in ("name", "zhName"):
+            raw_k = normalize_tw_query(str(eq.get(key_field) or "").strip()).strip()
+            if raw_k:
+                eq_map.setdefault(_fold_search_text(raw_k), eq)
+
+    try:
+        db_path: Path | None = _gd.ensure_gamedata_index(pob_dir=pob_dir, runtime_dir=runtime_dir)
+    except FileNotFoundError:
+        if not eq_map:
+            raise
+        db_path = None
+
+    if db_path is None:
+        unique_cards_offline: list[dict[str, Any]] = []
+        seen_off: set[str] = set()
+        for raw_u in unique_names:
+            u_clean = normalize_tw_query(str(raw_u or "").strip()).strip()
+            u_low = _fold_search_text(u_clean) if u_clean else ""
+            eq_ov = eq_map.get(u_low)
+            if eq_ov and u_low not in seen_off:
+                seen_off.add(u_low)
+                unique_cards_offline.append(_format_unique_fact_card({}, equipped_override=eq_ov))
+        return {
+            "pobVersion": "unknown",
+            "dataVersion": "unknown",
+            "gems": [],
+            "uniques": unique_cards_offline,
+        }
+
     conn = sqlite3.connect(_sqlite_ro_uri(db_path), uri=True)
     try:
         meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
@@ -277,17 +251,23 @@ def lookup_fact_cards_for_build(
             if not u_clean:
                 continue
             u_low = _fold_search_text(u_clean)
+            eq_ov = eq_map.get(u_low)
             row = conn.execute(
                 "SELECT data_json FROM uniques WHERE name_lower = ? OR zh_lower = ? LIMIT 1",
                 (u_low, u_low),
             ).fetchone()
             if row is None:
+                if eq_ov and u_low not in seen_uniques:
+                    seen_uniques.add(u_low)
+                    unique_cards.append(_format_unique_fact_card({}, equipped_override=eq_ov))
                 continue
             obj = json.loads(row[0])
             uname = str(obj.get("name") or "")
+            if eq_ov is None and uname:
+                eq_ov = eq_map.get(_fold_search_text(uname))
             if uname and uname not in seen_uniques:
                 seen_uniques.add(uname)
-                unique_cards.append(_format_unique_fact_card(obj))
+                unique_cards.append(_format_unique_fact_card(obj, equipped_override=eq_ov))
 
         return {
             "pobVersion": meta.get("pob_version", "unknown"),
@@ -297,45 +277,6 @@ def lookup_fact_cards_for_build(
         }
     finally:
         conn.close()
-
-
-def _format_ground_context_block(
-    *,
-    pob_ver: str,
-    data_ver: str,
-    gamedata_available: bool,
-    warnings: list[dict[str, Any]],
-    resolved_slang: list[dict[str, str]],
-    entities: list[dict[str, Any]],
-) -> str:
-    ctx_lines = [f"[Env: PoE1 3.30 | PoB {pob_ver} | Data {data_ver}]"]
-    if not gamedata_available:
-        ctx_lines.append(
-            "- [INFO] Local PoE1 game data not bootstrapped yet; run `pob bootstrap` to attach live gem/unique fact cards."
-        )
-    for w in warnings:
-        ctx_lines.append(f"- {w['tag']} `{w['trigger']}`: {w['message']}")
-    if resolved_slang:
-        slang_bits = ", ".join(f"{s['slang']}={s['canonical']}" for s in resolved_slang[:6])
-        ctx_lines.append(f"- Slang: {slang_bits}")
-    for ent in entities:
-        zh_p = f" ({ent['zhName']})" if ent.get("zhName") else ""
-        if ent["kind"] == "gem":
-            bits = []
-            if ent.get("isSupport"):
-                bits.append("Support")
-            if ent.get("castTime") is not None:
-                bits.append(f"Cast={ent['castTime']}s")
-            if ent.get("tags"):
-                bits.append(f"Tags={ent['tags']}")
-            st_items = list((ent.get("lv20Stats") or {}).items())[:4]
-            if st_items:
-                bits.append("Lv20: " + ", ".join(f"{k}={v}" for k, v in st_items))
-            ctx_lines.append(f"- [Gem] {ent['name']}{zh_p}: " + " | ".join(bits))
-        else:
-            mods_preview = "; ".join((ent.get("explicits") or [])[:4])
-            ctx_lines.append(f"- [Unique] {ent['name']}{zh_p} ({ent.get('baseType') or '-'}): {mods_preview}")
-    return "\n".join(ctx_lines)
 
 
 def ground_text_entities(

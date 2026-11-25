@@ -23,6 +23,7 @@ from .dewater import (
     _probe_rpc_method,
     _rpc_error_text,
 )
+from .dewater_auto import best_effort_audit_tree_and_raw, infer_auto_keep_and_flask_notes
 from .dewater_steps import _same_state
 from .pitfalls_core import _detect_build_mechanics_and_pitfalls
 from .summary import _compute_effective_mana_spend, _has_doryanis_prototype_equipped
@@ -465,6 +466,8 @@ def audit_build(
     attribution: bool = True,
     *,
     include_envelope: bool = True,
+    pre_tree_summary: dict[str, Any] | None = None,
+    pre_equipped_slots_raw: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run static build health checks + non-destructive 4-part PoB inflation ('water') audit."""
     import pob_cli.analyzer as _analyzer
@@ -486,7 +489,28 @@ def audit_build(
             stats, info, items_res, skills_res_audit, digest_before["warnings"]
         )
 
-        stripped, records = _analyzer.dewater_build_with_records(worker, keep=keep)
+        eff_tree, eff_raw, alloc_st = best_effort_audit_tree_and_raw(
+            worker,
+            items_res,
+            pre_tree_summary=pre_tree_summary,
+            pre_equipped_slots_raw=pre_equipped_slots_raw,
+        )
+        auto_keep, flask_notes = infer_auto_keep_and_flask_notes(
+            stats=stats,
+            skills_res=skills_res_audit,
+            items_res=items_res,
+            build_info=info,
+            tree_summary=eff_tree,
+            equipped_slots_raw=eff_raw,
+            alloc_node_stats=alloc_st,
+        )
+        dw_defs = getattr(_analyzer.dewater_build_with_records, "__kwdefaults__", None) or {}
+        dw_kw: dict[str, Any] = {}
+        if "auto_keep_reasons" in dw_defs:
+            dw_kw["auto_keep_reasons"] = auto_keep
+        if "flask_notes" in dw_defs:
+            dw_kw["flask_notes"] = flask_notes
+        stripped, records = _analyzer.dewater_build_with_records(worker, keep=keep, **dw_kw)
         digest_dewatered = capture_digest(worker)
         dewater_diff = diff_digest(digest_before, digest_dewatered)
         water_attribution = (

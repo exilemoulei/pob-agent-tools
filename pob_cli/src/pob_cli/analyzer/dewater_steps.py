@@ -77,6 +77,8 @@ def _dewater_config_and_custom_mods(
     stripped: dict[str, list[str]],
     mutations: list[tuple[str, dict[str, Any]]],
     records: list[dict[str, Any]],
+    *,
+    auto_keep_reasons: dict[str, str] | None = None,
 ) -> None:
     current_boss = None
     had_preset_boss_skills = False
@@ -112,6 +114,10 @@ def _dewater_config_and_custom_mods(
                 continue
             if var.lower() in keep_set:
                 stripped["kept"].append(f"{var}={val!r} (kept)")
+                continue
+            auto_reason = (auto_keep_reasons or {}).get(var.lower())
+            if auto_reason:
+                stripped.setdefault("autoKept", []).append(f"{var}={val!r} (auto-kept: {auto_reason})")
                 continue
             if var == "presetBossSkills":
                 had_preset_boss_skills = True
@@ -212,6 +218,7 @@ def _dewater_flasks(
     records: list[dict[str, Any]],
     *,
     has_bloodsoaked_blade: bool | None,
+    flask_notes: dict[str, str] | None = None,
 ) -> None:
     has_mb = _has_mageblood_equipped(items_res)
     items_by_id = {it["id"]: it for it in items_res.get("items", [])}
@@ -244,7 +251,9 @@ def _dewater_flasks(
                     f"{slot_name} ({item_title}) (kept: Bloodsoaked Blade sustained Tincture; Tinctures != Flasks)"
                 )
                 continue
-            stripped["flasks"].append(f"{slot_name} ({item_title}) -> active=False")
+            f_note = (flask_notes or {}).get(slot_name)
+            note_suffix = f" [{f_note}]" if f_note else ""
+            stripped["flasks"].append(f"{slot_name} ({item_title}) -> active=False{note_suffix}")
             mutations.append(("set_slot_active", {"slotName": slot_name, "active": False}))
             records.append(
                 {

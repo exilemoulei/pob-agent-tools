@@ -13,6 +13,11 @@ from .compare import (
     borrow_from_ref,
     compare_builds,
 )
+from .gem_caveats import (
+    _check_support_hard_conflict,
+    compute_sadism_per_ailment_pct,
+    compute_sadism_stats,
+)
 from .matrix import (
     DEFAULT_MATRIX_SCENARIOS,
     _apply_matrix_scenario_in_place,
@@ -40,6 +45,7 @@ __all__ = [
     "_apply_env_config",
     "_apply_matrix_scenario_in_place",
     "_build_pair_table",
+    "_check_support_hard_conflict",
     "_classify_item_weapon_type",
     "_detect_equipped_weapon_types",
     "_extract_env_config",
@@ -55,6 +61,8 @@ __all__ = [
     "_safe_float",
     "borrow_from_ref",
     "compare_builds",
+    "compute_sadism_per_ailment_pct",
+    "compute_sadism_stats",
     "rank_gems",
     "rank_nodes",
     "run_matrix",

@@ -2,12 +2,148 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from typing import Any
 
 from ..bridge_client import BridgeWorker
-from ..snapshot import history_of
-from .constants import _PANTHEON_HINTS
+from ..formatters import strip_pob_escapes
+from ..game_data.fact_cards import normalize_stat_lines
+from ..snapshot import BuildTransaction, history_of
+from .constants import _ITEM_SEL_VARIANT_RE, _MOD_VARIANT_RE, _PANTHEON_HINTS
+
+_POB_IMPLICITS_HDR_RE = re.compile(r"^Implicits:\s*(\d+)\s*$", re.IGNORECASE)
+_POB_TRAILING_STATE_RE = re.compile(
+    r"^(?:Corrupted|Mirrored|Unidentified|Split|Synthesised Item|Fractured Item|Searing Exarch Item|"
+    r"Eater of Worlds Item|Elder Item|Shaper Item|Crusader Item|Redeemer Item|Hunter Item|Warlord Item|"
+    r"Relic Unique|Foil Unique\b.*|Note:\s*.*)$",
+    re.IGNORECASE,
+)
+
+
+def _filter_variant_lines(lines: list[str], sel_var: int | None) -> list[str]:
+    out: list[str] = []
+    for ln in lines:
+        s = ln.strip()
+        if not s or _POB_TRAILING_STATE_RE.match(s):
+            continue
+        if sel_var is not None:
+            mv = _MOD_VARIANT_RE.search(s)
+            if mv:
+                allowed = {int(x) for x in mv.group(1).split(",") if x.isdigit()}
+                if allowed and sel_var not in allowed:
+                    continue
+        out.append(s)
+    return normalize_stat_lines(out)
+
+
+def extract_equipped_unique_overrides(items_info: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract real parsed `implicits` & `explicits` from equipped unique items in `inspect_items(all_raw=True)`."""
+    from ..trade_item.parser import parse_item_text
+
+    overrides: list[dict[str, Any]] = []
+    for s in items_info.get("equippedSlots") or []:
+        if not isinstance(s, dict) or "Swap" in str(s.get("slotName") or ""):
+            continue
+        it = s.get("item")
+        if not isinstance(it, dict):
+            continue
+        rarity = str(it.get("rarity") or "").upper()
+        uname = strip_pob_escapes(str(it.get("title") or it.get("name") or "")).strip()
+        if rarity not in ("UNIQUE", "RELIC") or not uname:
+            continue
+        uname_zh = strip_pob_escapes(str(it.get("titleZh") or it.get("nameZh") or "")).strip() or None
+        base_nm = strip_pob_escapes(str(it.get("baseName") or "")).strip() or None
+        implicits: list[str] = []
+        explicits: list[str] = []
+
+        if isinstance(it.get("implicits"), list) or isinstance(it.get("explicits"), list):
+            implicits = normalize_stat_lines(it.get("implicits") or [])
+            explicits = normalize_stat_lines(it.get("explicits") or [])
+        else:
+            raw_text = str(s.get("raw") or it.get("raw") or "").strip()
+            if raw_text:
+                m_sel = _ITEM_SEL_VARIANT_RE.search(raw_text)
+                sel_var = int(m_sel.group(1)) if m_sel else None
+                raw_lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
+                imp_idx = next(
+                    (idx for idx, ln in enumerate(raw_lines) if _POB_IMPLICITS_HDR_RE.match(ln)),
+                    None,
+                )
+                if imp_idx is not None:
+                    m_imp = _POB_IMPLICITS_HDR_RE.match(raw_lines[imp_idx])
+                    n_imp = int(m_imp.group(1)) if m_imp else 0
+                    implicits = _filter_variant_lines(raw_lines[imp_idx + 1 : imp_idx + 1 + n_imp], sel_var)
+                    explicits = _filter_variant_lines(raw_lines[imp_idx + 1 + n_imp :], sel_var)
+                elif any(ln.startswith("--------") for ln in raw_lines):
+                    try:
+                        parsed = parse_item_text(raw_text)
+                        implicits = normalize_stat_lines(m.text for m in parsed.implicits)
+                        explicits = normalize_stat_lines(m.text for m in parsed.explicits)
+                    except Exception:
+                        pass
+
+        if implicits or explicits:
+            overrides.append(
+                {
+                    "name": uname,
+                    "zhName": uname_zh,
+                    "baseType": base_nm,
+                    "implicits": implicits,
+                    "explicits": explicits,
+                }
+            )
+    return overrides
+
+
+def deduplicate_diagnose_advisories(
+    advisories: list[dict[str, Any]],
+    *,
+    core_synergies: list[str],
+    build_mechanics: dict[str, Any] | None = None,
+    health_gaps: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Suppress generic patch trap advisories already explained in Section 2/2b/2c."""
+    syn_blob = " ".join(str(x) for x in (core_synergies or [])).lower()
+    gap_blob = " ".join(
+        str(g.get("message") or "") for g in (health_gaps or []) if isinstance(g, dict)
+    ).lower()
+    bm = build_mechanics or {}
+    has_soa = isinstance(bm.get("swordOfAges"), dict)
+    has_cwc_bm = any(
+        isinstance(t, dict) and t.get("kind") == "fixed_interval_channelling"
+        for t in (bm.get("triggers") or [])
+    )
+
+    out: list[dict[str, Any]] = []
+    seen_rules: set[str] = set()
+    for adv in advisories or []:
+        if not isinstance(adv, dict):
+            continue
+        rid = str(adv.get("ruleId") or "").strip().upper()
+        trig = str(adv.get("trigger") or "").strip().lower()
+        dedup_key = rid or f"{adv.get('tag')}:{trig}"
+        if dedup_key in seen_rules:
+            continue
+        if rid == "PATCH_330_AGNOSTIC_CWS_SYNERGY" and ("[do not unspec]" in syn_blob or "the agnostic" in syn_blob):
+            continue
+        if rid == "PATCH_330_RAMAKO_FIXED_DOT_RES" and "ramako" in syn_blob:
+            continue
+        if rid == "PATCH_330_DORYANI_PROTOTYPE_NEG_RES" and (
+            "doryani's prototype" in syn_blob or "doryani's prototype" in gap_blob
+        ):
+            continue
+        if rid == "PATCH_330_SWORD_OF_AGES_TEMPORAL_MIRAGE" and has_soa:
+            continue
+        if rid == "PATCH_330_CWC_NOT_COOLDOWN" and has_cwc_bm:
+            continue
+        if rid == "PATCH_330_LOW_LIFE_ESH_VISAGE" and "esh's visage" in gap_blob:
+            continue
+        if ("frost bomb" in trig or "寒霜爆" in trig or "FROST_BOMB" in rid) and "frost bomb" in syn_blob:
+            continue
+        seen_rules.add(dedup_key)
+        out.append(adv)
+    return out
 
 
 def _merge_traps_and_ask_grounding(
@@ -102,7 +238,11 @@ def _run_diagnose_rankings(
     mg: dict[str, Any],
     *,
     top: int,
+    keep: Iterable[str] | str | None = None,
+    auto_keep_reasons: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+    import pob_cli.analyzer as _analyzer
+
     from ..comparator import rank_gems, rank_nodes
 
     top_nodes: dict[str, Any] | None = None
@@ -111,28 +251,61 @@ def _run_diagnose_rankings(
     primary_key = str((audit.get("original") or {}).get("primaryDpsKey") or "CombinedDPS")
     node_stat = "CombinedDPS" if primary_key in ("CombinedDPS", "TotalDPS", "TotalDotDPS", "FullDPS") else primary_key
     gem_field = "FullDPS" if primary_key == "FullDPS" else "CombinedDPS"
-    try:
-        top_nodes = rank_nodes(worker, stat=node_stat, max_dist=5, top=top)
-        if isinstance(top_nodes, dict) and top_nodes.get("error"):
-            rank_errors.append(f"rank_nodes: {top_nodes['error']}")
-            top_nodes = None
-    except Exception as exc:
-        rank_errors.append(f"rank_nodes: {exc}")
-        top_nodes = None
-    try:
-        if mg and (mg.get("gems") or []):
-            top_gems = rank_gems(
-                worker,
-                group_selector="main",
-                slot_idx=None,
-                add_link=True,
-                field=gem_field,
-                top=top,
-                exclude_archetype_swaps=True,
+
+    def _exec_rankings(label: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        rn: dict[str, Any] | None = None
+        rg: dict[str, Any] | None = None
+        try:
+            rn_kw = (
+                {"baseline_label": label}
+                if "baseline_label" in (getattr(rank_nodes, "__kwdefaults__", None) or {})
+                else {}
             )
-    except Exception as exc:
-        rank_errors.append(f"rank_gems: {exc}")
-        top_gems = None
+            rn = rank_nodes(worker, stat=node_stat, max_dist=5, top=top, **rn_kw)
+            if isinstance(rn, dict) and rn.get("error"):
+                rank_errors.append(f"rank_nodes: {rn['error']}")
+                rn = None
+            elif isinstance(rn, dict) and not rn.get("baselineLabel"):
+                rn["baselineLabel"] = label
+        except Exception as exc:
+            rank_errors.append(f"rank_nodes: {exc}")
+            rn = None
+        try:
+            if mg and (mg.get("gems") or []):
+                rg_kw = (
+                    {"baseline_label": label}
+                    if "baseline_label" in (getattr(rank_gems, "__kwdefaults__", None) or {})
+                    else {}
+                )
+                rg = rank_gems(
+                    worker,
+                    group_selector="main",
+                    slot_idx=None,
+                    add_link=True,
+                    field=gem_field,
+                    top=top,
+                    exclude_archetype_swaps=True,
+                    **rg_kw,
+                )
+                if isinstance(rg, dict) and not rg.get("baselineLabel"):
+                    rg["baselineLabel"] = label
+        except Exception as exc:
+            rank_errors.append(f"rank_gems: {exc}")
+            rg = None
+        return rn, rg
+
+    if audit.get("dewateredPinnacle") is not None:
+        try:
+            with BuildTransaction(worker):
+                dw_defs = getattr(_analyzer.dewater_build_with_records, "__kwdefaults__", None) or {}
+                dw_kw = {"auto_keep_reasons": auto_keep_reasons} if "auto_keep_reasons" in dw_defs else {}
+                _analyzer.dewater_build_with_records(worker, keep=keep, **dw_kw)
+                top_nodes, top_gems = _exec_rankings("Dewatered Pinnacle")
+                return top_nodes, top_gems, rank_errors
+        except Exception:
+            pass
+
+    top_nodes, top_gems = _exec_rankings("Original Panel")
     return top_nodes, top_gems, rank_errors
 
 

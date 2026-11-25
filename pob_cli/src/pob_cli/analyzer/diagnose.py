@@ -8,12 +8,16 @@ from typing import Any
 
 from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
+from ..game_data.fact_cards import normalize_stat_lines
 from ..snapshot import _call_batch
+from .dewater_auto import infer_auto_keep_and_flask_notes
 from .diagnose_compare import (
     _build_diagnose_env,
     _extract_pantheon_info,
     _merge_traps_and_ask_grounding,
     _run_diagnose_rankings,
+    deduplicate_diagnose_advisories,
+    extract_equipped_unique_overrides,
 )
 from .diagnose_probes import (
     _detect_dead_main_supports,
@@ -101,7 +105,7 @@ def _collect_diagnose_tree_and_skills(
                         nd["stats"] = ov_diag[sid]["stats"]
                     if ov_diag[sid].get("name"):
                         nd["name"] = ov_diag[sid]["name"]
-                st_lines = [str(x) for x in (nd.get("stats") or []) if str(x).strip()]
+                st_lines = normalize_stat_lines(nd.get("stats") or [])
                 if st_lines:
                     lbl = strip_pob_escapes(str(nd.get("name") or sid))
                     alloc_node_stats.append((lbl, st_lines))
@@ -117,8 +121,8 @@ def _collect_diagnose_tree_and_skills(
             continue
         an_name = strip_pob_escapes(str(an.get("name") or "")).strip()
         an_name_zh = strip_pob_escapes(str(an.get("nameZh") or "")).strip() or None
-        an_stats = [strip_pob_escapes(str(x)).strip() for x in (an.get("stats") or []) if str(x).strip()]
-        an_stats_zh = [strip_pob_escapes(str(x)).strip() for x in (an.get("statsZh") or []) if str(x).strip()]
+        an_stats = normalize_stat_lines(an.get("stats") or [])
+        an_stats_zh = normalize_stat_lines(an.get("statsZh") or [])
         if an_name == "Passive Point" and an_stats == ["Grants 1 Passive Skill Point"]:
             continue
         if not an_stats and not an_stats_zh:
@@ -290,9 +294,21 @@ def diagnose_build(
 
     top = max(1, int(top))
     summary = extract_summary(worker)
-    audit_kw = {"include_envelope": False} if "include_envelope" in (getattr(_analyzer.audit_build, "__kwdefaults__", None) or {}) else {}
-    audit = _analyzer.audit_build(worker, keep=keep, attribution=True, **audit_kw)
     items_info = inspect_items(worker, all_raw=True)
+    try:
+        tree_summary = inspect_tree(worker)
+    except Exception:
+        tree_summary = {}
+
+    audit_defs = getattr(_analyzer.audit_build, "__kwdefaults__", None) or {}
+    audit_kw: dict[str, Any] = {}
+    if "include_envelope" in audit_defs:
+        audit_kw["include_envelope"] = False
+    if "pre_tree_summary" in audit_defs:
+        audit_kw["pre_tree_summary"] = tree_summary
+    if "pre_equipped_slots_raw" in audit_defs:
+        audit_kw["pre_equipped_slots_raw"] = items_info.get("equippedSlots")
+    audit = _analyzer.audit_build(worker, keep=keep, attribution=True, **audit_kw)
     with worker.lock:
         all_skills_res, cfg_res_diag, items_raw_res, tree_state_diag = _call_batch(
             worker,
@@ -332,19 +348,17 @@ def diagnose_build(
         if g.get("enabled", True) and (g.get("name") or g.get("nameSpec"))
     ]
     unique_names, equipped_uniques_meta, equipped_items_compact = _collect_diagnose_items(items_info)
+    equipped_unique_overrides = extract_equipped_unique_overrides(items_info)
 
     fact_cards: dict[str, Any] = {"pobVersion": "unknown", "dataVersion": "unknown", "gems": [], "uniques": []}
     try:
-        fact_cards = lookup_fact_cards_for_build(
-            main_gems_raw, unique_names, pob_dir=pob_dir, runtime_dir=runtime_dir
-        )
+        fc_defs = getattr(lookup_fact_cards_for_build, "__kwdefaults__", None) or {}
+        fc_kw: dict[str, Any] = {"pob_dir": pob_dir, "runtime_dir": runtime_dir}
+        if "equipped_uniques" in fc_defs:
+            fc_kw["equipped_uniques"] = equipped_unique_overrides
+        fact_cards = lookup_fact_cards_for_build(main_gems_raw, unique_names, **fc_kw)
     except Exception:
         pass
-
-    try:
-        tree_summary = inspect_tree(worker)
-    except Exception:
-        tree_summary = {}
 
     alloc_node_stats, ascendancy_nodes_compact, skill_groups_compact, all_active_skill_names = (
         _collect_diagnose_tree_and_skills(worker, tree_state_diag, tree_summary, all_skills_res)
@@ -386,16 +400,35 @@ def diagnose_build(
         pob_dir=pob_dir,
         runtime_dir=runtime_dir,
     )
+    advisories_merged = deduplicate_diagnose_advisories(
+        advisories_merged,
+        core_synergies=core_synergies,
+        build_mechanics=build_mechanics,
+        health_gaps=gaps,
+    )
 
     raw_attr = [r for r in (audit.get("waterAttribution") or []) if not r.get("error")]
     top_water = sorted(
         raw_attr,
         key=lambda r: (abs(float(r.get("dpsPct") or 0.0)) + abs(float(r.get("totalEhpPct") or 0.0))),
         reverse=True,
-    )[:6]
+    )
 
+    auto_keep_diag, _ = infer_auto_keep_and_flask_notes(
+        stats={**(summary.get("offence") or {}), **(summary.get("defence") or {})},
+        skills_res=all_skills_res,
+        items_res=items_raw_res,
+        build_info=info,
+        tree_summary=tree_summary,
+        equipped_slots_raw=items_info.get("equippedSlots"),
+        alloc_node_stats=alloc_node_stats,
+    )
     top_nodes, top_gems, rank_errors = (
-        (None, None, []) if no_rank else _run_diagnose_rankings(worker, audit, mg, top=top)
+        (None, None, [])
+        if no_rank
+        else _run_diagnose_rankings(
+            worker, audit, mg, top=top, keep=keep, auto_keep_reasons=auto_keep_diag
+        )
     )
 
     out_diag: dict[str, Any] = {

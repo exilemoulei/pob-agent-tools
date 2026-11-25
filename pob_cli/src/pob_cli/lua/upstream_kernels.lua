@@ -116,6 +116,13 @@ local function handle_node_power(params)
 
 	local t0 = now_ms()
 	local ok, report_or_err = pcall(function()
+		if build.spec and build.spec.nodes and type(build.spec.AddMasteryEffectOptionsToNode) == "function" then
+			for _, nd in pairs(build.spec.nodes) do
+				if nd.type == "Mastery" and not nd.alloc and not nd.allMasteryOptions and nd.overrideType ~= "AlternateMastery" then
+					build.spec:AddMasteryEffectOptionsToNode(nd)
+				end
+			end
+		end
 		build.calcsTab:PowerBuilder()
 		return build.treeTab:BuildPowerReportList(power_stat)
 	end)
@@ -129,13 +136,53 @@ local function handle_node_power(params)
 	local raw_report = report_or_err or {}
 	local report = {}
 	local cluster_count = 0
+	local used_eff = {}
+	local mult = (power_stat and power_stat.powerMultiplier) or 1
+	local m_defs = build.spec and build.spec.tree and build.spec.tree.masteryEffects
 	for i, row in ipairs(raw_report) do
 		if row.pathDist == "Cluster" then
 			cluster_count = cluster_count + 1
 		end
+		local r_name, r_sd, eff_id, alloc_spec = row.name, row.sd, row.effectId, nil
+		if row.type == "Mastery" then
+			local nd = build.spec and build.spec.nodes and build.spec.nodes[row.id]
+			if not eff_id and nd and nd.power and type(nd.power.masteryEffects) == "table" then
+				local u = used_eff[row.id] or {}
+				used_eff[row.id] = u
+				local best_id, best_diff = nil, math.huge
+				for eid, ep in pairs(nd.power.masteryEffects) do
+					if not u[eid] then
+						local d = math.abs(((ep and ep.singleStat) or 0) * mult - (row.power or 0))
+						if d < best_diff or (d == best_diff and (not best_id or eid < best_id)) then
+							best_id, best_diff = eid, d
+						end
+					end
+				end
+				if best_id then
+					eff_id = best_id
+					u[best_id] = true
+				end
+			end
+			if eff_id then
+				alloc_spec = tostring(row.id) .. ":" .. tostring(eff_id)
+				local edef = m_defs and m_defs[eff_id]
+				if edef and type(edef.sd) == "table" and #edef.sd > 0 then
+					local esd = {}
+					for j, ln in ipairs(edef.sd) do
+						esd[j] = tostring(ln):gsub("%s*\r?\n%s*", " ")
+					end
+					r_sd = esd
+					local base_nm = tostring((nd and nd.dn) or r_name or "Mastery"):gsub("%s*\r?\n%s*", " ")
+					base_nm = base_nm:match("^(.-)%s*:") or base_nm:match("^(.-)%s+/%s+") or base_nm
+					r_name = base_nm .. ": " .. table.concat(esd, "; ")
+				end
+			end
+		end
 		report[i] = {
 			id = row.id,
-			name = row.name,
+			effectId = eff_id,
+			allocSpec = alloc_spec,
+			name = r_name,
 			type = row.type,
 			allocated = row.allocated and true or false,
 			power = row.power or 0,
@@ -143,7 +190,7 @@ local function handle_node_power(params)
 			pathPower = row.pathPower or 0,
 			pathPowerStr = row.pathPowerStr,
 			pathDist = row.pathDist,
-			sd = row.sd,
+			sd = r_sd,
 			x = row.x,
 			y = row.y,
 		}
