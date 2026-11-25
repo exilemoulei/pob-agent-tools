@@ -280,6 +280,20 @@ def test_calc_skill_selector_puts_back_the_target_groups_own_calcs_skill() -> No
     assert worker.cur_skill_by_group == {1: 2, 2: 1}
 
 
+def test_calc_selector_changes_nothing_on_a_bridge_that_cannot_say_what_to_put_back() -> None:
+    worker = _FakeCalcsWorker(initial_group=2, initial_skill=1)
+    real_call = worker.call
+
+    def _no_selectors(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        res = real_call(method, params)
+        return {k: v for k, v in res.items() if k != "selectors"} if method == "get_calcs" else res
+
+    worker.call = _no_selectors  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="does not report the Calcs selection"):
+        search_calcs_breakdown(worker, "Average Damage", skill="Fireball", no_breakdown=True)  # type: ignore[arg-type]
+    assert worker.set_calls == [] and worker.cur_group == 2
+
+
 def test_trade_auto_query_resolves_a_numbered_jewel_socket() -> None:
     from pob_cli.daemon.rpc_handlers import _h_trade_generate_query
 
