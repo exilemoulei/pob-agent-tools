@@ -24,18 +24,35 @@ NON_APS_TRIGGER_KEYS: frozenset[str] = frozenset({
 _OVERSPEED_TRIG_RE = re.compile(r"^Trigger Overspeed \(([^,)]+)(?:,\s*([^)]+))?\)")
 _OVERSPEED_CDR_RE = re.compile(r"at\s+([0-9]+(?:\.[0-9]+)?)%\s+CDR")
 _USED_MINION_RECENTLY_RE = re.compile(
-    r"used\s+a\s+minion\s+skill\s+recently|近期[内內]?使用[过過](?:召唤|召喚)生物技能|\boverseer['’]s\s+whip\b",
+    r"used\s+a\s+minion\s+skill\s+recently|近期(?:[内內]|有)?使用[了过過]?(?:召唤|召喚)(?:生物|物)技能|\boverseer['’]s\s+whip\b",
     re.IGNORECASE,
 )
+# PoB 2.69's Minion-typed skills that are neither `permanentMinion` nor Triggered (Data/Skills/act_*.lua,
+# other.lua), less Herald of Purity, which is reserved, not cast: what a build uses again and again.
+_HAND_CAST_MINION_SKILL_IDS: frozenset[str] = frozenset(
+    s.lower()
+    for s in (
+        "AnimateWeapon", "AnimateWeaponAltX", "AnimateWeaponAltY", "VaalAnimateWeapon",
+        "BlinkArrow", "BlinkArrowAltX", "BlinkArrowAltY", "MirrorArrow", "MirrorArrowAltX", "MirrorArrowAltY",
+        "BodyswapAltX", "BoneOffering", "FleshOffering", "SpiritOffering", "BloodOffering", "DarkPact", "DeathWish",
+        "RaiseSpectreAltX", "RaiseZombieAltY", "SummonRagingSpirit", "SummonRagingSpiritAltX",
+        "SummonReaper", "SummonReaperAltX", "SummonReaperAltY",
+        "SummonSkeletons", "SummonSkeletonsAltX", "SummonSkeletonsAltY", "VaalSummonSkeletons",
+        "Absolution", "AbsolutionAltX", "VaalAbsolution", "DominatingBlow", "DominatingBlowAltX", "VaalDomination",
+        "HolyStrike",
+    )
+)
+# For a gem row that carries no skill id.
 _COMBAT_MINION_TOKENS: tuple[str, ...] = (
     "summon raging spirit", "愤怒狂灵", "憤怒狂靈", "summon skeletons", "召唤魔卫", "召喚魔衛",
     "absolution", "赦罪", "dominating blow", "霸气之击", "霸氣之擊", "animate weapon", "幻化武器",
     "bodyswap of sacrifice", "牺牲之灵体转换", "献祭之移形换位", "獻祭之移形換位", "summon reaper", "召唤追命死灵",
-    "blink arrow", "闪现射击", "閃現射擊", "mirror arrow", "魅影射击", "魅影射擊", "holy strike",
+    "blink arrow", "闪现射击", "閃現射擊", "mirror arrow", "魅影射击", "魅影射擊", "holy strike", "神圣打击",
     "flesh offering", "血肉奉献", "bone offering", "骸骨奉献", "spirit offering", "灵魂奉献",
-    # Minion-tagged skills a build casts as its main skill.
-    "dark pact", "暗夜血契", "death wish", "死亡之愿",
+    "dark bargain", "黑暗交易", "death wish", "死亡之愿", "咒死", "vaal domination",
+    "raise spectre of transience", "raise zombie of falling",
 )
+_TRIGGER_SUPPORT_ID_PREFIXES = ("SupportCastOn", "SupportCastWh", "SupportAwakenedCast")
 
 
 def canonical_trigger_key(name: str) -> str:
@@ -347,8 +364,12 @@ def _check_minion_convocation_trigger(
         has_auto = any(gsid in ("Automation", "SupportAutomation") or any(t in ("automation", "automation support", "自动化", "自動化") for t in toks) for toks, gsid, _ in parsed)
         has_cwdt = any(gsid == "SupportCastWhenDamageTaken" or any("cast when damage taken" in t or "受伤时施放" in t or "受傷時施放" in t for t in toks) for toks, gsid, _ in parsed)
         has_other = any(p in slot_low for p in ("trigger a socketed", "trigger socketed", "触发插槽内")) or any(
-            any(p in " ".join(toks) for p in ("cast when stunned", "cast on critical strike", "cast while channelling", "arcanist brand", "spellslinger"))
-            for toks, _, _ in parsed
+            gsid.startswith(_TRIGGER_SUPPORT_ID_PREFIXES)
+            or any(
+                p in " ".join(toks)
+                for p in ("cast when stunned", "cast on critical strike", "cast while channelling", "cast on melee kill", "cast on death", "cast on ward break", "arcanist brand", "spellslinger")
+            )
+            for toks, gsid, _ in parsed
         )
         is_trig = has_auto or has_cwdt or has_other
         t_lbl = "Automation Support" if has_auto else ("Cast when Damage Taken Support" if has_cwdt else "triggered socket")
@@ -357,7 +378,8 @@ def _check_minion_convocation_trigger(
             if gsid == "Convocation" or any(t in ("convocation", "号召", "號召") for t in toks):
                 (trig_conv.append((g_idx, g_slot, t_lbl)) if is_trig else man_conv.append((g_idx, g_slot)))
             elif not is_sup and gsid not in ("Automation", "SupportAutomation"):
-                if not is_trig and any(tok in joined for tok in _COMBAT_MINION_TOKENS):
+                known = gsid.lower() in _HAND_CAST_MINION_SKILL_IDS if gsid else any(tok in joined for tok in _COMBAT_MINION_TOKENS)
+                if known and not is_trig:
                     has_manual_combat = True
 
     if recent and trig_conv and not man_conv and not has_manual_combat:

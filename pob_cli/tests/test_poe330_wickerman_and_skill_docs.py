@@ -103,9 +103,9 @@ def test_custom_mods_pure_330_simulation_vs_kept() -> None:
             {
                 "title": "WickermanSim",
                 "text": (
-                    "// Upper Limb Greater Overseer's Whip\n"
-                    "Minions are Aggressive if you've used a Minion Skill Recently\n"
-                    "20% increased bonuses gained from equipped helmet\n"
+                    "// Greater Scholar's Leg\n"
+                    "45% reduced bonuses gained from Equipped Boots\n"
+                    "装备手套获得的加成提高 25%\n"
                 ),
                 "enabled": True,
             }
@@ -121,7 +121,20 @@ def test_custom_mods_pure_330_simulation_vs_kept() -> None:
     assert "MIXED:" not in lbl
     assert "Viscera/Runegraft lines" in lbl and "PoB models" in lbl
     assert "if active in-game" not in lbl
-    assert len(stripped.get("customMods330Notes") or []) == 1
+    notes = stripped.get("customMods330Notes") or []
+    assert len(notes) == 1 and "counts twice" in notes[0]
+
+    # Only gloves and boots bonuses come from a Viscera or Runegraft, and PoB does not parse the
+    # Overseer's Whip aggression line at all: neither is a line that would count twice.
+    for other in ("20% increased bonuses gained from equipped helmet", "30% increased bonuses gained from equipped quiver",
+                  "Minions are Aggressive if you've used a Minion Skill Recently"):
+        plain = _make_empty_stripped()
+        recs: list[dict[str, Any]] = []
+        _dewater_config_and_custom_mods(
+            {"sections": [], "customMods": [{"title": "T", "text": other, "enabled": True}]}, set(), {}, plain, [], recs
+        )
+        assert "Viscera/Runegraft lines" not in recs[0]["label"], other
+        assert "customMods330Notes" not in plain, other
 
     stripped_kept = _make_empty_stripped()
     records_kept: list[dict[str, Any]] = []
@@ -294,18 +307,31 @@ def test_convocation_automation_not_flagged_when_manual_combat_minion_skill_exis
     assert not [g for g in gaps if g["category"] == "TriggerMechanic"]
 
 
-def _convocation_case(main_gem: dict[str, Any], *, automated: bool, condition: bool) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    conv: list[dict[str, Any]] = [{"name": "Convocation", "skillId": "Convocation", "enabled": True, "support": False}]
+def _gem(name: str, skill_id: str = "", *, support: bool = False) -> dict[str, Any]:
+    return {"name": name, "skillId": skill_id, "enabled": True, "support": support}
+
+
+def _convocation_case(
+    main_gem: dict[str, Any],
+    *,
+    automated: bool,
+    condition: bool = True,
+    conv_support: dict[str, Any] | None = None,
+    main_support: dict[str, Any] | None = None,
+    condition_text: str = "Minions are Aggressive if you've used a Minion Skill Recently",
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    conv = [_gem("Convocation", "Convocation")]
     if automated:
-        conv.append({"name": "Automation Support", "enabled": True, "support": True})
+        conv.append(conv_support or _gem("Automation Support", "SupportAutomation", support=True))
+    main = [main_gem] + ([main_support] if main_support else [])
     skills_res = {
         "mainSocketGroup": 1,
         "groups": [
-            {"index": 1, "isMain": True, "enabled": True, "slot": "Body Armour", "gems": [main_gem]},
+            {"index": 1, "isMain": True, "enabled": True, "slot": "Body Armour", "gems": main},
             {"index": 2, "enabled": True, "slot": "Boots", "gems": conv},
         ],
     }
-    text = "Minions are Aggressive if you've used a Minion Skill Recently" if condition else "10% increased Minion Damage"
+    text = condition_text if condition else "10% increased Minion Damage"
     return _detect_build_mechanics_and_pitfalls(
         stats={"MinionCombinedDPS": 3_000_000, "MinionLife": 50_000, "FireResist": 75, "ColdResist": 75, "LightningResist": 75},
         skills_res=skills_res,
@@ -314,32 +340,87 @@ def _convocation_case(main_gem: dict[str, Any], *, automated: bool, condition: b
     )
 
 
+def _bricked(gaps: list[dict[str, str]]) -> bool:
+    return bool([g for g in gaps if g["category"] == "TriggerMechanic"])
+
+
+# Names and skill ids as the PoB 2.69 bridge reports them; the last row has a Chinese name and no id.
 @pytest.mark.parametrize(
     "main_gem",
     [
-        {"name": "Blink Arrow", "skillId": "BlinkArrow", "enabled": True, "support": False},
-        {"name": "Mirror Arrow", "skillId": "MirrorArrow", "enabled": True, "support": False},
-        {"name": "Holy Strike", "skillId": "HolyStrike", "enabled": True, "support": False},
-        {"name": "Dark Pact", "skillId": "DarkPact", "enabled": True, "support": False},
+        _gem("Blink Arrow", "BlinkArrow"),
+        _gem("Mirror Arrow of Bombarding Clones", "MirrorArrowAltX"),
+        _gem("Holy Strike", "HolyStrike"),
+        _gem("Dark Bargain", "DarkPact"),
+        _gem("Death Wish", "DeathWish"),
+        _gem("Raise Spectre of Transience", "RaiseSpectreAltX"),
+        _gem("Raise Zombie of Falling", "RaiseZombieAltY"),
+        _gem("Vaal Domination", "VaalDomination"),
+        _gem("闪现射击"),
     ],
 )
 def test_a_minion_skill_cast_by_hand_feeds_the_condition_whatever_convocation_does(main_gem: dict[str, Any]) -> None:
-    gaps, mechanics = _convocation_case(main_gem, automated=True, condition=True)
-    assert not [g for g in gaps if g["category"] == "TriggerMechanic"]
+    gaps, mechanics = _convocation_case(main_gem, automated=True)
+    assert not _bricked(gaps)
     # And hand-cast Convocation is then not what the condition hangs on.
-    _, mechanics = _convocation_case(main_gem, automated=False, condition=True)
+    _, mechanics = _convocation_case(main_gem, automated=False)
     assert "minionSkillTrigger" not in mechanics
+
+
+@pytest.mark.parametrize(
+    ("main_gem", "main_support"),
+    [
+        # Permanent minions are summoned once, not used again and again.
+        (_gem("Raise Spectre", "RaiseSpectre"), None),
+        (_gem("Raise Zombie of Slamming", "RaiseZombieAltX"), None),
+        # Shares a word with Dark Bargain in zh-TW but is no minion skill.
+        (_gem("Dark Bargain of Trarthus", "DarkPactAltX"), None),
+        # A triggered minion skill is not used either.
+        (_gem("Summon Raging Spirit", "SummonRagingSpirit"), _gem("Cast On Critical Strike", "SupportCastOnCriticalStrike", support=True)),
+        (_gem("Summon Raging Spirit", "SummonRagingSpirit"), _gem("Cast on Death", "SupportCastOnDeath", support=True)),
+    ],
+)
+def test_a_skill_that_does_not_feed_the_condition_leaves_the_warning_standing(
+    main_gem: dict[str, Any], main_support: dict[str, Any] | None
+) -> None:
+    gaps, _ = _convocation_case(main_gem, automated=True, main_support=main_support)
+    assert _bricked(gaps)
+
+
+@pytest.mark.parametrize(
+    "support",
+    [
+        _gem("Cast on Melee Kill", "SupportCastOnMeleeKill", support=True),
+        _gem("Cast on Death", "SupportCastOnDeath", support=True),
+        _gem("Cast when Damage Taken", "SupportCastWhenDamageTaken", support=True),
+    ],
+)
+def test_convocation_behind_any_trigger_support_is_not_called_manual(support: dict[str, Any]) -> None:
+    spectre = _gem("Raise Spectre", "RaiseSpectre")
+    gaps, mechanics = _convocation_case(spectre, automated=True, conv_support=support)
+    assert _bricked(gaps)
+    assert (mechanics.get("minionSkillTrigger") or {}).get("status") != "active_dependency"
+
+
+def test_the_condition_is_read_in_the_wordings_the_chinese_dictionaries_use() -> None:
+    spectre = _gem("Raise Spectre", "RaiseSpectre")
+    for text in (
+        "若你近期内使用了召唤生物技能，则召唤生物的伤害提高 20%",
+        "若你近期有使用召喚物技能，召喚物增加 20% 傷害",
+    ):
+        gaps, _ = _convocation_case(spectre, automated=True, condition_text=text)
+        assert _bricked(gaps), text
 
 
 def test_manual_convocation_is_no_advisory_on_a_build_without_the_condition() -> None:
-    spectre = {"name": "Raise Spectre", "skillId": "RaiseSpectre", "enabled": True, "support": False}
+    spectre = _gem("Raise Spectre", "RaiseSpectre")
     gaps, mechanics = _convocation_case(spectre, automated=False, condition=False)
     assert "minionSkillTrigger" not in mechanics
     assert not [s for s in mechanics.get("coreSynergies") or [] if "Convocation" in s]
-    assert not [g for g in gaps if g["category"] == "TriggerMechanic"]
+    assert not _bricked(gaps)
     # With the condition and nothing else feeding it, automating Convocation is the brick it warns of.
-    gaps, _ = _convocation_case(spectre, automated=True, condition=True)
-    assert [g for g in gaps if g["category"] == "TriggerMechanic"]
+    gaps, _ = _convocation_case(spectre, automated=True)
+    assert _bricked(gaps)
 
 
 def test_manual_convocation_records_load_bearing_mechanic_and_renders_in_diagnose() -> None:
@@ -414,13 +495,16 @@ def test_skill_and_reference_docs_330_wickerman_vestigial_and_cli_contracts() ->
     assert len(skill_md.splitlines()) <= 85
     assert len(trig_md.splitlines()) <= 45
 
-    for token in ("{vestigial}", "Wickerman", "Viscera", "Convocation", "pob data tattoo|runegraft"):
+    for token in ("{vestigial}", "Wickerman", "Viscera", "Convocation", "pob data runegraft <query>", "pob data tattoo <query> [--kind"):
         assert token in skill_md, f"Missing {token!r} in SKILL.md"
     # What the engine does not bear out stays out: PoB has no `====` blocks, offers no Vestigial
     # implicit to a quiver, and models Viscera and Runegrafts itself.
     for doc_text in (skill_md, anti_md):
         assert "====" not in doc_text and "NEW 3.30 MECHANIC" not in doc_text
         assert "never on a quiver" in doc_text and "counts twice" in doc_text
+        # PoB's rule lets Stasis Prison take one, and its example of a parsed Viscera is the gloves and
+        # boots bonus, not the Overseer's Whip line it cannot parse.
+        assert "Stasis Prison" in doc_text and "Greater Scholar's Leg" in doc_text
         assert "simulated in `customMods`" not in doc_text
 
     for token in (

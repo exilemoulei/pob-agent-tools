@@ -41,14 +41,13 @@ def _same_state(a: Any, b: Any) -> bool:
     return abs(fa - fb) <= 1e-9 * max(1.0, abs(fa))
 
 
+# Lines PoB 2.69 already counts from an equipped Viscera or allocated Runegraft: only gloves and boots
+# bonuses are scaled by them (Data/Viscera.lua, TattooPassives.lua), plus lines that name the source.
 _SIM_330_CUSTOM_MOD_RE = re.compile(
-    r"(?:increased|reduced)\s+bonuses\s+gained\s+from\s+equipped\s+"
-    r"(?:gloves|boots|helmet|body\s+armour|shield|quiver|rings?|amulet|belt)"
-    r"|minions\s+are\s+aggressive\s+if\s+you(?:['’]ve|\s+have)\s+used\s+a\s+minion\s+skill\s+recently"
+    r"(?:increased|reduced)\s+bonuses\s+gained\s+from\s+equipped\s+(?:gloves|boots)"
     r"|\b(?:runegrafts?|wickerman|viscera|scholar['’]s\s+leg|overseer['’]s\s+whip)\b"
-    r"|(?:从)?装备的(?:手套|鞋子|头盔|胸甲|盾牌|箭袋|戒指|项链|腰带)获得的加成(?:提高|降低|增加|减少)"
-    r"|近期(?:内|內)?使用(?:过|過)召唤生物技能.*召唤生物.*侵略"
-    r"|(?:符文之[结結]|符文嫁接|柳条人|内脏|脏器)",
+    r"|[装裝][备備]的?(?:手套|鞋子)[获獲]得的加成"
+    r"|(?:符文之[结結]|符文嫁接|柳条人)",
     re.IGNORECASE,
 )
 
