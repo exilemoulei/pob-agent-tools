@@ -319,8 +319,22 @@ def test_a_skill_step_that_would_do_less_than_it_says_is_refused() -> None:
             validate_batch_op(1, "skill", op)
     with pytest.raises(ValueError, match="adds and removes"):
         validate_batch_op(1, "skill", {"op": "skill", "group": 1, "addGem": "Arc", "removeGem": 1})
+    # An add that takes its gem from `gem` is an add all the same.
+    with pytest.raises(ValueError, match="adds and removes"):
+        validate_batch_op(1, "skill", {"op": "skill", "group": 1, "action": "add", "gem": "Arc", "removeGem": 1})
+    # One step removes one gem, however the selector is spelled.
+    for kind, op in (
+        ("skill_rm", {"op": "skill_rm", "group": 1, "gem": "Arc", "removeGem": "Spark"}),
+        ("skill_rm", {"op": "skill_rm", "group": 1, "gem": 1, "index": 2}),
+        ("skill", {"op": "skill", "group": 1, "action": "remove", "gem": 1, "index": 2}),
+        ("skill", {"op": "skill", "group": 1, "removeGem": 1, "gem": 2}),
+    ):
+        with pytest.raises(ValueError, match="more than one gem to remove"):
+            validate_batch_op(1, kind, op)
     validate_batch_op(1, "skill", {"op": "skill", "group": 1, "removeGem": 1})
     validate_batch_op(1, "skill", {"op": "skill", "group": 1, "action": "remove", "gem": 1})
+    validate_batch_op(1, "skill_rm", {"op": "skill_rm", "group": 1, "gem": 1, "removeGem": None})
+    validate_batch_op(1, "skill_rm", {"op": "skill_rm", "group": 1, "gem": "Arc", "removeGem": "arc"})
 
 
 def test_a_null_full_dps_spelling_does_not_hide_the_one_that_is_set() -> None:
@@ -337,6 +351,22 @@ def test_a_null_full_dps_spelling_does_not_hide_the_one_that_is_set() -> None:
     w.call = _spy  # type: ignore[method-assign]
     _execute_batch_ops(w, [{"op": "skill", "group": 1, "includeInFullDPS": None, "fullDps": True}], cache)  # type: ignore[arg-type]
     assert sent and sent[-1].get("includeInFullDPS") is True
+
+
+def test_a_null_remove_gem_spelling_does_not_hide_the_one_that_is_set() -> None:
+    w = _FakeSkillExtWorker()
+    deleted: list[dict[str, Any]] = []
+    real_call = w.call
+
+    def _spy(method: str, params: dict[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
+        if method == "delete_gem":
+            deleted.append(dict(params or {}))
+            return {}
+        return real_call(method, params, **kw)
+
+    w.call = _spy  # type: ignore[method-assign]
+    _execute_batch_ops(w, [{"op": "skill", "group": 1, "removeGem": None, "remove_gem": 1}], _BatchCache(w))  # type: ignore[arg-type]
+    assert deleted == [{"group": 1, "index": 1}]
 
 
 def test_replaced_gem_state_is_not_carried_onto_a_different_gem_of_the_same_spec_name() -> None:
