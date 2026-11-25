@@ -11,13 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from .constants import _INDEX_BUILD_LOCK, _VALID_INDEX_CACHE, SCHEMA_VERSION
-from .parsers_items import (
-    _assign_vestigial_slots,
-    _parse_bases,
-    _parse_mods,
-    _parse_uniques,
-    _vestigial_donor_map_from_mods,
-)
+from .parsers_items import _parse_bases, _parse_mods, _parse_uniques
+from .parsers_vestigial import _assign_vestigial_slots, _vestigial_donor_map_from_mods
 from .paths import (
     _prune_old_indexes,
     _resolve_poe1_data_dirs,
@@ -197,7 +192,17 @@ def _insert_mods_table(conn: sqlite3.Connection, mods: list[dict[str, Any]]) -> 
         en_stats = _fold_search_text("\n".join(m["stats"]))
         zh_stats = _fold_search_text("\n".join(x for x in m["stats_zh"] if x))
         search_en = (
-            _fold_search_text(" ".join([m["id"], m["affix"], m["group"], *(m.get("vestigialDonors") or ())]))
+            _fold_search_text(
+                " ".join(
+                    [
+                        m["id"],
+                        m["affix"],
+                        m["group"],
+                        *(m.get("vestigialDonors") or ()),
+                        *(("vestigial",) if m.get("source") == "Vestigial" else ()),
+                    ]
+                )
+            )
             + " "
             + en_stats
         )

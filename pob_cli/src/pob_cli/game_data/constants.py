@@ -13,7 +13,7 @@ from ..updater import detect_source_checkout_root, get_runtime_dir
 # 12: Index ModDelve/ModVeiled + DelveDropOnly/IncursionDropOnly/Essence drop-slot tags.
 # 13: Mods keep their weight keys in PoB's order, bases their influence tags (`mod --slot`).
 # 14: Index 3.30 Vestigial mods + Tattoos/Runegrafts tables (tattoos + tattoos_fts).
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 _INDEX_BUILD_LOCK = threading.RLock()
 
 _POB_ESCAPE_RE = re.compile(r"\^x[0-9A-Fa-f]{6}|\^\d")

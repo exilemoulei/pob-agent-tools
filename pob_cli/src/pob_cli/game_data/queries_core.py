@@ -524,7 +524,7 @@ def _query_mods(
         data_json,
     ) in rows:
         if q_lower:
-            combined = f"{mod_id.lower()} {affix_l} {grp_l} {en_l} {zh_l}"
+            combined = f"{mod_id.lower()} {source.lower()} {affix_l} {grp_l} {en_l} {zh_l}"
             if tokens and not all(t in combined for t in tokens):
                 continue
             if q_lower == mod_id.lower() or q_lower == grp_l or q_lower == affix_l or q_lower in en_l or q_lower in zh_l:

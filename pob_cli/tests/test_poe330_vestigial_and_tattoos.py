@@ -100,7 +100,7 @@ def isolated_engine_env(tmp_path_factory: pytest.TempPathFactory) -> dict[str, P
 
 
 def test_parse_crafted_header_and_author_divider_and_vestigial_roundtrip() -> None:
-    assert SCHEMA_VERSION >= 13
+    assert SCHEMA_VERSION >= 15  # 15: Vestigial slots by donor, takes_vestigial, tattoo names
     assert "vestigial" in NON_CONVERTIBLE_KINDS
 
     gloves = parse_item_text(_YLPA_CRAFTED_GLOVES)
@@ -138,6 +138,7 @@ def test_parse_crafted_header_and_author_divider_and_vestigial_roundtrip() -> No
     # PoB has no "Vestigial Item" state line; it would keep one as an unsupported modifier.
     assert "Vestigial Item" not in built_txt
 
+    assert parse_item_text(built_txt).base_type == "Scholar's Robe"
     reparsed_vest = [m for m in parse_item_text(built_txt).mods if m.kind == "vestigial"]
     assert len(reparsed_vest) == 1
     assert reparsed_vest[0].raw == "+200 to maximum Life"
@@ -228,6 +229,26 @@ def test_vestigial_mod_indexing_and_donor_unique_notes(
         unique = next(r for r in res["results"] if r["name"] == name)
         assert unique["takes_vestigial"] is False, name
         assert "Takes a Vestigial implicit" not in _render_single_data_markdown(res, "unique", name)
+
+    # A unique whose data puts a header before its base type still has its base, class and source
+    # read, so one with a source is not offered a Vestigial implicit.
+    for name, base in (("Gorgon's Gaze", "Regicide Mask"), ("Echoes of Creation", "Royal Burgonet")):
+        res = query_local_data("unique", name, pob_dir=engine_dir, runtime_dir=cache_dir)
+        unique = next(r for r in res["results"] if r["name"] == name)
+        assert (unique["base_type"], unique["item_class"], bool(unique["source"])) == (base, "Helmet", True), name
+        assert unique["takes_vestigial"] is False, name
+
+    # PoB compares titles after writing a-umlaut plain; Vestigial.lua names the donor that way.
+    guise_res = query_local_data("unique", "Doppelg\u00e4nger Guise", pob_dir=engine_dir, runtime_dir=cache_dir)
+    guise = next(r for r in guise_res["results"] if r["name"].endswith("nger Guise"))
+    assert guise["vestigial_donor_mods"]
+    guise_mod = query_local_data(
+        "mod", "DivergentRegenerateLifeNotUnhingedUnique__1", pob_dir=engine_dir, runtime_dir=cache_dir
+    )
+    assert guise_mod["results"][0]["applicable_types"] == ["Body Armour"]
+    # The word itself finds them.
+    by_word = query_local_data("mod", "vestigial", pob_dir=engine_dir, runtime_dir=cache_dir, limit=0)
+    assert len(by_word["results"]) > 400 and all(r["source"] == "Vestigial" for r in by_word["results"])
 
     kaom_res = query_local_data("unique", "Kaom's Heart", pob_dir=engine_dir, runtime_dir=cache_dir)
     kaom_u = next(r for r in kaom_res["results"] if r["name"] == "Kaom's Heart")

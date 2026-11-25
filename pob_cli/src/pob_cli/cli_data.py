@@ -35,9 +35,9 @@ from .cli_research import cmd_poedb, cmd_research, cmd_wiki
     type=click.Choice(["all", "tattoo", "runegraft"], case_sensitive=False),
     default="all",
     show_default=True,
-    help="[tattoo only] Filter passive overrides by kind (all, tattoo, runegraft).",
+    help="[tattoo] Filter passive overrides by kind (all, tattoo, runegraft).",
 )
-@click.option("--legacy", "include_legacy", is_flag=True, help="[tattoo only] Include retired 3.22 legacy tattoos.")
+@click.option("--legacy", "include_legacy", is_flag=True, help="[tattoo, runegraft] Include retired 3.22 legacy tattoos.")
 @click.option("--type", "node_type", type=str, default=None, help="[tree only] Filter passive tree nodes by type (Keystone, Notable, Mastery, Ascendancy, Bloodline, Socket).")
 @click.option("--asc", "asc_filter", type=str, default=None, help="[tree only] Filter passive tree nodes by Ascendancy or Bloodline name (EN or ZH, e.g. Warden, Trickster, 守望者).")
 @click.option("--cdr", "cdr_pct", type=float, default=0.0, show_default=True, help="[tick only] Total Cooldown Recovery Rate % (e.g. 14, 52).")
@@ -124,7 +124,7 @@ def cmd_data(
     if mod_filter is not None and kind_low not in ("unique", "tattoo", "runegraft"):
         raise click.UsageError("--mod is only supported for `pob data unique` and `pob data tattoo`.")
     if (tattoo_kind.lower() != "all" or include_legacy) and kind_low not in ("tattoo", "runegraft"):
-        raise click.UsageError("--kind and --legacy are only supported for `pob data tattoo`.")
+        raise click.UsageError("--kind and --legacy are only supported for `pob data tattoo` and `pob data runegraft`.")
     if kind_low == "runegraft" and tattoo_kind.lower() == "tattoo":
         raise click.UsageError("`pob data runegraft` lists runegrafts only; use `pob data tattoo --kind tattoo`.")
 
