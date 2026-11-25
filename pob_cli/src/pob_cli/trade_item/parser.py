@@ -171,11 +171,12 @@ def build_item_text(raw_item: dict[str, Any]) -> str:
     explicit_lines = _extract_mod_lines(item.get("explicitMods"))
     lines.extend(explicit_lines)
 
-    explicit_counts = Counter(explicit_lines)
+    explicit_counts = Counter(explicit_lines) + Counter(implicit_block)
     for field_name, tag in (
         ("fracturedMods", "fractured"),
         ("craftedMods", "crafted"),
         ("mutatedMods", "mutated"),
+        ("vestigialMods", "vestigial"),
         ("veiledMods", "veiled"),
     ):
         for mod_line in _extract_mod_lines(item.get(field_name), extra_tag=tag):
@@ -188,6 +189,8 @@ def build_item_text(raw_item: dict[str, Any]) -> str:
     for api_key, display in INFLUENCE_API_MAP:
         if influences.get(api_key) or item.get(api_key):
             lines.append(f"{display} Item")
+    if influences.get("vestigial") or item.get("vestigial"):
+        lines.append("Vestigial Item")
 
     if item.get("synthesised"):
         lines.append("Synthesised Item")
@@ -420,7 +423,19 @@ def _first_int(value: str) -> int:
         return 0
 
 
+PROPERTY_PREFIXES: tuple[str, ...] = (
+    "implicits:",
+    "item level:",
+    "rarity:",
+    "item class:",
+    "crafted:",
+)
+
+
 def _is_property_line(line: str) -> bool:
+    lowered = line.strip().lower()
+    if lowered.startswith(PROPERTY_PREFIXES):
+        return True
     match = PROPERTY_RE.match(line)
     if not match:
         return False
@@ -442,7 +457,7 @@ def _is_meta_or_property_line(line: str) -> bool:
         return True
     if lowered in STATE_LINES:
         return True
-    if lowered.startswith(("implicits:", "item level:", "rarity:", "item class:")):
+    if lowered.startswith(PROPERTY_PREFIXES):
         return True
     if lowered.startswith("foil unique"):
         return True

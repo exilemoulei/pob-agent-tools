@@ -16,11 +16,129 @@ from .constants import (
 from .lua_parser import (
     MOD_TRADEHASH_STRIP_RE,
     _as_seq,
+    _LuaParser,
     _parse_lua_assignments,
     _parse_lua_return,
+    _tokenize_lua,
 )
 from .parsers_special import _extract_special_lua_blocks
 from .zh_dict import _ZhDictionary
+
+_VESTIGIAL_ALL_SLOTS: tuple[str, ...] = (
+    "helmet",
+    "body_armour",
+    "gloves",
+    "boots",
+    "shield",
+    "quiver",
+)
+_VESTIGIAL_BODY_SUFFIX_RE = re.compile(r"Body(?:Str|Dex|Int)\d*[a-z]?$")
+
+
+def _infer_vestigial_slot_types(mod_id: str) -> list[str]:
+    if "UniqueBody" in mod_id or _VESTIGIAL_BODY_SUFFIX_RE.search(mod_id):
+        return ["body_armour"]
+    if "UniqueHelmet" in mod_id or "UniqueIntHelmet" in mod_id or "UniqueStrDexHelmet" in mod_id:
+        return ["helmet"]
+    if "UniqueGloves" in mod_id:
+        return ["gloves"]
+    if "UniqueBoots" in mod_id:
+        return ["boots"]
+    if "UniqueShield" in mod_id:
+        return ["shield"]
+    if "UniqueQuiver" in mod_id:
+        return ["quiver"]
+    return list(_VESTIGIAL_ALL_SLOTS)
+
+
+def _load_vestigial_mods(data_dir: Path, zh: _ZhDictionary) -> list[dict[str, Any]]:
+    excl_path = data_dir / "ModItemExclusive.lua"
+    if not excl_path.is_file():
+        return []
+
+    vest_donors_by_id: dict[str, list[str]] = {}
+    vest_path = data_dir / "Vestigial.lua"
+    if vest_path.is_file():
+        parsed_vest = _parse_lua_return(vest_path)
+        if isinstance(parsed_vest, dict):
+            for mid, donors in parsed_vest.items():
+                d_list = [str(d).strip() for d in _as_seq(donors) if isinstance(d, str) and str(d).strip()]
+                if d_list:
+                    vest_donors_by_id[str(mid)] = d_list
+
+    raw_txt = excl_path.read_text(encoding="utf-8", errors="ignore")
+    parsed_excl: Any = None
+    if len(raw_txt) > 200_000:
+        div_lines = [
+            ln
+            for ln in raw_txt.splitlines()
+            if ("Divergent" in ln or "divergentunique" in ln) and ln.lstrip().startswith('["')
+        ]
+        if div_lines:
+            snippet = MOD_TRADEHASH_STRIP_RE.sub(" }", "return {\n" + "\n".join(div_lines) + "\n}")
+            try:
+                parsed_excl = _LuaParser(_tokenize_lua(snippet), skip_keys=LUA_SKIP_KEYS_MOD).parse_return_table()
+            except Exception:
+                parsed_excl = None
+    if not isinstance(parsed_excl, dict):
+        parsed_excl = _parse_lua_return(
+            excl_path,
+            skip_keys=LUA_SKIP_KEYS_MOD,
+            prestrip_re=MOD_TRADEHASH_STRIP_RE,
+            prestrip_repl=" }",
+        )
+    if not isinstance(parsed_excl, dict):
+        return []
+
+    out: list[dict[str, Any]] = []
+    for mod_id, entry in parsed_excl.items():
+        if not isinstance(entry, dict):
+            continue
+        mid_s = str(mod_id)
+        mod_tags = [str(t) for t in _as_seq(entry.get("modTags")) if isinstance(t, str)]
+        if not (mid_s.startswith("Divergent") or "divergentunique" in mod_tags):
+            continue
+        stat_lines = [str(s) for s in _as_seq(entry) if isinstance(s, str) and s.strip()]
+        if not stat_lines:
+            continue
+        stats_zh = [zh.translate_stat_line(ln) for ln in stat_lines] if zh.available else []
+        out.append(
+            {
+                "id": mid_s,
+                "source": "Vestigial",
+                "generation_type": str(entry.get("type") or "") or "Vestigial",
+                "affix": str(entry.get("affix") or ""),
+                "group": str(entry.get("group") or ""),
+                "level": int(entry.get("level") or 0),
+                "stats": stat_lines,
+                "stats_zh": stats_zh,
+                "mod_tags": mod_tags,
+                "weights": {},
+                "zero_weights": [],
+                "applicable_types": _infer_vestigial_slot_types(mid_s),
+                "bench_info": None,
+                "vestigialDonors": vest_donors_by_id.get(mid_s, []),
+            }
+        )
+    return out
+
+
+def _vestigial_donor_map_from_mods(mods: list[dict[str, Any]]) -> dict[str, list[str]]:
+    by_donor: dict[str, list[str]] = {}
+    for m in mods:
+        if m.get("source") != "Vestigial":
+            continue
+        donors = m.get("vestigialDonors") or ()
+        if not donors:
+            continue
+        joined = "; ".join(str(s) for s in (m.get("stats") or ()) if s)
+        if not joined:
+            continue
+        for donor in donors:
+            bucket = by_donor.setdefault(str(donor), [])
+            if joined not in bucket:
+                bucket.append(joined)
+    return by_donor
 
 
 def _parse_bases(poe1_dir: Path, zh: _ZhDictionary) -> list[dict[str, Any]]:
@@ -75,11 +193,15 @@ def _parse_uniques(
     bases_by_name: dict[str, dict[str, Any]],
     foulborn_mods_by_id: dict[str, dict[str, Any]],
     zh: _ZhDictionary,
+    *,
+    vestigial_by_donor: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     data_dir = poe1_dir / "Data"
     uniques_dir = data_dir / "Uniques"
     if not uniques_dir.is_dir():
         return []
+    if vestigial_by_donor is None:
+        vestigial_by_donor = _vestigial_donor_map_from_mods(_load_vestigial_mods(data_dir, zh))
 
     foulborn_lua_map: dict[str, list[str]] = {}
     fb_lua_path = data_dir / "ModFoulbornMap.lua"
@@ -214,6 +336,8 @@ def _parse_uniques(
         zh_name = zh.translate_unique(name)
         foulborn_en = f"Foulborn {name}"
         zh_foulborn = zh.translate_unique(foulborn_en)
+        donor_mods = list(vestigial_by_donor.get(name) or ())
+        donor_mods_zh = [zh.translate_stat_line(ln) for ln in donor_mods] if (zh.available and donor_mods) else []
 
         records.append(
             {
@@ -234,6 +358,8 @@ def _parse_uniques(
                 "explicits": explicits,
                 "explicits_zh": explicits_zh,
                 "foulborn_mods": foulborn_mods,
+                "vestigial_donor_mods": donor_mods,
+                "vestigial_donor_mods_zh": donor_mods_zh,
             }
         )
     return records
@@ -424,5 +550,10 @@ def _parse_mods(poe1_dir: Path, zh: _ZhDictionary) -> tuple[list[dict[str, Any]]
             records.append(rec)
             if source_name == "Foulborn":
                 foulborn_by_id[mod_id] = rec
+
+    for vrec in _load_vestigial_mods(data_dir, zh):
+        if vrec["id"] not in seen_ids:
+            seen_ids.add(vrec["id"])
+            records.append(vrec)
 
     return records, foulborn_by_id

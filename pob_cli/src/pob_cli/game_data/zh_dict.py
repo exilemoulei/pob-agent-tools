@@ -212,12 +212,18 @@ class _ZhDictionary:
             if not isinstance(entries, dict):
                 continue
 
-            cat_hint, rank_hint = ZH_FILE_CATEGORY_HINT.get(fn, ("other", 3))
+            cat_hint, rank_hint = ZH_FILE_CATEGORY_HINT.get(
+                fn, ZH_FILE_CATEGORY_HINT.get(fn.lower(), ("other", 3))
+            )
             is_season_patch = fn.startswith("Z-S") and fn.endswith(".json")
             is_gem_file = fn in ("gems.json", "Gems_data.txt.json", "Items_Gems.txt.json", "Z-Skills.json") or is_season_patch
             is_unique_file = fn in ("uniques.json", "Uniques.txt.json", "Z-S28-Foulborn.json", "Z-Flask.json", "Z-Jewel.json") or is_season_patch
             is_base_file = fn in ("items.json", "Items_Accessories.txt.json", "Items_Armour.txt.json", "Items_Flasks.txt.json", "Items_Jewels.txt.json", "Items_Weapons.txt.json", "Z-Item.json", "Z-Flask.json", "Z-Jewel.json", "Z-Addition.json", "Z.json") or is_season_patch
-            is_passive_file = fn in ("tree_dn.json", "TattooPassives.json", "Z-Phrecia.json") or is_season_patch
+            is_passive_file = (
+                fn in ("tree_dn.json", "TattooPassives.json", "Z-Phrecia.json")
+                or fn.lower() in ("tatto.json", "tattoo.json")
+                or is_season_patch
+            )
             is_stat_file = fn in ("statDescriptions.json", "stats.json", "Query_Mod.json", "ModMap.json", "A-1a.json", "A-1b.json", "Z-Item.json", "tree_sd.json", "Z-Addition.json", "Z.json") or is_season_patch
 
             for raw_en, raw_zh in entries.items():

@@ -6,9 +6,10 @@ from typing import Any
 
 
 def _render_single_data_markdown(res: dict[str, Any], kind: str, query: str) -> str:
-    from .formatters import format_game_data
+    from .formatters import format_game_data, render_table
+    from .game_data.tattoos import render_data_with_vestigial_and_tattoos
 
-    return format_game_data(res, kind=kind, query=query)
+    return render_data_with_vestigial_and_tattoos(res, kind, query, format_game_data, render_table)
 
 
 def _render_gem_quality_breakpoints_markdown(res: dict[str, Any]) -> str:

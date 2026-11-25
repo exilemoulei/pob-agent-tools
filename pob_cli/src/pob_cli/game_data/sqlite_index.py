@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .constants import _INDEX_BUILD_LOCK, _VALID_INDEX_CACHE, SCHEMA_VERSION
-from .parsers_items import _parse_bases, _parse_mods, _parse_uniques
+from .parsers_items import _parse_bases, _parse_mods, _parse_uniques, _vestigial_donor_map_from_mods
 from .paths import (
     _prune_old_indexes,
     _resolve_poe1_data_dirs,
@@ -28,6 +28,7 @@ from .sqlite_lock import (
     _release_build_lock,
     _try_break_stale_lock,
 )
+from .tattoos import _insert_tattoos_table, _parse_tattoos
 from .tw_norm import _fold_search_text
 from .zh_dict import _ZhDictionary
 
@@ -37,6 +38,7 @@ __all__ = [
     "_insert_bases_table",
     "_insert_gems_table",
     "_insert_mods_table",
+    "_insert_tattoos_table",
     "_insert_translations_table",
     "_insert_uniques_table",
     "_is_build_lock_stale",
@@ -152,6 +154,8 @@ def _insert_uniques_table(conn: sqlite3.Connection, uniques: list[dict[str, Any]
                     " ".join(x for x in u["implicits_zh"] if x),
                     " ".join(x for x in u["explicits_zh"] if x),
                     fb_lines,
+                    " ".join(u.get("vestigial_donor_mods") or ()),
+                    " ".join(x for x in (u.get("vestigial_donor_mods_zh") or ()) if x),
                 )
                 if p
             )
@@ -181,7 +185,11 @@ def _insert_mods_table(conn: sqlite3.Connection, mods: list[dict[str, Any]]) -> 
     for m in mods:
         en_stats = _fold_search_text("\n".join(m["stats"]))
         zh_stats = _fold_search_text("\n".join(x for x in m["stats_zh"] if x))
-        search_en = _fold_search_text(" ".join([m["id"], m["affix"], m["group"]])) + " " + en_stats
+        search_en = (
+            _fold_search_text(" ".join([m["id"], m["affix"], m["group"], *(m.get("vestigialDonors") or ())]))
+            + " "
+            + en_stats
+        )
         search_zh = zh_stats
         fts_txt = f"{search_en} {search_zh}".strip()
         mod_rows.append(
@@ -267,6 +275,7 @@ def _write_gamedata_sqlite(
     bases: list[dict[str, Any]],
     uniques: list[dict[str, Any]],
     mods: list[dict[str, Any]],
+    tattoos: list[dict[str, Any]] | None = None,
 ) -> None:
     if tmp_path.exists():
         tmp_path.unlink()
@@ -298,6 +307,7 @@ def _write_gamedata_sqlite(
         _insert_bases_table(conn, bases)
         _insert_uniques_table(conn, uniques)
         _insert_mods_table(conn, mods)
+        _insert_tattoos_table(conn, tattoos or [])
         _insert_translations_table(conn, zh, gems, uniques, bases)
         conn.commit()
     finally:
@@ -359,7 +369,14 @@ def ensure_gamedata_index(
             bases = _parse_bases(poe1_dir, zh)
             bases_by_name = {b["name"]: b for b in bases}
             mods, foulborn_by_id = _parse_mods(poe1_dir, zh)
-            uniques = _parse_uniques(poe1_dir, bases_by_name, foulborn_by_id, zh)
+            uniques = _parse_uniques(
+                poe1_dir,
+                bases_by_name,
+                foulborn_by_id,
+                zh,
+                vestigial_by_donor=_vestigial_donor_map_from_mods(mods),
+            )
+            tattoos = _parse_tattoos(poe1_dir, zh)
 
             _write_gamedata_sqlite(
                 tmp_path,
@@ -370,6 +387,7 @@ def ensure_gamedata_index(
                 bases=bases,
                 uniques=uniques,
                 mods=mods,
+                tattoos=tattoos,
             )
 
             replaced = False

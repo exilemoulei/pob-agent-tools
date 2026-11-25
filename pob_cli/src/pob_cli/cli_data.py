@@ -18,11 +18,26 @@ from .cli_research import cmd_poedb, cmd_research, cmd_wiki
 
 
 @click.command("data")
-@click.argument("kind", type=click.Choice(["gem", "unique", "mod", "base", "translate", "tree", "tick"], case_sensitive=False))
+@click.argument(
+    "kind",
+    type=click.Choice(
+        ["gem", "unique", "mod", "base", "translate", "tattoo", "runegraft", "tree", "tick"],
+        case_sensitive=False,
+    ),
+)
 @click.argument("queries", nargs=-1, required=False)
-@click.option("--slot", help="Filter mods/uniques/bases by slot (e.g. 'body_armour', 'helmet', 'ring', 'wand').")
+@click.option("--slot", help="Filter mods/uniques/bases by slot, or tattoos by target passive type (e.g. 'body_armour', 'Small Strength', 'Mastery').")
 @click.option("--ilvl", type=int, help="Maximum item level / required level filter.")
-@click.option("--mod", "mod_filter", type=str, default=None, help="[unique only] Filter uniques by explicit/implicit mod substring (EN or ZH).")
+@click.option("--mod", "mod_filter", type=str, default=None, help="[unique/tattoo] Filter uniques or tattoos/runegrafts by mod/stat substring (EN or ZH).")
+@click.option(
+    "--kind",
+    "tattoo_kind",
+    type=click.Choice(["all", "tattoo", "runegraft"], case_sensitive=False),
+    default="all",
+    show_default=True,
+    help="[tattoo only] Filter passive overrides by kind (all, tattoo, runegraft).",
+)
+@click.option("--legacy", "include_legacy", is_flag=True, help="[tattoo only] Include retired 3.22 legacy tattoos.")
 @click.option("--type", "node_type", type=str, default=None, help="[tree only] Filter passive tree nodes by type (Keystone, Notable, Mastery, Ascendancy, Bloodline, Socket).")
 @click.option("--asc", "asc_filter", type=str, default=None, help="[tree only] Filter passive tree nodes by Ascendancy or Bloodline name (EN or ZH, e.g. Warden, Trickster, 守望者).")
 @click.option("--cdr", "cdr_pct", type=float, default=0.0, show_default=True, help="[tick only] Total Cooldown Recovery Rate % (e.g. 14, 52).")
@@ -41,6 +56,8 @@ def cmd_data(
     slot: str | None,
     ilvl: int | None,
     mod_filter: str | None,
+    tattoo_kind: str,
+    include_legacy: bool,
     node_type: str | None,
     asc_filter: str | None,
     cdr_pct: float,
@@ -55,7 +72,7 @@ def cmd_data(
     compact: bool,
     out_path: str | None,
 ) -> None:
-    """Query local 0ms PoB Lua game/tree data & 0.033s tick calculator (`gem|unique|mod|base|translate|tree|tick`, daemon-free)."""
+    """Query local 0ms PoB Lua game/tree data & 0.033s tick calculator (`gem|unique|mod|base|translate|tattoo|runegraft|tree|tick`, daemon-free)."""
     from . import game_data as gd
 
     kind_low = kind.lower()
@@ -104,8 +121,10 @@ def cmd_data(
         _emit_text(_render_tree_data_markdown(res), out_path=out_path)
         return
 
-    if mod_filter is not None and kind_low != "unique":
-        raise click.UsageError("--mod is only supported for `pob data unique`.")
+    if mod_filter is not None and kind_low not in ("unique", "tattoo", "runegraft"):
+        raise click.UsageError("--mod is only supported for `pob data unique` and `pob data tattoo`.")
+    if (tattoo_kind.lower() != "all" or include_legacy) and kind_low not in ("tattoo", "runegraft"):
+        raise click.UsageError("--kind and --legacy are only supported for `pob data tattoo`.")
 
     if quality_breakpoints or search_quality is not None:
         if kind_low != "gem":
@@ -122,7 +141,19 @@ def cmd_data(
         _emit_text(_render_gem_quality_breakpoints_markdown(res), out_path=out_path)
         return
 
+    extra_kw: dict[str, Any] = {}
+    if kind_low in ("tattoo", "runegraft"):
+        extra_kw = {"tattoo_kind": tattoo_kind.lower(), "include_legacy": include_legacy}
+
     if not q_list:
+        if kind_low in ("tattoo", "runegraft"):
+            res = gd.query_local_data(kind, "", slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw)
+            if as_json:
+                _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
+                return
+            lbl = f"--mod {mod_filter}" if mod_filter else (slot or tattoo_kind)
+            _emit_text(_render_single_data_markdown(res, kind, lbl), out_path=out_path)
+            return
         if kind_low == "unique" and mod_filter and mod_filter.strip():
             res = gd.query_local_data(kind, "", slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit)
             if as_json:
@@ -132,7 +163,7 @@ def cmd_data(
             return
         raise click.UsageError("Provide at least one non-empty query.")
     if len(q_list) == 1:
-        res = gd.query_local_data(kind, q_list[0], slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit)
+        res = gd.query_local_data(kind, q_list[0], slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw)
         if as_json:
             _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
             return
@@ -143,7 +174,7 @@ def cmd_data(
     multi_res: dict[str, Any]
     if hasattr(gd, "query_local_data_multi"):
         multi_res = _call_with_supported_kwargs(
-            gd.query_local_data_multi, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit
+            gd.query_local_data_multi, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw
         )
     elif hasattr(gd, "query_multi"):
         import inspect
@@ -153,14 +184,17 @@ def cmd_data(
         if first_param in ("db", "conn", "db_path"):
             db_path = gd.ensure_gamedata_index()
             multi_res = _call_with_supported_kwargs(
-                gd.query_multi, db_path, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit
+                gd.query_multi, db_path, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw
             )
         else:
             multi_res = _call_with_supported_kwargs(
-                gd.query_multi, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit
+                gd.query_multi, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw
             )
     else:
-        grouped = {q: gd.query_local_data(kind, q, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit) for q in q_list}
+        grouped = {
+            q: gd.query_local_data(kind, q, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw)
+            for q in q_list
+        }
         multi_res = {"kind": kind.lower(), "queries": q_list, "results": grouped}
 
     if as_json:

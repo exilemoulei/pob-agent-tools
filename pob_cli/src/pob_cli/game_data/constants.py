@@ -10,8 +10,8 @@ from typing import Any
 
 from ..updater import detect_source_checkout_root, get_runtime_dir
 
-# 12: Index ModDelve/ModVeiled + DelveDropOnly/IncursionDropOnly/Essence drop-slot tags.
-SCHEMA_VERSION = 12
+# 13: Index 3.30 Vestigial mods + Tattoos/Runegrafts tables (tattoos + tattoos_fts).
+SCHEMA_VERSION = 13
 _INDEX_BUILD_LOCK = threading.RLock()
 
 _POB_ESCAPE_RE = re.compile(r"\^x[0-9A-Fa-f]{6}|\^\d")
@@ -410,6 +410,9 @@ ZH_FILE_CATEGORY_HINT: dict[str, tuple[str, int]] = {
     "Items_Oils.json": ("base", 2),
     "Z-Item.json": ("base", 2),
     "tree_dn.json": ("passive", 1),
+    "Tatto.json": ("passive", 2),
+    "tatto.json": ("passive", 2),
+    "tattoo.json": ("passive", 2),
     "TattooPassives.json": ("passive", 2),
     "passiveTree.json": ("passive", 3),
     "tree_sd.json": ("stat", 3),

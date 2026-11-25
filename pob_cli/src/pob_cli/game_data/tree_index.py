@@ -22,7 +22,7 @@ from .paths import (
 )
 from .tw_norm import _fold_search_text
 
-TREE_SCHEMA_VERSION = 5
+TREE_SCHEMA_VERSION = 6
 _TREE_INDEX_LOCK = threading.RLock()
 _VALID_TREE_INDEX_CACHE: set[tuple[str, str, str]] = set()
 
@@ -434,6 +434,7 @@ def ensure_treedata_index(
                         " ".join(
                             p
                             for p in (
+                                str(nd["id"]),
                                 nd["name"],
                                 nd["zhName"] or "",
                                 nd["ascName"] or "",

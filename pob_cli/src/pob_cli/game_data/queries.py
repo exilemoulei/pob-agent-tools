@@ -23,6 +23,7 @@ from .quality import _enrich_gem_quality_stats
 from .queries_core import _query_bases, _query_gems, _query_mods, _query_uniques
 from .queries_translate import _query_translate
 from .slang import resolve_player_slang
+from .tattoos import query_tattoo_data
 from .tw_norm import _fold_search_text, is_legacy_awakened_gem, normalize_tw_query
 
 _TICK_BASE_CD_PRESETS: dict[str, tuple[float, str]] = {
@@ -53,6 +54,8 @@ def _dispatch_query(
     runtime_dir: Path | None = None,
     raw_query: str | None = None,
     drop_only_sink: list[dict[str, Any]] | None = None,
+    tattoo_kind: str = "all",
+    include_legacy: bool = False,
 ) -> list[dict[str, Any]]:
     if kind_norm == "gem":
         return _query_gems(conn, q_folded, limit)
@@ -62,6 +65,9 @@ def _dispatch_query(
         return _query_bases(conn, q_folded, slot, ilvl, limit)
     if kind_norm == "mod":
         return _query_mods(conn, q_folded, slot, ilvl, limit, drop_only_sink=drop_only_sink)
+    if kind_norm in ("tattoo", "runegraft"):
+        tk = "runegraft" if (kind_norm == "runegraft" and tattoo_kind == "all") else tattoo_kind
+        return query_tattoo_data(conn, q_folded, kind=tk, slot_filter=slot, mod_filter=mod_filter, include_legacy=include_legacy, limit=limit)
     return _query_translate(
         conn, q_folded, limit, zh_available, pob_dir=pob_dir, runtime_dir=runtime_dir, raw_query=raw_query
     )
@@ -201,23 +207,23 @@ def query_local_data(
     slot: str | None = None,
     ilvl: int | None = None,
     mod_filter: str | None = None,
+    tattoo_kind: str = "all",
+    include_legacy: bool = False,
     limit: int = 25,
 ) -> dict[str, Any]:
-    """Query local PoB game data (`gem`, `unique`, `mod`, `base`, `translate`) via SQLite index."""
+    """Query local PoB game data (`gem`, `unique`, `mod`, `base`, `translate`, `tattoo`) via SQLite index."""
     import pob_cli.game_data as _gd
 
     kind_norm = kind.strip().lower()
-    if kind_norm not in ("gem", "unique", "mod", "base", "translate"):
-        raise ValueError(
-            f"Unsupported kind {kind!r}; expected one of: gem, unique, mod, base, translate."
-        )
+    if kind_norm not in ("gem", "unique", "mod", "base", "translate", "tattoo", "runegraft"):
+        raise ValueError(f"Unsupported kind {kind!r}; expected one of: gem, unique, mod, base, translate, tattoo, runegraft.")
 
     q_clean = str(query or "").strip()
     q_tw = normalize_tw_query(q_clean) if q_clean else ""
     mod_clean = str(mod_filter or "").strip() or None
     mod_tw = normalize_tw_query(mod_clean) if mod_clean else None
-    if mod_clean and kind_norm != "unique":
-        raise ValueError("--mod filter is only supported for kind='unique'.")
+    if mod_clean and kind_norm not in ("unique", "tattoo", "runegraft"):
+        raise ValueError("--mod filter is only supported for kind='unique' or 'tattoo'.")
     if q_clean:
         validate_url(q_clean, expected_game="poe1", cli_subcommand=f"data {kind_norm}")
     q_scope = _guardrail_scope_for_kind(kind_norm)
@@ -259,6 +265,8 @@ def query_local_data(
             runtime_dir=runtime_dir,
             raw_query=q_clean,
             drop_only_sink=drop_only_sink if kind_norm == "mod" else None,
+            tattoo_kind=tattoo_kind,
+            include_legacy=include_legacy,
         )
         needs_slang = (not results) or (
             kind_norm == "translate" and not any(r.get("match_type") == "exact" for r in results)
@@ -344,6 +352,8 @@ def query_local_data(
         "count": len(results),
         "results": results,
     }
+    if kind_norm in ("tattoo", "runegraft"):
+        out["filters"].update({"tattooKind": tattoo_kind, "legacy": include_legacy})
     if resolved_alias is not None:
         out["resolvedAlias"] = resolved_alias
     if suggestions is not None:
@@ -367,16 +377,16 @@ def query_multi(
     slot: str | None = None,
     ilvl: int | None = None,
     mod_filter: str | None = None,
+    tattoo_kind: str = "all",
+    include_legacy: bool = False,
     limit: int = 25,
 ) -> dict[str, Any]:
     """Run multiple local game-data queries in one SQLite connection for variadic `pob data`."""
     import pob_cli.game_data as _gd
 
     kind_norm = str(kind).strip().lower()
-    if kind_norm not in ("gem", "unique", "mod", "base", "translate"):
-        raise ValueError(
-            f"Unsupported kind {kind!r}; expected one of: gem, unique, mod, base, translate."
-        )
+    if kind_norm not in ("gem", "unique", "mod", "base", "translate", "tattoo", "runegraft"):
+        raise ValueError(f"Unsupported kind {kind!r}; expected one of: gem, unique, mod, base, translate, tattoo, runegraft.")
 
     clean_queries = list(
         dict.fromkeys(q.strip() for q in (queries or []) if isinstance(q, str) and q.strip())
@@ -435,6 +445,8 @@ def query_multi(
                 mod_filter=mod_tw,
                 raw_query=q_clean,
                 drop_only_sink=sub_sink if kind_norm == "mod" else None,
+                tattoo_kind=tattoo_kind,
+                include_legacy=include_legacy,
             )
             resolved_alias: dict[str, str] | None = None
             suggestions: list[dict[str, Any]] | None = None
@@ -473,6 +485,8 @@ def query_multi(
                 "count": len(res),
                 "results": res,
             }
+            if kind_norm in ("tattoo", "runegraft"):
+                entry["filters"].update({"tattooKind": tattoo_kind, "legacy": include_legacy})
             if resolved_alias is not None:
                 entry["resolvedAlias"] = resolved_alias
             if suggestions is not None:
