@@ -45,7 +45,7 @@ def extract_custom_mods_330_notes(*sources: Any) -> list[str]:
         for lbl in fallback_rows:
             _add(
                 f"{lbl}: check `pob items` and `pob tree` for the Viscera or Runegraft itself; "
-                "pass `--keep customMods` only for what the build does not already carry."
+                "`--keep customMods` keeps the block whole, so take out the lines the build already carries first."
             )
     return notes
 

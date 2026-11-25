@@ -92,6 +92,8 @@ def test_custom_mods_mixed_330_viscera_runegraft_and_unverified_padding() -> Non
     notes = stripped.get("customMods330Notes") or []
     assert len(notes) == 1
     assert "mixes Viscera/Runegraft lines" in notes[0] and "counts twice" in notes[0]
+    # --keep customMods cannot keep half a block.
+    assert "keeps the block whole" in notes[0]
     assert "+200% to critical hit chance" in notes[0]
     assert rec.get("customMods330Notes") == notes
 
@@ -105,7 +107,7 @@ def test_custom_mods_pure_330_simulation_vs_kept() -> None:
                 "text": (
                     "// Greater Scholar's Leg\n"
                     "45% reduced bonuses gained from Equipped Boots\n"
-                    "装备手套获得的加成提高 25%\n"
+                    "25% increased bonuses gained from Equipped Gloves\n"
                 ),
                 "enabled": True,
             }
@@ -126,8 +128,10 @@ def test_custom_mods_pure_330_simulation_vs_kept() -> None:
 
     # Only gloves and boots bonuses come from a Viscera or Runegraft, and PoB does not parse the
     # Overseer's Whip aggression line at all: neither is a line that would count twice.
+    # A Chinese line or a bare name is not something PoB's customMods parser reads, so it cannot count twice.
     for other in ("20% increased bonuses gained from equipped helmet", "30% increased bonuses gained from equipped quiver",
-                  "Minions are Aggressive if you've used a Minion Skill Recently"):
+                  "Minions are Aggressive if you've used a Minion Skill Recently", "装备手套获得的加成提高 25%",
+                  "Greater Overseer's Whip", "Runegraft of the Bound"):
         plain = _make_empty_stripped()
         recs: list[dict[str, Any]] = []
         _dewater_config_and_custom_mods(
@@ -344,7 +348,7 @@ def _bricked(gaps: list[dict[str, str]]) -> bool:
     return bool([g for g in gaps if g["category"] == "TriggerMechanic"])
 
 
-# Names and skill ids as the PoB 2.69 bridge reports them; the last row has a Chinese name and no id.
+# Names and skill ids as the PoB 2.69 bridge reports them.
 @pytest.mark.parametrize(
     "main_gem",
     [
@@ -356,7 +360,7 @@ def _bricked(gaps: list[dict[str, str]]) -> bool:
         _gem("Raise Spectre of Transience", "RaiseSpectreAltX"),
         _gem("Raise Zombie of Falling", "RaiseZombieAltY"),
         _gem("Vaal Domination", "VaalDomination"),
-        _gem("闪现射击"),
+        _gem("召唤魔侍", "SummonSkeletons"),
     ],
 )
 def test_a_minion_skill_cast_by_hand_feeds_the_condition_whatever_convocation_does(main_gem: dict[str, Any]) -> None:
@@ -375,6 +379,8 @@ def test_a_minion_skill_cast_by_hand_feeds_the_condition_whatever_convocation_do
         (_gem("Raise Zombie of Slamming", "RaiseZombieAltX"), None),
         # Shares a word with Dark Bargain in zh-TW but is no minion skill.
         (_gem("Dark Bargain of Trarthus", "DarkPactAltX"), None),
+        # Manaforged Arrows fires the bow attack by itself.
+        (_gem("Mirror Arrow", "MirrorArrow"), _gem("Manaforged Arrows", "SupportManaforgedArrows", support=True)),
         # A triggered minion skill is not used either.
         (_gem("Summon Raging Spirit", "SummonRagingSpirit"), _gem("Cast On Critical Strike", "SupportCastOnCriticalStrike", support=True)),
         (_gem("Summon Raging Spirit", "SummonRagingSpirit"), _gem("Cast on Death", "SupportCastOnDeath", support=True)),
@@ -388,11 +394,27 @@ def test_a_skill_that_does_not_feed_the_condition_leaves_the_warning_standing(
 
 
 @pytest.mark.parametrize(
+    ("attack", "support"),
+    [
+        (_gem("Holy Strike", "HolyStrike"), _gem("Cast on Melee Kill", "SupportCastOnMeleeKill", support=True)),
+        (_gem("Dominating Blow", "DominatingBlow"), _gem("Cast On Critical Strike", "SupportCastOnCriticalStrike", support=True)),
+        (_gem("Mirror Arrow", "MirrorArrow"), _gem("Awakened Cast On Critical Strike", "SupportAwakenedCastOnCriticalStrike", support=True)),
+    ],
+)
+def test_the_attack_that_fires_a_cast_on_support_is_itself_used_by_hand(attack: dict[str, Any], support: dict[str, Any]) -> None:
+    gaps, _ = _convocation_case(attack, automated=True, main_support=support)
+    assert not _bricked(gaps)
+
+
+@pytest.mark.parametrize(
     "support",
     [
         _gem("Cast on Melee Kill", "SupportCastOnMeleeKill", support=True),
         _gem("Cast on Death", "SupportCastOnDeath", support=True),
         _gem("Cast when Damage Taken", "SupportCastWhenDamageTaken", support=True),
+        # Told by the id alone, and by the name alone.
+        _gem("", "SupportCastOnWardBreak", support=True),
+        _gem("Cast on Melee Kill", support=True),
     ],
 )
 def test_convocation_behind_any_trigger_support_is_not_called_manual(support: dict[str, Any]) -> None:
@@ -542,3 +564,43 @@ def test_skill_and_reference_docs_330_wickerman_vestigial_and_cli_contracts() ->
     ):
         low = doc_text.lower()
         assert "stop exploring" not in low, f"Nagging prompt leaked into {doc_name}"
+
+
+def test_the_hand_cast_minion_skills_are_the_ones_pob_types_so() -> None:
+    """The id table against the engine's skill files, so a PoB update that adds a gem shows up here."""
+    import re
+
+    from engine_paths import find_engine_data
+
+    from pob_cli.analyzer.pitfalls_minion_trigger import (
+        _HAND_CAST_MINION_SKILL_IDS,
+        _MINION_ATTACK_SKILL_IDS,
+    )
+
+    engine = find_engine_data()
+    skills_dir = engine / "PoE1" / "Data" / "Skills" if engine else None
+    if skills_dir is None or not skills_dir.is_dir():
+        pytest.skip("no engine on this machine")
+
+    def typed(path: Path) -> dict[str, tuple[str, bool]]:
+        parts = re.split(r'\nskills\["([^"]+)"\] = \{', path.read_text(encoding="utf-8"))
+        out: dict[str, tuple[str, bool]] = {}
+        for sid, body in zip(parts[1::2], parts[2::2], strict=True):
+            m = re.search(r"skillTypes = \{([^\n]*)\}", body)
+            out[sid] = (m.group(1) if m else "", "permanentMinion = true" in body)
+        return out
+
+    gem_skills: dict[str, tuple[str, bool]] = {}
+    for f in sorted(skills_dir.glob("act_*.lua")):
+        gem_skills.update(typed(f))
+    used = {
+        sid.lower()
+        for sid, (types, permanent) in gem_skills.items()
+        if "SkillType.Minion]" in types and "SkillType.Triggered]" not in types and not permanent
+    }
+    item_granted = {"bloodoffering", "deathwish"}
+    assert used - {"heraldofpurity"} == _HAND_CAST_MINION_SKILL_IDS - item_granted
+    other = typed(skills_dir / "other.lua")
+    assert all("SkillType.Minion]" in other[s][0] for s in ("BloodOffering", "DeathWish"))
+    attacks = {sid.lower() for sid, (types, _) in gem_skills.items() if sid.lower() in used and "SkillType.Attack]" in types}
+    assert attacks == _MINION_ATTACK_SKILL_IDS

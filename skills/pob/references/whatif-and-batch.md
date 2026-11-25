@@ -28,7 +28,7 @@ pob batch --json-ops '[{"op":"config","set":{"usePowerCharges":true,"enemyIsBoss
 ```powershell
 pob calc "CombinedDPS" "ManaCost" --group 2 --skill 1                     # Inspect a specific socket group / active skill without switching main
 pob tree change --allocate 26725 --allocate 41263 --deallocate 36634      # Repeatable --allocate / --deallocate flags (or comma-separated IDs)
-pob diagnose @build.xml --json --out report.json                          # Writes clean UTF-8 (no BOM); prefer --out <file> on Windows PowerShell 5.1 instead of > / pipe
+pob diagnose '@build.xml' --json --out report.json                        # Writes clean UTF-8 (no BOM); prefer --out <file> on Windows PowerShell 5.1 instead of > / pipe
 ```
 
 ## Parallel Variant Sweep (`pob sweep`)

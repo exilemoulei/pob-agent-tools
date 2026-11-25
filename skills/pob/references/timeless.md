@@ -27,8 +27,8 @@ pob timeless search --jewel "Brutal Restraint" --socket 26725 --conqueror Balbal
 Default search uses non-exhaustive fast modes — additive fitting (`narrow_down`, which may stop once remaining PRNG groups are bounded) for Legion jewels and a conditional `max(top * 4, 200)` weight shortlist for `Glorious Vanity` and 3.30 Abyss jewels (`Festering Vengeance` / `溃烂复仇`, etc.) — reporting both currently allocated notables (`0` extra points) and unallocated notables in radius; either fast mode can miss a higher seed that `--exact` (full evaluation of every resolved group) finds. Note: `Putrid Seed` (`腐朽之种`) is the 3.30 outer cluster passive fork, whereas the 3.30 Abyss timeless jewel is `Festering Vengeance`.
 
 ## 3. Conquered Radius Boundaries & `Elegant Hubris` `0`-Stat Passives
-- **`Elegant Hubris` (`优雅的狂妄`) `Price of Glory`**: Conquers every small passive in radius into **`Price of Glory`** (zh-TW `榮耀代價`), which grants **nothing**; the conquered notables and keystone carry the jewel's stats and a mastery keeps its own, so a small passive in radius is worth its point only as the path to one of those.
-- **`TreeWaste` Dead-End Audit (`pob diagnose`)**: Flags allocated conquered `0`-stat `Price of Glory` small passives that are dead ends or only link back into the tree, i.e. points that lead to no notable, keystone, mastery or jewel socket.
+- **`Elegant Hubris` (`优雅的狂妄`) `Price of Glory`**: Conquers every small passive in radius into **`Price of Glory`** (zh-TW `榮耀代價`), which grants **nothing**; the conquered notables and keystone carry the jewel's stats and a mastery keeps its own, so a small passive in radius is worth its point only as the path to one of those or to a jewel socket.
+- **`TreeWaste` Dead-End Audit (`pob diagnose`)**: Flags an allocated conquered `0`-stat `Price of Glory` small passive when taking it out would disconnect nothing but other such passives: points that lead nowhere. It is not a general dead-end check; a `Price of Glory` node on the way to anything with stats is left alone.
 - **Inspect Active Socket Radius (`pob tree --socket-radius <id>`)**:
   ```powershell
   pob tree --socket-radius 26725

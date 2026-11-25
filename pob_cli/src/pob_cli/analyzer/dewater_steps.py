@@ -41,13 +41,11 @@ def _same_state(a: Any, b: Any) -> bool:
     return abs(fa - fb) <= 1e-9 * max(1.0, abs(fa))
 
 
-# Lines PoB 2.69 already counts from an equipped Viscera or allocated Runegraft: only gloves and boots
-# bonuses are scaled by them (Data/Viscera.lua, TattooPassives.lua), plus lines that name the source.
+# The lines PoB 2.69 already counts from an equipped Viscera or allocated Runegraft: they scale gloves
+# and boots bonuses only (Data/Viscera.lua, TattooPassives.lua). English only, since that is all PoB's
+# customMods parser reads; a line it cannot read counts for nothing wherever it stands.
 _SIM_330_CUSTOM_MOD_RE = re.compile(
-    r"(?:increased|reduced)\s+bonuses\s+gained\s+from\s+equipped\s+(?:gloves|boots)"
-    r"|\b(?:runegrafts?|wickerman|viscera|scholar['’]s\s+leg|overseer['’]s\s+whip)\b"
-    r"|[装裝][备備]的?(?:手套|鞋子)[获獲]得的加成"
-    r"|(?:符文之[结結]|符文嫁接|柳条人)",
+    r"(?:increased|reduced)\s+bonuses\s+gained\s+from\s+equipped\s+(?:gloves|boots)",
     re.IGNORECASE,
 )
 
@@ -82,8 +80,8 @@ def _classify_custom_mod_block(
         note = (
             f"`customMods[{display_title}]` mixes Viscera/Runegraft lines [{sim_str}] with other custom lines "
             f"[{other_str}]. PoB models an equipped Wickerman Viscera (`pob items`) and an allocated Runegraft "
-            "(`pob tree`) itself, so a line that repeats one counts twice; `--keep customMods` only what the build "
-            "does not already carry."
+            "(`pob tree`) itself, so a line that repeats one counts twice. `--keep customMods` keeps the block "
+            "whole: take the repeated lines out of it first."
         )
         return label, note, sim_330_lines, other_lines
 
@@ -94,7 +92,7 @@ def _classify_custom_mod_block(
     note = (
         f"`customMods[{display_title}]` writes Viscera/Runegraft lines [{sim_str}] by hand. PoB models an equipped "
         "Wickerman Viscera (`pob items`) and an allocated Runegraft (`pob tree`) itself, so a line that repeats one "
-        "counts twice; pass `--keep customMods` only if the build does not already carry it."
+        "counts twice; pass `--keep customMods` only if the build does not already carry it (the block is kept whole)."
     )
     return label, note, sim_330_lines, other_lines
 
