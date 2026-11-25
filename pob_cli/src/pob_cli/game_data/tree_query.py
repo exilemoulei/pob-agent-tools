@@ -88,7 +88,7 @@ def _filter_and_score_tree_rows(
     type_low: str,
     asc_targets: list[str],
     expanded_queries: list[tuple[str, str]],
-) -> list[tuple[tuple[int, int, int, int, str], dict[str, Any]]]:
+) -> list[tuple[tuple[int, int, int, int, int, str], dict[str, Any]]]:
     asc_matches_active_exact = False
     if asc_targets:
         for r in rows:
@@ -96,7 +96,7 @@ def _filter_and_score_tree_rows(
                 asc_matches_active_exact = True
                 break
 
-    scored: list[tuple[tuple[int, int, int, int, str], dict[str, Any]]] = []
+    scored: list[tuple[tuple[int, int, int, int, int, str], dict[str, Any]]] = []
     for (
         _nid,
         name_l,
@@ -151,7 +151,8 @@ def _filter_and_score_tree_rows(
 
         scored.append(
             (
-                (0 if exact_id else is_alt_asc, match_tier, _TREE_TYPE_RANK.get(ntype, 6), 0 if has_stats else 1, name_l),
+                # A node asked for by id goes first, so the fold of same-named small nodes keeps it.
+                (0 if exact_id else 1, 0 if exact_id else is_alt_asc, match_tier, _TREE_TYPE_RANK.get(ntype, 6), 0 if has_stats else 1, name_l),
                 json.loads(dj),
             )
         )

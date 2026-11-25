@@ -285,6 +285,8 @@ def query_local_data(
                     limit=limit,
                     zh_available=zh_available,
                     mod_filter=mod_tw,
+                    tattoo_kind=tattoo_kind,
+                    include_legacy=include_legacy,
                     pob_dir=pob_dir,
                     runtime_dir=runtime_dir,
                     drop_only_sink=slang_sink if kind_norm == "mod" else None,
@@ -309,6 +311,8 @@ def query_local_data(
                         limit=limit,
                         zh_available=zh_available,
                         mod_filter=mod_tw,
+                        tattoo_kind=tattoo_kind,
+                        include_legacy=include_legacy,
                         pob_dir=pob_dir,
                         runtime_dir=runtime_dir,
                         drop_only_sink=sib_sink if kind_norm == "mod" else None,
@@ -334,6 +338,8 @@ def query_local_data(
                     limit=limit,
                     zh_available=zh_available,
                     mod_filter=canon_mod,
+                    tattoo_kind=tattoo_kind,
+                    include_legacy=include_legacy,
                 )
                 if slang_res:
                     results = slang_res
@@ -467,6 +473,8 @@ def query_multi(
                         limit=limit,
                         zh_available=zh_available,
                         mod_filter=mod_tw,
+                        tattoo_kind=tattoo_kind,
+                        include_legacy=include_legacy,
                     )
                     if slang_res:
                         res = slang_res

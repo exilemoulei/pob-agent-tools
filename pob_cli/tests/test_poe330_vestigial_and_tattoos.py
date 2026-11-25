@@ -254,6 +254,10 @@ def test_vestigial_mod_indexing_and_donor_unique_notes(
     kaom_u = next(r for r in kaom_res["results"] if r["name"] == "Kaom's Heart")
     assert "+200 to maximum Life" in kaom_u["vestigial_donor_mods"]
 
+    # A Vestigial mod is found by the unique that gives it.
+    donor_res = query_local_data("mod", "Kaom's Heart", pob_dir=engine_dir, runtime_dir=cache_dir)
+    assert "DivergentIncreasedLifeUniqueBodyStr1" in [m["id"] for m in donor_res["results"]]
+
 
 # ---------------------------------------------------------------------------
 # 3. 3.30 Tattoos & Runegrafts Offline Query (Bilingual + Legacy Filtering)
@@ -356,6 +360,17 @@ def test_tree_exact_numeric_node_id_lookup(
     assert first["id"] == 61308
     assert first["name"] == "Amplify"
     assert first["zhName"] == "增幅"
+
+    # Small nodes that share a name and stats fold into one row; a node asked for by id must be the
+    # one that stays (476 and 487 are two such "Strength" nodes).
+    for wanted, twin in ((487, 476), (476, 487)):
+        ids = [n["id"] for n in query_tree_data([str(wanted), "Strength"], pob_dir=engine_dir, runtime_dir=cache_dir, limit=0)["results"]]
+        assert ids[0] == wanted and twin not in ids
+
+    # A slang word that names a keystone must not bring its tattoo into a runegraft-only query.
+    slang_res = query_local_data("tattoo", "杂耍", pob_dir=engine_dir, runtime_dir=cache_dir, tattoo_kind="runegraft")
+    assert not [r for r in slang_res["results"] if r.get("kind") != "runegraft"]
+    assert query_local_data("tattoo", "杂耍", pob_dir=engine_dir, runtime_dir=cache_dir)["results"][0]["name"] == "Acrobatics"
 
 
 # ---------------------------------------------------------------------------

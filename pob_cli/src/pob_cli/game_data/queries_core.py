@@ -525,6 +525,10 @@ def _query_mods(
     ) in rows:
         if q_lower:
             combined = f"{mod_id.lower()} {source.lower()} {affix_l} {grp_l} {en_l} {zh_l}"
+            if tokens and source == "Vestigial" and not all(t in combined for t in tokens):
+                # The index finds a Vestigial mod by its donor's name; this check has to know it too.
+                donors = json.loads(data_json).get("vestigialDonors") or ()
+                combined += " " + _fold_search_text(" ".join(str(d) for d in donors))
             if tokens and not all(t in combined for t in tokens):
                 continue
             if q_lower == mod_id.lower() or q_lower == grp_l or q_lower == affix_l or q_lower in en_l or q_lower in zh_l:
