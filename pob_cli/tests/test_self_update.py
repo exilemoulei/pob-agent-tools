@@ -126,7 +126,7 @@ def test_swap_posix_replaces_the_directory(tmp_path: Path) -> None:
 
 
 def test_windows_swap_script_quotes_paths() -> None:
-    current = Path("C:/Users/O'Brien/pob4agents/bin")
+    current = Path("C:/Program Files/O'Brien/pob4agents/bin")
     script = self_update.windows_swap_script(42, current, Path("C:/x/bin.update-1/new"), NEW)
     assert "$proc.Id -eq 42" in script
     assert "O''Brien" in script and "O'Brien" not in script.replace("O''Brien", "")
@@ -240,10 +240,10 @@ def test_cli_points_other_installs_at_their_updater(monkeypatch: pytest.MonkeyPa
 @pytest.mark.parametrize(
     ("frozen", "exe", "prefix", "expected"),
     [
-        (True, "C:/Users/a/scoop/apps/pob/current/pob.exe", "", "scoop"),
-        (True, "/home/a/.local/share/pob4agents/bin/pob", "", "standalone"),
-        (False, "", "/home/a/.local/share/uv/tools/pob4agents", "uv"),
-        (False, "", "/home/a/.local/pipx/venvs/pob-cli", "pipx"),
+        (True, "D:/scoop/apps/pob/current/pob.exe", "", "scoop"),
+        (True, "/opt/pob4agents/bin/pob", "", "standalone"),
+        (False, "", "/opt/uv/tools/pob4agents", "uv"),
+        (False, "", "/opt/pipx/venvs/pob-cli", "pipx"),
         (False, "", "/usr", "pip"),
     ],
 )
