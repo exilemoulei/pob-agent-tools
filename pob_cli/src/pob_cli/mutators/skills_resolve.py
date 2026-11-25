@@ -109,7 +109,11 @@ def _extract_explicit_gem_level(entry: str | dict[str, Any]) -> int | None:
     return None
 
 
-def _normalize_gem_spec(entry: str | dict[str, Any]) -> dict[str, Any]:
+def _normalize_gem_spec(
+    entry: str | dict[str, Any],
+    *,
+    allow_illegal_level: bool = False,
+) -> dict[str, Any]:
     """Normalize a gem spec (`dict` or `'Name[:level[:quality]]'` string) into a canonical dict."""
     if isinstance(entry, str):
         raw = entry.strip()
@@ -131,7 +135,7 @@ def _normalize_gem_spec(entry: str | dict[str, Any]) -> dict[str, Any]:
                 name = raw
         if not name:
             raise ValueError(f"Invalid gem specification '{entry}'.")
-        eff_level, cautions = _validate_gem_level(name, explicit_level)
+        eff_level, cautions = _validate_gem_level(name, explicit_level, allow_illegal_level=allow_illegal_level)
         out: dict[str, Any] = {
             "name": name,
             "gemId": None,
@@ -150,8 +154,11 @@ def _normalize_gem_spec(entry: str | dict[str, Any]) -> dict[str, Any]:
         if not name and not gem_id:
             raise ValueError("Gem spec dict must include 'name', 'nameSpec', 'gem', or 'gemId'.")
         explicit_level = int(entry["level"]) if entry.get("level") is not None else None
+        eff_allow_illegal = allow_illegal_level or bool(
+            entry.get("allowIllegalLevel", entry.get("allow_illegal_level", False))
+        )
         if name:
-            eff_level, cautions = _validate_gem_level(name, explicit_level)
+            eff_level, cautions = _validate_gem_level(name, explicit_level, allow_illegal_level=eff_allow_illegal)
         else:
             eff_level = explicit_level if explicit_level is not None else 20
             cautions = []

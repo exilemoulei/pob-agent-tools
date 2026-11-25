@@ -66,7 +66,8 @@ Resolves English or Chinese modifier text to an official PoE1 trade stat ID with
 | `--bench-hint/--no-bench-hint` | on | Include matching crafting-bench options for the slot in the report. |
 | `--pob auto\|on\|off` | `auto` | Batch-verify top `--pob-limit` candidates via daemon `trade_eval_items` (`on` exits `6` on failure; `auto` degrades to mod deltas). |
 | `--pob-limit` | `5` | Number of top candidates evaluated in PoB. |
-| `--fetch-limit` / `--max-results` | `10` / `8` | Listings fetched (max `20`) / rows displayed. |
+| `--surrogate-k` | off | Surrogate-prefilter fetched candidate pool to top `K` (`K >= 50` floor; `0` disables) via `compute_grad_build` before exact PoB evaluation. |
+| `--fetch-limit` / `--max-results` | `10` / `8` | Listings fetched (max `100`, chunked in 10-ID GGG requests) / rows displayed. |
 | `--sort score\|price\|pob` | `score` | Report ranking order (`pob` ranks by finite DPS + 0.25*EHP, `inf`/`NaN`-safe). `price` compares chaos values using poe.ninja currency rates, so `1 divine` sorts after `50 chaos`. |
 | `--dump-query` | off | Print trade query JSON and exit without calling `/api/trade/search`. |
 | `--proxy` | env | Explicit HTTP/SOCKS5 proxy (also honors `POB_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`). |

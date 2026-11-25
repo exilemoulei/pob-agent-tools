@@ -148,6 +148,8 @@ def _h_skill_set(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> 
         count=params.get("count"),
         include_in_full_dps=params.get("include_in_full_dps"),
         group_enabled=params.get("group_enabled"),
+        allow_legacy=bool(params.get("allow_legacy", params.get("allowLegacy", False))),
+        allow_illegal_level=bool(params.get("allow_illegal_level", params.get("allowIllegalLevel", False))),
         apply=bool(params.get("apply", False)),
     )
 
@@ -162,6 +164,8 @@ def _h_skill_add(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> 
         level=int(params["level"]) if params.get("level") is not None else None,
         quality=int(params["quality"]) if params.get("quality") is not None else 20,
         enabled=bool(params.get("enabled", True)),
+        allow_legacy=bool(params.get("allow_legacy", params.get("allowLegacy", False))),
+        allow_illegal_level=bool(params.get("allow_illegal_level", params.get("allowIllegalLevel", False))),
         apply=bool(params.get("apply", False)),
     )
 
@@ -192,6 +196,8 @@ def _h_skill_new_group(_m: DaemonManager, params: dict[str, Any], w: BridgeWorke
             else params.get("includeInFullDps")
         ),
         make_main=bool(params.get("make_main", params.get("makeMain", False))),
+        allow_legacy=bool(params.get("allow_legacy", params.get("allowLegacy", False))),
+        allow_illegal_level=bool(params.get("allow_illegal_level", params.get("allowIllegalLevel", False))),
         apply=bool(params.get("apply", False)),
     )
 
@@ -212,6 +218,8 @@ def _h_skill_replace_group(_m: DaemonManager, params: dict[str, Any], w: BridgeW
             if params.get("include_in_full_dps") is not None
             else params.get("includeInFullDps")
         ),
+        allow_legacy=bool(params.get("allow_legacy", params.get("allowLegacy", False))),
+        allow_illegal_level=bool(params.get("allow_illegal_level", params.get("allowIllegalLevel", False))),
         apply=bool(params.get("apply", False)),
     )
 

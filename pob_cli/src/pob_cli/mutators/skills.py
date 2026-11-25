@@ -27,6 +27,10 @@ from .skills_resolve import (
 )
 
 
+def _legacy_warn_cautions(warns: list[Any]) -> list[str]:
+    return [f"[POE1-PATCH-WARN] {w.summary}" for w in warns if getattr(w, "category", "") == "legacy_patch"]
+
+
 def _apply_add_group_in_place(
     w: BridgeWorker,
     *,
@@ -36,6 +40,8 @@ def _apply_add_group_in_place(
     enabled: bool = True,
     include_in_full_dps: bool | None = None,
     make_main: bool = False,
+    allow_legacy: bool = False,
+    allow_illegal_level: bool = False,
     cache: _BatchCache | None = None,
 ) -> dict[str, Any]:
     resolved_slot: str | None = None
@@ -43,6 +49,7 @@ def _apply_add_group_in_place(
         check_input(str(slot), scope=GuardrailScope.SLOT, expected_game="poe1")
         items_res = cache.get_items() if cache is not None else w.call("list_items", {})
         resolved_slot = _resolve_slot_from_items(items_res, str(slot))
+    cautions: list[str] = []
     if gems:
         for g_entry in gems:
             g_name = (
@@ -51,7 +58,13 @@ def _apply_add_group_in_place(
                 else str(g_entry.get("name") or g_entry.get("nameSpec") or g_entry.get("gem") or "")
             )
             if g_name:
-                check_input(g_name, scope=GuardrailScope.GEM_NAME, expected_game="poe1", block_legacy_gems=True)
+                warns = check_input(
+                    g_name,
+                    scope=GuardrailScope.GEM_NAME,
+                    expected_game="poe1",
+                    block_legacy_gems=not allow_legacy,
+                )
+                cautions = _merge_cautions(cautions, _legacy_warn_cautions(warns))
 
     add_params: dict[str, Any] = {}
     if label is not None:
@@ -71,17 +84,16 @@ def _apply_add_group_in_place(
         w.call("set_group", group_updates)
 
     added_gems: list[dict[str, Any]] = []
-    cautions: list[str] = []
     if gems:
         explicit_levels = [_extract_explicit_gem_level(g) for g in gems]
-        norm_specs = [_normalize_gem_spec(g) for g in gems]
+        norm_specs = [_normalize_gem_spec(g, allow_illegal_level=allow_illegal_level) for g in gems]
         for sp in norm_specs:
             cautions = _merge_cautions(cautions, sp.get("cautions"))
         resolved_specs = _resolve_gem_specs_batch(w, g_idx, norm_specs)
         for sp, exp_lv in zip(resolved_specs, explicit_levels, strict=False):
             r_name = str(sp.get("name") or "").strip()
             if r_name:
-                eff_lv, lv_cautions = _validate_gem_level(r_name, exp_lv)
+                eff_lv, lv_cautions = _validate_gem_level(r_name, exp_lv, allow_illegal_level=allow_illegal_level)
                 if eff_lv is not None:
                     sp["level"] = eff_lv
                 cautions = _merge_cautions(cautions, lv_cautions)
@@ -118,12 +130,14 @@ def add_skill_group(
     enabled: bool = True,
     include_in_full_dps: bool | None = None,
     make_main: bool = False,
+    allow_legacy: bool = False,
+    allow_illegal_level: bool = False,
     apply: bool = False,
 ) -> dict[str, Any]:
     """Create a new skill socket group with optional gems, slot, label, enabled, and FullDPS flag."""
     if gems:
         for g in gems:
-            _normalize_gem_spec(g)
+            _normalize_gem_spec(g, allow_illegal_level=allow_illegal_level)
 
     def _do_add_group(w: BridgeWorker) -> dict[str, Any]:
         return _apply_add_group_in_place(
@@ -134,6 +148,8 @@ def add_skill_group(
             enabled=enabled,
             include_in_full_dps=include_in_full_dps,
             make_main=make_main,
+            allow_legacy=allow_legacy,
+            allow_illegal_level=allow_illegal_level,
         )
 
     res = run_mutation(worker, _do_add_group, apply=apply)
@@ -166,6 +182,8 @@ def _apply_replace_group_in_place(
     slot: str | None = None,
     enabled: bool | None = None,
     include_in_full_dps: bool | None = None,
+    allow_legacy: bool = False,
+    allow_illegal_level: bool = False,
     cache: _BatchCache | None = None,
 ) -> dict[str, Any]:
     skills_res = cache.get_skills() if cache is not None else w.call("list_skills", {})
@@ -179,17 +197,23 @@ def _apply_replace_group_in_place(
         check_input(str(slot), scope=GuardrailScope.SLOT, expected_game="poe1")
     raw_gems = list(gems or [])
     explicit_levels = [_extract_explicit_gem_level(g) for g in raw_gems]
-    norm_specs = [_normalize_gem_spec(g) for g in raw_gems]
+    norm_specs = [_normalize_gem_spec(g, allow_illegal_level=allow_illegal_level) for g in raw_gems]
     cautions: list[str] = []
     for sp in norm_specs:
         cautions = _merge_cautions(cautions, sp.get("cautions"))
         if sp.get("name"):
-            check_input(str(sp["name"]), scope=GuardrailScope.GEM_NAME, expected_game="poe1", block_legacy_gems=True)
+            warns = check_input(
+                str(sp["name"]),
+                scope=GuardrailScope.GEM_NAME,
+                expected_game="poe1",
+                block_legacy_gems=not allow_legacy,
+            )
+            cautions = _merge_cautions(cautions, _legacy_warn_cautions(warns))
     resolved_specs = _resolve_gem_specs_batch(w, g_idx, norm_specs)
     for sp, exp_lv in zip(resolved_specs, explicit_levels, strict=False):
         r_name = str(sp.get("name") or "").strip()
         if r_name:
-            eff_lv, lv_cautions = _validate_gem_level(r_name, exp_lv)
+            eff_lv, lv_cautions = _validate_gem_level(r_name, exp_lv, allow_illegal_level=allow_illegal_level)
             if eff_lv is not None:
                 sp["level"] = eff_lv
             cautions = _merge_cautions(cautions, lv_cautions)
@@ -248,12 +272,14 @@ def replace_skill_group(
     slot: str | None = None,
     enabled: bool | None = None,
     include_in_full_dps: bool | None = None,
+    allow_legacy: bool = False,
+    allow_illegal_level: bool = False,
     apply: bool = False,
 ) -> dict[str, Any]:
     """Atomically clear all existing gems in `group` and replace them with `gems` in one call."""
     gem_list = list(gems or [])
     for g in gem_list:
-        _normalize_gem_spec(g)
+        _normalize_gem_spec(g, allow_illegal_level=allow_illegal_level)
 
     def _do_replace(w: BridgeWorker) -> dict[str, Any]:
         return _apply_replace_group_in_place(
@@ -264,6 +290,8 @@ def replace_skill_group(
             slot=slot,
             enabled=enabled,
             include_in_full_dps=include_in_full_dps,
+            allow_legacy=allow_legacy,
+            allow_illegal_level=allow_illegal_level,
         )
 
     res = run_mutation(worker, _do_replace, apply=apply)
@@ -285,13 +313,21 @@ def modify_skill(
     count: int | None = None,
     include_in_full_dps: bool | None = None,
     group_enabled: bool | None = None,
+    allow_legacy: bool = False,
+    allow_illegal_level: bool = False,
     apply: bool = False,
 ) -> dict[str, Any]:
     """Modify a skill group or a specific gem within a skill group."""
     pre_cautions: list[str] = []
     if new_gem:
-        check_input(new_gem, scope=GuardrailScope.GEM_NAME, expected_game="poe1", block_legacy_gems=True)
-        _, pre_cautions = _validate_gem_level(new_gem.strip(), level)
+        warns = check_input(
+            new_gem,
+            scope=GuardrailScope.GEM_NAME,
+            expected_game="poe1",
+            block_legacy_gems=not allow_legacy,
+        )
+        _, lv_cautions = _validate_gem_level(new_gem.strip(), level, allow_illegal_level=allow_illegal_level)
+        pre_cautions = _merge_cautions(_legacy_warn_cautions(warns), lv_cautions)
 
     def _do_skill_set(w: BridgeWorker) -> dict[str, Any]:
         skills_res = w.call("list_skills", {})
@@ -319,7 +355,9 @@ def modify_skill(
             if new_gem:
                 cand = _resolve_gem_candidate(w, g_idx, new_gem)
                 resolved_name = (cand.get("name") if cand else None) or new_gem.strip()
-                eff_level, res_cautions = _validate_gem_level(resolved_name, level)
+                eff_level, res_cautions = _validate_gem_level(
+                    resolved_name, level, allow_illegal_level=allow_illegal_level
+                )
                 cautions = _merge_cautions(cautions, res_cautions)
                 if cand and cand.get("gemId"):
                     gem_params["gemId"] = cand["gemId"]
@@ -333,7 +371,9 @@ def modify_skill(
             else:
                 existing_name = str(target_gem.get("name") or target_gem.get("nameSpec") or "").strip()
                 if level is not None:
-                    eff_level, res_cautions = _validate_gem_level(existing_name, level)
+                    eff_level, res_cautions = _validate_gem_level(
+                        existing_name, level, allow_illegal_level=allow_illegal_level
+                    )
                     cautions = _merge_cautions(cautions, res_cautions)
                     gem_params["level"] = eff_level
             if quality is not None:
@@ -364,18 +404,28 @@ def add_skill_gem(
     level: int | None = None,
     quality: int = 20,
     enabled: bool = True,
+    allow_legacy: bool = False,
+    allow_illegal_level: bool = False,
     apply: bool = False,
 ) -> dict[str, Any]:
     """Add a gem (resolved via `gem_search` if needed) to a skill group."""
-    check_input(gem_name, scope=GuardrailScope.GEM_NAME, expected_game="poe1", block_legacy_gems=True)
-    _, pre_cautions = _validate_gem_level(gem_name.strip(), level)
+    warns = check_input(
+        gem_name,
+        scope=GuardrailScope.GEM_NAME,
+        expected_game="poe1",
+        block_legacy_gems=not allow_legacy,
+    )
+    _, lv_cautions = _validate_gem_level(gem_name.strip(), level, allow_illegal_level=allow_illegal_level)
+    pre_cautions = _merge_cautions(_legacy_warn_cautions(warns), lv_cautions)
 
     def _do_add(w: BridgeWorker) -> dict[str, Any]:
         skills_res = w.call("list_skills", {})
         g_idx = resolve_skill_group_index(skills_res, group_selector)
         chosen = _resolve_gem_candidate(w, g_idx, gem_name)
         resolved_name = (chosen.get("name") if chosen else None) or gem_name.strip()
-        eff_level, res_cautions = _validate_gem_level(resolved_name, level)
+        eff_level, res_cautions = _validate_gem_level(
+            resolved_name, level, allow_illegal_level=allow_illegal_level
+        )
         cautions = _merge_cautions(pre_cautions, res_cautions)
         final_level = eff_level if eff_level is not None else 20
 

@@ -8,7 +8,7 @@ Every subcommand with its flags, in one place. For when to use which, start with
 # Exit codes: 0 ok; 1 bad request (bad arguments, PoE2 input, or a build code the engine rejects while it keeps running); 5 daemon or engine fault (timeout, crash, any other engine error: `pob stop` and retry); `pob trade` uses 0..6 (docs/guides/trade.md).
 
 # Lifecycle, Foreground Daemon, Engine Bootstrap/Update & Build I/O (127.0.0.1 + X-PoB-Token)
-pob help [--brief|-b] [COMMAND]... [--json]                                            # Compact 1-screen CLI cheat-sheet (`--brief`) or subcommand help
+pob help [--brief|-b] [COMMAND]... [--json]                                            # Compact 1-screen CLI cheat-sheet (`--brief`, <20ms) or subcommand help
 pob serve [--offline] [--proxy <url>] [--port N] [--runtime-dir <dir>]                 # Foreground persistent daemon (use IsDaemon:true in job-reaped shells)
 pob bootstrap [--proxy <url>] [--mirror <url>] [--no-zh] [--from-dir <dir>] [--json]   # Install/seed slim managed engine (native LuaJIT _lua-host on Windows, zero pob-zh.exe; PobTools-zh bridge + zh-rCN/zh-rTW + PoB master)
 pob update [--check] [--force] [--proxy <url>] [--mirror <url>] [--offline] [--json]   # Incremental SHA1 update (hot-reloads live daemon slots)
@@ -24,15 +24,15 @@ pob undo | pob redo | pob stop [--json]
 
 # Read-Only Inspection, Grounding & One-Shot Diagnosis
 pob ground "<prompt_text>" [--limit 8] [--json]                                        # <15ms daemon-free 3.30 entity cards + PoE2/patch trap alerts
-pob diagnose [SOURCE] [-c|--compare REF] [-q|--ask "<text>"] [--char "<name>"] [--league L] [--realm pc|xbox|sony|cn] [--keep <spec>]... [--top 5] [--no-rank] [--target <slug>] [--ref-target <slug>] [--json] # One-shot: [Env (NOT PoE2) | rev=N] + Pinnacle audit + gaps/bricks/dead-supports/triggers + 3.30 cards + upgrades (or dual-build 3-baseline compare)
+pob diagnose [SOURCE] [-c|--compare REF] [-q|--ask "<text>"] [--char "<name>"] [--league L] [--realm pc|xbox|sony|cn] [--keep <spec>]... [--rank|--no-rank] [--section all|summary|gaps|items|skills|cards|upgrades] [--top 5] [--target <slug>] [--ref-target <slug>] [--json] # One-shot: [Env (NOT PoE2) | rev=N] + Pinnacle audit + gaps/bricks/dead-supports/triggers + 3.30 cards + optional --rank upgrades (or dual-build 3-baseline compare)
 pob summary [--target <slug>] [--json]                                                 # [Env | rev=N] + Offence (Hit/DoT/FullDPS/Minion*), Defence (EHP/MaxHit/Res), Warnings
 pob audit [--keep <spec>]... [--no-attribution] [--target <slug>] [--json]             # [Env | rev=N] + Hard gaps + 4-dim water audit -> Pinnacle (per-item PoB attribution; --keep var|Flask N|flasks|gem|customMods|party)
 pob config list [--all] [--search "<sub >"] [--with-options] [--target <slug>] [--json] # Active/filtered ConfigTab vars + raw customMods
 pob items [--slot "Weapon 1"|"#1"] [--all] [--raw] [--target <slug>] [--json]          # Equipped table, single slot, or all equipped + allocated jewels raw
-pob item inspect (--slot S | --raw "<item text>" | --file f) [--want "Cold Resistance"]... [--target <slug>] [--json] # Rare-item affix occupancy and bench candidates; uncertain matches never claim free slots
+pob item inspect (--slot S | --raw "<item text>" | --file f) [--want "Cold Resistance"]... [--limit 8] [--target <slug>] [--json] # Rare-item affix occupancy and bench candidates (unclamped --limit >= 1); uncertain matches never claim free slots
 pob skills [--group main|1|"label"] [--target <slug>] [--json]                         # Skill groups or per-gem DPS tooltips
-pob tree [--search "<kw>" ...] [--type Keystone|Notable|Mastery|Socket|Ascendancy ...] [--allocated|--unallocated] [--max-cost N] [--show-path] [--masteries] [--socket-radius <id|#1>] [--json]
-pob calc "<kw1>" ["<kw2>" ...] [--limit 20] [--no-breakdown] [--target <slug>] [--json] # Variadic EN/ZH get_calcs + calcs_breakdown formulas/tables; rows are for the skill PoB's Calcs tab selects (named in the output as `calcsSkill`, with a warning when it is not the main skill)
+pob tree [--search "<kw>" ...] [--type Keystone|Notable|Mastery|Socket|Ascendancy ...] [--allocated|--unallocated] [--max-cost N] [--show-path] [--masteries] [--socket-radius <id|#1>] [--limit 100] [--json] # --limit 0 returns all matching nodes
+pob calc "<kw1>" ["<kw2>" ...] [--limit 20] [--max-breakdowns 30] [--no-breakdown] [--target <slug>] [--json] # Variadic EN/ZH get_calcs + calcs_breakdown formulas/tables (--max-breakdowns 0 expands all); rows are for `calcsSkill`
 
 # What-If Simulation (0-residue rollback by default) & Persistent Mutation (--apply)
 pob item try [--slot S] (--raw "<text>" | --file f) [--tooltip-only] [--apply]
@@ -41,11 +41,11 @@ pob item unequip --slot S [--apply]
 pob item db "<query>" [--type UNIQUE|RARE] [--slot S] [--index N] [--equip] [--with-tooltips] [--with-raw] [--apply] [--limit 15]
 pob item flask <1..5|all> <on|off> [--apply]
 pob item anoint [--slot Amulet] --notable "<name>" [--index 1..4] [--apply]
-pob skill set --group main [--gem <idx|name>] [--new-gem "<name>"] [--level N] [--quality N] [--enabled true|false] [--count N] [--full-dps true|false] [--apply]
-pob skill add --group main --gem "<name>" [--level 20] [--quality 20] [--apply]
+pob skill set --group main [--gem <idx|name>] [--new-gem "<name>"] [--level N] [--quality N] [--enabled true|false] [--count N] [--full-dps true|false] [--allow-legacy] [--allow-illegal-level] [--apply]
+pob skill add --group main --gem "<name>" [--level 20] [--quality 20] [--allow-legacy] [--allow-illegal-level] [--apply]
 pob skill rm --group main --gem <idx|name> [--apply]
-pob skill new-group [--label L] [--slot S] [--gem "Name[:lvl[:qual]]"]... [--full-dps true|false] [--apply]
-pob skill replace-group --group main (--gems '<json>' | --gem "Name[:lvl[:qual]]"...) [--label L] [--slot S] [--full-dps true|false] [--apply]
+pob skill new-group [--label L] [--slot S] [--gem "Name[:lvl[:qual]]"]... [--full-dps true|false] [--allow-legacy] [--allow-illegal-level] [--apply]
+pob skill replace-group --group main (--gems '<json>' | --gem "Name[:lvl[:qual]]"...) [--label L] [--slot S] [--full-dps true|false] [--allow-legacy] [--allow-illegal-level] [--apply]
 pob tree change [--allocate id1,id2:effectId] [--deallocate id3] [--allow-cascade|--no-allow-cascade] [--apply]
 pob tree set-class [Class] [Ascendancy] [--secondary-asc <Bloodline|None>] [--apply]
 pob config set [<var>=<val|reset> ...] [--custom-mods "<text|clear>"] [--append-mods "<text>"] [--apply]
@@ -62,15 +62,15 @@ pob borrow [--item-slot "Weapon 1,Amulet"] [--skill-group main] [--apply] [--jso
 
 # Local 0ms Game Data (Daemon-Free, Variadic) & External Economy/PoEDB/Wiki (Cached, Variadic)
 pob data <gem|unique|mod|base|translate|tree|tick> ["<q1>" ...] [--slot S] [--ilvl N] [--mod "<stat>"] [--type T] [--asc A] [--cdr N] [--aps R] [--spells N] [--quality-breakpoints] [--search-quality Q] [--active-only] [--limit 25] [--rebuild] [--json]
-pob poedb "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us] [--proxy <url>] [--limit 60] [--json]
+pob poedb "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us] [--proxy <url>] [--limit 150] [--json]
 pob price "<q1>" ["<q2>" ...] [--league L] [--category all|unique|gem|imbuedgem|...] [--variant S] [--limit 20] [--detailed] [--proxy <url>] [--json]
 pob meta [--league L] [--skill S] [--class C] [--top 15] [--proxy <url>] [--json]
-pob research "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us] [--proxy <url>] [--limit 40] [--json] # Concurrent poedb.tw + poewiki.net dual-source research (short entity names; auto-splits long NL sentences)
-pob wiki "<q1>" ["<q2>" ...] [--proxy <url>] [--json]                                  # Local PoEDB bilingual index exact match + Mechanics/Interactions priority extraction
+pob research "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us] [--proxy <url>] [--limit 40] [--max-chars 12000] [--json] # Concurrent poedb.tw + poewiki.net dual-source research (--max-chars 0 = unlimited)
+pob wiki "<q1>" ["<q2>" ...] [--max-chars 12000] [--proxy <url>] [--json]               # Local PoEDB bilingual index exact match + Mechanics/Interactions priority extraction (--max-chars 0 = unlimited)
 
 # Official PoE1 Trade (Read-Only, PoB-Verified) & Crafting Bench
 pob trade stats "<text|中文>" [--slot S] [--limit 5] [--proxy U] [--json]              # Local TradeSiteStats.lua (0ms) or API fallback
-pob trade search --slot S [--stat "text|中文=min"]... [--sum "a[*w]|b[*w]>=min"]... [--want T]... [--bench-craft "<stat>"]... [--budget N] [--currency chaos_equiv|chaos|divine] [--status available|securable|online|any] [--max-age HOURS] [--bargain PCT] [--search-sort asc|desc|sum] [--sort score|price|pob|sum] [--allow-conversion [--convert-to E]] [--open-prefix|--open-suffix|--open-affix] [--pob auto|on|off] [--auto-query] [--target <slug>] [--dump-query] [--proxy U] [--json] # --bench-craft keeps originals + max-roll bench variants (PoB-ranked; budget=listing only; hard --stat pre-craft); --auto-query searches PoB's weighted query sorted by weighted sum (unless --search-sort is given), trimming its lowest weights to keep the whole query within complexity 160
+pob trade search --slot S [--stat "text|中文=min"]... [--sum "a[*w]|b[*w]>=min"]... [--want T]... [--bench-craft "<stat>"]... [--budget N] [--currency chaos_equiv|chaos|divine] [--status available|securable|online|any] [--max-age HOURS] [--bargain PCT] [--search-sort asc|desc|sum] [--sort score|price|pob|sum] [--fetch-limit 10] [--pob-limit 5] [--surrogate-k K] [--allow-conversion [--convert-to E]] [--open-prefix|--open-suffix|--open-affix] [--pob auto|on|off] [--auto-query] [--target <slug>] [--dump-query] [--proxy U] [--json] # --fetch-limit up to 100 (10-ID GGG chunks); --surrogate-k prefilters fetched pool via grad-Build (floor 50) before PoB eval; --auto-query trims lowest weights within complexity 160
 pob trade convert (--text T | --file f) --to fire|cold|lightning [--out f] [--json]    # Harvest 3.30 swap preview (same tier, rerolled)
 pob bench list --slot S [--search "<text|中文>"] [--affix prefix|suffix] [--limit 25] [--json]
 pob bench suggest --slot S --stat "<text|中文>" [--affix prefix|suffix] [--limit 5] [--json]

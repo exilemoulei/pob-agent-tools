@@ -404,10 +404,12 @@ def _h_timeless_list(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> d
 def _h_trade_eval_items(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from .. import trade_eval
 
+    raw_pk = params.get("prefilter_k") if params.get("prefilter_k") is not None else params.get("prefilterK")
     return trade_eval.eval_trade_items(
         w,
         slot_name=params.get("slot") or params.get("slotName"),
         items=list(params.get("items") or []),
+        prefilter_k=int(raw_pk) if raw_pk is not None else None,
     )
 
 

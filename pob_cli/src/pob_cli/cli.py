@@ -143,8 +143,8 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "Inspect, evaluate, edit, or mutate equipped items, flasks, and anoints.",
     ),
     "skill": (
-        ".cli_mutate",
-        "grp_skill",
+        ".cli_mutate_skills",
+        "skill",
         "Modify, add, or replace skill groups and support/active gems.",
     ),
     "tree": (

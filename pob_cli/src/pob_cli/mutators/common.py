@@ -171,7 +171,12 @@ def _get_gem_level_bounds_safe(gem_name: str) -> dict[str, Any]:
     }
 
 
-def _validate_gem_level(gem_name: str, level: int | None) -> tuple[int | None, list[str]]:
+def _validate_gem_level(
+    gem_name: str,
+    level: int | None,
+    *,
+    allow_illegal_level: bool = False,
+) -> tuple[int | None, list[str]]:
     """Validate requested gem level against PoE1 3.28+ Exceptional / Legacy bounds."""
     bounds = _get_gem_level_bounds_safe(gem_name)
     nat_max = int(bounds.get("natural_max_level") or 20)
@@ -179,14 +184,17 @@ def _validate_gem_level(gem_name: str, level: int | None) -> tuple[int | None, l
     is_exceptional = bool(bounds.get("is_exceptional"))
     legacy_removed = bool(bounds.get("legacy_removed_328"))
 
+    cautions: list[str] = []
     if is_exceptional and level is not None and int(level) > corrupt_max:
-        raise ValueError(
+        msg = (
             f"Invalid level {level} for Exceptional Support '{gem_name}': "
             f"max natural level is Lv.{nat_max} (corrupted max Lv.{corrupt_max}). "
             "PoE1 3.28+ Exceptional supports cannot reach Lv.20."
         )
+        if not allow_illegal_level:
+            raise ValueError(msg)
+        cautions.append(f"[ILLEGAL-GEM-LEVEL] {msg}")
 
-    cautions: list[str] = []
     if legacy_removed:
         cautions.append(
             f"[LEGACY 3.28+ REMOVED] '{gem_name}' was drop-disabled in PoE1 3.28 (Mirage); "

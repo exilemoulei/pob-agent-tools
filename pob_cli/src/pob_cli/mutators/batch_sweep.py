@@ -345,8 +345,9 @@ def trade_eval_items(
     *,
     slot_name: str | None,
     items: list[dict[str, Any]],
+    prefilter_k: int | None = None,
 ) -> dict[str, Any]:
     """Delegate read-only batch trade evaluation to `trade_eval.eval_trade_items`."""
     from ..trade_eval import eval_trade_items
 
-    return eval_trade_items(worker, slot_name=slot_name, items=items)
+    return eval_trade_items(worker, slot_name=slot_name, items=items, prefilter_k=prefilter_k)

@@ -348,7 +348,7 @@ def _emit_search_results(
 @click.option("--max-results", type=int, default=8, show_default=True, help="Rows in report.")
 @click.option(
     "--fetch-limit", type=int, default=10, show_default=True,
-    help="Listings to report (max 20); --max-age may page through up to 50 to find fresh ones.",
+    help="Listings to report (max 100); --max-age may page through up to 100 to find fresh ones.",
 )
 @click.option("--open-prefix", is_flag=True, help="Require at least one open prefix.")
 @click.option("--open-suffix", is_flag=True, help="Require at least one open suffix.")
@@ -357,6 +357,13 @@ def _emit_search_results(
 @click.option("--bench-hint/--no-bench-hint", default=True, show_default=True)
 @click.option("--pob", "pob_mode", type=click.Choice(["auto", "on", "off"]), default="auto", show_default=True)
 @click.option("--pob-limit", type=int, default=5, show_default=True, help="Candidates to PoB-verify.")
+@click.option(
+    "--surrogate-k",
+    "surrogate_k",
+    type=click.IntRange(min=0),
+    default=None,
+    help="Surrogate-prefilter fetched pool to top K (floor 50; 0 disables) before PoB eval.",
+)
 @click.option("--auto-query", is_flag=True, help="Generate weighted trade query via PoB TradeQueryGenerator.")
 @click.option("--target", type=_TARGET_SLOT_TYPE, default=_default_target_slot)
 @click.option("--current-item-file", type=click.Path(exists=True, dir_okay=False))
@@ -396,6 +403,7 @@ def cmd_trade_search(
     bench_hint: bool,
     pob_mode: str,
     pob_limit: int,
+    surrogate_k: int | None,
     auto_query: bool,
     target: str,
     current_item_file: str | None,
@@ -452,6 +460,11 @@ def cmd_trade_search(
                 _emit_json({"slot": slot, "autoQuery": True, **auto_res}, compact=compact, out_path=out_path, sanitize=True)
                 return
 
+    eff_prefilter_k = surrogate_k if (surrogate_k is not None and surrogate_k > 0) else None
+    eff_fetch_limit = fetch_limit
+    if eff_prefilter_k is not None and ctx.get_parameter_source("fetch_limit") == click.core.ParameterSource.DEFAULT:
+        eff_fetch_limit = max(fetch_limit, 50, eff_prefilter_k)
+
     fetched_ctx = _execute_trade_api_query(
         ctx, proxy=proxy, verbose=verbose, league=league, dump_query=dump_query, slot=slot,
         resolved_category=resolved_category, requests=requests, weighted_groups=weighted_groups,
@@ -459,7 +472,7 @@ def cmd_trade_search(
         ilvl_min=ilvl_min, status=status, currency=currency, budget=budget, max_age=max_age,
         bargain=bargain, search_sort=search_sort, sort_by=sort_by, open_prefix=open_prefix,
         open_suffix=open_suffix, open_affix=open_affix, allow_corrupted=allow_corrupted,
-        bench_hint=bench_hint, fetch_limit=fetch_limit, compact=compact, out_path=out_path,
+        bench_hint=bench_hint, fetch_limit=eff_fetch_limit, compact=compact, out_path=out_path,
         auto_query_body=auto_res["query"] if isinstance(auto_res, dict) else None,
     )
     if fetched_ctx is None:
@@ -490,7 +503,7 @@ def cmd_trade_search(
 
     if not _verify_candidates_with_pob(
         ctx, candidates, pob_mode=pob_mode, pob_slot=pob_slot, slot=slot,
-        target=target, verification_limit=verification_limit,
+        target=target, verification_limit=verification_limit, prefilter_k=eff_prefilter_k,
     ):
         return
 

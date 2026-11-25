@@ -137,36 +137,40 @@ def verify_candidates_batch(
     slot: str,
     target: str = "main",
     limit: int = 5,
+    prefilter_k: int | None = None,
     daemon_call: Callable[..., dict[str, Any]] | None = None,
 ) -> None:
     """Verify up to ``limit`` candidates in ONE ``trade_eval_items`` daemon RPC.
 
+    When ``prefilter_k`` is set, sends the full candidate pool so the daemon worker can
+    surrogate-prefilter down to ``max(50, prefilter_k)`` before exact PoB evaluation.
     Falls back sequentially to ``item_try`` if an older running daemon responds with
     ``Unknown daemon action``.
     """
-    if limit <= 0 or not candidates:
+    if (limit <= 0 and prefilter_k is None) or not candidates:
         return
     if daemon_call is None:
         raise ValueError("daemon_call callback is required for PoB verification.")
 
-    subset = candidates[:limit]
+    subset = candidates if prefilter_k is not None else candidates[:limit]
     items_payload = [{"id": idx, "raw": candidate.item_text} for idx, candidate in enumerate(subset)]
+    rpc_params: dict[str, Any] = {
+        "target": target,
+        "slot": slot,
+        "items": items_payload,
+    }
+    if prefilter_k is not None:
+        rpc_params["prefilter_k"] = int(prefilter_k)
 
     try:
-        resp = daemon_call(
-            "trade_eval_items",
-            {
-                "target": target,
-                "slot": slot,
-                "items": items_payload,
-            },
-        )
+        resp = daemon_call("trade_eval_items", rpc_params)
     except BootstrapMissingError:
         raise
     except Exception as exc:
         msg = str(exc)
         if "unknown daemon action" in msg.lower():
-            for candidate in subset:
+            fb_subset = subset[: max(0, limit)] if prefilter_k is not None else subset
+            for candidate in fb_subset:
                 try:
                     candidate.pob = verify_candidate(
                         candidate,
@@ -208,10 +212,11 @@ def verify_candidates_batch(
             candidate.pob = None
             candidate.pob_error = str(entry.get("error") or "PoB evaluation failed.")
 
-    for idx, candidate in enumerate(subset):
-        if idx not in seen:
-            candidate.pob = None
-            candidate.pob_error = "Missing PoB evaluation result."
+    if prefilter_k is None or not seen:
+        for idx, candidate in enumerate(subset):
+            if idx not in seen:
+                candidate.pob = None
+                candidate.pob_error = "Missing PoB evaluation result."
 
 
 # ---------------------------------------------------------------------------

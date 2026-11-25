@@ -1,7 +1,8 @@
-"""Skill, passive tree, and ConfigTab Click command groups for `pob` CLI."""
+"""Passive tree and ConfigTab Click command groups for `pob` CLI."""
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import click
@@ -10,9 +11,7 @@ from .cli_common import (
     _emit_json,
     _emit_text,
     _output_options,
-    _parse_gem_spec,
     _prepend_active_guardrail_warnings,
-    _read_json_input,
     _target_option,
     invoke_daemon,
 )
@@ -24,274 +23,6 @@ def _format_mutation_report(title: str, res: dict[str, Any]) -> str:
     return format_mutation_report(title, res)
 
 
-@click.group("skill")
-def grp_skill() -> None:
-    """Modify, add, or replace skill groups and support/active gems."""
-
-
-@grp_skill.command("set")
-@click.option("--group", default="main", show_default=True, help="Skill group ('main', index, or label).")
-@click.option("--gem", "--gem-name", "gem", help="Gem 1-based index or name within group.")
-@click.option("--new-gem", "--name", "new_gem", help="Replace gem with a new gem name (English or Chinese).")
-@click.option("--level", type=int, help="Gem level.")
-@click.option("--quality", type=int, help="Gem quality.")
-@click.option("--enabled", type=click.Choice(["true", "false"], case_sensitive=False), help="Enable/disable gem or group.")
-@click.option("--count", type=int, help="Skill/minion count.")
-@click.option("--full-dps", type=click.Choice(["true", "false"], case_sensitive=False), help="Include group in FullDPS.")
-@click.option("--apply", is_flag=True, help="Persist change into build.")
-@_target_option(allow_slot_alias=True)
-@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
-@_output_options
-def cmd_skill_set(
-    group: str,
-    gem: str | None,
-    new_gem: str | None,
-    level: int | None,
-    quality: int | None,
-    enabled: str | None,
-    count: int | None,
-    full_dps: str | None,
-    apply: bool,
-    target: str,
-    as_json: bool,
-    compact: bool,
-    out_path: str | None,
-) -> None:
-    """Modify gem level/quality/enabled/count/gemId or group FullDPS state."""
-    if new_gem:
-        from .guardrails import GuardrailScope, check_input
-
-        check_input(new_gem, scope=GuardrailScope.GEM_NAME, expected_game="poe1", block_legacy_gems=True)
-    res = invoke_daemon(
-        "skill_set",
-        {
-            "target": target,
-            "group": group,
-            "gem": gem,
-            "new_gem": new_gem,
-            "level": level,
-            "quality": quality,
-            "enabled": (enabled.lower() == "true") if enabled is not None else None,
-            "count": count,
-            "include_in_full_dps": (full_dps.lower() == "true") if full_dps is not None else None,
-            "apply": apply,
-        },
-    )
-    if as_json:
-        _emit_json(res, compact=compact, out_path=out_path)
-    else:
-        _emit_text(_format_mutation_report(f"Skill Set (Group: {group}, Gem: {gem or 'Group'})", res), out_path=out_path)
-
-
-@grp_skill.command("add")
-@click.option("--group", default="main", show_default=True, help="Skill group ('main', index, or label).")
-@click.option("--gem", "--gem-name", "--name", "gem", required=True, help="Gem name (English or Chinese).")
-@click.option(
-    "--level",
-    type=int,
-    default=None,
-    help="Gem level (defaults to gem natural max level: 20 normal, 3 Exceptional, 4 Awakened Exceptional).",
-)
-@click.option("--quality", type=int, default=20, show_default=True)
-@click.option("--apply", is_flag=True, help="Persist change into build.")
-@_target_option(allow_slot_alias=True)
-@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
-@_output_options
-def cmd_skill_add(
-    group: str,
-    gem: str,
-    level: int | None,
-    quality: int,
-    apply: bool,
-    target: str,
-    as_json: bool,
-    compact: bool,
-    out_path: str | None,
-) -> None:
-    """Add a gem to a skill group."""
-    from .guardrails import GuardrailScope, check_input
-
-    check_input(gem, scope=GuardrailScope.GEM_NAME, expected_game="poe1", block_legacy_gems=True)
-    res = invoke_daemon(
-        "skill_add",
-        {
-            "target": target,
-            "group": group,
-            "gem": gem,
-            "level": level,
-            "quality": quality,
-            "apply": apply,
-        },
-    )
-    if as_json:
-        _emit_json(res, compact=compact, out_path=out_path)
-    else:
-        eff_lv: Any = level
-        if eff_lv is None:
-            detail = res.get("detail") or {}
-            added_gem = detail.get("addedGem") or {}
-            gem_obj = added_gem.get("gem") if isinstance(added_gem, dict) else None
-            eff_lv = (gem_obj or {}).get("level") or detail.get("effectiveLevel") or "auto"
-        _emit_text(
-            _format_mutation_report(f"Add Gem '{gem}' ({eff_lv}/{quality}%) to Group '{group}'", res),
-            out_path=out_path,
-        )
-
-
-@grp_skill.command("rm")
-@click.option("--group", default="main", show_default=True, help="Skill group ('main', index, or label).")
-@click.option("--gem", "--gem-name", "--name", "gem", required=True, help="Gem 1-based index or name to remove.")
-@click.option("--apply", is_flag=True, help="Persist change into build.")
-@_target_option(allow_slot_alias=True)
-@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
-@_output_options
-def cmd_skill_rm(
-    group: str,
-    gem: str,
-    apply: bool,
-    target: str,
-    as_json: bool,
-    compact: bool,
-    out_path: str | None,
-) -> None:
-    """Remove a gem from a skill group."""
-    res = invoke_daemon(
-        "skill_rm",
-        {
-            "target": target,
-            "group": group,
-            "gem": gem,
-            "apply": apply,
-        },
-    )
-    if as_json:
-        _emit_json(res, compact=compact, out_path=out_path)
-    else:
-        _emit_text(_format_mutation_report(f"Remove Gem '{gem}' from Group '{group}'", res), out_path=out_path)
-
-
-@grp_skill.command("new-group")
-@click.option("--label", help="Skill group label.")
-@click.option("--slot", help="Item slot for the skill group (e.g. 'Body Armour', 'Helmet').")
-@click.option("--gem", "gem_specs", multiple=True, help="Gem spec 'Name[:level[:quality]]' (repeatable).")
-@click.option("--full-dps", type=click.Choice(["true", "false"], case_sensitive=False), help="Include group in FullDPS.")
-@click.option("--enabled", type=click.Choice(["true", "false"], case_sensitive=False), help="Enable/disable group.")
-@click.option("--apply", is_flag=True, help="Persist new skill group into build.")
-@_target_option(allow_slot_alias=False)
-@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
-@_output_options
-def cmd_skill_new_group(
-    label: str | None,
-    slot: str | None,
-    gem_specs: tuple[str, ...],
-    full_dps: str | None,
-    enabled: str | None,
-    apply: bool,
-    target: str,
-    as_json: bool,
-    compact: bool,
-    out_path: str | None,
-) -> None:
-    """Create a new skill group and optionally populate its linked gems in one transaction."""
-    from .guardrails import GuardrailScope, check_input
-
-    if slot:
-        check_input(slot, scope=GuardrailScope.SLOT, expected_game="poe1")
-    gems = [_parse_gem_spec(g) for g in gem_specs] if gem_specs else None
-    for g_item in gems or []:
-        if g_item.get("name"):
-            check_input(str(g_item["name"]), scope=GuardrailScope.GEM_NAME, expected_game="poe1", block_legacy_gems=True)
-    res = invoke_daemon(
-        "skill_new_group",
-        {
-            "target": target,
-            "gems": gems,
-            "label": label,
-            "slot": slot,
-            "enabled": (enabled.lower() == "true") if enabled is not None else True,
-            "include_in_full_dps": (full_dps.lower() == "true") if full_dps is not None else None,
-            "apply": apply,
-        },
-    )
-    if as_json:
-        _emit_json(res, compact=compact, out_path=out_path)
-    else:
-        _emit_text(_format_mutation_report(f"New Skill Group ({label or slot or 'Unnamed'})", res), out_path=out_path)
-
-
-@grp_skill.command("replace-group")
-@click.option("--group", default="main", show_default=True, help="Skill group ('main', index, or label).")
-@click.option("--gems", "gems_json", help="JSON array of gem objects or 'Name[:lvl[:qual]]' strings.")
-@click.option("--gem", "gem_specs", multiple=True, help="Gem spec 'Name[:level[:quality]]' (repeatable).")
-@click.option("--label", help="Optional new group label.")
-@click.option("--slot", help="Optional equipment slot for the skill group.")
-@click.option("--full-dps", type=click.Choice(["true", "false"], case_sensitive=False), help="Include group in FullDPS.")
-@click.option("--apply", is_flag=True, help="Persist replaced skill group into build.")
-@_target_option(allow_slot_alias=False)
-@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
-@_output_options
-def cmd_skill_replace_group(
-    group: str,
-    gems_json: str | None,
-    gem_specs: tuple[str, ...],
-    label: str | None,
-    slot: str | None,
-    full_dps: str | None,
-    apply: bool,
-    target: str,
-    as_json: bool,
-    compact: bool,
-    out_path: str | None,
-) -> None:
-    """Atomically replace all gems in a skill group in ONE daemon call."""
-    parsed_gems: list[dict[str, Any]] = []
-    if gems_json:
-        raw_list = _read_json_input(None, gems_json, label="--gems")
-        if not isinstance(raw_list, list):
-            raise click.UsageError("--gems must be a JSON array.")
-        for entry in raw_list:
-            if isinstance(entry, str):
-                parsed_gems.append(_parse_gem_spec(entry))
-            elif isinstance(entry, dict):
-                parsed_gems.append(entry)
-            else:
-                raise click.UsageError(f"Unsupported gem entry in --gems: {entry!r}")
-    for spec in gem_specs:
-        parsed_gems.append(_parse_gem_spec(spec))
-
-    if not parsed_gems:
-        raise click.UsageError("Provide at least one gem via --gem 'Name[:lvl[:qual]]' or --gems '[...]'.")
-
-    from .guardrails import GuardrailScope, check_input
-
-    if slot:
-        check_input(slot, scope=GuardrailScope.SLOT, expected_game="poe1")
-    for g_item in parsed_gems:
-        g_name = str(g_item.get("name") or g_item.get("nameSpec") or g_item.get("gem") or "").strip()
-        if g_name:
-            check_input(g_name, scope=GuardrailScope.GEM_NAME, expected_game="poe1", block_legacy_gems=True)
-
-    res = invoke_daemon(
-        "skill_replace_group",
-        {
-            "target": target,
-            "group": group,
-            "gems": parsed_gems,
-            "label": label,
-            "slot": slot,
-            "include_in_full_dps": (full_dps.lower() == "true") if full_dps is not None else None,
-            "apply": apply,
-        },
-    )
-    if as_json:
-        _emit_json(res, compact=compact, out_path=out_path)
-    else:
-        _emit_text(
-            _format_mutation_report(f"Replace Skill Group '{group}' ({len(parsed_gems)} gems)", res),
-            out_path=out_path,
-        )
-
-
 @click.group("tree", invoke_without_command=True)
 @click.option("--search", "searches", multiple=True, help="Search passive tree nodes by EN/ZH name, stat, ID, or '#1' (repeatable).")
 @click.option("--type", "node_types", multiple=True, help="Filter by node type (Keystone, Notable, Mastery, Socket, Ascendancy; repeatable).")
@@ -300,6 +31,7 @@ def cmd_skill_replace_group(
 @click.option("--show-path", "show_path", is_flag=True, help="Include shortest allocation path node IDs.")
 @click.option("--masteries", "masteries", is_flag=True, help="Include full masteryEffects IDs and text without truncation.")
 @click.option("--socket-radius", "socket_radius", type=str, default=None, help="Inspect nodes within jewel radii of socket (ID, '#1', or name).")
+@click.option("--limit", type=click.IntRange(min=0), default=100, show_default=True, help="Max nodes returned (0 = unlimited).")
 @_target_option(allow_slot_alias=True)
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @_output_options
@@ -313,6 +45,7 @@ def grp_tree(
     show_path: bool,
     masteries: bool,
     socket_radius: str | None,
+    limit: int,
     target: str,
     as_json: bool,
     compact: bool,
@@ -322,6 +55,7 @@ def grp_tree(
     if ctx.invoked_subcommand is None:
         from .cli_inspect_parts import _run_tree_inspect
 
+        extra_kw = {"limit": limit} if "limit" in inspect.signature(_run_tree_inspect).parameters else {}
         _run_tree_inspect(
             searches=searches,
             node_types=node_types,
@@ -334,6 +68,7 @@ def grp_tree(
             as_json=as_json,
             compact=compact,
             out_path=out_path,
+            **extra_kw,
         )
         return
 
@@ -599,6 +334,8 @@ def cmd_config_set(
 
 
 def register_mutate_commands(group: click.Group) -> None:
-    group.add_command(grp_skill)
+    from .cli_mutate_skills import skill
+
+    group.add_command(skill)
     group.add_command(grp_tree)
     group.add_command(grp_config)

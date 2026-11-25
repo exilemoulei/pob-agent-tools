@@ -537,7 +537,7 @@ def test_default_league_skips_hc_ssf_ruthless_private_standard(tmp_path: Path):
     )
 
 
-def test_fetch_many_chunks_batches_of_10_and_caps_at_20(tmp_path: Path):
+def test_fetch_many_chunks_batches_of_10_and_caps_at_100(tmp_path: Path):
     seen_batches: list[list[str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -557,12 +557,19 @@ def test_fetch_many_chunks_batches_of_10_and_caps_at_20(tmp_path: Path):
     assert [len(b) for b in seen_batches] == [10, 5]
     assert [r["id"] for r in rows] == ids_15
 
-    # 25 IDs with limit=25 -> capped to 20 -> 10 + 10.
+    # 25 IDs with limit=25 -> 10 + 10 + 5 (unlocked past old 20 cap).
     seen_batches.clear()
     ids_25 = [f"id{i}" for i in range(25)]
-    rows_capped = client.fetch_many(ids_25, "q99", limit=25)
-    assert [len(b) for b in seen_batches] == [10, 10]
-    assert len(rows_capped) == 20
+    rows_25 = client.fetch_many(ids_25, "q99", limit=25)
+    assert [len(b) for b in seen_batches] == [10, 10, 5]
+    assert len(rows_25) == 25
+
+    # 125 IDs with limit=125 -> capped to MAX_FETCH_MANY (100) -> ten 10-ID batches.
+    seen_batches.clear()
+    ids_125 = [f"id{i}" for i in range(125)]
+    rows_capped = client.fetch_many(ids_125, "q99", limit=125)
+    assert [len(b) for b in seen_batches] == [10] * 10
+    assert len(rows_capped) == 100
 
     # fetch() directly rejects >10 IDs.
     with pytest.raises(ValueError):

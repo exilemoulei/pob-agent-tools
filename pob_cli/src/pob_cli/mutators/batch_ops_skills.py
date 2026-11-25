@@ -13,7 +13,12 @@ from .common import (
     _resolve_slot_from_items,
     _validate_gem_level,
 )
-from .skills import _apply_add_group_in_place, _apply_replace_group_in_place, _guard_source_skill_group
+from .skills import (
+    _apply_add_group_in_place,
+    _apply_replace_group_in_place,
+    _guard_source_skill_group,
+    _legacy_warn_cautions,
+)
 from .skills_resolve import (
     _add_gem_with_default_skill_flags,
     _resolve_gem_candidate,
@@ -35,6 +40,8 @@ def _op_add_group(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: 
         enabled=bool(op.get("enabled", True)),
         include_in_full_dps=bool(full_dps_val) if full_dps_val is not None else None,
         make_main=bool(op.get("makeMain", op.get("make_main", False))),
+        allow_legacy=bool(op.get("allowLegacy", op.get("allow_legacy", False))),
+        allow_illegal_level=bool(op.get("allowIllegalLevel", op.get("allow_illegal_level", False))),
         cache=cache,
     )
     ag_step: dict[str, Any] = {
@@ -103,6 +110,8 @@ def _op_replace_group(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, i
         slot=op.get("slot"),
         enabled=bool(op["enabled"]) if "enabled" in op and op["enabled"] is not None else None,
         include_in_full_dps=bool(full_dps_val) if full_dps_val is not None else None,
+        allow_legacy=bool(op.get("allowLegacy", op.get("allow_legacy", False))),
+        allow_illegal_level=bool(op.get("allowIllegalLevel", op.get("allow_illegal_level", False))),
         cache=cache,
     )
     rg_step: dict[str, Any] = {
@@ -135,18 +144,25 @@ def _op_skill(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int)
         w.call("set_group", grp_updates)
 
     skill_cautions: list[str] = []
+    allow_legacy = bool(op.get("allowLegacy", op.get("allow_legacy", False)))
+    allow_illegal_level = bool(op.get("allowIllegalLevel", op.get("allow_illegal_level", False)))
     add_gem_name = op.get("addGem") or op.get("add_gem")
     remove_gem_sel = op.get("removeGem") if "removeGem" in op else op.get("remove_gem")
     if add_gem_name:
         gem_name = str(add_gem_name).strip()
-        check_input(gem_name, scope=GuardrailScope.GEM_NAME, expected_game="poe1")
+        warns = check_input(
+            gem_name,
+            scope=GuardrailScope.GEM_NAME,
+            expected_game="poe1",
+            block_legacy_gems=not allow_legacy,
+        )
         raw_level = op.get("level")
         req_level = int(raw_level) if raw_level is not None else None
-        _, pre_c = _validate_gem_level(gem_name, req_level)
+        _, pre_c = _validate_gem_level(gem_name, req_level, allow_illegal_level=allow_illegal_level)
         cand = _resolve_gem_candidate(w, g_idx, gem_name)
         resolved_name = (cand.get("name") if cand else None) or gem_name
-        eff_lv, res_c = _validate_gem_level(resolved_name, req_level)
-        skill_cautions = _merge_cautions(pre_c, res_c)
+        eff_lv, res_c = _validate_gem_level(resolved_name, req_level, allow_illegal_level=allow_illegal_level)
+        skill_cautions = _merge_cautions(_legacy_warn_cautions(warns), pre_c, res_c)
         add_params: dict[str, Any] = {
             "group": g_idx,
             "level": eff_lv if eff_lv is not None else 20,
@@ -171,12 +187,17 @@ def _op_skill(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int)
         new_gem_name = op.get("newGem") or op.get("new_gem")
         req_level = int(op["level"]) if ("level" in op and op["level"] is not None) else None
         if new_gem_name:
-            check_input(str(new_gem_name), scope=GuardrailScope.GEM_NAME, expected_game="poe1")
-            _, pre_c = _validate_gem_level(str(new_gem_name).strip(), req_level)
+            warns = check_input(
+                str(new_gem_name),
+                scope=GuardrailScope.GEM_NAME,
+                expected_game="poe1",
+                block_legacy_gems=not allow_legacy,
+            )
+            _, pre_c = _validate_gem_level(str(new_gem_name).strip(), req_level, allow_illegal_level=allow_illegal_level)
             cand = _resolve_gem_candidate(w, g_idx, str(new_gem_name))
             resolved_name = (cand.get("name") if cand else None) or str(new_gem_name).strip()
-            eff_lv, res_c = _validate_gem_level(resolved_name, req_level)
-            skill_cautions = _merge_cautions(pre_c, res_c)
+            eff_lv, res_c = _validate_gem_level(resolved_name, req_level, allow_illegal_level=allow_illegal_level)
+            skill_cautions = _merge_cautions(_legacy_warn_cautions(warns), pre_c, res_c)
             if cand and cand.get("gemId"):
                 gem_params["gemId"] = cand["gemId"]
                 gem_params["nameSpec"] = resolved_name
@@ -186,7 +207,7 @@ def _op_skill(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int)
                 gem_params["level"] = eff_lv
         elif req_level is not None:
             existing_name = str(t_gem.get("name") or t_gem.get("nameSpec") or "").strip()
-            eff_lv, res_c = _validate_gem_level(existing_name, req_level)
+            eff_lv, res_c = _validate_gem_level(existing_name, req_level, allow_illegal_level=allow_illegal_level)
             skill_cautions = _merge_cautions(skill_cautions, res_c)
             gem_params["level"] = eff_lv
         for k in ("quality", "enabled", "count"):

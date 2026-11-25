@@ -24,7 +24,7 @@ from ..os_util import _try_break_stale_lock as _try_break_stale_lockfile  # noqa
 BASE_URL = "https://www.pathofexile.com"
 STATS_TTL_SECONDS = 7 * 24 * 3600
 MAX_FETCH_IDS = 10
-MAX_FETCH_MANY = 20
+MAX_FETCH_MANY = 100
 DEFAULT_LIMIT_MARGIN = 1
 DEFAULT_MAX_WAIT_SEC = 15.0
 DEFAULT_RETRY_AFTER_SEC = 60
