@@ -6,7 +6,11 @@ import copy
 import hashlib
 import json
 import threading
+from collections import OrderedDict
+from collections.abc import Callable
 from typing import Any
+
+from ..snapshot import history_of
 
 READ_CACHE_ACTIONS: frozenset[str] = frozenset(
     {"summary", "items", "skills", "audit", "calc", "diagnose"}
@@ -20,12 +24,19 @@ _COMMON_SKIP_KEYS: frozenset[str] = frozenset({"target", "main_target", "skip_pe
 _DIAGNOSE_LOAD_KEYS: frozenset[str] = frozenset(
     {"source", "xml_code", "char_name", "league", "realm", "source_hash", "sourceHash"}
 )
+_COMPARE_SKIP_KEYS: frozenset[str] = frozenset(
+    {"ref_target", "source", "xml_code", "ref_source", "ref_xml_code"}
+)
 _PARAM_KEY_ALIASES: dict[str, str] = {
     "all_raw": "allRaw",
     "noRank": "no_rank",
     "noBreakdown": "no_breakdown",
     "maxBreakdowns": "max_breakdowns",
+    "noAutoKeep": "no_auto_keep",
 }
+_BOOL_CANON_KEYS: frozenset[str] = frozenset(
+    {"raw", "allRaw", "no_rank", "no_breakdown", "attribution", "no_auto_keep"}
+)
 
 
 def compute_source_hash(params: dict[str, Any]) -> str | None:
@@ -73,6 +84,8 @@ def _canonicalize_params(action: str, params: dict[str, Any], *, include_section
             continue
         if action == "diagnose" and k in _DIAGNOSE_LOAD_KEYS:
             continue
+        if action == "compare" and k in _COMPARE_SKIP_KEYS:
+            continue
         if action == "diagnose" and k == "section":
             if include_section:
                 sec = str(v or "all").strip().lower()
@@ -82,7 +95,9 @@ def _canonicalize_params(action: str, params: dict[str, Any], *, include_section
         canon_k = _PARAM_KEY_ALIASES.get(k, k)
         if v is None:
             continue
-        if canon_k in ("raw", "allRaw", "no_rank", "no_breakdown", "attribution"):
+        if k != canon_k and params.get(canon_k) is not None:
+            continue
+        if canon_k in _BOOL_CANON_KEYS:
             norm[canon_k] = bool(v)
         elif isinstance(v, tuple):
             norm[canon_k] = list(v)
@@ -94,6 +109,7 @@ def _canonicalize_params(action: str, params: dict[str, Any], *, include_section
         norm.setdefault("allRaw", False)
     elif action == "audit":
         norm.setdefault("attribution", True)
+        norm.setdefault("no_auto_keep", False)
     elif action == "calc":
         kws = norm.get("keywords")
         kw = norm.get("keyword")
@@ -107,34 +123,109 @@ def _canonicalize_params(action: str, params: dict[str, Any], *, include_section
     elif action == "diagnose":
         norm.setdefault("top", 5)
         norm.setdefault("no_rank", False)
+        norm.setdefault("no_auto_keep", False)
+    elif action == "compare":
+        norm.setdefault("no_auto_keep", False)
 
     return json.dumps(norm, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
-class SlotReadCache:
-    """Thread-safe per-(slot, rev) read cache with 3rd-call soft `[loop-guard]` & `sourceHash` tracking."""
+def _is_hist_unsettled(hist: Any) -> bool:
+    """Return True when a slot has an open BuildTransaction (e.g. `tx.restore(rebuild=False)`) or stale flag."""
+    return bool(getattr(hist, "stale", False) or getattr(hist, "active", None) is not None)
 
-    def __init__(self) -> None:
+
+def _key_mentions_slot(key: tuple[Any, ...], slot: str, stale_rev: int | None = None) -> bool:
+    if len(key) == 5:
+        return key[0] == slot and (stale_rev is None or key[1] != stale_rev)
+    if len(key) == 6:
+        if stale_rev is None:
+            return key[0] == slot or key[2] == slot
+        return (key[0] == slot and key[1] != stale_rev) or (key[2] == slot and key[3] != stale_rev)
+    return False
+
+
+class SlotReadCache:
+    """Thread-safe bounded LRU per-(slot, rev) read cache with `compare` support & `sourceHash` tracking."""
+
+    def __init__(self, max_entries: int = 256) -> None:
+        self.max_entries = max(1, int(max_entries))
+        self._max_hits = max(64, self.max_entries * 4)
         self._lock = threading.RLock()
-        self._entries: dict[tuple[str, int, str, str, str], dict[str, Any]] = {}
-        self._hits: dict[tuple[str, int, str, str, str], int] = {}
+        self._entries: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
+        self._hits: OrderedDict[tuple[Any, ...], int] = OrderedDict()
         self._slot_revs: dict[str, int] = {}
         self._slot_sources: dict[str, dict[str, Any]] = {}
 
     def _sync_slot_rev_unlocked(self, slot: str, rev: int) -> None:
         prev = self._slot_revs.get(slot)
         if prev is not None and prev != rev:
-            for k in [k for k in self._entries if k[0] == slot and k[1] != rev]:
+            for k in [k for k in self._entries if _key_mentions_slot(k, slot, stale_rev=rev)]:
                 self._entries.pop(k, None)
-            for k in [k for k in self._hits if k[0] == slot and k[1] != rev]:
+            for k in [k for k in self._hits if _key_mentions_slot(k, slot, stale_rev=rev)]:
                 self._hits.pop(k, None)
         self._slot_revs[slot] = rev
+
+    def _put_entry_unlocked(
+        self,
+        entry_key: tuple[Any, ...],
+        hit_key: tuple[Any, ...],
+        payload: dict[str, Any],
+    ) -> None:
+        clean_copy = copy.deepcopy(payload)
+        clean_copy.pop("cached", None)
+        clean_copy.pop("loopGuardWarning", None)
+        self._entries[entry_key] = clean_copy
+        self._entries.move_to_end(entry_key)
+        while len(self._entries) > self.max_entries:
+            self._entries.popitem(last=False)
+        self._hits[hit_key] = max(1, self._hits.get(hit_key, 0) + 1)
+        self._hits.move_to_end(hit_key)
+        while len(self._hits) > self._max_hits:
+            self._hits.popitem(last=False)
+
+    def _get_entry_unlocked(
+        self,
+        entry_key: tuple[Any, ...],
+        hit_key: tuple[Any, ...],
+    ) -> tuple[dict[str, Any], int] | None:
+        stored = self._entries.get(entry_key)
+        if stored is None:
+            return None
+        self._entries.move_to_end(entry_key)
+        count = self._hits.get(hit_key, 0) + 1
+        self._hits[hit_key] = count
+        self._hits.move_to_end(hit_key)
+        while len(self._hits) > self._max_hits:
+            self._hits.popitem(last=False)
+        return copy.deepcopy(stored), count
+
+    def tracked_slots(self) -> set[str]:
+        with self._lock:
+            slots = set(self._slot_revs) | set(self._slot_sources)
+            for k in self._entries:
+                if len(k) == 5:
+                    slots.add(str(k[0]))
+                elif len(k) == 6:
+                    slots.add(str(k[0]))
+                    slots.add(str(k[2]))
+            return slots
+
+    def invalidate_slot(self, slot: str) -> None:
+        with self._lock:
+            for k in [k for k in self._entries if _key_mentions_slot(k, slot)]:
+                self._entries.pop(k, None)
+            for k in [k for k in self._hits if _key_mentions_slot(k, slot)]:
+                self._hits.pop(k, None)
+            self._slot_revs.pop(slot, None)
+            self._slot_sources.pop(slot, None)
 
     def clear_all(self) -> None:
         with self._lock:
             self._entries.clear()
             self._hits.clear()
             self._slot_revs.clear()
+            self._slot_sources.clear()
 
     def record_slot_load(
         self,
@@ -188,13 +279,13 @@ class SlotReadCache:
         loop_key = _canonicalize_params(action, params, include_section=True)
         with self._lock:
             self._sync_slot_rev_unlocked(slot, rev)
-            stored = self._entries.get((slot, rev, lang, action, comp_key))
-            if stored is None:
+            hit = self._get_entry_unlocked(
+                (slot, rev, lang, action, comp_key),
+                (slot, rev, lang, action, loop_key),
+            )
+            if hit is None:
                 return None
-            hit_tuple = (slot, rev, lang, action, loop_key)
-            count = self._hits.get(hit_tuple, 0) + 1
-            self._hits[hit_tuple] = count
-            out = copy.deepcopy(stored)
+            out, count = hit
         out["cached"] = True
         if count >= 3:
             out["loopGuardWarning"] = LOOP_GUARD_WARNING
@@ -213,11 +304,140 @@ class SlotReadCache:
             return
         comp_key = _canonicalize_params(action, params, include_section=False)
         loop_key = _canonicalize_params(action, params, include_section=True)
-        clean_copy = copy.deepcopy(payload)
-        clean_copy.pop("cached", None)
-        clean_copy.pop("loopGuardWarning", None)
         with self._lock:
             self._sync_slot_rev_unlocked(slot, rev)
-            self._entries[(slot, rev, lang, action, comp_key)] = clean_copy
-            hit_tuple = (slot, rev, lang, action, loop_key)
-            self._hits[hit_tuple] = max(1, self._hits.get(hit_tuple, 0) + 1)
+            self._put_entry_unlocked(
+                (slot, rev, lang, action, comp_key),
+                (slot, rev, lang, action, loop_key),
+                payload,
+            )
+
+    def lookup_compare(
+        self,
+        main_slot: str,
+        main_rev: int,
+        ref_slot: str,
+        ref_rev: int,
+        lang: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        comp_key = _canonicalize_params("compare", params, include_section=False)
+        with self._lock:
+            self._sync_slot_rev_unlocked(main_slot, main_rev)
+            self._sync_slot_rev_unlocked(ref_slot, ref_rev)
+            key = (main_slot, main_rev, ref_slot, ref_rev, lang, comp_key)
+            hit = self._get_entry_unlocked(key, key)
+            if hit is None:
+                return None
+            out, count = hit
+        out["cached"] = True
+        if count >= 3:
+            out["loopGuardWarning"] = LOOP_GUARD_WARNING
+        return out
+
+    def store_compare(
+        self,
+        main_slot: str,
+        main_rev: int,
+        ref_slot: str,
+        ref_rev: int,
+        lang: str,
+        params: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        if not isinstance(payload, dict):
+            return
+        comp_key = _canonicalize_params("compare", params, include_section=False)
+        with self._lock:
+            self._sync_slot_rev_unlocked(main_slot, main_rev)
+            self._sync_slot_rev_unlocked(ref_slot, ref_rev)
+            key = (main_slot, main_rev, ref_slot, ref_rev, lang, comp_key)
+            self._put_entry_unlocked(key, key, payload)
+
+    def check_slot_read(
+        self,
+        target: str,
+        worker: Any,
+        eff_lang: str,
+        action: str,
+        params: dict[str, Any],
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Return `(cache_lang, cached_payload_or_None)`, bypassing stale workers."""
+        if action not in READ_CACHE_ACTIONS:
+            return "", None
+        w_loc = getattr(worker, "locale", None)
+        cache_lang = f"{eff_lang}:{w_loc}" if w_loc else eff_lang
+        hist = history_of(worker)
+        if _is_hist_unsettled(hist):
+            return cache_lang, None
+        if action == "diagnose":
+            has_load_arg = bool(
+                params.get("source")
+                or params.get("xml_code")
+                or (params.get("realm") and str(params.get("realm")).lower() == "cn")
+            )
+            if has_load_arg:
+                inc_hash = compute_source_hash(params)
+                if (
+                    self.matching_slot_load(
+                        target,
+                        hist.rev,
+                        bool(getattr(worker, "last_good_code", None)),
+                        inc_hash,
+                    )
+                    is None
+                ):
+                    return cache_lang, None
+        return cache_lang, self.lookup(target, hist.rev, cache_lang, action, params)
+
+    def store_slot_read(
+        self,
+        target: str,
+        worker: Any,
+        cache_lang: str,
+        action: str,
+        params: dict[str, Any],
+        res_slot: Any,
+    ) -> None:
+        """Store a single-slot read response only when the worker is settled (`not stale`)."""
+        if action not in READ_CACHE_ACTIONS or not isinstance(res_slot, dict):
+            return
+        hist = history_of(worker)
+        if _is_hist_unsettled(hist):
+            return
+        self.store(target, hist.rev, cache_lang, action, params, res_slot)
+
+    def run_cached_compare(
+        self,
+        main_slot: str,
+        mw: Any,
+        ref_slot: str,
+        rw: Any,
+        eff_lang: str,
+        params: dict[str, Any],
+        compute_fn: Callable[[], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Lookup or compute dual-slot `compare`, skipping stale/unloaded slots and partial attribution errors."""
+        mh, rh = history_of(mw), history_of(rw)
+        if (
+            _is_hist_unsettled(mh)
+            or _is_hist_unsettled(rh)
+            or not getattr(mw, "last_good_code", None)
+            or not getattr(rw, "last_good_code", None)
+        ):
+            return compute_fn()
+        mw_loc, rw_loc = getattr(mw, "locale", None), getattr(rw, "locale", None)
+        cmp_lang = f"{eff_lang}:{mw_loc or ''}:{rw_loc or ''}" if (mw_loc or rw_loc) else eff_lang
+        m_rev, r_rev = mh.rev, rh.rev
+        cached_cmp = self.lookup_compare(main_slot, m_rev, ref_slot, r_rev, cmp_lang, params)
+        if cached_cmp is not None:
+            return cached_cmp
+        cmp_res = compute_fn()
+        if (
+            isinstance(cmp_res, dict)
+            and not cmp_res.get("powerAttributionError")
+            and not _is_hist_unsettled(history_of(mw))
+            and not _is_hist_unsettled(history_of(rw))
+        ):
+            self.store_compare(main_slot, m_rev, ref_slot, r_rev, cmp_lang, params, cmp_res)
+        return cmp_res

@@ -143,11 +143,11 @@ def verify_candidates_batch(
     """Verify up to ``limit`` candidates in ONE ``trade_eval_items`` daemon RPC.
 
     When ``prefilter_k`` is set, sends the full candidate pool so the daemon worker can
-    surrogate-prefilter down to ``max(50, prefilter_k)`` before exact PoB evaluation.
-    Falls back sequentially to ``item_try`` if an older running daemon responds with
-    ``Unknown daemon action``.
+    surrogate-rank ``max(50, prefilter_k)`` listings and run full PoB evaluation on the
+    top ``limit`` (``pob_limit``). Falls back sequentially to ``item_try`` if an older
+    running daemon responds with ``Unknown daemon action``.
     """
-    if (limit <= 0 and prefilter_k is None) or not candidates:
+    if limit <= 0 or not candidates:
         return
     if daemon_call is None:
         raise ValueError("daemon_call callback is required for PoB verification.")
@@ -161,6 +161,9 @@ def verify_candidates_batch(
     }
     if prefilter_k is not None:
         rpc_params["prefilter_k"] = int(prefilter_k)
+        rpc_params["pob_limit"] = int(limit)
+        if items_payload:
+            items_payload[0]["pob_limit"] = int(limit)
 
     try:
         resp = daemon_call("trade_eval_items", rpc_params)
@@ -278,17 +281,19 @@ def _prefilter_raw_items_for_eval(
     worker: Any,
     items: list[dict[str, Any]],
     prefilter_k: int | None,
+    pob_limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Enforce `K >= 50` surrogate pre-filtering before exact PoB evaluation when requested."""
+    """Enforce `K >= 50` surrogate ranking, then slice to `pob_limit` when requested."""
     if prefilter_k is None:
-        return items
+        return items[: max(1, int(pob_limit))] if pob_limit is not None else items
     effective_k = max(MIN_SURROGATE_PREFILTER_K, int(prefilter_k))
-    if len(items) <= effective_k:
+    eval_cap = max(1, int(pob_limit)) if pob_limit is not None else effective_k
+    if len(items) <= eval_cap:
         return items
     grad = compute_grad_weights(worker)
-    # Without weights every score is 0 and the cut would keep the first K unranked.
+    # Without weights every score is 0: keep unranked items unless pob_limit bounds full PoB evals.
     if not grad or not isinstance(grad.get("weights"), dict) or not grad["weights"]:
-        return items
+        return items[:eval_cap] if pob_limit is not None else items
     from ..trade_item import parse_item_text
 
     scored: list[tuple[float, int, dict[str, Any]]] = []
@@ -304,7 +309,10 @@ def _prefilter_raw_items_for_eval(
             sc = 0.0
         scored.append((sc, idx, entry))
     scored.sort(key=lambda row: (-row[0], row[1]))
-    return [row[2] for row in scored[:effective_k]]
+    surrogate_ranked = [row[2] for row in scored[:effective_k]]
+    if pob_limit is not None:
+        return surrogate_ranked[:eval_cap]
+    return surrogate_ranked
 
 
 def _summary(digest: dict[str, Any]) -> dict[str, Any]:
@@ -331,18 +339,25 @@ def _eval_trade_items_cow(
     from ..snapshot import capture_digest, diff_digest
 
     results: list[dict[str, Any]] = []
-    total_items = len(items)
-    for pos, entry in enumerate(items):
+    need_restore = False
+    has_unrebuilt_restore = False
+    for entry in items:
         item_id = entry.get("id")
         raw_clean = str(entry.get("raw") or "").strip()
         if not raw_clean:
             results.append({"id": item_id, "ok": False, "error": "Empty item text."})
             continue
+        if need_restore:
+            tx.restore(rebuild=not use_direct)
+            need_restore = False
+            has_unrebuilt_restore = use_direct
         try:
             add_params: dict[str, Any] = {"raw": raw_clean, "equip": True}
             if resolved_slot:
                 add_params["slotName"] = resolved_slot
+            need_restore = True
             worker.call("add_item", add_params)
+            has_unrebuilt_restore = False
             digest_after = (
                 _digest_from_direct_calc(worker, digest_before)
                 if use_direct
@@ -354,8 +369,8 @@ def _eval_trade_items_cow(
             )
         except Exception as exc:
             results.append({"id": item_id, "ok": False, "error": str(exc)})
-        if pos < total_items - 1:
-            tx.restore()
+    if need_restore and not has_unrebuilt_restore:
+        tx.stale = False
     return results
 
 
@@ -365,6 +380,7 @@ def eval_trade_items(
     slot_name: str | None,
     items: list[dict[str, Any]],
     prefilter_k: int | None = None,
+    pob_limit: int | None = None,
 ) -> dict[str, Any]:
     """Read-only batch what-if evaluation of candidate items against a single build snapshot.
 
@@ -375,6 +391,12 @@ def eval_trade_items(
     if not items:
         return {"slotName": slot_name, "before": None, "results": []}
 
+    eff_pob_limit = pob_limit
+    if eff_pob_limit is None and prefilter_k is not None and isinstance(items[0], dict):
+        embedded_limit = items[0].get("pob_limit")
+        if embedded_limit is not None:
+            eff_pob_limit = int(embedded_limit)
+
     from ..analyzer import resolve_slot_name
     from ..snapshot import BuildTransaction, _call_batch, capture_digest, diff_digest
 
@@ -383,7 +405,7 @@ def eval_trade_items(
 
     with BuildTransaction(worker) as tx:
         assert tx.base is not None
-        eval_items = _prefilter_raw_items_for_eval(worker, items, prefilter_k)
+        eval_items = _prefilter_raw_items_for_eval(worker, items, prefilter_k, pob_limit=eff_pob_limit)
         if tx.base.kind == "cow":
             items_res = worker.call("list_items", {})
             resolved_slot = resolve_slot_name(worker, slot_name, items_res=items_res) if slot_name else None

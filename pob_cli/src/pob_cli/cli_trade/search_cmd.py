@@ -362,7 +362,7 @@ def _emit_search_results(
     "surrogate_k",
     type=click.IntRange(min=0),
     default=None,
-    help="Surrogate-prefilter fetched pool to top K (floor 50; 0 disables) before PoB eval.",
+    help="Score fetched pool of max(50, K) with linear surrogate (0 disables), then PoB-eval top --pob-limit.",
 )
 @click.option("--auto-query", is_flag=True, help="Generate weighted trade query via PoB TradeQueryGenerator.")
 @click.option("--target", type=_TARGET_SLOT_TYPE, default=_default_target_slot)
@@ -507,7 +507,15 @@ def cmd_trade_search(
     ):
         return
 
-    ordered = sort_candidates(candidates, sort_by)
+    eff_sort_by = sort_by
+    if (
+        eff_prefilter_k is not None
+        and ctx.get_parameter_source("sort_by") == click.core.ParameterSource.DEFAULT
+        and any(c.pob is not None for c in candidates)
+    ):
+        eff_sort_by = "pob"
+
+    ordered = sort_candidates(candidates, eff_sort_by)
     ordered.sort(key=lambda c: not c.bargain)  # stable: bargains first, order otherwise kept
     ordered = ordered[: max(0, max_results)]
     _emit_search_results(

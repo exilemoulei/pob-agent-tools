@@ -23,6 +23,54 @@ from .errors import CrossGameHallucinationError, DaemonRequestError
 from .formatters import fmt_num, render_table
 from .guardrails import GuardrailScope, check_input, check_poe2_timeless_jewel
 from .timeless import STAT_KEYS, search, set_idle_priority
+from .timeless.worker import _check_putrid_seed
+
+
+def parse_socket_spec(raw: str | int) -> int | list[int] | str:
+    """Parse `--socket` into a single `int`, a `list[int]` (`'61419,6230'`), or `'all'`."""
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return raw
+    text = str(raw if raw is not None else "").strip()
+    if not text:
+        raise ValueError("--socket cannot be empty; pass a socket node ID, comma-separated IDs, or 'all'.")
+    if text.lower() == "all":
+        return "all"
+    if "," not in text:
+        try:
+            return int(text)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid --socket value {raw!r}; expected an integer socket ID, comma-separated IDs, or 'all'."
+            ) from exc
+    parts = [p.strip() for p in text.split(",")]
+    if any(not p for p in parts):
+        raise ValueError(f"Invalid --socket list {raw!r}; empty entry in comma-separated socket IDs.")
+    parsed: list[int] = []
+    for p in parts:
+        try:
+            val = int(p)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid socket ID {p!r} in {raw!r}; expected integer socket IDs or 'all'."
+            ) from exc
+        if val not in parsed:
+            parsed.append(val)
+    return parsed
+
+
+class _SocketOptionType(click.ParamType):
+    name = "socket"
+
+    def convert(self, value: Any, param: Any, ctx: Any) -> int | list[int] | str:
+        if isinstance(value, list):
+            return value
+        try:
+            return parse_socket_spec(value)
+        except ValueError as exc:
+            self.fail(str(exc), param, ctx)
+
+
+_SOCKET_OPTION_TYPE = _SocketOptionType()
 
 
 def _daemon_exit_code() -> int:
@@ -57,6 +105,27 @@ def _seed_preview(seeds: list[int], limit: int = 6) -> str:
     return f"{head} ..." if len(seeds) > limit else head
 
 
+def _notable_preview(entries: list[dict[str, Any]], limit: int = 6) -> str:
+    if not entries:
+        return "none"
+    parts = [f"{n.get('nameZh') or n.get('name')} ({n.get('id')})" for n in entries[:limit]]
+    return f"{', '.join(parts)} ..." if len(entries) > limit else ", ".join(parts)
+
+
+def _format_radius_summary_line(res: dict[str, Any]) -> str | None:
+    radius = res.get("radiusSummary")
+    if not isinstance(radius, dict):
+        return None
+    alloc = list(radius.get("allocatedNotables") or [])
+    unalloc = list(radius.get("unallocatedNotables") or [])
+    if not alloc and not unalloc:
+        return None
+    return (
+        f"> Radius notables — allocated (0 extra points, {len(alloc)}): {_notable_preview(alloc)} | "
+        f"unallocated in radius ({len(unalloc)}): {_notable_preview(unalloc)}"
+    )
+
+
 def _format_list_markdown(info: dict[str, Any], target: str) -> str:
     jewels = info.get("jewels") or []
     sockets = info.get("sockets") or []
@@ -84,7 +153,57 @@ def _format_list_markdown(info: dict[str, Any], target: str) -> str:
     return "\n".join(lines)
 
 
+def _format_multi_search_markdown(res: dict[str, Any], stat: str, top: int) -> str:
+    base = res.get("baseline") or {}
+    top_seeds = (res.get("topSeeds") or [])[:top]
+    extra_stat = stat not in ("CombinedDPS", "TotalEHP", "Life")
+    if extra_stat:
+        headers = ["#", "Socket", stat, "vs now", "Combined DPS", "vs now", "Total EHP", "vs now", "Life", "Seeds", "Seed numbers"]
+        rows: list[list[Any]] = [
+            ["now", "-", fmt_num(base.get(stat)), "", fmt_num(base.get("CombinedDPS")), "", fmt_num(base.get("TotalEHP")), "", fmt_num(base.get("Life")), "-", "build as loaded"]
+        ]
+        for idx, item in enumerate(top_seeds, 1):
+            s = item.get("stats") or {}
+            seeds = item.get("seeds") or []
+            sock_txt = f"{item.get('socket')} ({item['socketLabel']})" if item.get("socketLabel") else str(item.get("socket"))
+            rows.append([
+                idx, sock_txt, fmt_num(s.get(stat)), _pct(s.get(stat), base.get(stat)),
+                fmt_num(s.get("CombinedDPS")), _pct(s.get("CombinedDPS"), base.get("CombinedDPS")),
+                fmt_num(s.get("TotalEHP")), _pct(s.get("TotalEHP"), base.get("TotalEHP")),
+                fmt_num(s.get("Life")), len(seeds), _seed_preview(seeds),
+            ])
+    else:
+        headers = ["#", "Socket", "Combined DPS", "vs now", "Total EHP", "vs now", "Life", "Seeds", "Seed numbers"]
+        rows = [
+            ["now", "-", fmt_num(base.get("CombinedDPS")), "", fmt_num(base.get("TotalEHP")), "", fmt_num(base.get("Life")), "-", "build as loaded"]
+        ]
+        for idx, item in enumerate(top_seeds, 1):
+            s = item.get("stats") or {}
+            seeds = item.get("seeds") or []
+            sock_txt = f"{item.get('socket')} ({item['socketLabel']})" if item.get("socketLabel") else str(item.get("socket"))
+            rows.append([
+                idx, sock_txt, fmt_num(s.get("CombinedDPS")), _pct(s.get("CombinedDPS"), base.get("CombinedDPS")),
+                fmt_num(s.get("TotalEHP")), _pct(s.get("TotalEHP"), base.get("TotalEHP")),
+                fmt_num(s.get("Life")), len(seeds), _seed_preview(seeds),
+            ])
+
+    sockets = res.get("sockets") or []
+    sock_str = ", ".join(str(s) for s in sockets)
+    lines = [
+        f"### Timeless Multi-Socket Search: `{res.get('jewel')}` ({res.get('conqueror')}) across sockets "
+        f"`[{sock_str}]` - {int(res.get('calculatedTotal') or 0):,} groups calculated on "
+        f"{res.get('workers') or 1} engines in {res.get('seconds')}s, ranked by `{stat}`",
+        render_table(headers, rows),
+    ]
+    for sock_res in res.get("socketResults") or []:
+        lines.append("\n" + _format_search_markdown(sock_res, stat, min(top, 5)))
+    return "\n".join(lines)
+
+
 def _format_search_markdown(res: dict[str, Any], stat: str, top: int) -> str:
+    if "socketResults" in res:
+        return _format_multi_search_markdown(res, stat, top)
+
     base = res.get("baseline") or {}
     outcomes = res.get("outcomes") or []
     est = res.get("estimate")
@@ -94,56 +213,31 @@ def _format_search_markdown(res: dict[str, Any], stat: str, top: int) -> str:
     if extra_stat:
         headers = ["#", stat, "vs now", "Combined DPS", "vs now", "Total EHP", "vs now", "Life", "Seeds", "Seed numbers"]
         rows: list[list[Any]] = [[
-            "now",
-            fmt_num(base.get(stat)),
-            "",
-            fmt_num(base.get("CombinedDPS")),
-            "",
-            fmt_num(base.get("TotalEHP")),
-            "",
-            fmt_num(base.get("Life")),
-            "-",
-            "socket as loaded",
+            "now", fmt_num(base.get(stat)), "", fmt_num(base.get("CombinedDPS")), "",
+            fmt_num(base.get("TotalEHP")), "", fmt_num(base.get("Life")), "-", "socket as loaded",
         ]]
         for idx, outcome in enumerate(shown, 1):
             s = outcome.get("stats") or {}
             seeds = outcome.get("seeds") or []
             rows.append([
-                idx,
-                fmt_num(s.get(stat)),
-                _pct(s.get(stat), base.get(stat)),
-                fmt_num(s.get("CombinedDPS")),
-                _pct(s.get("CombinedDPS"), base.get("CombinedDPS")),
-                fmt_num(s.get("TotalEHP")),
-                _pct(s.get("TotalEHP"), base.get("TotalEHP")),
-                fmt_num(s.get("Life")),
-                len(seeds),
-                _seed_preview(seeds),
+                idx, fmt_num(s.get(stat)), _pct(s.get(stat), base.get(stat)),
+                fmt_num(s.get("CombinedDPS")), _pct(s.get("CombinedDPS"), base.get("CombinedDPS")),
+                fmt_num(s.get("TotalEHP")), _pct(s.get("TotalEHP"), base.get("TotalEHP")),
+                fmt_num(s.get("Life")), len(seeds), _seed_preview(seeds),
             ])
     else:
         headers = ["#", "Combined DPS", "vs now", "Total EHP", "vs now", "Life", "Seeds", "Seed numbers"]
         rows = [[
-            "now",
-            fmt_num(base.get("CombinedDPS")),
-            "",
-            fmt_num(base.get("TotalEHP")),
-            "",
-            fmt_num(base.get("Life")),
-            "-",
-            "socket as loaded",
+            "now", fmt_num(base.get("CombinedDPS")), "", fmt_num(base.get("TotalEHP")), "",
+            fmt_num(base.get("Life")), "-", "socket as loaded",
         ]]
         for idx, outcome in enumerate(shown, 1):
             s = outcome.get("stats") or {}
             seeds = outcome.get("seeds") or []
             rows.append([
-                idx,
-                fmt_num(s.get("CombinedDPS")),
-                _pct(s.get("CombinedDPS"), base.get("CombinedDPS")),
-                fmt_num(s.get("TotalEHP")),
-                _pct(s.get("TotalEHP"), base.get("TotalEHP")),
-                fmt_num(s.get("Life")),
-                len(seeds),
-                _seed_preview(seeds),
+                idx, fmt_num(s.get("CombinedDPS")), _pct(s.get("CombinedDPS"), base.get("CombinedDPS")),
+                fmt_num(s.get("TotalEHP")), _pct(s.get("TotalEHP"), base.get("TotalEHP")),
+                fmt_num(s.get("Life")), len(seeds), _seed_preview(seeds),
             ])
 
     seed_count = int(res.get("seedCount") or 0)
@@ -156,8 +250,11 @@ def _format_search_markdown(res: dict[str, Any], stat: str, top: int) -> str:
         f"### Timeless Search: `{res.get('jewel')}` ({res.get('conqueror')}) at socket `{res.get('socket')}` - "
         f"{seed_count:,} seeds in {group_count:,} groups, {calculated:,} calculated on "
         f"{workers} engines in {seconds}s, ranked by `{stat}`",
-        render_table(headers, rows),
     ]
+    radius_line = _format_radius_summary_line(res)
+    if radius_line:
+        lines.append(radius_line)
+    lines.append(render_table(headers, rows))
 
     for other in res.get("removed") or []:
         lines.append(
@@ -166,9 +263,10 @@ def _format_search_markdown(res: dict[str, Any], stat: str, top: int) -> str:
         )
 
     if est and est.get("method") == "weightShortlist":
+        unique_groups = int(est.get("groupsTotal") or group_count)
         lines.append(
-            f"\n> Shortlist: {calculated:,} of {group_count:,} seed groups, picked by PoB's timeless weight finder, "
-            "were calculated; the rest were not, so a better seed may exist. `--exact` calculates all."
+            f"\n> Ranked top {calculated} of {unique_groups} PRNG groups via weight shortlist "
+            "(pass --exact only for exhaustive scan)."
         )
     elif est:
         max_err = est.get("maxError")
@@ -232,8 +330,8 @@ def cmd_timeless_list(
 @click.option(
     "--socket",
     required=True,
-    type=int,
-    help="Allocated jewel socket node ID (from 'pob timeless list').",
+    type=_SOCKET_OPTION_TYPE,
+    help="Allocated jewel socket node ID, comma-separated IDs (e.g. 61419,6230), or 'all'.",
 )
 @click.option("--conqueror", default=None, help="Conqueror / devotion variant (defaults to first).")
 @click.option(
@@ -258,7 +356,7 @@ def cmd_timeless_list(
 @click.option("--json", "as_json", is_flag=True, help="Output structured JSON.")
 def cmd_timeless_search(
     jewel: str,
-    socket: int,
+    socket: int | list[int] | str,
     conqueror: str | None,
     stat: str,
     mods: tuple[str, ...],
@@ -271,12 +369,16 @@ def cmd_timeless_search(
     out_path: str | None,
     as_json: bool,
 ) -> None:
-    """Find the best seeds of a timeless jewel at an allocated jewel socket."""
+    """Find the best seeds of a timeless jewel at one or more allocated jewel sockets."""
     if top < 1:
         raise click.ClickException("--top must be >= 1.")
     if workers is not None and workers < 1:
         raise click.ClickException("--workers must be >= 1.")
 
+    try:
+        _check_putrid_seed(jewel)
+    except ValueError as exc:
+        raise click.ClickException(_err_text(exc)) from exc
     check_poe2_timeless_jewel(jewel, expected_game="poe1")
     check_input(jewel, scope=GuardrailScope.DATA_QUERY, expected_game="poe1")
     for mod in mods:

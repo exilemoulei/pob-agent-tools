@@ -17,8 +17,11 @@ pob timeless search --jewel "Lethal Pride" --socket 26725 --conqueror Kaom --sta
 # Chinese jewel name + filter specific notable mod lines
 pob timeless search --jewel "致命的骄傲" --socket 26725 --mod "5% chance to deal Double Damage" --stat FullDPS --top 10
 
-# Exact full evaluation mode (slower, checks every seed in PoB)
+# Scan multiple sockets (or `--socket all` for all allocated jewel sockets) in one shared worker pool
+pob timeless search --jewel "Festering Vengeance" --socket all --stat CombinedDPS --top 5
+
+# Exact full evaluation mode (checks every PRNG group in PoB; only pass when explicitly requested)
 pob timeless search --jewel "Brutal Restraint" --socket 26725 --conqueror Balbala --stat TotalEHP --exact
 ```
 
-Without `--exact`, Glorious Vanity and the Abyss jewels calculate only a shortlist picked by PoB's timeless weight finder (the footer says so), and a better seed can lie outside it. Use `--exact` when the best seed matters.
+Default search uses non-exhaustive fast modes — additive fitting (`narrow_down`, which may stop once remaining PRNG groups are bounded) for Legion jewels and a conditional `max(top * 4, 200)` weight shortlist for `Glorious Vanity` and 3.30 Abyss jewels (`Festering Vengeance` / `溃烂复仇`, etc.) — reporting both currently allocated notables (`0` extra points) and unallocated notables in radius; either fast mode can miss a higher seed that `--exact` (full evaluation of every resolved group) finds. Note: `Putrid Seed` (`腐朽之种`) is the 3.30 outer cluster passive fork, whereas the 3.30 Abyss timeless jewel is `Festering Vengeance`.

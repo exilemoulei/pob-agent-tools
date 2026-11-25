@@ -43,7 +43,7 @@ pob skill add|set|rm --group main ... [--apply] | pob tree change --allocate <id
 pob batch --json-ops '[...]' [--return "skills,summary"] | pob sweep --scenario Pinnacle --json-variants '[...]' | pob matrix Original Pinnacle Uber FlasksOff
 pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--max-dist 5] | pob rank-gems [--group main] [--slot N|--add-link]
 pob bench suggest --slot boots --stat "抗性" | pob trade search --slot ring1 [--auto-query | --stat "生命>=60" --sum "火抗|冰抗|电抗>=80"] [--bench-craft "最大生命"] --budget 5 --currency divine
-pob timeless search --jewel "Lethal Pride" --socket <nodeId> --stat CombinedDPS [--exact] | pob lang [zh-CN|zh-TW|en]
+pob timeless search --jewel "Lethal Pride" --socket <nodeId|id1,id2|all> --stat CombinedDPS | pob lang [zh-CN|zh-TW|en]
 ```
 
 ## 3. High-Risk PoE1 3.23–3.30 Domain Facts

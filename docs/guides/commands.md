@@ -77,5 +77,5 @@ pob bench suggest --slot S --stat "<text|中文>" [--affix prefix|suffix] [--lim
 
 # Timeless Jewel Seed Search (hybrid PRNG+mmap in-engine synthesis for Legion & 3.30 Abyss, PoB-verified; other Historic jewels removed)
 pob timeless list [--target <slug>] [--json]                                           # 11 timeless jewels (EN/ZH) + build's allocated sockets
-pob timeless search --jewel "<name|中文>" --socket <nodeId> [--conqueror C] [--stat CombinedDPS|FullDPS|TotalEHP|...] [--mod "<ln>"]... [--top 15] [--workers N] [--exact] [--idle] [--target <slug>] [--json]
+pob timeless search --jewel "<name|中文>" --socket <nodeId|id1,id2|all> [--conqueror C] [--stat CombinedDPS|FullDPS|TotalEHP|...] [--mod "<ln>"]... [--top 15] [--workers N] [--exact] [--idle] [--target <slug>] [--json]
 ```

@@ -54,6 +54,7 @@ def hot_reload_update(
     with manager._update_check_lock, manager._exclusive_barrier():
         if manager._stopping:
             return manager.update_status
+        read_cache = getattr(manager, "_read_cache", None)
         saved_slots: dict[str, dict[str, Any]] = {}
         for slot_name, worker in list(manager._workers.items()):
             history = history_of(worker)
@@ -63,6 +64,10 @@ def hot_reload_update(
                 worker.stop()
             except Exception:
                 pass
+            if read_cache is not None:
+                read_cache.invalidate_slot(slot_name)
+        if read_cache is not None:
+            read_cache.clear_all()
 
         manager.update_status = _daemon_pkg.check_and_apply_updates(
             engine_dir=manager._explicit_pob_dir,
@@ -218,6 +223,8 @@ def handle_set_lang_action(manager: DaemonManager, params: dict[str, Any]) -> di
                 os.environ["POB_LANG"] = norm
             with manager._lock:
                 workers_snap = list(manager._workers.items())
+            read_cache = getattr(manager, "_read_cache", None)
+            invalidated_slots: set[str] = set()
             for sname, w in workers_snap:
                 slock = manager._get_slot_lock(sname)
                 with slock:
@@ -227,6 +234,12 @@ def handle_set_lang_action(manager: DaemonManager, params: dict[str, Any]) -> di
                             updated_slots[sname] = set_fn(target_lang)
                         except Exception as exc:
                             updated_slots[sname] = {"ok": False, "error": str(exc)}
+                    if read_cache is not None:
+                        read_cache.invalidate_slot(sname)
+                        invalidated_slots.add(sname)
+            if read_cache is not None:
+                for cached_slot in read_cache.tracked_slots() - invalidated_slots:
+                    read_cache.invalidate_slot(cached_slot)
         else:
             target_lang, _ = get_active_lang(rt_dir)
         eff_lang, eff_src = get_active_lang(rt_dir)
@@ -243,6 +256,47 @@ def handle_set_lang_action(manager: DaemonManager, params: dict[str, Any]) -> di
     if env_overridden:
         out["daemonEnvOverridden"] = env_overridden
     return out
+
+
+def slot_status_entry(manager: DaemonManager, slot_name: str, worker: BridgeWorker | None) -> dict[str, Any]:
+    alive = worker is not None and worker.is_alive()
+    info = None
+    busy = False
+    if alive and worker is not None:
+        slot_lock = manager._get_slot_lock(slot_name)
+        if slot_lock.acquire(blocking=False):
+            try:
+                with manager._lock:
+                    still_active = manager._workers.get(slot_name) is worker and worker.is_alive()
+                if still_active:
+                    try:
+                        info = worker.call("get_build_info", {})
+                    except Exception:
+                        info = None
+                else:
+                    alive = False
+            finally:
+                slot_lock.release()
+        else:
+            busy = True
+    entry: dict[str, Any] = {
+        "alive": alive,
+        "buildInfo": info,
+        "hasLoadedBuild": bool(worker and worker.last_good_code),
+    }
+    if busy:
+        entry["busy"] = True
+    if worker is not None:
+        history = history_of(worker)
+        entry.update(history.depths())
+        if slot_name == "main":
+            entry["hello"] = worker.hello_info
+        if history.source_label:
+            entry["sourceLabel"] = history.source_label
+        restore_failed = getattr(worker, "restore_failed", None)
+        if restore_failed:
+            entry["restoreFailed"] = restore_failed
+    return entry
 
 
 def build_status_payload(manager: DaemonManager) -> dict[str, Any]:
