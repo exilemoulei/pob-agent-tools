@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 # Commands whose output an agent harness parses, or that run in the background: no notice there.
-_QUIET_COMMANDS = frozenset({"_daemon", "_lua-host", "_release-check", "serve", "hook", "self-update"})
+_QUIET_COMMANDS = frozenset({"_daemon", "_lua-host", "_release-check", "serve", "self-update"})
 # Background commands, which nobody reads: a failed Windows swap is reported by the next other one.
 _BACKGROUND_COMMANDS = frozenset({"_daemon", "_lua-host", "_release-check"})
 

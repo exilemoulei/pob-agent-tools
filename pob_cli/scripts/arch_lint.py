@@ -31,7 +31,6 @@ LAYER_MAP: dict[str, int] = {
     "game_data": 1,
     "external_data": 1,
     "poedb_client": 1,
-    "turn_receipts": 1,
     # L2: domain core
     "formatters": 2,
     "snapshot": 2,
@@ -52,6 +51,7 @@ LAYER_MAP: dict[str, int] = {
     "__main__": 4,
     "cli_common": 4,
     "cli": 4,
+    "cli_help": 4,
     "cli_lifecycle": 4,
     "cli_build_io": 4,
     "cli_inspect": 4,
@@ -64,7 +64,6 @@ LAYER_MAP: dict[str, int] = {
     "cli_data": 4,
     "cli_trade": 4,
     "cli_timeless": 4,
-    "cli_hook": 4,
 }
 
 BLOCKED_RPC_EXACT: frozenset[str] = frozenset(

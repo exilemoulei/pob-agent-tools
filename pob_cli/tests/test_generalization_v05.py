@@ -522,7 +522,7 @@ def test_universal_skill_and_triggers_reference_contracts() -> None:
     skill_lines = skill_text.splitlines()
     assert len(skill_lines) <= 85, f"SKILL.md has {len(skill_lines)} lines (must be <= 85)"
     assert "diagnose" in skill_text and "--compare" in skill_text and "-q" in skill_text
-    assert "Long-Turn Re-Anchoring" in skill_text
+    assert "Every Number Comes From `pob` Output" in skill_text and "[待验证]" in skill_text
     assert "triggers-and-mechanics.md" in skill_text
     assert "data tick" in skill_text and "data tree" in skill_text
 

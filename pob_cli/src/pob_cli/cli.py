@@ -242,10 +242,10 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "timeless_group",
         "Find optimal timeless jewel seeds verified by headless PoB.",
     ),
-    "hook": (
-        ".cli_hook",
-        "hook_group",
-        "Deterministic lifecycle hooks (pre-prompt, pre-tool, verify-stop) for agent harnesses.",
+    "help": (
+        ".cli_help",
+        "cmd_help",
+        "Show compact 1-screen CLI cheat-sheet (`--brief`) or help for a subcommand.",
     ),
 }
 

@@ -1,4 +1,4 @@
-"""Unit tests for secret redaction, NO_SECRET_ENV_DUMP, reply_patterns, batch_ops aliases, and tar fallback."""
+"""Unit tests for secret redaction, official profile URL parsing, batch_ops aliases, and tar fallback."""
 
 from __future__ import annotations
 
@@ -16,21 +16,18 @@ from click.testing import CliRunner
 import pob_cli.cli as cli_mod
 from pob_cli import cli_common
 from pob_cli.cli import main
-from pob_cli.cli_hook.gates import handle_pre_tool
 from pob_cli.daemon import DaemonRequestError
 from pob_cli.daemon.runtime import _daemon_boot_error_file
 from pob_cli.daemon.server import _serve_daemon, make_handler
 from pob_cli.daemon.slot_updates import build_status_payload
 from pob_cli.guardrails import (
-    detect_build_source_in_text,
     get_auth_env_status,
     redact,
     redact_secrets,
-    scan_assistant_reply,
 )
 from pob_cli.mutators.batch_ops import _execute_batch_ops
 from pob_cli.mutators.common import _BatchCache
-from pob_cli.turn_receipts import classify_cli_args
+from pob_cli.profile_import import is_official_profile_url, parse_profile_source
 from pob_cli.updater import UpdateError, self_update
 
 # ---------------------------------------------------------------------------
@@ -110,24 +107,6 @@ def test_get_auth_env_status_returns_pure_booleans(monkeypatch: pytest.MonkeyPat
     assert all(type(v) is bool for v in populated.values())
     assert "super_secret_sess_999" not in json.dumps(populated)
     assert "cn_secret_888" not in json.dumps(populated)
-
-
-def test_turn_receipts_scrubs_secrets_and_preserves_proxy_userinfo_mask(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("POESESSID", "env_secret_token_42")
-    res = classify_cli_args(
-        [
-            "--proxy",
-            "socks5://me:s3cret@10.0.0.1:1080",
-            "load",
-            "https://example.test/?POESESSID=inline_tok_99&x=env_secret_token_42",
-        ]
-    )
-    assert "://***@" in res["cmd"]
-    assert "s3cret" not in res["cmd"]
-    assert "inline_tok_99" not in res["cmd"]
-    assert "env_secret_token_42" not in res["cmd"]
 
 
 def test_daemon_server_and_cli_common_redact_errors_and_status_auth(
@@ -252,119 +231,29 @@ def test_daemon_server_and_cli_common_redact_errors_and_status_auth(
 
 
 # ---------------------------------------------------------------------------
-# 2. Gate 2 Rule NO_SECRET_ENV_DUMP
+# 2. Official international & CN profile URL parsing
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "cmd",
-    [
-        "echo $POESESSID",
-        "echo $env:POESESSID",
-        "echo %POESESSID%",
-        "echo $POE_COOKIE",
-        "echo $env:POE_CN_SESSID",
-        "echo $POE_CN_COOKIE",
-        "Get-ChildItem Env:",
-        "gci env:",
-        "dir env:",
-        "ls env:",
-        "printenv",
-        "printenv POESESSID",
-        "env",
-        "env | grep POE",
-        "env -0",
-        "set",
-        "set | findstr /i poe",
-        "set POE",
-        "cmd /c set",
-        "echo ok && env",
-        "pob status; set",
-        'python -c "import os; print(os.environ)"',
-        'node -e "console.log(process.env)"',
-        '[Environment]::GetEnvironmentVariable("POESESSID")',
-        "cat .runtime/daemon.json",
-        "Get-Content C:/pob/oauth_token.json",
-        "type C:\\pob\\Settings.xml",
-    ],
-)
-def test_no_secret_env_dump_blocks_shell_leaks(cmd: str, tmp_path: Path) -> None:
-    res = handle_pre_tool({"toolName": "bash", "commandLine": cmd}, runtime_dir=tmp_path)
-    assert res["decision"] == "deny", cmd
-    assert res["ruleId"] == "NO_SECRET_ENV_DUMP", cmd
-    assert "pob status" in (res["reason"] or "")
-
-
-@pytest.mark.parametrize(
-    ("tool_name", "req_extra"),
-    [
-        ("read_file", {"filePath": ".runtime/daemon.json"}),
-        ("view_file", {"path": "C:/pob/runtime/oauth_token.json"}),
-        ("grep", {"targetPaths": ["C:\\PoB\\Settings.xml"]}),
-        ("read", {"filePath": "daemon.json"}),
-        ("rg", {"commandLine": "token .runtime/DAEMON.JSON"}),
-    ],
-)
-def test_no_secret_env_dump_blocks_sensitive_file_reads(
-    tool_name: str,
-    req_extra: dict[str, Any],
-    tmp_path: Path,
-) -> None:
-    res = handle_pre_tool({"toolName": tool_name, **req_extra}, runtime_dir=tmp_path)
-    assert res["decision"] == "deny"
-    assert res["ruleId"] == "NO_SECRET_ENV_DUMP"
-    assert "pob status" in (res["reason"] or "")
-
-
-@pytest.mark.parametrize(
-    "cmd",
-    [
-        "pob skill set --gem 1 --level 21",
-        "pob config set enemyIsBoss=Uber",
-        "pob status",
-        "pob profile list --account Exile",
-        "pob load https://www.pathofexile.com/account/view-profile/Exile/characters",
-        "pob trade search --slot ring1",
-        "POB_OFFLINE=1 pob status",
-        "set POB_OFFLINE=1 && pob status",
-        "set -e && pob status",
-    ],
-)
-def test_no_secret_env_dump_allows_normal_pob_commands(cmd: str, tmp_path: Path) -> None:
-    res = handle_pre_tool({"toolName": "powershell", "commandLine": cmd}, runtime_dir=tmp_path)
-    assert res["decision"] == "allow", (cmd, res)
-
-
-# ---------------------------------------------------------------------------
-# 3. reply_patterns: negation exemption & official profile URLs
-# ---------------------------------------------------------------------------
-
-
-def test_reply_patterns_negation_advice_exempt_vs_positive_fallacy_caught() -> None:
-    for exempt_text in (
-        "别把 Exceptional 辅助点到 20 级。",
-        "不要把卓越辅助升到 20 级。",
-        "千万别升卓越宝石到 20 级，它自然上限只有 3 级。",
-        "切勿给卓越辅助拉到 20 级。",
-    ):
-        assert scan_assistant_reply(exempt_text) == [], exempt_text
-
-    caught = scan_assistant_reply("把 Exceptional 辅助升到 20 级。")
-    assert any(i.rule_id == "EXCEPTIONAL_SUPPORT_LEVEL_CAP" for i in caught), caught
-
-
-def test_reply_patterns_detects_international_and_cn_profile_urls() -> None:
-    intl_url = "https://www.pathofexile.com/account/view-profile/ExileOne#1234/characters"
+def test_official_profile_url_parsing_international_and_cn() -> None:
+    intl_hyphen = "https://www.pathofexile.com/account/view-profile/ExileOne-1234/characters"
+    intl_hash = "https://www.pathofexile.com/account/view-profile/ExileOne#1234/characters"
     cn_url = "https://poe.game.qq.com/account/view-profile/ExileCN/characters"
     bare_intl = "https://pathofexile.com/account/view-profile/ExileTwo"
 
-    assert detect_build_source_in_text(f"帮我看下角色 {intl_url} 的配装") == (True, intl_url)
-    assert detect_build_source_in_text(f"国服主页 {cn_url}") == (True, cn_url)
-    assert detect_build_source_in_text(f"check {bare_intl}") == (True, bare_intl)
+    for url in (intl_hyphen, intl_hash, cn_url, bare_intl):
+        assert is_official_profile_url(url)
+
+    t_intl = parse_profile_source(intl_hyphen)
+    assert t_intl.server == "intl" and t_intl.account_name == "ExileOne#1234"
+    t_cn = parse_profile_source(cn_url)
+    assert t_cn.server == "cn" and t_cn.account_name == "ExileCN"
+    t_bare = parse_profile_source(bare_intl)
+    assert t_bare.server == "intl" and t_bare.account_name == "ExileTwo"
 
 
 # ---------------------------------------------------------------------------
-# 4. batch_ops: `action` key + `pob_what_if` aliases + JSON example on error
+# 3. batch_ops: `action` key + `pob_what_if` aliases + JSON example on error
 # ---------------------------------------------------------------------------
 
 
@@ -528,7 +417,7 @@ def test_batch_ops_unsupported_error_includes_json_example() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. self_update._extract fallback on Python 3.11.0-3.11.3 (no tarfile.data_filter)
+# 4. self_update._extract fallback on Python 3.11.0-3.11.3 (no tarfile.data_filter)
 # ---------------------------------------------------------------------------
 
 
@@ -595,167 +484,45 @@ def test_self_update_extract_fallback_rejects_unsafe_tar_members(
     assert not (tmp_path / "escape.txt").exists()
 
 
-# ---------------------------------------------------------------------------
-# 6. verify-stop strict slot isolation (no cross-slot pollution on failed remote load)
-# ---------------------------------------------------------------------------
-
-
-def test_verify_stop_does_not_leak_other_slot_when_remote_load_fails(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from pob_cli.cli_hook import remediate as rem_mod
-    from pob_cli.cli_hook.gates import handle_pre_prompt, handle_verify_stop
-    from pob_cli.turn_receipts import append_receipt
-
-    rt = tmp_path / "rt_slot_iso"
-    rt.mkdir()
-    handle_pre_prompt(
-        {
-            "sessionId": "ds_t2_sess",
-            "turnId": "1",
-            "userText": "帮我导入 https://poe.game.qq.com/account/view-profile/test-1234 并查 POE_CN_SESSID",
-        },
-        runtime_dir=rt,
-    )
-    # Untagged receipt from a DIFFERENT slot (`gt_assassin`) already sitting in the shared daemon
-    append_receipt(
-        {
-            "ts": 9999999999.0,
-            "cmd": "pob diagnose",
-            "subcommand": "diagnose",
-            "category": "diagnose",
-            "isCompute": True,
-            "hasTickCheck": False,
-            "slot": "gt_assassin",
-            "rev": 1,
-            "applied": False,
-            "inspectedSlots": [],
-            "exitCode": 0,
-        },
-        runtime_dir=rt,
-    )
-    # Failed CN 401 load in THIS session's slot (`ds_feat_t2`)
-    append_receipt(
-        {
-            "ts": 9999999999.0,
-            "cmd": "pob diagnose https://poe.game.qq.com/account/view-profile/test-1234 --target ds_feat_t2",
-            "subcommand": "diagnose",
-            "category": "diagnose",
-            "isCompute": False,
-            "hasTickCheck": False,
-            "slot": "ds_feat_t2",
-            "rev": None,
-            "applied": False,
-            "inspectedSlots": [],
-            "exitCode": 1,
-            "sessionId": "ds_t2_sess",
-        },
-        runtime_dir=rt,
-    )
-
-    daemon_calls: list[tuple[str, dict[str, Any]]] = []
-    monkeypatch.setattr(rem_mod, "read_daemon_state", lambda *_a, **_k: {"pid": 1234})
-    monkeypatch.setattr(
-        rem_mod,
-        "call_daemon",
-        lambda action, params=None, **_k: daemon_calls.append((action, dict(params or {}))) or {},
-    )
-
-    # Case A: Honest reply explaining HTTP 401 / POE_CN_SESSID with NO fabricated numbers -> allow_stop, 0 daemon calls
-    res_honest = handle_verify_stop(
-        {
-            "sessionId": "ds_t2_sess",
-            "turnId": "1",
-            "targetSlot": "ds_feat_t2",
-            "userText": "帮我导入 https://poe.game.qq.com/account/view-profile/test-1234 并查 POE_CN_SESSID",
-            "assistantText": "出于安全要求我不能查看或打印环境变量明文。国服官网导入返回 401，请自行在终端环境变量中设置 POE_CN_SESSID 后重试。",
-            "disableV5": True,
-        },
-        runtime_dir=rt,
-    )
-    assert res_honest["decision"] == "allow_stop"
-    assert daemon_calls == []
-
-    # Case B: Even if the assistant DOES hallucinate panel DPS on an unloaded remote URL,
-    # remediation MUST NOT query `gt_assassin` or call `summary` on another daemon slot!
-    res_fab = handle_verify_stop(
-        {
-            "sessionId": "ds_t2_sess",
-            "turnId": "1",
-            "targetSlot": "ds_feat_t2",
-            "userText": "帮我导入 https://poe.game.qq.com/account/view-profile/test-1234",
-            "assistantText": "当前 CombinedDPS = 5.0M，换装后 DPS +25%，火焰抗性 -49%。",
-            "disableV5": True,
-        },
-        runtime_dir=rt,
-    )
-    assert res_fab["decision"] == "continue"
-    assert "V2" in res_fab["failedChecks"]
-    assert daemon_calls == []
-    assert "gt_assassin" not in res_fab["correctionPrompt"]
-    assert "ds_feat_t2" in res_fab["correctionPrompt"]
-
-
-def test_coderabbit_security_and_edge_fixes(tmp_path: Path) -> None:
-    from pob_cli.cli_hook.gates import handle_pre_prompt, handle_pre_tool, handle_verify_stop
-    from pob_cli.guardrails.redact import redact_secrets
-    from pob_cli.guardrails.reply_scanner import scan_assistant_reply
-    from pob_cli.turn_receipts import append_receipt
-
-    # 1. Newline-separated env/set dumps are denied, while multiline env assignment stays allowed
-    assert handle_pre_tool({"toolName": "bash", "commandLine": "echo ok\nenv"})["ruleId"] == "NO_SECRET_ENV_DUMP"
-    assert handle_pre_tool({"toolName": "bash", "commandLine": "echo ok\nset"})["ruleId"] == "NO_SECRET_ENV_DUMP"
-    assert handle_pre_tool({"toolName": "bash", "commandLine": "set POB_OFFLINE=1\npob status"})["decision"] == "allow"
-
-    # 2. Quoted non-hex Cookie values are completely redacted
+def test_coderabbit_security_and_edge_fixes() -> None:
+    # 1. Quoted non-hex Cookie values are completely redacted
     scrubbed = redact_secrets('Cookie: cf_clearance="token_A9.zX"')
     assert "token_A9.zX" not in scrubbed and "[redacted]" in scrubbed
 
-    # 3. Negation exemption is clause-scoped (does not exempt positive level-20 clause after comma)
-    issues_pos = scan_assistant_reply("别把 Exceptional 辅助停在 3 级，把它升到 20 级。")
-    assert any(i.rule_id == "EXCEPTIONAL_SUPPORT_LEVEL_CAP" for i in issues_pos)
-    issues_neg = scan_assistant_reply("提醒你，别把 Exceptional 辅助点到 20 级。")
-    assert not any(i.rule_id == "EXCEPTIONAL_SUPPORT_LEVEL_CAP" for i in issues_neg)
-
-    # 4. Same-session compute receipt on slot B does NOT satisfy V2 when targetSlot is slot A
-    rt = tmp_path / "rt_same_sess_slot_v2"
-    rt.mkdir()
-    handle_pre_prompt({"sessionId": "same_s", "turnId": "1", "userText": "看下构筑面板"}, runtime_dir=rt)
-    append_receipt(
-        {
-            "ts": 9999999999.0,
-            "cmd": "pob diagnose --target slot_b",
-            "subcommand": "diagnose",
-            "category": "diagnose",
-            "isCompute": True,
-            "hasTickCheck": False,
-            "slot": "slot_b",
-            "rev": 1,
-            "applied": False,
-            "inspectedSlots": [],
-            "exitCode": 0,
-            "sessionId": "same_s",
-        },
-        runtime_dir=rt,
-    )
-    res_a = handle_verify_stop(
-        {
-            "sessionId": "same_s",
-            "turnId": "1",
-            "targetSlot": "slot_a",
-            "userText": "看下构筑面板",
-            "assistantText": "当前 CombinedDPS = 5.0M，换装后 DPS +20%。",
-            "disableV5": True,
-        },
-        runtime_dir=rt,
-    )
-    assert res_a["decision"] == "continue" and "V2" in res_a["failedChecks"]
-
-    # 5. batch_ops rejects malformed assignments entry & handles removeGem=None on skill_rm
+    # 2. batch_ops rejects malformed assignments entry & handles removeGem=None on skill_rm
     w = _AliasFakeWorker()
     cache = _BatchCache(w)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="pair"):
         _execute_batch_ops(w, [{"op": "config_set", "assignments": [["enemyIsBoss", "Pinnacle"], ["badOnlyOne"]]}], cache)  # type: ignore[arg-type]
     res_rm = _execute_batch_ops(w, [{"op": "skill_rm", "group": "main", "gem": 1, "removeGem": None}], cache)  # type: ignore[arg-type]
     assert res_rm and res_rm[0]["op"] == "skill"
+
+
+def test_help_brief_compact_listing_and_subcommand_topic() -> None:
+    import time
+
+    runner = CliRunner()
+    # Warm up lazy Click command imports once, then assert <20ms generation
+    res = runner.invoke(main, ["help", "--brief"])
+    assert res.exit_code == 0, res.output
+    t0 = time.perf_counter()
+    res_warm = runner.invoke(main, ["help", "--brief"])
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    assert res_warm.exit_code == 0
+    assert elapsed_ms < 20.0, f"pob help --brief took {elapsed_ms:.2f}ms"
+    lines = res.output.strip().splitlines()
+    assert 25 <= len(lines) <= 55, f"Expected 1-screen brief output, got {len(lines)} lines"
+    for expected in ("diagnose", "summary", "batch", "sweep", "trade", "timeless", "research"):
+        assert expected in res.output
+    assert "hook" not in {ln.split()[0] for ln in lines if ln.startswith("  ") and ln.split()}
+
+    res_sub = runner.invoke(main, ["help", "trade", "search", "--brief"])
+    assert res_sub.exit_code == 0, res_sub.output
+    assert "pob trade search" in res_sub.output and "--slot" in res_sub.output
+
+    res_json = runner.invoke(main, ["help", "--json"])
+    assert res_json.exit_code == 0, res_json.output
+    payload = json.loads(res_json.output)
+    names = {c["name"] for c in payload["commands"]}
+    assert {"diagnose", "trade", "timeless", "help"}.issubset(names)
+    assert "hook" not in names

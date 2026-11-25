@@ -83,7 +83,7 @@ Paste it directly to your agent and ask it to save it to your local `POESESSID` 
 
 ## Setup Guide for AI Agents (Required — Human Users Can Skip)
 
-When a user asks you to install `exilemoulei/pob4agents`, **complete all 5 steps below**. Do not stop after installing the CLI alone:
+When a user asks you to install `exilemoulei/pob4agents`, **complete all 4 steps below**. Do not stop after installing the CLI alone:
 
 ### 1. Install `pob4agents` (command: `pob`, no Python required)
 
@@ -96,7 +96,7 @@ When a user asks you to install `exilemoulei/pob4agents`, **complete all 5 steps
   curl -fsSL https://raw.githubusercontent.com/exilemoulei/pob4agents/main/install.sh | bash
   ```
 
-Both installers verify the release's Ed25519 signature and SHA-256 checksums automatically. If direct GitHub access fails, ask the user for their proxy URL and set `POB_PROXY` (e.g. `http://127.0.0.1:<port>`) or `POB_GITHUB_MIRROR` before retrying. For future updates, run `pob self-update` (and refresh `skills/pob` and `hooks/` from this repo on minor/major upgrades).
+Both installers verify the release's Ed25519 signature and SHA-256 checksums automatically. If direct GitHub access fails, ask the user for their proxy URL and set `POB_PROXY` (e.g. `http://127.0.0.1:<port>`) or `POB_GITHUB_MIRROR` before retrying. For future updates, run `pob self-update` (and refresh `skills/pob` from this repo on minor/major upgrades).
 
 ### 2. Bootstrap the Local PoB Engine & Language
 
@@ -113,7 +113,7 @@ pob status
 
 ### 3. Install the Skill (Mandatory — Do Not Skip)
 
-`install.ps1` and `install.sh` only install the `pob` binary; they do **not** install the Skill or Hooks. Fetch this repository (e.g. `git clone --depth 1 https://github.com/exilemoulei/pob4agents.git` into a temp directory) and copy the entire [`skills/pob`](skills/pob) directory (including `SKILL.md` and `references/`) into your client's skills folder:
+`install.ps1` and `install.sh` only install the `pob` binary; they do **not** install the Skill. Fetch this repository (e.g. `git clone --depth 1 https://github.com/exilemoulei/pob4agents.git` into a temp directory) and copy the entire [`skills/pob`](skills/pob) directory (including `SKILL.md` and `references/`) into your client's skills folder:
 
 | Client | Target Path |
 | :--- | :--- |
@@ -123,21 +123,9 @@ pob status
 
 For every subsequent Path of Exile 1 build conversation, you must load and follow [`skills/pob/SKILL.md`](skills/pob/SKILL.md).
 
-### 4. Wire Up the Anti-Hallucination Hooks (Mandatory — Pairs With the Skill)
+### 4. Final Verification & Cookie Security Rules
 
-Install the matching hook configuration from [`hooks/`](hooks) to prevent skipping `pob`, leaking secret env vars, or mixing in PoE2 / outdated patch rules:
-
-| Client | Setup |
-| :--- | :--- |
-| Antigravity | Copy or merge [`hooks/hooks.json`](hooks/hooks.json) into `.agents/hooks.json` |
-| Claude Code | Merge [`hooks/claude-hooks.json`](hooks/claude-hooks.json) into `.claude/settings.json` |
-| DeepSeek Harness (DSH) | Enable the `dsh-pob-assistant` plugin |
-
-If the current client does not support these hook formats, inform the user clearly, but ensure Step 3 (the Skill) is fully installed.
-
-### 5. Final Verification & Cookie Security Rules
-
-- **Verify & finish**: once `pob status` is healthy, `skills/pob` is in place, and hooks are wired up, **remind the user to open a new chat window** so the new Skill and Hooks take effect.
+- **Verify & finish**: once `pob status` is healthy and `skills/pob` is in place, **remind the user to open a new chat window** so the new Skill takes effect.
 - **When the user sends a `POESESSID`**:
   - Save it to the local user-level environment variable **`POESESSID`** (Windows PowerShell: `[Environment]::SetEnvironmentVariable("POESESSID", "<value>", "User")`; macOS/Linux: write to shell profile).
   - **NEVER** pass cookies in CLI arguments, commit them to files/repos, or write them to logs. **NEVER** run `Get-ChildItem Env:` / `printenv` to inspect or print environment variables, and never echo the raw value back in your reply. To check whether credentials are configured, run `pob status` only.
