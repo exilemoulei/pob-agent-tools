@@ -5,11 +5,16 @@
 - DPS/EHP columns come strictly from headless PoB (`-` = unverified; never claim `0` upgrade).
 - `POESESSID` / `POE_COOKIE` are env-only if GGG returns 401/403 (never print or pass on CLI).
 
-## 1. Resolve Trade Stat IDs (0ms Local `TradeSiteStats.lua`)
+## 1. Resolve Trade Stat IDs & Verify Slot Affix Existence (Official Trade = Ground Truth)
 ```powershell
 pob trade stats "法压" --slot boots
 pob trade stats "to Cold Resistance" --slot ring1
+
+# MANDATORY Ground-Truth check before claiming any affix can/cannot exist on a slot
+# (PoB `pob data mod` has 0 spawn weights & incomplete slot tags for Delve/Incursion/league drop-only explicits!)
+pob trade search --slot gloves --stat "+# to Level of Socketed Minion Gems>=2" --fetch-limit 5 --pob off
 ```
+> **Hard Affix-Existence Rule**: Never conclude an affix cannot exist on `<slot>` solely from `pob data mod` (empty `Weights` / `0` `--slot` hits) or web search — drop-only explicits (Delve `Subterranean`, Incursion `Citaqualotl's`/`Tacati's`/`Matatl's`, Essence, Recombinator, current-league drops) have `0` currency roll weight in PoB `Mods.dat`. Always verify against the live official trade market with `--fetch-limit 5 --pob off` (explicit `>=<min>` when checking specific tiers like `+2`, or `--pob auto --pob-limit 5` when ranking DPS upgrades). When offline (`POB_OFFLINE=1` / no network / `401`/`403`), explicitly report `unverified (offline)` / `[待验证]` and never issue a negative verdict.
 
 ## 2. Search & Verify Live Listings in PoB
 ```powershell

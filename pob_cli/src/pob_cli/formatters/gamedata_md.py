@@ -149,8 +149,18 @@ def _fmt_game_data_mod(results: list[dict[str, Any]]) -> list[str]:
             cost_s = ", ".join(f"{k}:{v}" for k, v in cost.items()) if isinstance(cost, dict) else str(cost or "")
             types_s = ",".join((bench.get("types") or [])[:5])
             w_disp = f"Bench[{types_s}]" + (f" ({cost_s})" if cost_s else "")
+        elif weights:
+            w_disp = ", ".join(f"{k}:{v}" for k, v in list(weights.items())[:5])
         else:
-            w_disp = ", ".join(f"{k}:{v}" for k, v in list(weights.items())[:5]) or "-"
+            origin = str(r.get("drop_origin") or "")
+            app_types = r.get("applicable_types") or []
+            if app_types:
+                types_s = ",".join(str(x) for x in app_types[:4])
+                w_disp = f"{origin or 'Drop'}[{types_s}] (drop-only)"
+            elif origin:
+                w_disp = f"{origin} (drop-only; no roll weight)"
+            else:
+                w_disp = "drop-only (no roll weight)"
         affix_grp = f"{r.get('affix') or '-'} ({r.get('group') or '-'})"
         rows.append(
             [
@@ -230,6 +240,8 @@ def format_game_data(res: dict[str, Any], kind: str | None = None, query: str | 
         lines.extend(_fmt_game_data_unique(results))
     elif kind_norm == "mod":
         lines.extend(_fmt_game_data_mod(results))
+        if res.get("dropOnlyNote"):
+            lines.append(f"\n> {res['dropOnlyNote']}")
     elif kind_norm == "base":
         lines.extend(_fmt_game_data_base(results))
 
