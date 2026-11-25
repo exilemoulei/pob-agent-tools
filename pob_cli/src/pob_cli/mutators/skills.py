@@ -20,6 +20,7 @@ from .skills_resolve import (
     _apply_vaal_defaults_batch,
     _build_add_gem_params,
     _extract_explicit_gem_level,
+    _gem_spec_allows_illegal_level,
     _normalize_gem_spec,
     _resolve_gem_candidate,
     _resolve_gem_in_group,
@@ -90,10 +91,12 @@ def _apply_add_group_in_place(
         for sp in norm_specs:
             cautions = _merge_cautions(cautions, sp.get("cautions"))
         resolved_specs = _resolve_gem_specs_batch(w, g_idx, norm_specs)
-        for sp, exp_lv in zip(resolved_specs, explicit_levels, strict=False):
+        for sp, exp_lv, raw_spec in zip(resolved_specs, explicit_levels, gems, strict=False):
             r_name = str(sp.get("name") or "").strip()
             if r_name:
-                eff_lv, lv_cautions = _validate_gem_level(r_name, exp_lv, allow_illegal_level=allow_illegal_level)
+                # Same permission as the first pass in `_normalize_gem_spec`, or this pass refuses what that one let through.
+                allow_lv = _gem_spec_allows_illegal_level(raw_spec, allow_illegal_level)
+                eff_lv, lv_cautions = _validate_gem_level(r_name, exp_lv, allow_illegal_level=allow_lv)
                 if eff_lv is not None:
                     sp["level"] = eff_lv
                 cautions = _merge_cautions(cautions, lv_cautions)
@@ -210,10 +213,11 @@ def _apply_replace_group_in_place(
             )
             cautions = _merge_cautions(cautions, _legacy_warn_cautions(warns))
     resolved_specs = _resolve_gem_specs_batch(w, g_idx, norm_specs)
-    for sp, exp_lv in zip(resolved_specs, explicit_levels, strict=False):
+    for sp, exp_lv, raw_spec in zip(resolved_specs, explicit_levels, raw_gems, strict=False):
         r_name = str(sp.get("name") or "").strip()
         if r_name:
-            eff_lv, lv_cautions = _validate_gem_level(r_name, exp_lv, allow_illegal_level=allow_illegal_level)
+            allow_lv = _gem_spec_allows_illegal_level(raw_spec, allow_illegal_level)
+            eff_lv, lv_cautions = _validate_gem_level(r_name, exp_lv, allow_illegal_level=allow_lv)
             if eff_lv is not None:
                 sp["level"] = eff_lv
             cautions = _merge_cautions(cautions, lv_cautions)

@@ -109,6 +109,13 @@ def _extract_explicit_gem_level(entry: str | dict[str, Any]) -> int | None:
     return None
 
 
+def _gem_spec_allows_illegal_level(entry: str | dict[str, Any], allow_illegal_level: bool) -> bool:
+    """The command-wide flag, or the same permission set on one gem of a `--gems` JSON list."""
+    if allow_illegal_level or not isinstance(entry, dict):
+        return bool(allow_illegal_level)
+    return bool(entry.get("allowIllegalLevel", entry.get("allow_illegal_level", False)))
+
+
 def _normalize_gem_spec(
     entry: str | dict[str, Any],
     *,
@@ -154,9 +161,7 @@ def _normalize_gem_spec(
         if not name and not gem_id:
             raise ValueError("Gem spec dict must include 'name', 'nameSpec', 'gem', or 'gemId'.")
         explicit_level = int(entry["level"]) if entry.get("level") is not None else None
-        eff_allow_illegal = allow_illegal_level or bool(
-            entry.get("allowIllegalLevel", entry.get("allow_illegal_level", False))
-        )
+        eff_allow_illegal = _gem_spec_allows_illegal_level(entry, allow_illegal_level)
         if name:
             eff_level, cautions = _validate_gem_level(name, explicit_level, allow_illegal_level=eff_allow_illegal)
         else:

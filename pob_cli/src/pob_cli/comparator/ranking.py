@@ -328,11 +328,14 @@ def rank_gems(
             raise ValueError(f"Skill group #{g_idx} not found.")
         gems = group.get("gems", [])
         group_has_trigger = _group_has_trigger_gem(gems)
+        # `get_stats` describes the main skill. Its damage split and mana cost say nothing about a
+        # support socketed in another group, so the conflict and mana checks only run for the main one.
+        ranks_main_group = bool(group.get("isMain")) or skills_res.get("mainSocketGroup") == g_idx
 
         main_mana_cost: float | None = None
         stats_map: dict[str, Any] = {}
         try:
-            st_res = worker.call("get_stats", {})
+            st_res = worker.call("get_stats", {}) if ranks_main_group else None
             if isinstance(st_res, dict) and isinstance(st_res.get("stats"), dict):
                 stats_map = st_res["stats"]
             raw_mc = stats_map.get("ManaCost")

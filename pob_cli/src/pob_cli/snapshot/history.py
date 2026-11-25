@@ -14,7 +14,7 @@ class SlotHistory:
 
     `committed` is the share code of the build the slot holds outside a transaction. The worker
     keeps a copy as `last_good_code`, the build it restores after an engine crash; `bind` and every
-    change here keep that copy equal. Each change bumps `rev` (the hook ledger compares revisions)
+    change here keep that copy equal. Each change bumps `rev` (the daemon's read cache compares revisions)
     and saves the slot file once.
     """
 

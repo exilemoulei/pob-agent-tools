@@ -12,7 +12,7 @@ from ..snapshot import _call_batch, _finite_float
 from .dewater import dewater_build_in_place
 from .summary import _active_item_lines
 
-_TATTOO_LABEL_TOKENS = ("tattoo", "纹身", "紋身")
+_TATTOO_LABEL_TOKENS = ("tattoo", "文身", "纹身", "紋身")  # zh-CN writes 文身, zh-TW 紋身
 
 
 def _is_tattoo_label(label: str) -> bool:
@@ -33,9 +33,20 @@ def is_eldritch_battery_active(stats: dict[str, Any], tree_summary: dict[str, An
             return True
     return False
 
-_MIN_ENDURANCE_RE = re.compile(r"\+\d+\s+to\s+minimum\s+endurance\s+charges|最小耐力球", re.IGNORECASE)
-_MIN_FRENZY_RE = re.compile(r"\+\d+\s+to\s+minimum\s+frenzy\s+charges|最小狂怒球", re.IGNORECASE)
-_MIN_POWER_RE = re.compile(r"\+\d+\s+to\s+minimum\s+power\s+charges|最小暴击球|最小暴擊球", re.IGNORECASE)
+
+
+def _min_charges_fill_max(stats: dict[str, Any], kind: str) -> bool:
+    """True when the build's minimum `kind` charges already equal its maximum.
+
+    PoB counts minimum charges whether or not `use<Kind>Charges` is set, and the setting counts the
+    maximum. Keeping it for a build with 1 minimum of 4 would credit 4 guaranteed charges, so a
+    minimum only justifies keeping it when there is nothing above it to add.
+    """
+    lowest = max(_finite_float(stats.get(f"{kind}ChargesMin")), _finite_float(stats.get(f"Minimum{kind}Charges")))
+    highest = _finite_float(stats.get(f"{kind}ChargesMax"))
+    return 0 < highest <= lowest
+
+
 _PASSIVE_ENDURANCE_RE = re.compile(
     r"gain\s+an?\s+endurance\s+charge\s+every\b|gain\s+\d+\s+endurance\s+charges?\s+when\s+(?:you\s+are\s+)?hit\b"
     r"|\d+%\s+chance\s+to\s+gain\s+an?\s+endurance\s+charge\s+when\s+you\s+are\s+hit",
@@ -176,9 +187,9 @@ def infer_auto_keep_and_flask_notes(
         _finite_float(st.get("IgniteChance")),
         _finite_float(st.get("EnemyIgniteChance")),
     )
-    has_shaper_of_flames = any(
-        any(t in nm for t in ("shaper of flames", "烈焰塑界者", "火焰塑形者")) for nm in node_names
-    )
+    # Every node and item carries its English name, so that is what these checks read. A Chinese
+    # fragment is kept only where it is the real zh-CN or zh-TW name and matches nothing else.
+    has_shaper_of_flames = any("shaper of flames" in nm for nm in node_names)
     if has_shaper_of_flames or "hits always ignite" in mods_low or "always ignite" in mods_low:
         auto_keep["conditionenemyignited"] = "Build has guaranteed Ignite (Shaper of Flames / always Ignite)"
     elif ig_chance >= 100.0:
@@ -190,17 +201,14 @@ def infer_auto_keep_and_flask_notes(
     )
     has_ramako = (61355 in node_ids) or any(
         not _is_tattoo_label(nm)
-        and any(
-            t in nm
-            for t in ("ramako, sun's light", "ramako, suns light", "烈阳之光", "烈陽之光", "太阳之光", "太陽之光")
-        )
+        and any(t in nm for t in ("ramako, sun's light", "ramako, suns light", "烈陽之光", "太阳之光"))
         for nm in node_names
     )
     has_tukohama = any(
         not _is_tattoo_label(nm) and any(t in nm for t in ("tukohama", "图克哈玛", "圖克哈瑪"))
         for nm in node_names
     )
-    has_natures_patience = any(any(t in nm for t in ("nature's patience", "自然耐心")) for nm in node_names)
+    has_natures_patience = any("nature's patience" in nm for nm in node_names)
     if has_cws and has_ramako:
         auto_keep["conditionstationary"] = "CwS/Ramako stationary build"
     elif has_cws:
@@ -212,19 +220,22 @@ def infer_auto_keep_and_flask_notes(
     elif has_natures_patience:
         auto_keep["conditionstationary"] = "Nature's Patience stationary keystone"
 
+    # Bloodnotch is "血痕" in zh-CN, which also opens the base Sanguine Raiment ("血痕之衣").
     has_hittank = has_cws or any(
-        t in item_blob for t in ("bloodnotch", "缺血症", "血痕", "valyrium", "女武神", "战日", "戰日", "immutable force")
+        t in item_blob for t in ("bloodnotch", "缺血症", "valyrium", "女武神", "戰日", "immutable force")
     )
-    has_ralakesh = any(t in item_blob for t in ("ralakesh's impatience", "拉拉克什的焦躁"))
-    has_farrul = "farrul's fur" in item_blob or "法瑞尔的兽甲" in item_blob
-    is_replica_farrul = "replica farrul's fur" in item_blob or "仿品法瑞尔" in item_blob
-    has_conviction = any(any(t in nm for t in ("conviction of power", "信念之力")) for nm in node_names)
-    has_inexorable = any(any(t in nm for t in ("inexorable", "坚定不移", "不屈")) for nm in node_names)
-    has_enduring_comp = any(any(t in nm for t in ("enduring composure", "坚忍冷静")) for nm in node_names)
-    has_unflinching = any(any(t in nm for t in ("unflinching", "不可动摇", "势不可挡")) for nm in node_names)
+    has_ralakesh = "ralakesh's impatience" in item_blob
+    has_farrul = "farrul's fur" in item_blob
+    is_replica_farrul = "replica farrul's fur" in item_blob
+    has_conviction = any("conviction of power" in nm for nm in node_names)
+    # Chinese names are shared here: zh-CN calls both Inexorable and Juggernaut's Unstoppable
+    # "势不可挡", and "不屈" opens Unbending, Indomitable Resolve and two more.
+    has_inexorable = any("inexorable" in nm for nm in node_names)
+    has_enduring_comp = any("enduring composure" in nm for nm in node_names)
+    has_unflinching = any("unflinching" in nm for nm in node_names)
 
-    if _finite_float(st.get("MinimumEnduranceCharges")) > 0 or _finite_float(st.get("EnduranceChargesMin")) > 0 or _MIN_ENDURANCE_RE.search(mods_blob):
-        auto_keep["useendurancecharges"] = "MinimumEnduranceCharges > 0"
+    if _min_charges_fill_max(st, "Endurance"):
+        auto_keep["useendurancecharges"] = "Minimum Endurance Charges = maximum"
     elif has_enduring_comp:
         auto_keep["useendurancecharges"] = "Enduring Composure on-hit Endurance sustain"
     elif has_inexorable and has_hittank:
@@ -240,15 +251,15 @@ def infer_auto_keep_and_flask_notes(
     elif _PASSIVE_ENDURANCE_RE.search(mods_blob) and has_hittank:
         auto_keep["useendurancecharges"] = "Passive/on-hit Endurance Charge generation"
 
-    if _finite_float(st.get("MinimumFrenzyCharges")) > 0 or _finite_float(st.get("FrenzyChargesMin")) > 0 or _MIN_FRENZY_RE.search(mods_blob):
-        auto_keep["usefrenzycharges"] = "MinimumFrenzyCharges > 0"
+    if _min_charges_fill_max(st, "Frenzy"):
+        auto_keep["usefrenzycharges"] = "Minimum Frenzy Charges = maximum"
     elif has_farrul:
         auto_keep["usefrenzycharges"] = "Farrul's Fur Aspect of the Cat sustain"
     elif has_ralakesh and ("maximum frenzy charges" in mods_low or ("maximum endurance charges" not in mods_low and "maximum power charges" not in mods_low)):
         auto_keep["usefrenzycharges"] = "Ralakesh's Impatience"
 
-    if _finite_float(st.get("MinimumPowerCharges")) > 0 or _finite_float(st.get("PowerChargesMin")) > 0 or _MIN_POWER_RE.search(mods_blob):
-        auto_keep["usepowercharges"] = "MinimumPowerCharges > 0"
+    if _min_charges_fill_max(st, "Power"):
+        auto_keep["usepowercharges"] = "Minimum Power Charges = maximum"
     elif has_conviction:
         auto_keep["usepowercharges"] = "Hierophant Conviction of Power (+4 Min Power Charges)"
     elif has_farrul and not is_replica_farrul:

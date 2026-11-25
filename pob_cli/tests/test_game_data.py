@@ -85,10 +85,12 @@ def test_mod_bilingual_foulborn_bench_and_filters(tmp_path: Path) -> None:
 
     # Slot + ilvl filter: Prime (ilvl 86) excluded at ilvl=81, Rapturous (ilvl 81) included
     res_body = query_local_data(
-        "mod", "to maximum Life", pob_dir=REAL_POB_DIR, runtime_dir=tmp_path, slot="Body Armour", ilvl=81, limit=50
+        "mod", "to maximum Life", pob_dir=REAL_POB_DIR, runtime_dir=tmp_path, slot="Body Armour", ilvl=81, limit=0
     )
     body_ids = {m["id"] for m in res_body["results"]}
     assert "IncreasedLife11" in body_ids
+    # Keyed by the base's defence tag (`str_armour`), not by `body_armour`.
+    assert "LocalBaseArmourAndLife4" in body_ids
     assert "IncreasedLifeEnhancedBodyMod___" in body_ids
     assert "IncreasedLife12" not in body_ids
     for m in res_body["results"]:
@@ -97,7 +99,8 @@ def test_mod_bilingual_foulborn_bench_and_filters(tmp_path: Path) -> None:
             assert "Body Armour" in m["applicable_types"]
         else:
             assert any(
-                (k in ("body_armour", "armour", "default") or k.startswith("body_armour_")) and v > 0
+                (k in ("body_armour", "armour", "default") or k.startswith("body_armour_") or k.endswith("_armour"))
+                and v > 0
                 for k, v in m["weights"].items()
             )
 
@@ -284,6 +287,40 @@ Implicits: 1
         encoding="utf-8",
     )
     return base_dir
+
+
+def test_pob_root_without_game_data_gives_way_and_a_poe2_root_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pob_cli.errors import CrossGameHallucinationError
+
+    # A checkout may hold the legacy pack, which would answer before the last fallback below.
+    monkeypatch.setattr("pob_cli.game_data.paths.detect_source_checkout_root", lambda: None)
+    rt = tmp_path / "rt"
+    engine_dir = _create_synthetic_pob_dir(rt / "engine", pob_ver="2.99.0", extra_mod_level=10)
+    other = _create_synthetic_pob_dir(tmp_path / "other", pob_ver="2.98.0", extra_mod_level=10)
+
+    monkeypatch.setenv("POB_ROOT", str(other))
+    assert resolve_pob_dir(None, rt) == other
+
+    # A typo: the daemon falls back to the managed engine for builds, so data queries must too.
+    monkeypatch.setenv("POB_ROOT", str(tmp_path / "othre"))
+    assert resolve_pob_dir(None, rt) == engine_dir
+    assert resolve_pob_dir(None, tmp_path / "empty_rt") == tmp_path / "othre"
+
+    # A data pack the daemon cannot run loses to a managed engine it can, and wins when there is none.
+    monkeypatch.setenv("POB_ROOT", str(other))
+    monkeypatch.setattr("pob_cli.updater.is_valid_engine_dir", lambda p: Path(p) == engine_dir)
+    assert resolve_pob_dir(None, rt) == engine_dir
+    monkeypatch.setattr("pob_cli.updater.is_valid_engine_dir", lambda p: False)
+    assert resolve_pob_dir(None, rt) == other
+
+    poe2_only = tmp_path / "poe2"
+    (poe2_only / "PoE2" / "Data").mkdir(parents=True)
+    (poe2_only / "Data").mkdir()
+    monkeypatch.setenv("POB_ROOT", str(poe2_only))
+    with pytest.raises(CrossGameHallucinationError):
+        resolve_pob_dir(None, rt)
 
 
 def test_no_zh_fallback_resolution_and_auto_rebuild(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

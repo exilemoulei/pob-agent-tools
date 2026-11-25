@@ -81,7 +81,6 @@ class Engine:
         self.runtime_dir = Path(runtime_dir) if runtime_dir else None
         self._loaded = False
         self._cleared_slots: tuple[str, ...] = ()
-        self._last_item_id: int | None = None
         self.worker = _tl.BridgeWorker("test", pob_dir=self.pob_dir, runtime_dir=self.runtime_dir)
         self._start_worker()
 
@@ -118,7 +117,6 @@ class Engine:
         self.count = 0
         self._loaded = True
         self._cleared_slots = tuple(self.clear)
-        self._last_item_id = None
 
     def read(self) -> dict[str, Any]:
         stats = self.worker.call("get_stats", {}, timeout=60).get("stats") or {}
@@ -133,31 +131,20 @@ class Engine:
         else:
             cleared = getattr(self, "_cleared_slots", ())
             pending_clear = [s for s in self.clear if s not in cleared]
-        prev_item_id = getattr(self, "_last_item_id", None)
+        self.count += 1
         # not str.format: item lines may carry braces of their own, e.g. `{crafted}`
         raw = self.template.replace("{seed}", str(seed))
         calls: list[tuple[str, dict[str, Any]]] = [
             ("unequip_slot", {"slotName": slot}) for slot in pending_clear
         ]
-        add_idx = len(calls)
+        # The replaced jewel stays in the item list until the next reload: deleting it is a second
+        # full recalculation per seed (measured 72 ms a seed against 51 ms on PoB 2.69), and a
+        # reload every RESET_EVERY seeds costs far less than that.
         calls.append(("add_item", {"raw": raw, "equip": True, "slotName": self.slot}))
-        if isinstance(prev_item_id, int):
-            calls.append(("delete_item", {"id": prev_item_id}))
         calls.append(("get_stats", {}))
         responses = _worker_batch(self.worker, calls, timeout=60.0)
         if pending_clear:
             self._cleared_slots = tuple(self.clear)
-        add_resp = responses[add_idx] if len(responses) > add_idx and isinstance(responses[add_idx], dict) else {}
-        added_obj = add_resp.get("item") if isinstance(add_resp, dict) else None
-        raw_id = added_obj.get("id") if isinstance(added_obj, dict) else None
-        added_id = int(raw_id) if isinstance(raw_id, int) and not isinstance(raw_id, bool) else None
-        if added_id is not None:
-            self._last_item_id = added_id
-            if not isinstance(prev_item_id, int) or added_id == prev_item_id:
-                self.count += 1
-        else:
-            self._last_item_id = None
-            self.count += 1
         stats = (responses[-1] if responses else {}).get("stats") or {}
         return {key: _json_safe_stat(stats.get(key)) for key in STAT_KEYS}
 
