@@ -269,6 +269,43 @@ def test_search_calcs_breakdown_group_and_skill_restores_state() -> None:
         search_calcs_breakdown(worker, "Average Damage", skill="NonexistentSkill", no_breakdown=True)  # type: ignore[arg-type]
 
 
+def test_calc_skill_selector_puts_back_the_target_groups_own_calcs_skill() -> None:
+    # The Calcs tab shows group 2; group 1's Calcs-tab skill is #2 while its main-skill choice
+    # (all that `list_skills` reports) is #1.
+    worker = _FakeCalcsWorker(initial_group=2, initial_skill=2)
+    res = search_calcs_breakdown(worker, "Average Damage", skill="Fireball", no_breakdown=True)  # type: ignore[arg-type]
+    assert res["matches"][0]["cells"][0]["value"] == 12500.0  # Fireball, skill #1 of group 1
+    # A read-only command: everything is as it was, group 1's Calcs-tab skill included.
+    assert worker.cur_group == 2
+    assert worker.cur_skill_by_group == {1: 2, 2: 1}
+
+
+def test_trade_auto_query_resolves_a_numbered_jewel_socket() -> None:
+    from pob_cli.daemon.rpc_handlers import _h_trade_generate_query
+
+    class _Worker:
+        def __init__(self) -> None:
+            self.lock = threading.RLock()
+            self.caps: dict[str, Any] = {"tradeAutoQuery": True}
+            self.sent: dict[str, Any] = {}
+
+        def call(self, method: str, params: dict[str, Any] | None = None, **_kw: Any) -> dict[str, Any]:
+            if method == "list_items":
+                return {"slots": [{"name": "Jewel 26725", "nodeId": 26725, "selItemId": 1, "socketIndex": 1}]}
+            if method == "list_jewel_sockets":
+                return {"sockets": [{"index": 1, "nodeId": 26725, "slotName": "Jewel 26725"}]}
+            if method == "get_tree_state":
+                return {"sockets": [{"nodeId": 26725, "slotName": "Jewel 26725"}], "allocatedNodes": [26725]}
+            if method == "trade_generate_query":
+                self.sent = dict(params or {})
+                return {"query": {}}
+            raise AssertionError(f"Unexpected RPC {method}")
+
+    worker = _Worker()
+    _h_trade_generate_query(None, {"slotName": "#1"}, worker)  # type: ignore[arg-type]
+    assert worker.sent["slotName"] == "Jewel 26725"
+
+
 def test_cli_calc_group_skill_suppresses_non_main_warn(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_calls: list[dict[str, Any]] = []
 
@@ -326,8 +363,10 @@ def test_cli_calc_group_skill_suppresses_non_main_warn(monkeypatch: pytest.Monke
         ("Jewel 1", "jewel", "Jewel 1"),
         ("Jewel 31683 (#8)", "jewel", "Jewel 31683"),
         ("#8", "jewel", "#8"),
-        ("Abyssal Socket 1", "jewel.abyss", "Abyssal Socket 1"),
         ("Helmet Abyssal Socket 1", "jewel.abyss", "Helmet Abyssal Socket 1"),
+        ("Belt Abyssal Socket 6", "jewel.abyss", "Belt Abyssal Socket 6"),
+        ("Weapon 1 Swap Abyssal Socket 1", "jewel.abyss", "Weapon 1 Swap Abyssal Socket 1"),
+        ("weapon2_swap_abyssal_socket_2", "jewel.abyss", "Weapon 2 Swap Abyssal Socket 2"),
         ("Body Armour Abyssal Socket 2", "jewel.abyss", "Body Armour Abyssal Socket 2"),
         ("helm_abyssal_socket_1", "jewel.abyss", "Helmet Abyssal Socket 1"),
     ],
@@ -339,8 +378,17 @@ def test_dynamic_jewel_slot_aliases(raw_slot: str, exp_cat: str, exp_pob_slot: s
 
 
 def test_invalid_dynamic_abyss_slot_rejected() -> None:
-    assert pob_slot_for_slot("Banana Abyssal Socket 1") is None
-    assert _is_known_slot("Banana Abyssal Socket 1") is False
+    # Only the slots PoB itself has: named after the holding item, sockets 1..6, swap on weapons only.
+    for not_a_slot in (
+        "Banana Abyssal Socket 1",
+        "Abyssal Socket 1",
+        "Ring 2 Abyssal Socket 1",
+        "Amulet Abyssal Socket 1",
+        "Helmet Abyssal Socket 7",
+        "Helmet Swap Abyssal Socket 1",
+    ):
+        assert pob_slot_for_slot(not_a_slot) is None, not_a_slot
+        assert _is_known_slot(not_a_slot) is False, not_a_slot
 
 
 @pytest.mark.parametrize(
