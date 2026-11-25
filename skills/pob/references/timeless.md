@@ -25,3 +25,12 @@ pob timeless search --jewel "Brutal Restraint" --socket 26725 --conqueror Balbal
 ```
 
 Default search uses non-exhaustive fast modes — additive fitting (`narrow_down`, which may stop once remaining PRNG groups are bounded) for Legion jewels and a conditional `max(top * 4, 200)` weight shortlist for `Glorious Vanity` and 3.30 Abyss jewels (`Festering Vengeance` / `溃烂复仇`, etc.) — reporting both currently allocated notables (`0` extra points) and unallocated notables in radius; either fast mode can miss a higher seed that `--exact` (full evaluation of every resolved group) finds. Note: `Putrid Seed` (`腐朽之种`) is the 3.30 outer cluster passive fork, whereas the 3.30 Abyss timeless jewel is `Festering Vengeance`.
+
+## 3. Conquered Radius Boundaries & `Elegant Hubris` `0`-Stat Passives
+- **`Elegant Hubris` (`优雅的狂妄`) `Price of Glory`**: Conquers all small passives in radius into **`0`-stat `Price of Glory`** (`荣耀的代价`) travel nodes — small passives inside radius grant **no attributes or stats** unless pathing to an allocated conquered notable (`80%` value nodes) or `Supreme Ostentation`.
+- **`TreeWaste` Dead-End Audit (`pob diagnose`)**: Automatically flags conquered `0`-stat `Price of Glory` small passives and orphaned pathing dead-ends that do not connect to any allocated notable, keystone, mastery, or jewel socket.
+- **Inspect Active Socket Radius (`pob tree --socket-radius <id>`)**:
+  ```powershell
+  pob tree --socket-radius 26725
+  ```
+  Prints explicit active radius boundary headers (`In Radius` vs `Out of Radius`) around jewel socket `<id>` so conquered vs unconquered passives are unambiguous.

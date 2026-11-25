@@ -1,6 +1,6 @@
 ---
 name: pob-poe1
-description: Path of Exile 1 (PoE1 3.30, 流放之路1) build diagnosis, headless PoB calculation, DPS/EHP Pinnacle audit, passive tree/gem/item what-if optimization, official PoE1 trade search, crafting bench, and timeless jewel seed lookup via local `pob` CLI. Trigger on PoE1, PoB, pobb.in, poe.ninja, 配装, 天赋, 宝石, 技能连法, 伤害计算, 脱水, 跑PoB, 市集, 工艺台, 永恒珠宝, 法血, 猎首, 尼米斯, 大法师, 正火, 闪打, 龙卷, 漩涡, 憎恨, 耐力球, 异灵之体, 异能魔力, 万古之剑, 圣宗, 喋血之刃, 暴击时施放, 吟唱时施放, 艾许之面.
+description: Path of Exile 1 (PoE1 3.30, 流放之路1) build diagnosis, headless PoB calculation, DPS/EHP Pinnacle audit, passive tree/gem/item what-if optimization, official PoE1 trade search, crafting bench, and timeless jewel seed lookup via local `pob` CLI. Trigger on PoE1, PoB, pobb.in, poe.ninja, 配装, 天赋, 宝石, 技能连法, 伤害计算, 脱水, 跑PoB, 市集, 工艺台, 永恒珠宝, 法血, 猎首, 尼米斯, 大法师, 正火, 闪打, 龙卷, 漩涡, 憎恨, 耐力球, 异灵之体, 异能魔力, 万古之剑, 圣宗, 喋血之刃, 暴击时施放, 吟唱时施放, 艾许之面, 雾隐, 脏器, 符文嫁接.
 ---
 
 # PoE1 3.30 Headless PoB Skill (`pob4agents`, command `pob`)
@@ -28,7 +28,7 @@ description: Path of Exile 1 (PoE1 3.30, 流放之路1) build diagnosis, headles
   pob wiki "<q1>" ["<q2>" ...] | pob poedb "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us]
   pob data gem "<q1>" ["<q2>" ...] | pob data gem --quality-breakpoints --active-only [--limit 25]
   pob data unique [QUERY] [--mod "<stat_kw>"] [--slot S] | pob data mod "<q>" [--slot S] [--ilvl N] | pob data translate "<EN|中文>"
-  pob data tree [Q...] [--type Keystone|Notable|Ascendancy|Bloodline] [--asc "<Asc>"]
+  pob data tree [Q...] [--type Keystone|Notable|Ascendancy|Bloodline] [--asc "<Asc>"] | pob data tattoo <query> [--kind tattoo|runegraft]
   pob data tick <base_cd|coc|cospri|mjolner|poet|cwdt|soa> [--cdr N] [--aps R]        # Exact 0.033s tick & overspeed math
   ```
 - **D. Trade, Crafting Bench & `<3.5s` Timeless upgrades**:
@@ -36,10 +36,10 @@ description: Path of Exile 1 (PoE1 3.30, 流放之路1) build diagnosis, headles
 
 ## 2. Fast `<0.3s` Follow-Ups & CoW Zero-Residue What-If (`--apply` to Persist)
 ```powershell
-pob help --brief | pob summary [--json] | pob audit [--keep SPEC] | pob calc "<kw1>" ["<kw2>" ...] [--no-breakdown]
-pob items [--slot "Ring 1"|"#1"] [--all --raw] | pob skills [--group main] | pob tree [--search "<kw>"] | pob config list [--all]
+pob help --brief | pob summary [--json] | pob audit [--keep SPEC] | pob calc "<kw1>" ["<kw2>" ...] [--group G] [--skill S] [--no-breakdown]
+pob items [--slot "Ring 1"|"#1"] [--all --raw] | pob skills [--group main] | pob tree [--search "<kw>"|--socket-radius <id>] | pob config list [--all]
 pob item inspect (--slot S | --raw "<txt>" | --file f) [--want "<stat>"]... | pob item try --slot S --raw "<txt>" [--apply] | pob item edit --slot S --add-mod "<ln>" [--apply] | pob item anoint --notable "<N>"
-pob skill add|set|rm --group main ... [--apply] | pob tree change --allocate <id> [--deallocate <id>] [--apply] | pob config set <k>=<v> [--custom-mods "<txt>"] [--apply]
+pob skill add|set|rm --group main ... [--apply] | pob tree change --allocate <id>... [--deallocate <id>...] [--apply] | pob config set <k>=<v> [--custom-mods "<txt>"] [--apply]
 pob batch --json-ops '[...]' [--return "skills,summary"] | pob sweep --scenario Pinnacle --json-variants '[...]' | pob matrix Original Pinnacle Uber FlasksOff
 pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--max-dist 5] | pob rank-gems [--group main] [--slot N|--add-link]
 pob bench suggest --slot boots --stat "抗性" | pob trade search --slot ring1 [--auto-query | --stat "生命>=60" --sum "火抗|冰抗|电抗>=80"] [--bench-craft "最大生命"] --budget 5 --currency divine
@@ -51,6 +51,9 @@ pob timeless search --jewel "Lethal Pride" --socket <nodeId|id1,id2|all> --stat 
 - **3.25–3.30 Removals & Reworks**: Removed `Divine Blessing` (`神圣祝福`), `Ancestral Protector`/`Warchief` (`先祖卫士`/`战士长`), Lab Enchants, Alt-Quality (`Anomalous`/`Divergent`/`Phantasmal`), Sextants, Left-Click instant skills (use `Automation`/`Autoexertion`); `Vortex` = `0.6s` cast; `Hatred` (`憎恨`) = Phys-as-Cold only (no `% more Cold`); `Endurance Charge` (`耐力球`) = **4% Phys & Ele DR** (no `+4% Ele Res`); `Taste of Hate` (`恨意`) = Fire/Light-as-Cold; Hierophant `Sanctuary of Thought` = no 50% less Mana Cost; `Cloak of Defiance` = standard 40% MoM; Trickster `Polymath` = **2% more** per Mastery; Ranger `Warden` (`守望者`) replaced Raider.
 - **Triggers & Ticks**: PoE1 server tick = **`0.033s` (`33ms`, NOT `33.33ms`)** (`pob data tick`); CoC overspeed (`APS > cap`) **halves** effective triggers; **`Cast while Channelling` (`CwC`) is a fixed interval (`320ms` Lv20), NOT a cooldown — CDR has 0% effect**.
 - **Build Bricks & Archetype Traps**: `Esh's Visage` (`艾许之面`) **breaks on Low Life (`<=50%` unres Life)** so Chaos bypasses ES (use `Shavronne's Wrappings`/`Solaris Lorica`/`The Ivory Tower`/`Coruscating Elixir`); `+% to Quality of all Skill Gems` applies **only to Active Skill Gems**; **Tinctures != Flasks**; `EB + CI` = 1 Life / 0 ES on Life; `The Agnostic + Valyrium + Bloodnotch/CWS` requires **`ES = 0`** (>0 ES adds 50% Stun Avoidance & raises Valyrium stun threshold — keep `The Agnostic` and `Defiance of Destiny` on CWS); Chieftain `Ramako, Sun's Light` locks stationary enemy Fire Res vs DoT to **fixed `-20%`** (`Flammability`/Exposure/Scorch add 0 while stationary — use `Punishment`); `Inspiration` gives 0 charges at 0 Mana and resets at **800 Mana spent** Lv20 (`922` Lv21); `Sadism` reduces Ailment Duration (pads PoB DPS while cutting ignite uptime); `Doryani's Prototype` `-200%` Lightning Res is intentional (Armour mitigates hits, not Lightning DoT); `Uul-Netol's Vow` adds a 7th link; `Returning Projectiles` requires `Pierce`.
+- **3.30 Vestigial (`雾隐`) Uniques & Wickerman Viscera (`Head/Body/Arm/Leg`)**:
+  - `{vestigial}` tags or `====` separator blocks on `Body Armour / Helmet / Gloves / Boots / Shield / Quiver` uniques are legal 3.30 **Vestigial** (`Enshrouding Crystal` / `雾隐`) slot-inherited donor unique mods (e.g. `+200 to maximum Life` on `Cloak of Flame`) — verify via `pob data unique --mod "<stat>"`, `pob data mod "<stat>"`, or `pob trade search`; never delete as "illegal manual text" without checking!
+  - **3.30 Wickerman Viscera** (`Head/Body/Arm/Leg` slots, e.g. `Scholar's Leg`, `Greater Overseer's Whip`) & **`Runegraft of the Bound`** (`pob data tattoo <query>`, `bonuses gained from equipped Gloves/Boots/...`) are often simulated in `customMods`: separate verified 3.30 simulation lines from unverified padding, and keep **`Convocation` (`号召`) manual (unautomated)** when sustaining `"used a Minion Skill Recently"` (`Automation Support` triggers rather than "uses" skills).
 - **Affix Slot-Existence Ground Truth (`pob trade search`, NEVER `pob data mod` Alone) & Rare Gear Check**:
   - Whenever verifying whether an affix/mod can legally exist on a specific gear slot (especially Delve `Subterranean`, Incursion `Citaqualotl's`/`Tacati's`/`Matatl's`, Essence, Veiled, Recombinator, or league drop-only explicits such as Gloves `+2 to Level of Socketed Minion Gems`), **NEVER issue a negative verdict from `pob data mod` or web search alone** (PoB `Mods.dat` stores `0` spawn weights and incomplete slot tags for drop-only mods) — **always run `pob trade search --slot <slot> --stat "<stat_template>=<min>" --fetch-limit 5 --pob off`** (e.g. `--stat "+# to Level of Socketed Minion Gems>=2"`) to verify against live official market Ground Truth; if offline (`POB_OFFLINE=1` / network unavailable / `401`/`403`), mark `unverified (offline)` / `[待验证]` and never conclude the affix cannot exist.
   - Run `pob items --slot <S>` or `pob item inspect --slot <S>` before claiming open affixes, tiers, or `{crafted}` bench slots on rare gear.

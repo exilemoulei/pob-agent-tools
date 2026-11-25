@@ -18,8 +18,17 @@ pob matrix Original Pinnacle Uber FlasksOff "BossWithFrenzy:Pinnacle,useFrenzyCh
 
 ## Atomic Multi-Op Transaction (`pob batch`)
 Supported op types (19): `config`, `flask`, `item`, `item_db`, `item_edit`, `unequip`, `anoint`, `tree`, `tree_reset`, `import_tree_url`, `skill`, `add_group`, `delete_group`, `set_group`, `replace_group`, `new_build`, `set_level`, `set_class`, `switch_main`.
+- `"config"` supports multi-key `"set": {"useFrenzyCharges": true, "enemyIsBoss": "Pinnacle"}` (as well as single `"var"`/`"value"` and `"custom_mods"`).
+- `"skill"` supports `"skill_part"` (1-based sub-skill part index for multi-part gems such as `Ice Spear`, `Blade Vortex`, or transfigured variants).
 ```powershell
-pob batch --json-ops '[{"op":"anoint","slot":"Amulet","notable":"Whispers of Doom"},{"op":"skill","group":"main","gem":"2","new_gem":"Awakened Spell Echo"}]' --return summary,audit
+pob batch --json-ops '[{"op":"config","set":{"usePowerCharges":true,"enemyIsBoss":"Pinnacle"}},{"op":"anoint","slot":"Amulet","notable":"Whispers of Doom"},{"op":"skill","group":"main","gem":1,"skill_part":2}]' --return summary,audit
+```
+
+## Scoped `calc`, Repeatable `tree change` & PowerShell 5.1 `--out`
+```powershell
+pob calc "CombinedDPS" "ManaCost" --group 2 --skill 1                     # Inspect a specific socket group / active skill without switching main
+pob tree change --allocate 26725 --allocate 41263 --deallocate 36634      # Repeatable --allocate / --deallocate flags (or comma-separated IDs)
+pob diagnose @build.xml --json --out report.json                          # Writes clean UTF-8 (no BOM); prefer --out <file> on Windows PowerShell 5.1 instead of > / pipe
 ```
 
 ## Parallel Variant Sweep (`pob sweep`)

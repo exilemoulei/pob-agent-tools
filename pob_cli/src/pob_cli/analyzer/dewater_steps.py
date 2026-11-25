@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 from ..bridge_client import BridgeWorker
@@ -38,6 +39,63 @@ def _same_state(a: Any, b: Any) -> bool:
     if math.isinf(fa) or math.isinf(fb):
         return fa == fb
     return abs(fa - fb) <= 1e-9 * max(1.0, abs(fa))
+
+
+_SIM_330_CUSTOM_MOD_RE = re.compile(
+    r"(?:increased|reduced)\s+bonuses\s+gained\s+from\s+equipped\s+"
+    r"(?:gloves|boots|helmet|body\s+armour|shield|quiver|rings?|amulet|belt)"
+    r"|minions\s+are\s+aggressive\s+if\s+you(?:['’]ve|\s+have)\s+used\s+a\s+minion\s+skill\s+recently"
+    r"|\b(?:runegrafts?|wickerman|viscera|scholar['’]s\s+leg|overseer['’]s\s+whip)\b"
+    r"|(?:从)?装备的(?:手套|鞋子|头盔|胸甲|盾牌|箭袋|戒指|项链|腰带)获得的加成(?:提高|降低|增加|减少)"
+    r"|近期(?:内|內)?使用(?:过|過)召唤生物技能.*召唤生物.*侵略"
+    r"|(?:符文嫁接|柳条人|脏器)",
+    re.IGNORECASE,
+)
+
+
+def _is_custom_mod_comment(line: str) -> bool:
+    return line.startswith(("#", "//"))
+
+
+def _preview_mod_lines(mod_lines: list[str], limit: int = 3) -> str:
+    head = "; ".join(mod_lines[:limit])
+    extra = len(mod_lines) - limit
+    return f"{head}; ... (+{extra} more)" if extra > 0 else head
+
+
+def _classify_custom_mod_block(
+    display_title: str,
+    lines: list[str],
+) -> tuple[str, str | None, list[str], list[str]]:
+    sim_330_lines = [ln for ln in lines if _SIM_330_CUSTOM_MOD_RE.search(ln)]
+    other_lines = [ln for ln in lines if not _SIM_330_CUSTOM_MOD_RE.search(ln)]
+    if not sim_330_lines:
+        label = f"customMods[{display_title}] ({len(lines)} active lines: {_preview_mod_lines(lines)})"
+        return label, None, sim_330_lines, other_lines
+
+    sim_str = _preview_mod_lines(sim_330_lines)
+    if other_lines:
+        other_str = _preview_mod_lines(other_lines)
+        label = (
+            f"customMods[{display_title}] (MIXED: 3.30 Viscera/Runegraft simulation [{sim_str}] "
+            f"+ unverified custom [{other_str}]; verify Head/Body/Arm/Leg slots or keep only verified 3.30 lines)"
+        )
+        note = (
+            f"`customMods[{display_title}]` mixes 3.30 Viscera/Runegraft simulation [{sim_str}] "
+            f"with unverified custom lines [{other_str}]; verify `Head/Body/Arm/Leg` Viscera & Runegrafts "
+            "(`pob data tattoo`) and strip unverified lines before using `--keep`."
+        )
+        return label, note, sim_330_lines, other_lines
+
+    label = (
+        f"customMods[{display_title}] (3.30 Viscera/Runegraft simulation [{sim_str}]; "
+        "pass --keep customMods if active in-game)"
+    )
+    note = (
+        f"`customMods[{display_title}]` simulates 3.30 Viscera/Runegraft lines [{sim_str}]; "
+        "verify `Head/Body/Arm/Leg` Viscera & Runegrafts (`pob data tattoo`) and pass `--keep customMods` if active in-game."
+    )
+    return label, note, sim_330_lines, other_lines
 
 
 def _normalize_custom_mod_blocks(custom_mods: Any) -> list[dict[str, Any]]:
@@ -155,28 +213,31 @@ def _dewater_config_and_custom_mods(
             known[f"custommods:{clean_title.lower()}"] = f"customMods:{display_title}"
 
     dewatered_blocks = [dict(b) for b in blocks]
-    group_records: list[tuple[int, str, str]] = []
+    group_records: list[tuple[int, str, str, str | None]] = []
     for i, b in enumerate(blocks):
         lines = [
             s
             for ln in b["text"].splitlines()
-            if (s := strip_pob_escapes(ln).strip()) and not s.startswith("#")
+            if (s := strip_pob_escapes(ln).strip()) and not _is_custom_mod_comment(s)
         ]
         if not b["enabled"] or not lines:
             continue
         raw_title = str(b["title"])
         clean_title = strip_pob_escapes(raw_title).strip()
         display_title = clean_title or raw_title
-        label = f"customMods[{display_title}] ({len(lines)} active lines: {'; '.join(lines[:3])})"
+        label, note_330, _sim_lines, _other_lines = _classify_custom_mod_block(display_title, lines)
         keep_keys = {f"custommods:{raw_title.lower()}"}
         if clean_title:
             keep_keys.add(f"custommods:{clean_title.lower()}")
         if "custommods" in keep_set or bool(keep_keys & keep_set):
-            stripped["kept"].append(f"{label} (kept)")
+            kept_label = f"customMods[{display_title}] ({len(lines)} active lines: {_preview_mod_lines(lines)})"
+            stripped["kept"].append(f"{kept_label} (kept)")
             continue
         dewatered_blocks[i]["enabled"] = False
         stripped["config"].append(f"{label} -> disabled")
-        group_records.append((i, display_title, label))
+        if note_330:
+            stripped.setdefault("customMods330Notes", []).append(note_330)
+        group_records.append((i, display_title, label, note_330))
 
     if group_records:
         has_sentinel = any(
@@ -184,7 +245,7 @@ def _dewater_config_and_custom_mods(
             and b["enabled"]
             and bool(b["text"].strip())
             and all(
-                not (s := strip_pob_escapes(ln).strip()) or s.startswith("#")
+                not (s := strip_pob_escapes(ln).strip()) or _is_custom_mod_comment(s)
                 for ln in b["text"].splitlines()
             )
             for b in dewatered_blocks
@@ -192,20 +253,21 @@ def _dewater_config_and_custom_mods(
         if not has_sentinel:
             dewatered_blocks.append({"title": DEWATER_SENTINEL_TITLE, "text": "# disabled", "enabled": True})
         mutations.append(("set_custom_mods", {"list": dewatered_blocks}))
-        for i, display_title, label in group_records:
+        for i, display_title, label, note_330 in group_records:
             restored_blocks = [dict(b) for b in dewatered_blocks]
             restored_blocks[i]["enabled"] = True
-            records.append(
-                {
-                    "dimension": "config",
-                    "key": f"customMods:{display_title}",
-                    "label": label,
-                    "restore": [("set_custom_mods", {"list": restored_blocks})],
-                    "revert": [("set_custom_mods", {"list": dewatered_blocks})],
-                    "probe": {"kind": "customMods"},
-                    "original": restored_blocks,
-                }
-            )
+            rec_entry: dict[str, Any] = {
+                "dimension": "config",
+                "key": f"customMods:{display_title}",
+                "label": label,
+                "restore": [("set_custom_mods", {"list": restored_blocks})],
+                "revert": [("set_custom_mods", {"list": dewatered_blocks})],
+                "probe": {"kind": "customMods"},
+                "original": restored_blocks,
+            }
+            if note_330:
+                rec_entry["customMods330Notes"] = [note_330]
+            records.append(rec_entry)
 
 
 def _dewater_flasks(

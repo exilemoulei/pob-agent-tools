@@ -16,6 +16,40 @@ from .primitives import (
 )
 
 
+def extract_custom_mods_330_notes(*sources: Any) -> list[str]:
+    """Collect deduplicated 3.30 customMods simulation notes from stripped dicts or water-source rows."""
+    notes: list[str] = []
+
+    def _add(val: Any) -> None:
+        if isinstance(val, str) and val.strip() and val.strip() not in notes:
+            notes.append(val.strip())
+        elif isinstance(val, (list, tuple)):
+            for item in val:
+                _add(item)
+
+    fallback_rows: list[str] = []
+    for src in sources:
+        if isinstance(src, dict):
+            _add(src.get("customMods330Notes"))
+            _add(src.get("customMods330Note"))
+        elif isinstance(src, (list, tuple)):
+            for entry in src:
+                if not isinstance(entry, dict):
+                    continue
+                _add(entry.get("customMods330Notes"))
+                _add(entry.get("customMods330Note"))
+                lbl = str(entry.get("label") or entry.get("item") or "").strip()
+                if "3.30 Viscera/Runegraft simulation" in lbl and lbl not in fallback_rows:
+                    fallback_rows.append(lbl)
+    if not notes and fallback_rows:
+        for lbl in fallback_rows:
+            _add(
+                f"{lbl} — check equipped `Head/Body/Arm/Leg` Viscera & Runegrafts (`pob data tattoo`); "
+                "pass `--keep customMods` only for verified active 3.30 lines."
+            )
+    return notes
+
+
 def _safe_min_ele_max_hit(stats: dict[str, Any]) -> float | str | None:
     if not stats:
         return None
@@ -192,6 +226,7 @@ def format_matrix_markdown(res: dict[str, Any], *, target: str = "main") -> str:
     auto_kept: list[str] = []
     kept: list[str] = []
     rejected: list[str] = []
+    cm_notes: list[str] = extract_custom_mods_330_notes(res, res.get("waterSources"), res.get("topWaterSources"))
     for idx, sc in enumerate(sc_list):
         m = _extract_metrics_block(sc)
         p_dps = m["primaryDps"]
@@ -243,6 +278,9 @@ def format_matrix_markdown(res: dict[str, Any], *, target: str = "main") -> str:
             for r in st_info.get("keepRejected") or []:
                 if r not in rejected:
                     rejected.append(r)
+            for cn in extract_custom_mods_330_notes(st_info):
+                if cn not in cm_notes:
+                    cm_notes.append(cn)
 
     header = f"### Scenario Matrix Comparison (`{target}`, Baseline: `{res.get('baseline')}`, Primary: `{p_key}`)"
     table = render_table(
@@ -254,6 +292,8 @@ def format_matrix_markdown(res: dict[str, Any], *, target: str = "main") -> str:
         parts.append(warn)
     parts.append(header)
     parts.append(table)
+    for cn in cm_notes:
+        parts.append(f"\n> [3.30 CustomMods Note] {cn}")
     if auto_kept:
         parts.append("\n**Auto-Kept (Build-Guaranteed)**: " + "; ".join(auto_kept))
     if kept:
@@ -371,6 +411,8 @@ def format_sweep_markdown(result: dict[str, Any], *, target: str | None = None) 
 
     sc_applied = result.get("scenarioApplied")
     st_info = sc_applied.get("stripped") if isinstance(sc_applied, dict) else None
+    for cn in extract_custom_mods_330_notes(st_info, result, result.get("waterSources"), result.get("topWaterSources")):
+        lines.append(f"\n> [3.30 CustomMods Note] {cn}")
     if isinstance(st_info, dict):
         kept = st_info.get("kept") or []
         if kept:
@@ -447,6 +489,7 @@ def format_compare_markdown(
     auto_parts: list[str] = []
     kept_parts: list[str] = []
     rej_lines: list[str] = []
+    cm_notes: list[str] = []
     for slot_lbl, st_key in ((target, "mainStripped"), (ref_target, "refStripped")):
         st_d = pin_dew.get(st_key)
         if not isinstance(st_d, dict):
@@ -460,6 +503,12 @@ def format_compare_markdown(
         for r_ln in keep_rejected_warning(st_d):
             if r_ln not in rej_lines:
                 rej_lines.append(r_ln)
+        for cn in extract_custom_mods_330_notes(st_d):
+            tagged = f"`{slot_lbl}`: {cn}"
+            if tagged not in cm_notes:
+                cm_notes.append(tagged)
+    for cn in cm_notes:
+        lines.append(f"\n> [3.30 CustomMods Note] {cn}")
     if auto_parts:
         lines.append("\n**Auto-Kept (Build-Guaranteed)**: " + " | ".join(auto_parts))
     if kept_parts:
