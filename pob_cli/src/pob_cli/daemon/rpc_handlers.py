@@ -9,7 +9,7 @@ from ..bridge_client import BridgeError, BridgeWorker
 from ..bridge_protocol import get_worker_caps
 from ..errors import CrossGameHallucinationError, DaemonRequestError
 from ..snapshot import history_of
-from .read_cache import compute_source_hash
+from .read_cache import compute_source_hash, is_live_source
 from .rpc_mutate import MUTATE_ACTION_HANDLERS, norm_keep
 from .runtime import normalize_slot_name
 
@@ -153,9 +153,13 @@ def dispatch_dual_slot_action(
         )
         if read_cache is not None:
             if main_hash and not skip_main:
-                read_cache.record_slot_load(main_slot_name, history_of(mw).rev, main_hash)
+                read_cache.record_slot_load(
+                    main_slot_name, history_of(mw).rev, main_hash, live=is_live_source(main_load_params)
+                )
             if ref_hash and not skip_ref:
-                read_cache.record_slot_load(ref_slot_name, history_of(rw).rev, ref_hash)
+                read_cache.record_slot_load(
+                    ref_slot_name, history_of(rw).rev, ref_hash, live=is_live_source(ref_load_params)
+                )
         return manager._attach_warning_if_degraded(diag_cmp)
 
     raise ValueError(f"Unknown dual-slot daemon action '{action}'.")
@@ -196,7 +200,7 @@ def _h_load(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[s
     slot_nm = normalize_slot_name(params.get("target") or getattr(w, "slot_name", None))
     read_cache = getattr(m, "_read_cache", None)
     if read_cache is not None:
-        read_cache.record_slot_load(slot_nm, history_of(w).rev, src_hash, load_res)
+        read_cache.record_slot_load(slot_nm, history_of(w).rev, src_hash, load_res, live=is_live_source(params))
     if src_hash and isinstance(load_res, dict):
         load_res["sourceHash"] = src_hash
     return m._attach_warning_if_degraded(load_res)
@@ -275,7 +279,9 @@ def _h_diagnose(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> di
                 realm=params.get("realm"),
             )
             if read_cache is not None:
-                read_cache.record_slot_load(slot_nm, history_of(w).rev, src_hash, load_meta)
+                read_cache.record_slot_load(
+                    slot_nm, history_of(w).rev, src_hash, load_meta, live=is_live_source(params)
+                )
     top_val = int(params["top"]) if params.get("top") is not None else 5
     diag_res = diagnose_build(
         w,

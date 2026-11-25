@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from .. import game_data as _game_data
@@ -109,19 +110,20 @@ def _extract_explicit_gem_level(entry: str | dict[str, Any]) -> int | None:
     return None
 
 
+def _gem_spec_allows_illegal_level(entry: str | dict[str, Any], allow_illegal_level: bool) -> bool:
+    """The command-wide flag, or the same permission set on one gem of a `--gems` JSON list."""
+    if allow_illegal_level or not isinstance(entry, dict):
+        return bool(allow_illegal_level)
+    return bool(entry.get("allowIllegalLevel", entry.get("allow_illegal_level", False)))
+
+
 _VALID_GEM_SPEC_KEYS: frozenset[str] = frozenset(
     {
         "name",
         "nameSpec",
-        "nameZh",
         "gem",
         "gemId",
         "id",
-        "skillId",
-        "variant",
-        "qualityId",
-        "index",
-        "support",
         "level",
         "quality",
         "enabled",
@@ -140,25 +142,24 @@ _VALID_GEM_SPEC_KEYS: frozenset[str] = frozenset(
     }
 )
 
-_CARRY_GEM_STATE_FIELDS: tuple[str, ...] = (
-    "skillPart",
-    "skillPartCalcs",
-    "skillStageCount",
-    "skillStageCountCalcs",
-    "skillMineCount",
-    "skillMineCountCalcs",
-    "skillMinion",
-    "skillMinionCalcs",
-    "skillMinionSkill",
-    "skillMinionSkillCalcs",
-    "skillMinionItemSet",
-    "skillMinionItemSetCalcs",
-    "statSet",
-    "statSetCalcs",
-    "enableGlobal1",
-    "enableGlobal2",
+# What `pob skills --json` reports about a gem and nothing can set. They are let through so a
+# reported gem can be handed back as a spec; every other unknown key is a typo and is refused.
+_REPORTED_GEM_KEYS: frozenset[str] = frozenset(
+    {
+        "index",
+        "nameZh",
+        "skillId",
+        "support",
+        "errMsg",
+        "color",
+        "hasGlobalEffect",
+        "naturalMaxLevel",
+        "reqLevel",
+        "matchesSocket",
+        "fromItem",
+        "fromNode",
+    }
 )
-
 
 def _parse_positive_int(val: Any, field_name: str) -> int | None:
     """Validate and convert an optional positive integer (`>= 1`) such as `skillPart` or `stageCount`."""
@@ -215,7 +216,7 @@ def _normalize_gem_spec(
         return out
 
     if isinstance(entry, dict):
-        unknown = sorted(k for k in entry if k not in _VALID_GEM_SPEC_KEYS)
+        unknown = sorted(k for k in entry if k not in _VALID_GEM_SPEC_KEYS and k not in _REPORTED_GEM_KEYS)
         if unknown:
             raise ValueError(
                 f"Unknown key(s) {unknown} in gem spec dict "
@@ -234,9 +235,7 @@ def _normalize_gem_spec(
         )
         stage_count = _parse_positive_int(raw_sc, "stageCount")
         explicit_level = int(entry["level"]) if entry.get("level") is not None else None
-        eff_allow_illegal = allow_illegal_level or bool(
-            entry.get("allowIllegalLevel", entry.get("allow_illegal_level", False))
-        )
+        eff_allow_illegal = _gem_spec_allows_illegal_level(entry, allow_illegal_level)
         if name:
             eff_level, cautions = _validate_gem_level(name, explicit_level, allow_illegal_level=eff_allow_illegal)
         else:
@@ -254,6 +253,9 @@ def _normalize_gem_spec(
             out["skill_part"] = skill_part
         if stage_count is not None:
             out["stage_count"] = stage_count
+        for flag in ("enableGlobal1", "enableGlobal2"):
+            if entry.get(flag) is not None:
+                out[flag] = bool(entry[flag])
         if cautions:
             out["cautions"] = cautions
         return out
@@ -338,6 +340,7 @@ def _resolve_and_validate_specs(
     g_idx: int,
     norm_specs: list[dict[str, Any]],
     explicit_levels: list[int | None],
+    raw_specs: Sequence[str | dict[str, Any]],
     *,
     allow_illegal_level: bool,
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -345,10 +348,12 @@ def _resolve_and_validate_specs(
     for sp in norm_specs:
         cautions = _merge_cautions(cautions, sp.get("cautions"))
     resolved_specs = _resolve_gem_specs_batch(w, g_idx, norm_specs)
-    for sp, exp_lv in zip(resolved_specs, explicit_levels, strict=False):
+    for sp, exp_lv, raw_spec in zip(resolved_specs, explicit_levels, raw_specs, strict=False):
         r_name = str(sp.get("name") or "").strip()
         if r_name:
-            eff_lv, lv_c = _validate_gem_level(r_name, exp_lv, allow_illegal_level=allow_illegal_level)
+            # Same permission as the first pass in `_normalize_gem_spec`, or this pass refuses what that one let through.
+            allow_lv = _gem_spec_allows_illegal_level(raw_spec, allow_illegal_level)
+            eff_lv, lv_c = _validate_gem_level(r_name, exp_lv, allow_illegal_level=allow_lv)
             if eff_lv is not None:
                 sp["level"] = eff_lv
             cautions = _merge_cautions(cautions, lv_c)
@@ -401,23 +406,26 @@ def _apply_vaal_defaults_batch(
     resolved_specs: list[dict[str, Any]],
     gem_results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Build `added_gems` records and batch `set_gem(enableGlobal1=False, enableGlobal2=True)` ONLY for Vaal gems."""
+    """Build `added_gems` records and batch the `set_gem` calls for the global-effect flags.
+
+    A Vaal gem defaults to `enableGlobal1=False, enableGlobal2=True`; a flag the spec names wins,
+    on a Vaal gem or any other.
+    """
     added_gems: list[dict[str, Any]] = []
     vaal_fix_positions: list[int] = []
     vaal_fix_calls: list[tuple[str, dict[str, Any]]] = []
     for pos, (sp, res) in enumerate(zip(resolved_specs, gem_results, strict=False)):
         gem_obj = res.get("gem") if isinstance(res, dict) else None
+        flags: dict[str, bool] = {}
         if _is_vaal_gem_entry(gem_obj, str(sp.get("name") or "")):
+            flags = {"enableGlobal1": False, "enableGlobal2": True}
+        flags.update({k: bool(sp[k]) for k in ("enableGlobal1", "enableGlobal2") if sp.get(k) is not None})
+        if flags:
             gem_idx = gem_obj.get("index") if isinstance(gem_obj, dict) else None
             if gem_idx is None:
                 raise RuntimeError("add_gem did not return the added gem index")
             vaal_fix_positions.append(pos)
-            vaal_fix_calls.append(
-                (
-                    "set_gem",
-                    {"group": g_idx, "index": gem_idx, "enableGlobal1": False, "enableGlobal2": True},
-                )
-            )
+            vaal_fix_calls.append(("set_gem", {"group": g_idx, "index": gem_idx, **flags}))
         added_gems.append(
             {
                 "name": sp.get("name"),
@@ -435,128 +443,3 @@ def _apply_vaal_defaults_batch(
             if isinstance(fix_res, dict) and "gem" in fix_res:
                 added_gems[pos]["gem"] = fix_res["gem"]
     return added_gems
-
-
-def _build_explicit_gem_state(
-    index: int,
-    *,
-    skill_part: int | None = None,
-    stage_count: int | None = None,
-) -> dict[str, Any] | None:
-    """Build a single `gemStates` entry for `apply_group_gem_states` from explicit `skill_part` / `stage_count`."""
-    entry: dict[str, Any] = {"index": int(index)}
-    if skill_part is not None:
-        entry["skillPart"] = int(skill_part)
-        entry["skillPartCalcs"] = int(skill_part)
-    if stage_count is not None:
-        entry["skillStageCount"] = int(stage_count)
-        entry["skillStageCountCalcs"] = int(stage_count)
-    return entry if len(entry) > 1 else None
-
-
-def _build_specs_gem_states(
-    resolved_specs: list[dict[str, Any]],
-    added_gems: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Build `gemStates` entries for newly added gems that explicitly specified `skill_part` or `stage_count`."""
-    states: list[dict[str, Any]] = []
-    for pos, (sp, added) in enumerate(zip(resolved_specs, added_gems, strict=False)):
-        gem_obj = added.get("gem") if isinstance(added.get("gem"), dict) else {}
-        idx = int(gem_obj.get("index") or (pos + 1))
-        entry = _build_explicit_gem_state(
-            idx,
-            skill_part=sp.get("skill_part"),
-            stage_count=sp.get("stage_count"),
-        )
-        if entry is not None:
-            states.append(entry)
-    return states
-
-
-def _build_replaced_group_state_params(
-    g_idx: int,
-    prior_state: dict[str, Any] | None,
-    resolved_specs: list[dict[str, Any]],
-    added_gems: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    """Merge snapshotted prior gem states, explicit spec overrides, and prior active-skill selection."""
-    prior_gems = list(prior_state.get("gems") or []) if isinstance(prior_state, dict) else []
-    used_prior: set[int] = set()
-    gem_states: list[dict[str, Any]] = []
-    new_gem_ids: set[str] = set()
-    new_gem_names: set[str] = set()
-
-    for pos, (sp, added) in enumerate(zip(resolved_specs, added_gems, strict=False)):
-        gem_obj = added.get("gem") if isinstance(added.get("gem"), dict) else {}
-        new_idx = int(gem_obj.get("index") or (pos + 1))
-        gid = str(gem_obj.get("gemId") or sp.get("gemId") or "").strip()
-        if gid:
-            new_gem_ids.add(gid)
-        cand_names = {
-            str(x).strip().lower()
-            for x in (gem_obj.get("name"), gem_obj.get("nameSpec"), sp.get("name"))
-            if x and str(x).strip()
-        }
-        new_gem_names.update(cand_names)
-
-        matched_pg: dict[str, Any] | None = None
-        if gid:
-            for pi, pg in enumerate(prior_gems):
-                if pi not in used_prior and isinstance(pg, dict) and str(pg.get("gemId") or "").strip() == gid:
-                    used_prior.add(pi)
-                    matched_pg = pg
-                    break
-        if matched_pg is None and cand_names:
-            for pi, pg in enumerate(prior_gems):
-                if pi in used_prior or not isinstance(pg, dict):
-                    continue
-                pg_name = str(pg.get("nameSpec") or pg.get("name") or "").strip().lower()
-                if pg_name and pg_name in cand_names:
-                    used_prior.add(pi)
-                    matched_pg = pg
-                    break
-
-        entry: dict[str, Any] = {"index": new_idx}
-        if matched_pg is not None:
-            for field in _CARRY_GEM_STATE_FIELDS:
-                if matched_pg.get(field) is not None:
-                    entry[field] = matched_pg[field]
-        if sp.get("skill_part") is not None:
-            sp_val = int(sp["skill_part"])
-            entry["skillPart"] = sp_val
-            entry["skillPartCalcs"] = sp_val
-        if sp.get("stage_count") is not None:
-            sc_val = int(sp["stage_count"])
-            entry["skillStageCount"] = sc_val
-            entry["skillStageCountCalcs"] = sc_val
-        if len(entry) > 1:
-            gem_states.append(entry)
-
-    params: dict[str, Any] = {"group": g_idx}
-    if gem_states:
-        params["gemStates"] = gem_states
-
-    if isinstance(prior_state, dict) and resolved_specs:
-        for idx_key, gid_key, name_key, sid_key in (
-            ("mainActiveSkill", "mainActiveGemId", "mainActiveNameSpec", "mainActiveSkillId"),
-            ("mainActiveSkillCalcs", "mainActiveCalcsGemId", "mainActiveCalcsNameSpec", "mainActiveCalcsSkillId"),
-        ):
-            p_idx = prior_state.get(idx_key)
-            a_gid = str(prior_state.get(gid_key) or "").strip()
-            a_name = str(prior_state.get(name_key) or "").strip()
-            a_sid = str(prior_state.get(sid_key) or "").strip()
-            has_id = bool(a_gid or a_name)
-            matches_new = (bool(a_gid) and a_gid in new_gem_ids) or (
-                bool(a_name) and a_name.lower() in new_gem_names
-            )
-            if matches_new or (not has_id and isinstance(p_idx, int) and p_idx > 1):
-                if isinstance(p_idx, int) and p_idx >= 1:
-                    params[idx_key] = p_idx
-                if a_gid:
-                    params[gid_key] = a_gid
-                if a_name:
-                    params[name_key] = a_name
-                if a_sid:
-                    params[sid_key] = a_sid
-
-    return params if len(params) > 1 else None

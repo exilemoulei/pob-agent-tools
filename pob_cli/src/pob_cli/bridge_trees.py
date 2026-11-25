@@ -13,6 +13,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .bridge_protocol import BridgeError, _decode_share_code_xml, _extract_xml_tree_versions
 
@@ -108,12 +109,22 @@ def _tree_version_list(game_dir: Path) -> list[str]:
     return re.findall(r'"([^"]+)"', m.group(1)) if m else []
 
 
+def _link_is_on(link: str, site: str) -> bool:
+    """Whether `link` points at `site` or a subdomain of it, by its host and not by any part that mentions it."""
+    try:
+        host = urlsplit(link if "://" in link else "//" + link).hostname or ""
+    except ValueError:
+        return False
+    host = host.lower().rstrip(".")
+    return host == site or host.endswith("." + site)
+
+
 def tree_url_version(url: str, game_dir: Path) -> str | None:
     """The tree version PoB's import dialog builds for `url` (None for poeplanner and poeurl links)."""
     link = (url or "").strip()
-    if not link or "poeurl.com/" in link or "poeplanner.com/" in link:
+    if not link or _link_is_on(link, "poeurl.com") or _link_is_on(link, "poeplanner.com"):
         return None  # poeplanner encodes its version in the payload, which PoB decodes itself
-    if "poeskilltree.com/" in link:
+    if _link_is_on(link, "poeskilltree.com"):
         ver_m, alt_m = _SKILLTREE_VERSION_RE.search(link), _SKILLTREE_ALT_RE.search(link)
     else:
         ver_m, alt_m = _URL_VERSION_RE.search(link), _URL_ALT_RE.search(link)

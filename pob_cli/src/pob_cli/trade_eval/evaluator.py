@@ -410,14 +410,18 @@ def eval_trade_items(
             items_res = worker.call("list_items", {})
             resolved_slot = resolve_slot_name(worker, slot_name, items_res=items_res) if slot_name else None
             digest_before = capture_digest(worker)
-            before_summary = _summary(digest_before)
+            # Candidates are measured by direct_calc, so their baseline comes from the same pass:
+            # against the frame's own digest every diff also reports how the two passes differ
+            # (warnings in another language, the passive point fields).
+            diff_base = _digest_from_direct_calc(worker, digest_before) if use_direct else digest_before
+            before_summary = _summary(diff_base)
             results = _eval_trade_items_cow(
                 worker,
                 tx,
                 resolved_slot=resolved_slot,
                 items=eval_items,
                 before_summary=before_summary,
-                digest_before=digest_before,
+                digest_before=diff_base,
                 use_direct=use_direct,
             )
             tx.rollback_verified(digest_before)

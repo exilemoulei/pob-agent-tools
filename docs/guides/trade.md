@@ -37,13 +37,13 @@ pob bench suggest --slot gloves --stat "冰霜抗性"
 
 ## Commands
 
-### `pob trade stats "<text|中文>" [--slot S] [--limit 5] [--proxy U] [--json]`
+### `pob trade stats "<text|中文>" [--slot S] [--limit 5] [--proxy U] [--refresh] [--json]`
 
 Resolves English or Chinese modifier text to an official PoE1 trade stat ID with slot-aware `(Local)` / `(Shields)` routing:
 
 - Weapon slots (`weapon1`, `bow`, `wand`, `claw`, `dagger`, `sceptre`, `staff`, `one_handed_*`, `two_handed_*`) automatically route weapon-local modifiers (e.g., `increased Attack Speed` -> `explicit.stat_210067635 (#% increased Attack Speed (Local))`).
 - Non-weapon slots (`gloves`, `ring1`, `amulet`, `quiver`, etc.) route to global equivalents (`explicit.stat_681332047 (#% increased Attack Speed)`).
-- Reads local `PoE1/Data/TradeSiteStats.lua` (18,375 stats, updated automatically by `pob update`) in `<20ms` with zero network calls; falls back to `/api/trade/data/stats` (7-day cache) when no local engine is installed.
+- Reads local `PoE1/Data/TradeSiteStats.lua` (18,375 stats, updated automatically by `pob update`) in `<20ms` with zero network calls; falls back to `/api/trade/data/stats` (7-day cache; `--refresh` fetches it again) when no local engine is installed.
 
 ### `pob trade search`
 
@@ -55,10 +55,10 @@ Resolves English or Chinese modifier text to an official PoE1 trade stat ID with
 | `--weight cat=val` | — | Override mod scoring weights (`life`, `resist`, `damage`, `speed`, `crit`, `skill_level`, ...). |
 | `--budget` / `--currency` | `chaos_equiv` | Price cap. `chaos_equiv` omits `price.option` so GGG evaluates Chaos Orb Equivalent across Chaos/Divine/Alch; pass `chaos` or `divine` for exact currency. |
 | `--status` | `available` | PoE1 3.30 trade status: `available` (instant buyout + online), `securable` (instant buyout only), `online`, `onlineleague`, `any`. |
-| `--max-age` | off | Only listings indexed within this many hours, e.g. `15`. Sends the smallest site "Listed" window that covers it, drops the rest (and any listing with no readable time) locally, and keeps fetching (up to 5 pages) until `--fetch-limit` fresh listings are found. If nothing is that fresh, the older listings are shown instead and the report says so (`staleFallback` in `--json`). The report shows each listing's seller and how long ago it was listed. |
+| `--max-age` | off | Only listings indexed within this many hours, e.g. `15`. Sends the smallest site "Listed" window that covers it, drops the rest (and any listing with no readable time) locally, and keeps fetching (up to 5 pages, or 10 with a `--fetch-limit` above 50) until `--fetch-limit` fresh listings are found. If nothing is that fresh, the older listings are shown instead and the report says so (`staleFallback` in `--json`). The report shows each listing's seller and how long ago it was listed. |
 | `--bargain` | off | Percent, e.g. `30`. Flags listings at least that far below the going price (median of the 10 cheapest listings of the same search, any age) and lists them first. A search that matches 10,000 or more listings (the site's cap) has no reliable floor, so nothing is flagged and the `Market:` line says to narrow it. Price only: judge the item itself by the PoB columns. Costs one more search, unless the main search already is cheapest-first with no `--max-age`. Pair with `--max-age` to catch underpriced fresh listings. |
 | `--league` | auto | Defaults to current softcore trade league via `poe.ninja` / trade API. |
-| `--rarity` / `--ilvl-min` | `rare` / `0` | Rarity (`any` disables) and minimum item level. |
+| `--rarity` / `--ilvl-min` | `nonunique` / `0` | Rarity (`nonunique`, `rare`, `unique`; `any` disables) and minimum item level. |
 | `--category` / `--no-category` | from `--slot` | Override trade category (e.g. `weapon.bow`, `armour.gloves`). |
 | `--allow-conversion` | off | Expand convertible single-element stats into a `count (min: 1)` group across `fire`/`cold`/`lightning` and auto-exclude `corrupted`/`mirrored` (unless `--allow-corrupted`). |
 | `--convert-to` | from `--stat` | Explicit target element (`fire`, `cold`, `lightning`). |
@@ -66,7 +66,7 @@ Resolves English or Chinese modifier text to an official PoE1 trade stat ID with
 | `--bench-hint/--no-bench-hint` | on | Include matching crafting-bench options for the slot in the report. |
 | `--pob auto\|on\|off` | `auto` | Batch-verify top `--pob-limit` candidates via daemon `trade_eval_items` (`on` exits `6` on failure; `auto` degrades to mod deltas). |
 | `--pob-limit` | `5` | Number of top candidates evaluated in PoB. |
-| `--surrogate-k` | off | Surrogate-prefilter fetched candidate pool to top `K` (`K >= 50` floor; `0` disables) via `compute_grad_build` before exact PoB evaluation. |
+| `--surrogate-k` | off | Rank the fetched listings with a linear surrogate (`compute_grad_build`; `0` disables) and send only the best `--pob-limit` to exact PoB evaluation. Unless `--fetch-limit` is given, fetches `max(50, K)` listings, at most `100`. |
 | `--fetch-limit` / `--max-results` | `10` / `8` | Listings fetched (max `100`, chunked in 10-ID GGG requests) / rows displayed. |
 | `--sort score\|price\|pob` | `score` | Report ranking order (`pob` ranks by finite DPS + 0.25*EHP, `inf`/`NaN`-safe). `price` compares chaos values using poe.ninja currency rates, so `1 divine` sorts after `50 chaos`. |
 | `--dump-query` | off | Print trade query JSON and exit without calling `/api/trade/search`. |
@@ -86,7 +86,7 @@ pob bench list --slot gloves [--search "冰霜抗性"] [--affix suffix] [--limit
 pob bench suggest --slot gloves --stat "to Cold Resistance" [--affix suffix] [--json]
 ```
 
-- **Dual-source design**: uses PoB's auto-updated `ModMaster.lua` (via local `game_data.py` SQLite — 100% authoritative `prefix`/`suffix`, `group`, `level`, multi-line stats, and `zh-rCN` translations) overlaid with `pob_cli/src/pob_cli/data/bench_costs.json` for currency `cost` and `unlock` location. When no local engine is installed, transparently falls back to the clean embedded `ModMaster.lua` snapshot inside `bench_costs.json`.
+- **Dual-source design**: uses PoB's auto-updated `ModMaster.lua` (via the local `game_data/` SQLite index — 100% authoritative `prefix`/`suffix`, `group`, `level`, multi-line stats, and `zh-rCN` translations) overlaid with `pob_cli/src/pob_cli/data/bench_costs.json` for currency `cost` and `unlock` location. When no local engine is installed, transparently falls back to the clean embedded `ModMaster.lua` snapshot inside `bench_costs.json`.
 - Always quotes the **minimum** roll as the safe floor and provides ready-to-paste `craftedLinesMin` (`{crafted}+16% to Cold Resistance`) for verification with `pob item try`.
 - Refresh costs/unlocks after a patch with `python pob_cli/scripts/update_bench_costs.py [--proxy <url>]`.
 
@@ -99,7 +99,7 @@ pob bench suggest --slot gloves --stat "to Cold Resistance" [--affix suffix] [--
 | `resistance` | `fire` / `cold` / `lightning` | Change X Resistance into similar-tier Y Resistance | `300 Lifeforce (Primal/Vivid/Wild matching target)` |
 | `elemental_damage` | `fire` / `cold` / `lightning` (added / increased) | Change X Damage into similar-tier Y Damage | `300 Lifeforce + 1 Crystallised Rancour` |
 
-Enforced hard guards (`trade_item.py`):
+Enforced hard guards (`trade_item/`):
 - Only **identified** `MAGIC` / `RARE` items; `UNIQUE`, `NORMAL`, `Corrupted`, `Mirrored`, and `Unidentified` are refused.
 - Only pure `explicit` single-element lines; `implicit`, `enchant`, `fractured`, `crafted`, `scourge`, `crucible`, `mutated`, `veiled`, dual-element, `all Elemental Resistances`, maximum resistance, penetration, chaos, and physical mods are refused.
 - **Same-group conflict guard**: refuses converting into an element the item already has as an explicit or fractured mod in the same group/subkind, converts at most **one** mod per `(group, subkind)` (highest value first), and warns if a `{crafted}` target mod must be removed at the bench first.

@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import threading
+import time
 from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
@@ -38,6 +39,33 @@ _BOOL_CANON_KEYS: frozenset[str] = frozenset(
     {"raw", "allRaw", "no_rank", "no_breakdown", "attribution", "no_auto_keep"}
 )
 
+# A URL or profile source is hashed by its address, not by the build behind it, and that build can
+# change (a character swaps gear, a paste is edited). A repeat within this window is taken for an
+# agent loop and skips the reload; after it the source is fetched again.
+LIVE_SOURCE_RELOAD_AFTER_SEC = 120.0
+
+
+def _is_address(src: str, params: dict[str, Any]) -> bool:
+    """True when `src` says where a build lives: a URL, or an account the importer reads a character from."""
+    realm = str(params.get("realm") or "").strip()
+    if realm or src.startswith(("http://", "https://")):
+        return True
+    from ..profile_import import should_route_official_profile
+
+    # `Name#1234 --char X` has no URL and no realm, and is still an account, not a build code.
+    return should_route_official_profile(src, char_name=str(params.get("char_name") or "").strip() or None)
+
+
+def is_live_source(params: dict[str, Any]) -> bool:
+    """True when a load request names where the build lives (URL, account profile), not its content."""
+    xml_code = params.get("xml_code")
+    if isinstance(xml_code, str) and xml_code.strip():
+        return False
+    src = params.get("source")
+    if isinstance(src, str) and src.strip():
+        return _is_address(src.strip(), params)
+    return bool(str(params.get("realm") or "").strip())
+
 
 def compute_source_hash(params: dict[str, Any]) -> str | None:
     """Compute a deterministic 16-hex content hash for a slot load / `diagnose <source>` request."""
@@ -54,7 +82,7 @@ def compute_source_hash(params: dict[str, Any]) -> str | None:
         canonical = "code:" + xml_code.strip()
     elif isinstance(src, str) and src.strip():
         s = src.strip()
-        if s.startswith(("http://", "https://")) or realm:
+        if _is_address(s, params):
             char_nm = str(params.get("char_name") or "").strip()
             lg = str(params.get("league") or "").strip()
             canonical = f"src:{s}|char={char_nm}|league={lg}|realm={realm}"
@@ -148,8 +176,9 @@ def _key_mentions_slot(key: tuple[Any, ...], slot: str, stale_rev: int | None = 
 class SlotReadCache:
     """Thread-safe bounded LRU per-(slot, rev) read cache with `compare` support & `sourceHash` tracking."""
 
-    def __init__(self, max_entries: int = 256) -> None:
+    def __init__(self, max_entries: int = 256, *, clock: Callable[[], float] = time.monotonic) -> None:
         self.max_entries = max(1, int(max_entries))
+        self._clock = clock
         self._max_hits = max(64, self.max_entries * 4)
         self._lock = threading.RLock()
         self._entries: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
@@ -233,7 +262,11 @@ class SlotReadCache:
         rev: int,
         source_hash: str | None,
         load_meta: dict[str, Any] | None = None,
+        *,
+        live: bool = False,
     ) -> None:
+        """Remember what `slot` was loaded from. `live` marks a source whose build can change behind
+        the same hash (`is_live_source`), which `matching_slot_load` stops trusting after a while."""
         with self._lock:
             self._sync_slot_rev_unlocked(slot, rev)
             if not source_hash:
@@ -248,6 +281,7 @@ class SlotReadCache:
                 "sourceHash": source_hash,
                 "rev": rev,
                 "loadMeta": kept_meta,
+                "liveSince": self._clock() if live else None,
             }
 
     def matching_slot_load(
@@ -262,6 +296,9 @@ class SlotReadCache:
         with self._lock:
             rec = self._slot_sources.get(slot)
             if rec is None or rec.get("sourceHash") != source_hash or rec.get("rev") != rev:
+                return None
+            live_since = rec.get("liveSince")
+            if live_since is not None and self._clock() - live_since > LIVE_SOURCE_RELOAD_AFTER_SEC:
                 return None
             return copy.deepcopy(rec.get("loadMeta") or {})
 

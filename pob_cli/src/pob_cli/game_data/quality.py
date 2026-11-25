@@ -304,7 +304,7 @@ def query_gem_quality_breakpoints(
     q_clean = str(search_quality or "").strip()
     warnings = check_input(q_clean, scope=GuardrailScope.DATA_QUERY, expected_game="poe1") if q_clean else []
     q_low = _fold_search_text(q_clean)
-    limit = max(1, int(limit))
+    limit = int(limit)
 
     search_terms: list[str] = []
     if q_low:
@@ -396,6 +396,8 @@ def query_gem_quality_breakpoints(
             )
 
         matches.sort(key=lambda item: item[0])
+        if limit <= 0:  # 0 = unlimited, as in every other `pob data` query
+            limit = max(1, len(matches))
         if not search_terms and limit >= 6:
             by_cat: dict[str, list[dict[str, Any]]] = {
                 "integer_step": [],

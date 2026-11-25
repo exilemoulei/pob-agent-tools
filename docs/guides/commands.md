@@ -1,15 +1,16 @@
 # `pob` command reference
 
-Every subcommand with its flags, in one place. For when to use which, start with the recipes in [skills/pob/SKILL.md](../../skills/pob/SKILL.md) and the examples in the [README](../../README_EN.md); `pob <command> --help` is authoritative when this list and the CLI disagree.
+Every subcommand with its flags, in one place. For when to use which, start with the recipes in [skills/pob/SKILL.md](../../skills/pob/SKILL.md); `pob <command> --help` is authoritative when this list and the CLI disagree.
 
 ```powershell
 # Optimization flow: pob audit (dewater & gaps) -> rank-nodes / rank-gems / anoint / bench -> pob trade search (verified via PoB)
 # Global output & slot targeting: --target <slug> (alias --slot where non-conflicting; default POB_SLOT or main); --compact (1-line JSON); --out <file> (UTF-8 no-BOM).
-# Exit codes: 0 ok; 1 bad request (bad arguments, PoE2 input, or a build code the engine rejects while it keeps running); 5 daemon or engine fault (timeout, crash, any other engine error: `pob stop` and retry); `pob trade` uses 0..6 (docs/guides/trade.md).
+# Before the subcommand: pob --offline <command> (no engine update check, same as POB_OFFLINE=1); pob -V | --version.
+# Exit codes: 0 ok; 1 bad request (bad arguments, PoE2 input, or a build code the engine rejects while it keeps running); 2 usage error from the option parser (unknown option, missing or out-of-range value); 5 daemon or engine fault (timeout, crash, any other engine error: `pob stop` and retry); `pob trade` uses 0..6 (docs/guides/trade.md).
 
 # Lifecycle, Foreground Daemon, Engine Bootstrap/Update & Build I/O (127.0.0.1 + X-PoB-Token)
 pob help [--brief|-b] [COMMAND]... [--json]                                            # Compact 1-screen CLI cheat-sheet (`--brief`, <20ms) or subcommand help
-pob serve [--offline] [--proxy <url>] [--port N] [--runtime-dir <dir>]                 # Foreground persistent daemon (use IsDaemon:true in job-reaped shells)
+pob serve [--offline] [--proxy <url>] [--mirror <url>] [--port N] [--runtime-dir <dir>]               # Foreground persistent daemon (use IsDaemon:true in job-reaped shells)
 pob bootstrap [--proxy <url>] [--mirror <url>] [--no-zh] [--from-dir <dir>] [--json]   # Install/seed slim managed engine (native LuaJIT _lua-host on Windows, zero pob-zh.exe; PobTools-zh bridge + zh-rCN/zh-rTW + PoB master)
 pob update [--check] [--force] [--proxy <url>] [--mirror <url>] [--offline] [--json]   # Incremental SHA1 update (hot-reloads live daemon slots)
 pob status [--json]                                                                    # Daemon PID, PoB/PobTools/Data versions, active lang, caps/winLuaHost, boolean Auth env status, updateStatus, all named slots (a slot whose saved build failed to restore at boot carries `restoreFailed`: error, codeFile, skipped)
@@ -42,36 +43,37 @@ pob item db "<query>" [--type UNIQUE|RARE] [--slot S] [--index N] [--equip] [--w
 pob item flask <1..5|all> <on|off> [--apply]
 pob item anoint [--slot Amulet] --notable "<name>" [--index 1..4] [--apply]
 pob skill set --group main [--gem <idx|name>] [--new-gem "<name>"] [--level N] [--quality N] [--enabled true|false] [--count N] [--full-dps true|false] [--allow-legacy] [--allow-illegal-level] [--apply]
-pob skill add --group main --gem "<name>" [--level 20] [--quality 20] [--allow-legacy] [--allow-illegal-level] [--apply]
+pob skill add --group main --gem "<name>" [--level N] [--quality 20] [--allow-legacy] [--allow-illegal-level] [--apply]
 pob skill rm --group main --gem <idx|name> [--apply]
-pob skill new-group [--label L] [--slot S] [--gem "Name[:lvl[:qual]]"]... [--full-dps true|false] [--allow-legacy] [--allow-illegal-level] [--apply]
+pob skill new-group [--label L] [--slot S] [--gem "Name[:lvl[:qual]]"]... [--full-dps true|false] [--enabled true|false] [--allow-legacy] [--allow-illegal-level] [--apply]
 pob skill replace-group --group main (--gems '<json>' | --gem "Name[:lvl[:qual]]"...) [--label L] [--slot S] [--full-dps true|false] [--allow-legacy] [--allow-illegal-level] [--apply]
 pob tree change [--allocate id1,id2:effectId] [--deallocate id3] [--allow-cascade|--no-allow-cascade] [--apply]
 pob tree set-class [Class] [Ascendancy] [--secondary-asc <Bloodline|None>] [--apply]
 pob config set [<var>=<val|reset> ...] [--custom-mods "<text|clear>"] [--append-mods "<text>"] [--apply]
 pob batch (--file <ops.json|-> | --json-ops '[...]') [--apply] [--no-undo] [--keep <spec>]... [--return summary,audit,audit:full,matrix,calc:DPS;Mana,export] [--compact] [--out f]
 # Batch ops: config, flask, item, item_db, item_edit, unequip, anoint, tree, tree_reset, import_tree_url, skill, add_group, delete_group, set_group, replace_group, new_build, set_level, set_class, switch_main
+# An op with a key it does not know is refused (a typo used to be ignored); remarks go in comment / note / why / desc / reason or any key starting with _. config variables go inside "set": {...}. A gem in "gems" is a 'Name[:level[:quality]]' string or an object (name | gemId, level, quality, enabled, count, skillPart, stageCount, enableGlobal1, enableGlobal2, allowIllegalLevel, allowLegacy); a gem object copied from `pob skills --json` is accepted as is. replace_group keeps each kept gem's skill part, stage count and minion choice; skill / skill_add take skillPart and stageCount too.
 pob sweep (--file <vars.json|-> | --json-variants '[...]') [--base-ops '[...]'] [--calc K]... [--scenario Pinnacle] [--keep <spec>]... [--compact] [--out f] [--json]
-pob matrix [Original Pinnacle Uber FlasksOff "Label:Pinnacle,k=v"] [-s <spec>]... [--keep <spec>]... [--full] [--json]  # Compact default; --full for raw 200-key stats
+pob matrix [Original Pinnacle Uber FlasksOff "Label:Pinnacle,k=v"] [-s <spec>]... [--keep <spec>]... [--no-auto-keep] [--full] [--json]  # Compact default; --full for raw 200-key stats
 
 # ROI Ranking, 3-Baseline A/B Comparison & Transplant
 pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--max-dist 5] [--top 15] [--json]
-pob rank-gems [--group main] [--slot N | --add-link] [--field CombinedDPS|FullDPS] [--top 15] [--json]
+pob rank-gems [--group main] [--slot N | --add-link] [--field CombinedDPS|FullDPS] [--top 15] [--include-legacy] [--json]
 pob compare [<ref_source>] [--keep <spec>]... [--no-auto-keep] [--target <slug>] [--ref-target <slug>] [--json] # 3 baselines: Original / Target Env Aligned / Pinnacle Dewatered
-pob borrow [--item-slot "Weapon 1,Amulet"] [--skill-group main] [--apply] [--json]
+pob borrow [--item-slot "Weapon 1,Amulet"] [--skill-group main] [--ref-target ref] [--apply] [--json]
 
 # Local 0ms Game Data (Daemon-Free, Variadic) & External Economy/PoEDB/Wiki (Cached, Variadic)
-pob data <gem|unique|mod|base|translate|tree|tick> ["<q1>" ...] [--slot S] [--ilvl N] [--mod "<stat>"] [--type T] [--asc A] [--cdr N] [--aps R] [--spells N] [--quality-breakpoints] [--search-quality Q] [--active-only] [--limit 25] [--rebuild] [--json]
+pob data <gem|unique|mod|base|translate|tree|tick> ["<q1>" ...] [--slot S] [--ilvl N] [--mod "<stat>"] [--type T] [--asc A] [--cdr N] [--aps R] [--spells N] [--quality-breakpoints] [--search-quality Q] [--active-only] [--limit 25 (0 = all)] [--rebuild] [--json]
 pob poedb "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us] [--proxy <url>] [--limit 150] [--json]
 pob price "<q1>" ["<q2>" ...] [--league L] [--category all|unique|gem|imbuedgem|...] [--variant S] [--limit 20] [--detailed] [--proxy <url>] [--json]
 pob meta [--league L] [--skill S] [--class C] [--top 15] [--proxy <url>] [--json]
-pob research "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us] [--proxy <url>] [--limit 40] [--max-chars 12000] [--json] # Concurrent poedb.tw + poewiki.net dual-source research (--max-chars 0 = unlimited)
+pob research "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us|en] [--proxy <url>] [--limit 150] [--max-chars 12000] [--json] # Concurrent poedb.tw + poewiki.net dual-source research (--limit 0 = every mod row, --max-chars 0 = unlimited)
 pob wiki "<q1>" ["<q2>" ...] [--max-chars 12000] [--proxy <url>] [--json]               # Local PoEDB bilingual index exact match + Mechanics/Interactions priority extraction (--max-chars 0 = unlimited)
 
 # Official PoE1 Trade (Read-Only, PoB-Verified) & Crafting Bench
-pob trade stats "<text|中文>" [--slot S] [--limit 5] [--proxy U] [--json]              # Local TradeSiteStats.lua (0ms) or API fallback
-pob trade search --slot S [--stat "text|中文=min"]... [--sum "a[*w]|b[*w]>=min"]... [--want T]... [--bench-craft "<stat>"]... [--budget N] [--currency chaos_equiv|chaos|divine] [--status available|securable|online|any] [--max-age HOURS] [--bargain PCT] [--search-sort asc|desc|sum] [--sort score|price|pob|sum] [--fetch-limit 10] [--pob-limit 5] [--surrogate-k K] [--allow-conversion [--convert-to E]] [--open-prefix|--open-suffix|--open-affix] [--pob auto|on|off] [--auto-query] [--target <slug>] [--dump-query] [--proxy U] [--json] # --fetch-limit up to 100 (10-ID GGG chunks); --surrogate-k prefilters fetched pool via grad-Build (floor 50) before PoB eval; --auto-query trims lowest weights within complexity 160
-pob trade convert (--text T | --file f) --to fire|cold|lightning [--out f] [--json]    # Harvest 3.30 swap preview (same tier, rerolled)
+pob trade stats "<text|中文>" [--slot S] [--limit 5] [--proxy U] [--refresh] [--json]            # Local TradeSiteStats.lua (0ms) or API fallback
+pob trade search --slot S [--stat "text|中文=min"]... [--sum "a[*w]|b[*w]>=min"]... [--want T]... [--bench-craft "<stat>"]... [--budget N] [--currency chaos_equiv|chaos|divine] [--status available|securable|online|onlineleague|any] [--max-age HOURS] [--bargain PCT] [--search-sort asc|desc|sum] [--sort score|price|pob|sum] [--fetch-limit 10] [--pob-limit 5] [--surrogate-k K] [--allow-conversion [--convert-to E]] [--open-prefix|--open-suffix|--open-affix] [--pob auto|on|off] [--auto-query] [--target <slug>] [--dump-query] [--proxy U] [--json] # more options (--weight, --league, --rarity, --ilvl-min, --category, --allow-corrupted, --max-results, --no-bench-hint, --current-item-file, --no-compare, --verbose) are in trade.md; --fetch-limit up to 100 (10-ID GGG chunks); --surrogate-k prefilters the fetched pool via grad-Build before PoB eval (the pool is max(50, K) listings, at most 100, unless --fetch-limit is given); --auto-query trims lowest weights within complexity 160
+pob trade convert (--text T | --file f) --to fire|cold|lightning [--force] [--out f] [--json]  # Harvest 3.30 swap preview (same tier, rerolled)
 pob bench list --slot S [--search "<text|中文>"] [--affix prefix|suffix] [--limit 25] [--json]
 pob bench suggest --slot S --stat "<text|中文>" [--affix prefix|suffix] [--limit 5] [--json]
 

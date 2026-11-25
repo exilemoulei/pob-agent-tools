@@ -47,7 +47,8 @@ def _fetch_fresh(
     """Fetch price-ordered listings until ``want`` are within ``max_age`` hours.
 
     The server's "listed" window is coarser than ``max_age``, so the cheapest page alone
-    can be all too old. Returns (fresh rows, rows fetched); stops after 5 requests.
+    can be all too old. Returns (fresh rows, rows fetched); stops after 5 requests, or after
+    as many as ``want`` listings take (10 at most).
     """
     fresh: list[dict[str, Any]] = []
     fetched = 0
