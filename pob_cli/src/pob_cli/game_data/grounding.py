@@ -167,7 +167,7 @@ def _get_ground_entity_index(conn: sqlite3.Connection, db_key: str) -> dict[str,
                     is_rep_g, rep_stem_g = extract_zh_replica_stem(zh_l)
                     stem_c = re.sub(r"[\s·・.．:：()（）【】\[\]]", "", rep_stem_g) if is_rep_g else ""
                     if len(stem_c) >= 2 and stem_c not in _GROUND_ZH_STOPWORDS:
-                        for rep_form in (f"仿品{stem_c}", f"赝品{stem_c}", f"{stem_c}仿品"):
+                        for rep_form in (f"仿品{stem_c}", f"赝品{stem_c}", f"{stem_c}仿品", f"{stem_c}【仿品】"):
                             zh_entries.append((rep_form, "unique", int(rid), name))
 
     zh_entries.sort(key=lambda x: (-len(x[0]), 0 if x[1] == "gem" else 1, x[3]))
@@ -285,6 +285,39 @@ def lookup_fact_cards_for_build(
         conn.close()
 
 
+_REPLICA_BEFORE_RE = re.compile(r"(?:仿品|赝品)[\s·・.．\-:：】\]）)]*$")
+_REPLICA_AFTER_RE = re.compile(r"^[\s·・.．\-:：]*[【\[（(]?\s*(?:仿品|赝品)")
+
+
+def _resolve_slang(folded_tw: str) -> list[dict[str, str]]:
+    """Slang found in the text, longest first; a word inside a longer hit is not a hit of its own.
+
+    A unique's slang next to a Replica mark (`仿品·猎首`, `猎首【仿品】`) names the Replica, not the item.
+    """
+    out: list[dict[str, str]] = []
+    covered: list[tuple[int, int]] = []
+    for slang in _SLANG_SORTED_KEYS:
+        canon_en, kind_hint = PLAYER_SLANG_MAP[slang]
+        plain = marked = False
+        pos = folded_tw.find(slang)
+        while pos >= 0:
+            end = pos + len(slang)
+            if not any(a <= pos and end <= b for a, b in covered):
+                covered.append((pos, end))
+                is_marked = (
+                    kind_hint == "unique"
+                    and not canon_en.lower().startswith("replica ")
+                    and bool(_REPLICA_BEFORE_RE.search(folded_tw[:pos]) or _REPLICA_AFTER_RE.match(folded_tw[end:]))
+                )
+                marked, plain = marked or is_marked, plain or not is_marked
+            pos = folded_tw.find(slang, end)
+        if plain:
+            out.append({"slang": slang, "canonical": canon_en, "kind": kind_hint})
+        if marked:
+            out.append({"slang": slang, "canonical": f"Replica {canon_en}", "kind": kind_hint})
+    return out
+
+
 def ground_text_entities(
     text: str,
     *,
@@ -303,12 +336,7 @@ def ground_text_entities(
 
     traps = scan_text_traps(raw_tw)
 
-    resolved_slang: list[dict[str, str]] = []
-    if raw_tw and limit > 0:
-        for slang in _SLANG_SORTED_KEYS:
-            if slang in folded_tw:
-                canon_en, kind_hint = PLAYER_SLANG_MAP[slang]
-                resolved_slang.append({"slang": slang, "canonical": canon_en, "kind": kind_hint})
+    resolved_slang = _resolve_slang(folded_tw) if raw_tw and limit > 0 else []
 
     entities: list[dict[str, Any]] = []
     seen_keys: set[tuple[str, str]] = set()
@@ -375,10 +403,11 @@ def ground_text_entities(
                             if zh_c in text_zh_compact:
                                 if any(zh_c in prev for prev in covered_zh):
                                     continue
+                                # Covers its substrings even when the slang pass already named it.
+                                covered_zh.append(zh_c)
                                 ekey = (kind, name)
                                 if ekey not in seen_keys:
                                     seen_keys.add(ekey)
-                                    covered_zh.append(zh_c)
                                     matched_refs.append((kind, rid, f"zh:{zh_c}"))
 
                     if has_ascii and len(entities) + len(matched_refs) < limit:

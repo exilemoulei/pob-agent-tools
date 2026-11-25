@@ -123,7 +123,7 @@ def _query_uniques(
     if is_zh_rep:
         rows = conn.execute(
             """
-            SELECT name_lower, zh_lower, foulborn_lower, zh_foulborn_lower, slots_lower, data_json
+            SELECT name_lower, zh_lower, foulborn_lower, zh_foulborn_lower, slots_lower, data_json, search_text_lower
             FROM uniques
             WHERE name_lower LIKE 'replica %'
                OR (zh_lower IS NOT NULL AND (instr(zh_lower, '仿品') > 0 OR instr(zh_lower, '赝品') > 0))
@@ -164,7 +164,8 @@ def _query_uniques(
 
     q_tokens = [t for t in q_lower.split() if t] if (q_lower and not is_zh_rep) else []
     scored: list[tuple[tuple[int, int, int, str], dict[str, Any] | str]] = []
-    for name_l, zh_l, fb_l, zh_fb_l, slots_l, data_json in rows:
+    for row in rows:
+        name_l, zh_l, fb_l, zh_fb_l, slots_l, data_json = row[:6]
         zh_l = zh_l or ""
         fb_l = fb_l or ""
         zh_fb_l = zh_fb_l or ""
@@ -207,8 +208,10 @@ def _query_uniques(
             payload = obj
 
         if is_zh_rep:
+            # The rest of the query may name a base type, a class or a mod, as a plain search would
+            # match it: the row's whole search text stands in when the name does not carry it.
             rep_tier = _rank_zh_replica_row(
-                rep_stem, rep_tokens, q_lower, name_l, zh_l, fb_l, zh_fb_l, hay_extra=hay_extra
+                rep_stem, rep_tokens, q_lower, name_l, zh_l, fb_l, zh_fb_l, hay_extra=f"{hay_extra} {row[6]}"
             )
             if rep_tier is None:
                 continue

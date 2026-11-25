@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -67,6 +68,11 @@ Eldritch Battery during Effect
     (data / "Uniques" / "body.lua").write_text(
         """return {
 [[
+Farrul's Fur
+Triumphant Lamellar
+Implicits: 0
++2 to Level of Socketed Aura Gems
+]],[[
 Replica Farrul's Fur
 Triumphant Lamellar
 League: Heist
@@ -123,6 +129,7 @@ Magic Utility Flasks cannot be Used
                 "entries": {
                     "Sorrow of the Divine": "神圣哀悼",
                     "Replica Sorrow of the Divine": "神圣哀悼【仿品】",
+                    "Farrul's Fur": "大地之护",
                     "Replica Farrul's Fur": "大地之护【仿品】",
                     "Replica Atziri's Foible": "阿兹里圣徽【仿品】",
                     "Mageblood": "法师之血",
@@ -263,6 +270,45 @@ def test_data_unique_partial_prefix_multi_translate_grounding_and_nonexistent_gu
     assert english_for_zh("仿品法师之血", pob_dir=pob_root, runtime_dir=rt_dir) is None
     r_non = query_local_data("unique", "仿品法师之血", pob_dir=pob_root, runtime_dir=rt_dir)
     assert r_non["count"] == 0
+
+
+def test_a_replica_query_still_matches_on_item_type(tmp_path: Path) -> None:
+    _english_for_zh_cached.cache_clear()
+    pob_root, rt_dir = _build_replica_fixture_pob(tmp_path)
+
+    def names(q: str, **kw: Any) -> set[str]:
+        return {u["name"] for u in query_local_data("unique", q, pob_dir=pob_root, runtime_dir=rt_dir, **kw)["results"]}
+
+    # The words after the Replica mark may name a base type or a class, with or without --ilvl.
+    assert names("仿品 sulphur flask") == {"Replica Sorrow of the Divine"}
+    assert names("仿品 sulphur flask", ilvl=100) == {"Replica Sorrow of the Divine"}
+    assert names("仿品 amulet") == {"Replica Atziri's Foible", "Replica Astramentis"}
+    assert names("replica 神圣哀悼") == {"Replica Sorrow of the Divine"}
+    assert names("仿品 no such thing") == set()
+
+
+def test_grounding_names_the_replica_when_slang_sits_next_to_a_replica_mark(tmp_path: Path) -> None:
+    from pob_cli.game_data.grounding import _resolve_slang
+
+    def canon(text: str) -> list[str]:
+        return [r["canonical"] for r in _resolve_slang(text)]
+
+    assert canon("猎首") == ["Headhunter"]
+    for marked in ("仿品·猎首", "赝品猎首", "仿品 猎首", "猎首【仿品】", "我带了仿品·猎首"):
+        assert canon(marked) == ["Replica Headhunter"], marked
+    # A slang word inside a longer one is not a hit of its own; both items named means both.
+    assert canon("仿品猎首") == ["Replica Headhunter"]
+    assert canon("猎首和仿品猎首") == ["Replica Headhunter", "Headhunter"]
+    assert canon("仿品清单里没有猎首") == ["Headhunter"]
+
+    _english_for_zh_cached.cache_clear()
+    pob_root, rt_dir = _build_replica_fixture_pob(tmp_path)
+    for text in ("仿品·猫衣", "猫衣【仿品】", "仿品猫衣"):
+        ents = ground_text_entities(text, pob_dir=pob_root, runtime_dir=rt_dir)["entities"]
+        assert [e["name"] for e in ents] == ["Replica Farrul's Fur"], text
+    assert [e["name"] for e in ground_text_entities("猫衣", pob_dir=pob_root, runtime_dir=rt_dir)["entities"]] == [
+        "Farrul's Fur"
+    ]
 
 
 def test_data_unique_zh_tw_locale_matches_simplified_and_traditional_replica_queries(
