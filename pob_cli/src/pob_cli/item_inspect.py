@@ -101,7 +101,7 @@ def _cached_mod_rows(db_path_str: str) -> tuple[tuple[str, str, str, str, dict[s
     try:
         rows = conn.execute(
             "SELECT source, weights_json, zero_weights_json, types_json, data_json "
-            "FROM mods WHERE source IN ('Explicit', 'Bench')"
+            "FROM mods WHERE source IN ('Explicit', 'Delve', 'Veiled', 'Bench')"
         ).fetchall()
     finally:
         conn.close()
@@ -170,9 +170,14 @@ def _load_entries(
         elif base_tags:
             positive = json.loads(weights)
             excluded = set(json.loads(zeros))
-            specific = any(positive.get(tag, 0) > 0 for tag in base_tags if tag != "default")
-            if not specific and not (positive.get("default", 0) > 0 and not (base_tags & excluded)):
-                continue
+            if positive:
+                specific = any(positive.get(tag, 0) > 0 for tag in base_tags if tag != "default")
+                if not specific and not (positive.get("default", 0) > 0 and not (base_tags & excluded)):
+                    continue
+            else:
+                if base_tags & (excluded - {"default"}):
+                    continue
+                entry = {**entry, "_drop_only_fallback": True}
         # Without a resolved base, keep all explicit candidates and report ambiguity.
         if _affix_type(entry):
             out.append(entry)
@@ -231,17 +236,31 @@ def _find_attempt(
 
 
 def _classify(
-    mods: list[Mod], entries: list[dict[str, Any]], caps: dict[str, int] | None = None
+    mods: list[Mod],
+    entries: list[dict[str, Any]],
+    caps: dict[str, int] | None = None,
+    scaled_types: set[str] | None = None,
 ) -> dict[str, Any]:
     caps = caps or {"prefix": 3, "suffix": 3}
-    index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    primary_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    fallback_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    has_fallback = False
     for entry in entries:
+        is_fb = bool(entry.get("_drop_only_fallback"))
+        has_fallback = has_fallback or is_fb
+        target_idx = fallback_index if is_fb else primary_index
         for data_line in entry.get("stats") or []:
-            index[normalize_template(str(data_line))].append(entry)
+            target_idx[normalize_template(str(data_line))].append(entry)
 
     claimed: set[int] = set()
     affixes: list[dict[str, Any]] = []
-    for strict in (True, False):
+    if not has_fallback:
+        passes: tuple[tuple[dict[str, list[dict[str, Any]]], bool], ...] = ((primary_index, True), (primary_index, False))
+    elif scaled_types:
+        passes = ((primary_index, True), (primary_index, False), (fallback_index, True), (fallback_index, False))
+    else:
+        passes = ((primary_index, True), (fallback_index, True), (primary_index, False), (fallback_index, False))
+    for index, strict in passes:
         for i, mod in enumerate(mods):
             if i in claimed:
                 continue
@@ -309,7 +328,7 @@ def inspect_item(
             magnitude = _MAGNITUDE_MOD.fullmatch(mod.raw)
             if magnitude:
                 scaled_types.add(magnitude.group(1).lower())
-    classified = _classify(matchable, entries, capacity)
+    classified = _classify(matchable, entries, capacity, scaled_types)
     for affix in classified["affixes"]:
         if affix["type"] in scaled_types:
             affix["tierLevels"] = []

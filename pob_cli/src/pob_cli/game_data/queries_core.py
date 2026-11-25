@@ -41,6 +41,24 @@ def _normalize_slot_filter(slot: str) -> tuple[str, tuple[str, ...], tuple[str, 
     return norm, (norm,), (), (slot.strip(),)
 
 
+def _types_match_slot(
+    types_list: list[str], norm: str, master_types: tuple[str, ...], *, allow_subtype: bool = False
+) -> bool:
+    if not types_list:
+        return False
+    types_lower = [t.lower() for t in types_list]
+    types_set = set(types_lower)
+    if any(mt.lower() in types_set for mt in master_types):
+        return True
+    if not allow_subtype:
+        return norm in {re.sub(r"[\s\-]+", "_", tl) for tl in types_lower}
+    for mt in master_types:
+        mtl = mt.lower()
+        if any(tl.startswith(mtl + ":") or tl.endswith(": " + mtl) for tl in types_lower):
+            return True
+    return norm in {re.sub(r"[\s\-]+", "_", tl.split(":", 1)[0].strip()) for tl in types_lower}
+
+
 def _mod_matches_slot(
     source: str,
     weights_json: str,
@@ -50,12 +68,12 @@ def _mod_matches_slot(
 ) -> bool:
     norm, wk_targets, parent_tags, master_types = slot_spec
     if source == "Bench":
-        types_list = json.loads(types_json)
-        types_lower = {t.lower() for t in types_list}
-        for mt in master_types:
-            if mt.lower() in types_lower:
-                return True
-        return norm in {re.sub(r"[\s\-]+", "_", t.lower()) for t in types_list}
+        return _types_match_slot(json.loads(types_json), norm, master_types)
+
+    if weights_json == "{}" and types_json != "[]" and _types_match_slot(
+        json.loads(types_json), norm, master_types, allow_subtype=True
+    ):
+        return True
 
     weights: dict[str, int] = json.loads(weights_json)
     for k in wk_targets:
@@ -66,11 +84,17 @@ def _mod_matches_slot(
         if v > 0 and (k == norm or k.startswith(norm + "_")):
             return True
 
-    # PoB default-weight inheritance: rolls if default > 0 and no parent/slot tag is explicitly 0
-    if parent_tags and weights.get("default", 0) > 0 and source in ("Explicit", "Corrupted"):
+    # PoB ordered tag inheritance (e.g. gloves -> armour -> default; wand -> one_hand_weapon -> weapon -> default):
+    # first matching tag decides; an explicit 0 on a child/parent tag blocks broader fallback.
+    if parent_tags:
         zeros = set(json.loads(zero_weights_json))
-        if not any(pt in zeros for pt in parent_tags):
-            return True
+        for pt in parent_tags:
+            if pt in zeros:
+                break
+            if pt == "default" and source not in ("Explicit", "Corrupted"):
+                continue
+            if weights.get(pt, 0) > 0:
+                return True
     return False
 
 
@@ -359,7 +383,13 @@ def _query_bases(
 
 
 def _query_mods(
-    conn: sqlite3.Connection, q_lower: str, slot: str | None, ilvl: int | None, limit: int
+    conn: sqlite3.Connection,
+    q_lower: str,
+    slot: str | None,
+    ilvl: int | None,
+    limit: int,
+    *,
+    drop_only_sink: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     slot_spec = _normalize_slot_filter(slot) if slot else None
     where_ilvl = "AND m.level <= ?" if ilvl is not None else ""
@@ -417,9 +447,6 @@ def _query_mods(
         types_j,
         data_json,
     ) in rows:
-        if slot_spec and not _mod_matches_slot(source, weights_j, zero_j, types_j, slot_spec):
-            continue
-
         if q_lower:
             combined = f"{mod_id.lower()} {affix_l} {grp_l} {en_l} {zh_l}"
             if tokens and not all(t in combined for t in tokens):
@@ -430,6 +457,16 @@ def _query_mods(
                 tier = 2
         else:
             tier = 0
+
+        if slot_spec and not _mod_matches_slot(source, weights_j, zero_j, types_j, slot_spec):
+            if (
+                drop_only_sink is not None
+                and weights_j == "{}"
+                and source in ("Explicit", "Delve", "Veiled")
+                and len(drop_only_sink) < 8
+            ):
+                drop_only_sink.append(json.loads(data_json))
+            continue
 
         has_pos = 0 if (weights_j != "{}" or types_j != "[]") else 1
         scored.append(((tier, has_pos, -int(level), mod_id), data_json))

@@ -239,11 +239,83 @@ def _parse_uniques(
     return records
 
 
+def _incursion_stem(affix: str) -> str:
+    return re.sub(r"(?:^of\s+|'s$)", "", affix.strip().lower()).strip()
+
+
+def _load_drop_and_essence_slot_maps(
+    data_dir: Path,
+) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, str]]:
+    drop_slots: dict[str, list[str]] = {}
+    essence_slots_set: dict[str, set[str]] = {}
+    origins: dict[str, str] = {}
+
+    for fname, origin_lbl in (("DelveDropOnly.lua", "Delve"), ("IncursionDropOnly.lua", "Incursion")):
+        fpath = data_dir / fname
+        if not fpath.is_file():
+            continue
+        parsed = _parse_lua_return(fpath)
+        if not isinstance(parsed, dict):
+            continue
+        for mid, entry in parsed.items():
+            if not isinstance(mid, str) or not isinstance(entry, dict):
+                continue
+            cats = sorted({str(c).strip() for c in _as_seq(entry.get("categories")) if isinstance(c, str) and c.strip()})
+            if cats:
+                drop_slots[mid] = cats
+            origins[mid] = origin_lbl
+
+    ess_path = data_dir / "Essence.lua"
+    if ess_path.is_file():
+        parsed_ess = _parse_lua_return(ess_path)
+        if isinstance(parsed_ess, dict):
+            for entry in parsed_ess.values():
+                if not isinstance(entry, dict):
+                    continue
+                mods_map = entry.get("mods")
+                if not isinstance(mods_map, dict):
+                    continue
+                for slot_cat, mid in mods_map.items():
+                    if isinstance(slot_cat, str) and isinstance(mid, str) and slot_cat.strip() and mid.strip():
+                        essence_slots_set.setdefault(mid.strip(), set()).add(slot_cat.strip())
+
+    essence_slots = {mid: sorted(cats) for mid, cats in essence_slots_set.items()}
+    return drop_slots, essence_slots, origins
+
+
+def _infer_drop_origin(
+    mod_id: str,
+    source_name: str,
+    affix: str,
+    mod_tags: list[str],
+    origins: dict[str, str],
+    incursion_stems: set[str],
+    in_essence: bool,
+) -> str | None:
+    if mod_id in origins:
+        return origins[mod_id]
+    mid_low = mod_id.lower()
+    aff_low = affix.lower()
+    stem = _incursion_stem(affix)
+    if source_name == "Delve" or "delve" in mid_low or aff_low in ("subterranean", "of the underground"):
+        return "Delve"
+    if "enhancedmod" in mid_low or "enhancedlevel" in mid_low or (stem and stem in incursion_stems):
+        return "Incursion"
+    if in_essence or "essence" in mid_low or aff_low in ("essences", "of the essence"):
+        return "Essence"
+    if source_name == "Veiled" or "unveiled_mod" in mod_tags:
+        return "Veiled"
+    return None
+
+
 def _parse_mods(poe1_dir: Path, zh: _ZhDictionary) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     data_dir = poe1_dir / "Data"
     records: list[dict[str, Any]] = []
     foulborn_by_id: dict[str, dict[str, Any]] = {}
     seen_ids: set[str] = set()
+    drop_slots, essence_slots, drop_origins = _load_drop_and_essence_slot_maps(data_dir)
+    parsed_files: list[tuple[str, list[tuple[str, dict[Any, Any]]]]] = []
+    incursion_stems: set[str] = set()
 
     for filename, source_name in MOD_FILES:
         path = data_dir / filename
@@ -267,8 +339,16 @@ def _parse_mods(poe1_dir: Path, zh: _ZhDictionary) -> tuple[list[dict[str, Any]]
         elif isinstance(raw_table, dict):
             for mod_id, entry in raw_table.items():
                 if isinstance(entry, dict):
-                    items.append((str(mod_id), entry))
+                    mid_s = str(mod_id)
+                    items.append((mid_s, entry))
+                    mid_l = mid_s.lower()
+                    if drop_origins.get(mid_s) == "Incursion" or "enhancedmod" in mid_l or "enhancedlevel" in mid_l:
+                        stem = _incursion_stem(str(entry.get("affix") or ""))
+                        if len(stem) >= 4:
+                            incursion_stems.add(stem)
+        parsed_files.append((source_name, items))
 
+    for source_name, items in parsed_files:
         for mod_id, entry in items:
             if mod_id in seen_ids:
                 continue
@@ -302,6 +382,19 @@ def _parse_mods(poe1_dir: Path, zh: _ZhDictionary) -> tuple[list[dict[str, Any]]
             types_raw = entry.get("types")
             applicable_types = sorted(str(k) for k, v in types_raw.items() if v) if isinstance(types_raw, dict) else []
             mod_tags = [str(t) for t in _as_seq(entry.get("modTags")) if isinstance(t, str)]
+            drop_origin: str | None = None
+            if not positive_weights and source_name != "Bench":
+                drop_origin = _infer_drop_origin(
+                    mod_id,
+                    source_name,
+                    str(entry.get("affix") or ""),
+                    mod_tags,
+                    drop_origins,
+                    incursion_stems,
+                    mod_id in essence_slots,
+                )
+                if not applicable_types:
+                    applicable_types = list(drop_slots.get(mod_id) or essence_slots.get(mod_id) or ())
 
             bench_info: dict[str, Any] | None = None
             if source_name == "Bench":
@@ -326,6 +419,8 @@ def _parse_mods(poe1_dir: Path, zh: _ZhDictionary) -> tuple[list[dict[str, Any]]
                 "applicable_types": applicable_types,
                 "bench_info": bench_info,
             }
+            if drop_origin:
+                rec["drop_origin"] = drop_origin
             records.append(rec)
             if source_name == "Foulborn":
                 foulborn_by_id[mod_id] = rec

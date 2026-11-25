@@ -89,14 +89,15 @@ def test_mod_bilingual_foulborn_bench_and_filters(tmp_path: Path) -> None:
     )
     body_ids = {m["id"] for m in res_body["results"]}
     assert "IncreasedLife11" in body_ids
+    assert "IncreasedLifeEnhancedBodyMod___" in body_ids
     assert "IncreasedLife12" not in body_ids
     for m in res_body["results"]:
         assert m["level"] <= 81
-        if m["source"] == "Bench":
+        if m["source"] == "Bench" or not m["weights"]:
             assert "Body Armour" in m["applicable_types"]
         else:
             assert any(
-                (k == "body_armour" or k.startswith("body_armour_") or k == "default") and v > 0
+                (k in ("body_armour", "armour", "default") or k.startswith("body_armour_")) and v > 0
                 for k, v in m["weights"].items()
             )
 
