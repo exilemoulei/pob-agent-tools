@@ -68,8 +68,9 @@ end
 local function matches_active_identity(ds, want_gid, want_name, want_sid)
 	if not ds then return false end
 	local gid, nspec, sid = active_entry_identity(ds)
+	-- One gem can grant two skills (a Vaal gem and its base skill): only the skill id tells them apart.
+	if want_sid and sid then return sid == want_sid end
 	if want_gid and gid == want_gid then return true end
-	if want_sid and sid == want_sid then return true end
 	if type(want_name) == "string" and want_name ~= "" and type(nspec) == "string" then
 		if nspec:lower() == want_name:lower() then return true end
 	end

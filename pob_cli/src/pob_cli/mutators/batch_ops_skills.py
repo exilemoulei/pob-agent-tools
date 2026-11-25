@@ -24,12 +24,14 @@ from .skills_resolve import (
 )
 
 
+def _first_set(op: dict[str, Any], *keys: str) -> Any:
+    """The first spelling of a field that carries a value, as the validator reads them: a null one hides no other."""
+    return next((op[k] for k in keys if op.get(k) is not None), None)
+
+
+
 def _op_add_group(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
-    full_dps_val = (
-        op.get("includeInFullDPS")
-        if "includeInFullDPS" in op
-        else op.get("include_in_full_dps", op.get("fullDps"))
-    )
+    full_dps_val = _first_set(op, "includeInFullDPS", "include_in_full_dps", "fullDps")
     ag_res = _apply_add_group_in_place(
         w,
         gems=op.get("gems"),
@@ -72,11 +74,7 @@ def _op_set_group(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: 
         sg_params["label"] = str(op["label"])
     if "enabled" in op and op["enabled"] is not None:
         sg_params["enabled"] = bool(op["enabled"])
-    full_dps_val = (
-        op.get("includeInFullDPS")
-        if "includeInFullDPS" in op
-        else op.get("include_in_full_dps", op.get("fullDps"))
-    )
+    full_dps_val = _first_set(op, "includeInFullDPS", "include_in_full_dps", "fullDps")
     if full_dps_val is not None:
         sg_params["includeInFullDPS"] = bool(full_dps_val)
     if "slot" in op and op["slot"] is not None:
@@ -95,11 +93,7 @@ def _op_set_group(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: 
 
 def _op_replace_group(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
     g_sel = op.get("group") if op.get("group") is not None else op.get("index", "main")
-    full_dps_val = (
-        op.get("includeInFullDPS")
-        if "includeInFullDPS" in op
-        else op.get("include_in_full_dps", op.get("fullDps"))
-    )
+    full_dps_val = _first_set(op, "includeInFullDPS", "include_in_full_dps", "fullDps")
     rg_res = _apply_replace_group_in_place(
         w,
         g_sel,
@@ -132,14 +126,10 @@ def _op_skill(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int)
         raise ValueError(f"Skill group #{g_idx} not found in build.")
 
     grp_updates: dict[str, Any] = {"index": g_idx}
-    full_dps_val = (
-        op.get("includeInFullDPS")
-        if "includeInFullDPS" in op
-        else op.get("include_in_full_dps", op.get("fullDps"))
-    )
+    full_dps_val = _first_set(op, "includeInFullDPS", "include_in_full_dps", "fullDps")
     if full_dps_val is not None:
         grp_updates["includeInFullDPS"] = bool(full_dps_val)
-    grp_en = op.get("groupEnabled") if "groupEnabled" in op else op.get("group_enabled")
+    grp_en = _first_set(op, "groupEnabled", "group_enabled")
     if grp_en is not None:
         grp_updates["enabled"] = bool(grp_en)
     if len(grp_updates) > 1:
