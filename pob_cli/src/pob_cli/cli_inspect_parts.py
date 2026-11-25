@@ -226,7 +226,10 @@ def _run_tree_inspect(
 @click.option(
     "--skill",
     default=None,
-    help="Active skill in group (1-based index or gem name; searches all groups if --group is omitted).",
+    help=(
+        "With --group: an active skill of that group (1-based index, 'main' or gem name). "
+        "Without --group: a gem or group name looked up in every group, or a group number / 'main'."
+    ),
 )
 @click.option("--limit", type=click.IntRange(min=0), default=20, show_default=True, help="Maximum matched rows to return (0 = all).")
 @click.option(

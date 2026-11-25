@@ -3,7 +3,7 @@
 
 Modes:
   python pob_cli/scripts/check.py             # ruff + arch-lint + isolated offline pytest (>=905 passed, <=25 skipped)
-  python pob_cli/scripts/check.py --min-passed 1325 --max-skipped 8  # CI ratchet for a POSIX real-engine run
+  python pob_cli/scripts/check.py --min-passed 1326 --max-skipped 8  # CI ratchet for a POSIX real-engine run
   python pob_cli/scripts/check.py --fast      # ruff + AST arch-lint only (<3s)
   python pob_cli/scripts/check.py --self-test # mutation checks in %TEMP% proving every rule fires
 """

@@ -449,7 +449,7 @@ def _h_trade_generate_query(_m: DaemonManager, params: dict[str, Any], w: Bridge
         from ..analyzer.inspectors import resolve_slot_name
 
         with w.lock:
-            slot_name, _, _ = resolve_slot_name(w, slot_name)
+            slot_name = resolve_slot_name(w, slot_name)
     rpc_params: dict[str, Any] = {"slotName": slot_name}
     for key in ("stat", "includeEhp", "ehpWeight", "includeCorrupted", "league", "reuseModData", "rarity", "maxFilters"):
         if params.get(key) is not None:
