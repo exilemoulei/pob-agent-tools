@@ -1,8 +1,8 @@
-# `pob upgrade` 設計
+# `pob trade upgrade` 設計
 
 ## 目的與動機
 
-Agent 想回答「預算 N chaos，下一步該往哪裡投資」時，現在要自己串 `audit`、`trade search --auto-query`、`trade plan`、`respec`、`rank-gems --optimize` 五、六條命令，步驟多又容易出錯。`pob upgrade --budget N` 把這些串成一條命令，輸出一份**參考用**的升級清單：每項都經 PoB 實算，依每 chaos 的分數提升排序。
+Agent 想回答「預算 N chaos，下一步該往哪裡投資」時，現在要自己串 `audit`、`trade search --auto-query`、`trade plan`、`respec`、`rank-gems --optimize` 五、六條命令，步驟多又容易出錯。`pob trade upgrade --budget N` 把這些串成一條命令，輸出一份**參考用**的升級清單：每項都經 PoB 實算，依每 chaos 的分數提升排序。
 
 清單的用途是「方向參考」，不是「照單購買」。因此**速度與涵蓋面優先於精確度**。
 
@@ -48,7 +48,7 @@ Agent 想回答「預算 N chaos，下一步該往哪裡投資」時，現在要
 ### 命令
 
 ```
-pob upgrade --budget N [--slot S]... [--top-slots 3] [--per-slot 5]
+pob trade upgrade --budget N [--slot S]... [--top-slots 3] [--per-slot 5]
             [--score dps=W,ehp=W] [--league L] [--proxy U]
             [--target <slug>] [--json] [--compact] [--out f]
 ```
@@ -76,7 +76,7 @@ pob upgrade --budget N [--slot S]... [--top-slots 3] [--per-slot 5]
 
 ### 程式碼位置
 
-- 新檔 `pob_cli/src/pob_cli/cli_trade/upgrade_cmd.py`（L4），在 `cli_trade/__init__.py` 註冊為頂層命令 `pob upgrade`。
+- 新檔 `pob_cli/src/pob_cli/cli_trade/upgrade_cmd.py`（L4），在 `cli_trade/__init__.py` 註冊為 `pob trade` 的子命令 `pob trade upgrade`（避免與 `pob update`／`pob self-update` 混淆）。
 - 需要把 `cmd_trade_search` 中「給定 slot 與參數 → 回傳候選 payload」的部分抽成可呼叫的函式，讓 `trade search` 與 `upgrade` 共用；不得複製流程。
 - `trade plan` 的 Markdown 表格產生部分抽成共用函式供 `upgrade` 使用。
 
@@ -87,7 +87,7 @@ pob upgrade --budget N [--slot S]... [--top-slots 3] [--per-slot 5]
 
 ### 文件
 
-同步 `docs/guides/commands.md`、`README.md`、`README_EN.md`、`skills/pob/SKILL.md`（優化流程那段把 `pob upgrade` 列為第一步的捷徑）。
+同步 `docs/guides/commands.md`、`README.md`、`README_EN.md`、`skills/pob/SKILL.md`（優化流程那段把 `pob trade upgrade` 列為第一步的捷徑）。
 
 ## 留給實作者決定
 
