@@ -61,10 +61,15 @@ def test_cold_build_and_warm_query_benchmarks(tmp_path: Path, monkeypatch: pytes
     for kind, query, kwargs in warm_cases:
         # The first call of a kind loads per-process tables (the zh dictionaries take ~90 ms), so time
         # a second one: otherwise the result depends on which tests ran earlier in the process.
-        query_local_data(kind, query, pob_dir=REAL_POB_DIR, runtime_dir=tmp_path, **kwargs)  # type: ignore[arg-type]
-        tq = time.perf_counter()
         res = query_local_data(kind, query, pob_dir=REAL_POB_DIR, runtime_dir=tmp_path, **kwargs)  # type: ignore[arg-type]
-        elapsed_ms = (time.perf_counter() - tq) * 1000.0
+        # The best of three: one sample on a shared runner measures the runner as much as the query
+        # (a 4 ms query once took 16.5 ms on Windows CI with the code unchanged).
+        samples: list[float] = []
+        for _ in range(3):
+            tq = time.perf_counter()
+            res = query_local_data(kind, query, pob_dir=REAL_POB_DIR, runtime_dir=tmp_path, **kwargs)  # type: ignore[arg-type]
+            samples.append((time.perf_counter() - tq) * 1000.0)
+        elapsed_ms = min(samples)
         assert res["count"] >= 1, f"Expected >= 1 hit for {kind}({query!r})"
         limit_ms = perf_budget(15.0)
         assert elapsed_ms < limit_ms, f"Warm query {kind}({query!r}) took {elapsed_ms:.2f}ms (expected < {limit_ms:.0f}ms)"
