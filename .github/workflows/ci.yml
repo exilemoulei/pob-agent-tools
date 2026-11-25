@@ -162,7 +162,8 @@ jobs:
             label: Linux-x64
             python: "3.14"
             tag: linux-x64
-          - os: macos-15
+          # GitHub labels its macOS 27 arm64 image xcode-27.
+          - os: xcode-27
             label: macOS-arm64
             python: "3.14"
             tag: darwin-arm64

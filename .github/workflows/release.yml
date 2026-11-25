@@ -249,10 +249,11 @@ jobs:
       matrix:
         include:
           - platform: macos-arm64
-            runner: macos-15
+            # GitHub labels its macOS 27 arm64 image xcode-27; there is no Intel one, so x64 builds on macOS 26.
+            runner: xcode-27
             container: ""
           - platform: macos-x64
-            runner: macos-15-intel
+            runner: macos-26-intel
             container: ""
           - platform: linux-x64
             runner: ubuntu-24.04
@@ -498,7 +499,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15]
+        os: [ubuntu-latest, xcode-27]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout release commit

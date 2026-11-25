@@ -120,7 +120,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
+          # GitHub labels its macOS 27 arm64 image xcode-27.
+          - os: xcode-27
             label: macOS-arm64
             # Shared macOS runners run timing benchmarks about 2-3x slower than Linux.
             perf_slack: "3"
