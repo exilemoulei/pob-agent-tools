@@ -97,6 +97,9 @@ def _build_replaced_group_state_params(
             for pi, pg in enumerate(prior_gems):
                 if pi in used_prior or not isinstance(pg, dict):
                     continue
+                pg_gid = str(pg.get("gemId") or "").strip()
+                if gid and pg_gid and pg_gid != gid:
+                    continue  # both ids known and different: another gem, whatever the spec called it
                 pg_name = str(pg.get("nameSpec") or pg.get("name") or "").strip().lower()
                 if pg_name and pg_name in cand_names:
                     used_prior.add(pi)

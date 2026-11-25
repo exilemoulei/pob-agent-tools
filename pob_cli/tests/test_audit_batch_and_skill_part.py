@@ -308,6 +308,50 @@ def test_a_remark_on_an_op_and_a_gem_as_pob_reports_it_are_accepted() -> None:
             _normalize_gem_spec({"name": "Arc", stray: 1})
 
 
+def test_a_skill_step_that_would_do_less_than_it_says_is_refused() -> None:
+    # A removal reads nothing but the gem to remove.
+    for op in (
+        {"op": "skill", "group": 1, "removeGem": 1, "skillPart": 2},
+        {"op": "skill", "group": 1, "removeGem": 1, "gem": 2, "level": 21},
+        {"op": "skill", "group": 1, "action": "remove", "gem": 1, "quality": 23},
+    ):
+        with pytest.raises(ValueError, match="ignored by a removal"):
+            validate_batch_op(1, "skill", op)
+    with pytest.raises(ValueError, match="adds and removes"):
+        validate_batch_op(1, "skill", {"op": "skill", "group": 1, "addGem": "Arc", "removeGem": 1})
+    validate_batch_op(1, "skill", {"op": "skill", "group": 1, "removeGem": 1})
+    validate_batch_op(1, "skill", {"op": "skill", "group": 1, "action": "remove", "gem": 1})
+
+
+def test_a_null_full_dps_spelling_does_not_hide_the_one_that_is_set() -> None:
+    w = _FakeSkillExtWorker()
+    cache = _BatchCache(w)  # type: ignore[arg-type]
+    sent: list[dict[str, Any]] = []
+    real_call = w.call
+
+    def _spy(method: str, params: dict[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
+        if method == "set_group":
+            sent.append(dict(params or {}))
+        return real_call(method, params, **kw)
+
+    w.call = _spy  # type: ignore[method-assign]
+    _execute_batch_ops(w, [{"op": "skill", "group": 1, "includeInFullDPS": None, "fullDps": True}], cache)  # type: ignore[arg-type]
+    assert sent and sent[-1].get("includeInFullDPS") is True
+
+
+def test_replaced_gem_state_is_not_carried_onto_a_different_gem_of_the_same_spec_name() -> None:
+    from pob_cli.mutators.skills_state import _build_replaced_group_state_params
+
+    prior = {"gems": [{"index": 1, "gemId": "Metadata/Items/Gems/SkillGemArc", "nameSpec": "Arc", "skillPart": 2}]}
+    spark = {"gem": {"index": 1, "gemId": "Metadata/Items/Gems/SkillGemSpark", "name": "Spark"}}
+    # The spec said name "Arc" with Spark's id; the engine added Spark.
+    params = _build_replaced_group_state_params(1, prior, [{"name": "Arc", "gemId": "Metadata/Items/Gems/SkillGemSpark"}], [spark])
+    assert not (params or {}).get("gemStates")
+    same = {"gem": {"index": 1, "gemId": "Metadata/Items/Gems/SkillGemArc", "name": "Arc"}}
+    params = _build_replaced_group_state_params(1, prior, [{"name": "Arc"}], [same])
+    assert params and params["gemStates"] == [{"index": 1, "skillPart": 2}]
+
+
 def test_a_gems_own_allow_legacy_lets_that_gem_through_and_no_other() -> None:
     w = _FakeSkillExtWorker()
     cache = _BatchCache(w)  # type: ignore[arg-type]
@@ -661,5 +705,15 @@ def test_real_engine_bodyswap_of_sacrifice_skill_part_preserved_and_dps_verified
         assert st_dual["gems"][1]["skillPart"] == 2
         assert st_dual["gems"][1]["skillPartCalcs"] == 2
         assert float(dual_rep["after"]["primaryDps"]) > dual_base_dps * 1.2
+
+        # 4. One gem that grants two skills: the selected one is found again by its skill id, not by
+        # the gem, when a replacement moves it.
+        vaal_rf = {"name": "Vaal Righteous Fire", "enableGlobal1": True, "enableGlobal2": True}
+        two = mutators.add_skill_group(w, label="Two effects", gems=[vaal_rf, "Arc"], apply=True)["detail"]["groupIndex"]
+        w.call("set_group", {"index": two, "mainActiveSkill": 2})
+        assert w.call("get_group_gem_states", {"group": two})["mainActiveSkillId"] == "RighteousFire"
+        mutators.replace_skill_group(w, group=str(two), gems=["Arc", vaal_rf], apply=True)
+        moved = w.call("get_group_gem_states", {"group": two})
+        assert (moved["mainActiveSkill"], moved["mainActiveSkillId"]) == (3, "RighteousFire")
     finally:
         w.stop()
