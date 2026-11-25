@@ -1,4 +1,4 @@
-"""Build-mechanism-aware smart dewatering auto-keep and Flagellant flask notes."""
+"""Build-mechanism-aware smart dewatering auto-keep and flask notes (Flagellant, Eldritch Battery flask)."""
 
 from __future__ import annotations
 
@@ -154,7 +154,7 @@ def infer_auto_keep_and_flask_notes(
     equipped_slots_raw: list[dict[str, Any]] | None = None,
     alloc_node_stats: list[tuple[str, list[str]]] | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """Infer build-guaranteed config auto-keep reasons and Flagellant flask context notes."""
+    """Infer build-guaranteed config auto-keep reasons and the notes on flasks whose stripping needs a word."""
     st = stats or {}
     tok = _collect_build_tokens(
         skills_res=skills_res,

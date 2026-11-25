@@ -44,7 +44,8 @@ def is_replica_sorrow_eb_item(item: dict[str, Any] | None, extra_raw: str = "") 
     folded = fold_han(low)
     if "神圣哀悼" in folded and ("仿品" in folded or "赝品" in folded):
         return True
-    return "异能魔力" in folded and ("生效期间" in folded or "效果期间" in folded)
+    # zh-rCN writes the line with 生效期间, zh-rTW (folded) with 持续时间内.
+    return "异能魔力" in folded and any(t in folded for t in ("生效期间", "效果期间", "持续时间内"))
 
 
 def find_equipped_eb_flask_slots(
@@ -101,12 +102,12 @@ def collect_mana_sustain_issues(
     es_val = max(0.0, _finite_float(stats.get("EnergyShield")))
     es_cost = _finite_float(stats.get("ESCost"))
     eb_active = is_eldritch_battery_active(stats, tree_summary)
-    eb_flasks = find_equipped_eb_flask_slots(items_res, equipped_slots_raw)
+    # An active one already shows as Eldritch Battery in the stats; only one that is off needs a word.
+    eb_flasks = [f for f in find_equipped_eb_flask_slots(items_res, equipped_slots_raw) if not f[2]]
     es_for_mana = max(0.0, es_val - es_cost)
     payable_pool = (mana_unres + es_for_mana) if eb_active else mana_unres
     eb_covers_mana = eb_active and es_for_mana >= mana_cost
     eb_flask_pool = mana_unres + es_for_mana
-    eb_flask_covers_mana = (not eb_active) and bool(eb_flasks) and es_for_mana >= mana_cost
 
     raw_mana_regen = (
         stats.get("ManaRegenRecovery")
@@ -139,7 +140,7 @@ def collect_mana_sustain_issues(
     if mana_cost > 0 and mana_cost > payable_pool and life_unres > 0:
         if not eb_active and eb_flasks:
             eb_desc = ", ".join(f"{sn} ({ttl})" for sn, ttl, _ in eb_flasks)
-            keep_slot = eb_flasks[0][0]
+            flask_no = eb_flasks[0][0].rsplit(" ", 1)[-1]
             pool_summary = _fmt_eb_pool_summary(es_val, es_for_mana, mana_unres, es_cost)
             if eb_flask_pool >= mana_cost:
                 issues.append(
@@ -148,8 +149,8 @@ def collect_mana_sustain_issues(
                         "severity": "LOW",
                         "message": (
                             f"Skill Mana Cost ({mana_cost:.0f}) exceeds Unreserved Mana ({mana_unres:.0f}) while "
-                            f"{eb_desc} is inactive — flask grants Eldritch Battery during Effect "
-                            f"({pool_summary} >= {mana_cost:.0f}); maintain flask uptime or verify with --keep '{keep_slot}'"
+                            f"{eb_desc} is off; the flask grants Eldritch Battery during Effect "
+                            f"({pool_summary} >= {mana_cost:.0f}). Model it with `pob item flask {flask_no} on --apply`"
                         ),
                     }
                 )
@@ -181,7 +182,7 @@ def collect_mana_sustain_issues(
                     "message": f"Skill Mana Cost ({mana_cost:.0f}) exceeds {pool_msg}",
                 }
             )
-    elif mana_cost > 0 and not eb_covers_mana and not eb_flask_covers_mana and mana_regen < 0:
+    elif mana_cost > 0 and not eb_covers_mana and mana_regen < 0:
         issues.append(
             {
                 "category": "Sustain",
@@ -192,7 +193,6 @@ def collect_mana_sustain_issues(
     elif (
         mana_cost > 0
         and not eb_covers_mana
-        and not eb_flask_covers_mana
         and eff_casts > 0
         and exceeds_recovery
         and life_unres > 0
@@ -266,7 +266,7 @@ def collect_dewatered_eb_flask_note(
         "message": (
             f"Dewatering stripped {eb_desc} ('Eldritch Battery during Effect'), leaving dewatered "
             f"Unreserved Mana ({mana_unres:.0f}) below Skill Mana Cost ({mana_cost:.0f}) while "
-            f"ES + Unreserved Mana ({pool_summary} >= {mana_cost:.0f}) covers casting during flask effect — "
+            f"ES + Unreserved Mana ({pool_summary} >= {mana_cost:.0f}) covers casting during flask effect; "
             f"verify flask uptime or run with --keep '{keep_slot}'"
         ),
     }

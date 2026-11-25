@@ -259,7 +259,21 @@ def test_inactive_replica_sorrow_downgrades_mana_deficit_when_es_covers_cost() -
     assert sustain[0]["severity"] == "LOW"
     assert "Flask 4" in sustain[0]["message"]
     assert "1200 ES + 35 Unreserved Mana = 1235 >= 95" in sustain[0]["message"]
-    assert "--keep 'Flask 4'" in sustain[0]["message"]
+    # The flask is off in the build: --keep keeps nothing here, turning it on is what models it.
+    assert "`pob item flask 4 on --apply`" in sustain[0]["message"] and "--keep" not in sustain[0]["message"]
+
+    # A flask that is merely equipped silences nothing: with mana to cast once and negative regen,
+    # the regen warning stands, exactly as it does without the flask.
+    w_regen = _EbFlaskWorker(
+        flask_slot="Flask 4",
+        flask_active=False,
+        es=1200.0,
+        mana_unreserved=200.0,
+        mana_cost=95.0,
+        mana_regen=-2.0,
+    )
+    regen = [g for g in analyzer.audit_build(w_regen, attribution=False)["healthIssues"] if g["category"] == "Sustain"]  # type: ignore[arg-type]
+    assert [(g["severity"], g["message"][:26]) for g in regen] == [("MEDIUM", "Net Mana Regen is negative")]
 
     # When even ES + Unreserved Mana < ManaCost, HIGH Sustain MUST still fire
     w_broken = _EbFlaskWorker(
