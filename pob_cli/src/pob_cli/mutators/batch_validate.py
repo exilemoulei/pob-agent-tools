@@ -197,6 +197,24 @@ _SKILL_GEM_ATTR_KEYS: frozenset[str] = frozenset(
         "allow_illegal_level",
     }
 )
+# What a removal never reads: another gem to edit and every gem attribute.
+_REMOVAL_IGNORED_KEYS: frozenset[str] = frozenset(
+    {
+        "gem",
+        "name",
+        "newGem",
+        "new_gem",
+        "level",
+        "quality",
+        "enabled",
+        "count",
+        "skillPart",
+        "skill_part",
+        "stageCount",
+        "stage_count",
+        "skillStageCount",
+    }
+)
 _SKILL_KEYS: frozenset[str] = (
     _SKILL_COMMON_GROUP_KEYS
     | _SKILL_GEM_ATTR_KEYS
@@ -307,6 +325,18 @@ def validate_batch_op(idx: int, kind: str, op: dict[str, Any]) -> None:
                 'use {"op": "skill_add", "group": ..., "name": "..."} (or "addGem") to add a gem, '
                 'or pass both "gem" and "newGem" (or "name") to replace an existing gem.'
             )
+        # The dispatcher does one of add / remove / edit and reads nothing of the others.
+        removing = has_rm or sub_action in ("remove", "rm")
+        if has_add and removing:
+            raise ValueError(f"Batch step #{idx} ({kind}): adds and removes a gem in one step; use two steps.")
+        if removing:
+            ignored = _REMOVAL_IGNORED_KEYS if has_rm else _REMOVAL_IGNORED_KEYS - {"gem"}
+            stray = sorted(k for k in op if k in ignored and op[k] is not None)
+            if stray:
+                raise ValueError(
+                    f"Batch step #{idx} ({kind}): {stray} would be ignored by a removal; "
+                    "it takes only the gem to remove (edit or add another gem in its own step)."
+                )
         if sub_action not in ("add", "remove", "rm"):
             has_full_dps = any(
                 op.get(k) is not None for k in ("includeInFullDPS", "include_in_full_dps", "fullDps")
