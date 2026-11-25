@@ -15,10 +15,8 @@ from .bootstrap import _apply_staged_files_with_gate
 from .constants import (
     _AUTO_CHECK_TIMEOUT_SPEC,
     _CHECK_TIMEOUT_SPEC,
-    STATE_BOOTSTRAP_MISSING,
     STATE_DEGRADED_NETWORK,
     STATE_DEGRADED_ROLLBACK,
-    STATE_UP_TO_DATE,
     STATE_UPDATED,
     ManifestFileEntry,
     PobManifest,
@@ -26,6 +24,7 @@ from .constants import (
     _is_version_newer,
     _to_httpx_timeout,
 )
+from .engine_lock import STAGING_DIRNAME, EngineBusyError, engine_update_lock, recover_idle_engine
 from .manifest import (
     _render_local_manifest_xml,
     diff_pob_manifest,
@@ -41,7 +40,10 @@ from .remote import (
     _pick_pobtools_asset,
 )
 from .state import (
-    _build_user_hint,
+    _save_bootstrap_missing_state,
+    _save_check_result_state,
+    _save_degraded_state,
+    _save_offline_state,
     _write_pobtools_meta,
     detect_local_versions,
     probe_engine_gate,
@@ -51,52 +53,6 @@ from .state import (
 
 def _pkg() -> Any:
     return sys.modules["pob_cli.updater"]
-
-
-def _save_bootstrap_missing_state(eng_dir: Path, rt_dir: Path, err: str) -> dict[str, Any]:
-    state = {
-        "state": STATE_BOOTSTRAP_MISSING,
-        "localPobVersion": None,
-        "remotePobVersion": None,
-        "pobToolsVersion": None,
-        "dataVersion": None,
-        "checkedAt": time.time(),
-        "engineDir": str(eng_dir),
-        "networkError": err,
-        "userHint": _build_user_hint(STATE_BOOTSTRAP_MISSING, None, err),
-    }
-    save_update_state(state, rt_dir)
-    return state
-
-
-def _save_degraded_state(
-    state_name: str,
-    *,
-    local_vers: dict[str, str | None],
-    remote_pob_ver: str | None,
-    prev_state: dict[str, Any],
-    engine_dir: Path,
-    rt_dir: Path,
-    err_msg: str,
-    rolled_back: bool = False,
-) -> dict[str, Any]:
-    state: dict[str, Any] = {
-        "state": state_name,
-        "localPobVersion": local_vers["localPobVersion"],
-        "remotePobVersion": remote_pob_ver,
-        "pobToolsVersion": local_vers["pobToolsVersion"],
-        "pobToolsTag": local_vers["pobToolsTag"],
-        "dataVersion": local_vers["dataVersion"],
-        "pobManifestEtag": prev_state.get("pobManifestEtag"),
-        "checkedAt": time.time(),
-        "engineDir": str(engine_dir),
-        "networkError": err_msg,
-        "userHint": _build_user_hint(state_name, local_vers["localPobVersion"], err_msg),
-    }
-    if rolled_back:
-        state["rolledBack"] = True
-    save_update_state(state, rt_dir)
-    return state
 
 
 def _resolve_update_target(
@@ -340,7 +296,7 @@ def _apply_and_finalize_update(
     mirror: str | None,
     probe_callable: Callable[[Path], dict[str, Any]],
 ) -> dict[str, Any]:
-    staging_dir = write_dir / ".staging"
+    staging_dir = write_dir / STAGING_DIRNAME
     if staging_dir.exists():
         shutil.rmtree(staging_dir, ignore_errors=True)
     staging_dir.mkdir(parents=True, exist_ok=True)
@@ -420,39 +376,6 @@ def _apply_and_finalize_update(
     return state
 
 
-def _save_check_result_state(
-    *,
-    local_vers: dict[str, str | None],
-    remote_pob_ver: str | None,
-    remote_tools_ver: str,
-    remote_tools_tag: str,
-    remote_data_tag: str | None,
-    pob_etag: str | None,
-    active_dir: Path,
-    rt_dir: Path,
-    update_available: bool,
-    extra: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    state: dict[str, Any] = {
-        "state": STATE_UP_TO_DATE,
-        "localPobVersion": local_vers["localPobVersion"],
-        "remotePobVersion": remote_pob_ver,
-        "pobToolsVersion": local_vers["pobToolsVersion"] if update_available else (local_vers["pobToolsVersion"] or remote_tools_ver),
-        "pobToolsTag": local_vers["pobToolsTag"] if update_available else (local_vers["pobToolsTag"] or remote_tools_tag),
-        "dataVersion": local_vers["dataVersion"] if update_available else (local_vers["dataVersion"] or remote_data_tag),
-        "pobManifestEtag": pob_etag,
-        "checkedAt": time.time(),
-        "engineDir": str(active_dir),
-        "updateAvailable": update_available,
-        "networkError": None,
-        "userHint": None,
-    }
-    if extra:
-        state.update(extra)
-    save_update_state(state, rt_dir)
-    return state
-
-
 def check_and_apply_updates(
     *,
     engine_dir: Path | None = None,
@@ -489,35 +412,24 @@ def check_and_apply_updates(
                 else f"engine directory invalid: {active_dir}"
             )
             return _save_bootstrap_missing_state(target, rt_dir, err)
-        return pkg.bootstrap_engine(
-            target_dir=target,
-            runtime_dir=rt_dir,
-            proxy=proxy,
-            mirror=mirror,
-            include_zh=include_zh,
-            probe_fn=probe_callable,
-        )
+        try:
+            return pkg.bootstrap_engine(
+                target_dir=target,
+                runtime_dir=rt_dir,
+                proxy=proxy,
+                mirror=mirror,
+                include_zh=include_zh,
+                probe_fn=probe_callable,
+            )
+        except EngineBusyError as exc:  # callers get a state, never an exception, for "not installed yet"
+            return _save_bootstrap_missing_state(target, rt_dir, str(exc))
 
+    recover_idle_engine(active_dir)
     local_vers = detect_local_versions(active_dir, rt_dir)
     local_pob_ver = local_vers["localPobVersion"]
 
     if offline:
-        state = {
-            "state": STATE_UP_TO_DATE,
-            "localPobVersion": local_pob_ver,
-            "remotePobVersion": prev_state.get("remotePobVersion"),
-            "pobToolsVersion": local_vers["pobToolsVersion"],
-            "pobToolsTag": local_vers["pobToolsTag"],
-            "dataVersion": local_vers["dataVersion"],
-            "pobManifestEtag": prev_state.get("pobManifestEtag"),
-            "checkedAt": time.time(),
-            "engineDir": str(active_dir),
-            "offline": True,
-            "networkError": None,
-            "userHint": None,
-        }
-        save_update_state(state, rt_dir)
-        return state
+        return _save_offline_state(local_vers, prev_state, active_dir, rt_dir)
 
     check_timeout = _to_httpx_timeout(_CHECK_TIMEOUT_SPEC if force else _AUTO_CHECK_TIMEOUT_SPEC)
     prev_etag = None if force else prev_state.get("pobManifestEtag")
@@ -601,7 +513,7 @@ def check_and_apply_updates(
             update_available=False,
         )
 
-    if check_only:
+    def _still_pending(extra: dict[str, Any]) -> dict[str, Any]:
         return _save_check_result_state(
             local_vers=local_vers,
             remote_pob_ver=remote_pob_ver,
@@ -612,36 +524,45 @@ def check_and_apply_updates(
             active_dir=active_dir,
             rt_dir=rt_dir,
             update_available=True,
-            extra={
+            extra=extra,
+        )
+
+    if check_only:
+        return _still_pending(
+            {
                 "remotePobToolsVersion": remote_tools_ver,
                 "pobFilesChanged": len(to_download),
                 "pobFilesDeleted": len(to_delete),
                 "pobToolsUpdateAvailable": tools_needs_update,
                 "dataUpdateAvailable": data_needs_update,
-            },
+            }
         )
 
-    write_dir = active_dir
-    if needs_seed_from_legacy is not None and not explicit_engine:
-        seed_from_legacy_dir(needs_seed_from_legacy, managed_dir)
-        write_dir = managed_dir
-
-    return _apply_and_finalize_update(
-        write_dir=write_dir,
-        rt_dir=rt_dir,
-        prev_state=prev_state,
-        local_vers=local_vers,
-        remote_manifest=remote_manifest,
-        remote_pob_ver=remote_pob_ver,
-        new_etag=new_etag,
-        pob_needs_update=pob_needs_update,
-        to_download=to_download,
-        to_delete=to_delete,
-        tools_info=tools_info,
-        tools_needs_update=tools_needs_update,
-        data_needs_update=data_needs_update,
-        remote_data_tag=remote_data_tag,
-        proxy=proxy,
-        mirror=mirror,
-        probe_callable=probe_callable,
-    )
+    seeds_managed = needs_seed_from_legacy is not None and not explicit_engine
+    write_dir = managed_dir if seeds_managed else active_dir
+    try:
+        with engine_update_lock(write_dir):
+            if seeds_managed:
+                seed_from_legacy_dir(needs_seed_from_legacy, managed_dir)
+            return _apply_and_finalize_update(
+                write_dir=write_dir,
+                rt_dir=rt_dir,
+                prev_state=prev_state,
+                local_vers=local_vers,
+                remote_manifest=remote_manifest,
+                remote_pob_ver=remote_pob_ver,
+                new_etag=new_etag,
+                pob_needs_update=pob_needs_update,
+                to_download=to_download,
+                to_delete=to_delete,
+                tools_info=tools_info,
+                tools_needs_update=tools_needs_update,
+                data_needs_update=data_needs_update,
+                remote_data_tag=remote_data_tag,
+                proxy=proxy,
+                mirror=mirror,
+                probe_callable=probe_callable,
+            )
+    except EngineBusyError as exc:
+        # The other process is applying this same update; report it as still pending.
+        return _still_pending({"updateSkipped": str(exc)})

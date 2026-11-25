@@ -23,6 +23,13 @@ from .constants import (
     _is_version_gte,
     _to_httpx_timeout,
 )
+from .engine_lock import (
+    BACKUP_DIRNAME,
+    STAGING_DIRNAME,
+    backup_file,
+    engine_update_lock,
+    restore_interrupted_apply,
+)
 from .manifest import _render_local_manifest_xml, diff_pob_manifest
 from .paths import _find_legacy_dir, _get_runtime_dir, is_valid_engine_dir, seed_from_legacy_dir
 from .remote import (
@@ -55,11 +62,11 @@ def _apply_staged_files_with_gate(
 ) -> dict[str, Any]:
     """Backup existing files to .bak/, atomically replace from staged_files, probe gate, and rollback on failure."""
     eng = Path(engine_dir)
-    bak_dir = eng / ".bak"
-    staging_dir = eng / ".staging"
+    bak_dir = eng / BACKUP_DIRNAME
+    staging_dir = eng / STAGING_DIRNAME
 
-    if bak_dir.exists():
-        shutil.rmtree(bak_dir, ignore_errors=True)
+    # A backup folder still here belongs to a run that died mid-swap: its files go back first.
+    restore_interrupted_apply(eng)
     bak_dir.mkdir(parents=True, exist_ok=True)
 
     backed_up: list[tuple[Path, Path]] = []
@@ -90,8 +97,7 @@ def _apply_staged_files_with_gate(
             dst.parent.mkdir(parents=True, exist_ok=True)
             if dst.exists():
                 bak = bak_dir / rel_path
-                bak.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(dst, bak)
+                backup_file(dst, bak)
                 backed_up.append((dst, bak))
             else:
                 created.append(dst)
@@ -101,8 +107,7 @@ def _apply_staged_files_with_gate(
             dst = eng / rel_del
             if dst.is_file():
                 bak = bak_dir / rel_del
-                bak.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(dst, bak)
+                backup_file(dst, bak)
                 backed_up.append((dst, bak))
                 dst.unlink()
 
@@ -128,6 +133,10 @@ def _apply_staged_files_with_gate(
             "probe": None,
             "error": f"{type(exc).__name__}: {exc}",
         }
+    except BaseException:
+        # Ctrl-C or an exit mid-swap: the `finally` below deletes the backups, so use them first.
+        _rollback()
+        raise
     finally:
         shutil.rmtree(bak_dir, ignore_errors=True)
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -151,16 +160,29 @@ def _bootstrap_from_dir(
         )
         raise UpdateError(f"Offline source directory is invalid (requires {req_desc}): {src}")
     eng_dir.mkdir(parents=True, exist_ok=True)
-    for fname in LEGACY_SEED_FILES:
-        if (src / fname).is_file():
-            shutil.copy2(src / fname, eng_dir / fname)
-    for dname in (*LEGACY_SEED_DIRS, "bin"):
-        if (src / dname).is_dir():
-            shutil.copytree(src / dname, eng_dir / dname, dirs_exist_ok=True)
-
-    probe = probe_callable(eng_dir)
-    if not probe.get("ok"):
-        raise EngineGateError(f"Offline bootstrap failed gate_result probe: {probe.get('error')}")
+    # Through staging and the gate, like a download: a source that fails the probe must not be
+    # left copied over an engine that worked.
+    staging_dir = eng_dir / STAGING_DIRNAME
+    shutil.rmtree(staging_dir, ignore_errors=True)
+    try:
+        staging_dir.mkdir(parents=True)
+        for fname in LEGACY_SEED_FILES:
+            if (src / fname).is_file():
+                shutil.copy2(src / fname, staging_dir / fname)
+        for dname in (*LEGACY_SEED_DIRS, "bin"):
+            if (src / dname).is_dir():
+                shutil.copytree(src / dname, staging_dir / dname)
+    except OSError:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
+    staged = {p.relative_to(staging_dir): p for p in staging_dir.rglob("*") if p.is_file()}
+    apply_res = _apply_staged_files_with_gate(eng_dir, staged, probe_fn=probe_callable)
+    if not apply_res["ok"]:
+        raise EngineGateError(
+            f"Offline bootstrap failed gate_result probe: {apply_res.get('error')}. "
+            f"{eng_dir} was put back as it was."
+        )
+    probe = apply_res["probe"]
     vers = detect_local_versions(eng_dir, rt_dir)
     state = {
         "state": STATE_UPDATED,
@@ -275,10 +297,37 @@ def bootstrap_engine(
     probe_fn: Callable[[Path], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Bootstrap a complete managed PoB engine from offline directory, legacy seed, or GitHub dual upstreams."""
-    pkg = _pkg()
     rt_dir = _get_runtime_dir(runtime_dir)
     eng_dir = Path(target_dir) if target_dir is not None else (rt_dir / "engine")
-    probe_callable = probe_fn or probe_engine_gate
+    if from_dir is not None:  # refuse a wrong source before the engine folder is created to lock it
+        from ..guardrails import validate_engine_root
+
+        validate_engine_root(Path(from_dir), expected_game="poe1", source_label="--from-dir")
+    with engine_update_lock(eng_dir):
+        return _bootstrap_engine_locked(
+            eng_dir,
+            rt_dir,
+            proxy=proxy,
+            mirror=mirror,
+            include_zh=include_zh,
+            from_dir=from_dir,
+            legacy_dir=legacy_dir,
+            probe_callable=probe_fn or probe_engine_gate,
+        )
+
+
+def _bootstrap_engine_locked(
+    eng_dir: Path,
+    rt_dir: Path,
+    *,
+    proxy: str | None,
+    mirror: str | None,
+    include_zh: bool,
+    from_dir: Path | None,
+    legacy_dir: Path | None,
+    probe_callable: Callable[[Path], dict[str, Any]],
+) -> dict[str, Any]:
+    pkg = _pkg()
 
     if from_dir is not None:
         return _bootstrap_from_dir(from_dir, eng_dir, rt_dir, probe_callable)
@@ -300,7 +349,7 @@ def bootstrap_engine(
 
     import httpx
 
-    staging_dir = eng_dir / ".staging"
+    staging_dir = eng_dir / STAGING_DIRNAME
     check_timeout = _to_httpx_timeout(_CHECK_TIMEOUT_SPEC)
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:

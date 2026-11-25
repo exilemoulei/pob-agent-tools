@@ -19,6 +19,7 @@ from .constants import (
     STATE_BOOTSTRAP_MISSING,
     STATE_DEGRADED_NETWORK,
     STATE_DEGRADED_ROLLBACK,
+    STATE_UP_TO_DATE,
     UPDATE_STATE_FILENAME,
 )
 from .paths import _get_runtime_dir
@@ -357,3 +358,103 @@ def probe_engine_gate(engine_dir: Path, timeout_sec: float = 20.0) -> dict[str, 
             proc.wait(timeout=3.0)
         except Exception:
             pass
+
+
+def _save_bootstrap_missing_state(eng_dir: Path, rt_dir: Path, err: str) -> dict[str, Any]:
+    state = {
+        "state": STATE_BOOTSTRAP_MISSING,
+        "localPobVersion": None,
+        "remotePobVersion": None,
+        "pobToolsVersion": None,
+        "dataVersion": None,
+        "checkedAt": time.time(),
+        "engineDir": str(eng_dir),
+        "networkError": err,
+        "userHint": _build_user_hint(STATE_BOOTSTRAP_MISSING, None, err),
+    }
+    save_update_state(state, rt_dir)
+    return state
+
+
+def _save_degraded_state(
+    state_name: str,
+    *,
+    local_vers: dict[str, str | None],
+    remote_pob_ver: str | None,
+    prev_state: dict[str, Any],
+    engine_dir: Path,
+    rt_dir: Path,
+    err_msg: str,
+    rolled_back: bool = False,
+) -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "state": state_name,
+        "localPobVersion": local_vers["localPobVersion"],
+        "remotePobVersion": remote_pob_ver,
+        "pobToolsVersion": local_vers["pobToolsVersion"],
+        "pobToolsTag": local_vers["pobToolsTag"],
+        "dataVersion": local_vers["dataVersion"],
+        "pobManifestEtag": prev_state.get("pobManifestEtag"),
+        "checkedAt": time.time(),
+        "engineDir": str(engine_dir),
+        "networkError": err_msg,
+        "userHint": _build_user_hint(state_name, local_vers["localPobVersion"], err_msg),
+    }
+    if rolled_back:
+        state["rolledBack"] = True
+    save_update_state(state, rt_dir)
+    return state
+
+
+def _save_offline_state(
+    local_vers: dict[str, str | None], prev_state: dict[str, Any], engine_dir: Path, rt_dir: Path
+) -> dict[str, Any]:
+    state = {
+        "state": STATE_UP_TO_DATE,
+        "localPobVersion": local_vers["localPobVersion"],
+        "remotePobVersion": prev_state.get("remotePobVersion"),
+        "pobToolsVersion": local_vers["pobToolsVersion"],
+        "pobToolsTag": local_vers["pobToolsTag"],
+        "dataVersion": local_vers["dataVersion"],
+        "pobManifestEtag": prev_state.get("pobManifestEtag"),
+        "checkedAt": time.time(),
+        "engineDir": str(engine_dir),
+        "offline": True,
+        "networkError": None,
+        "userHint": None,
+    }
+    save_update_state(state, rt_dir)
+    return state
+
+
+def _save_check_result_state(
+    *,
+    local_vers: dict[str, str | None],
+    remote_pob_ver: str | None,
+    remote_tools_ver: str,
+    remote_tools_tag: str,
+    remote_data_tag: str | None,
+    pob_etag: str | None,
+    active_dir: Path,
+    rt_dir: Path,
+    update_available: bool,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "state": STATE_UP_TO_DATE,
+        "localPobVersion": local_vers["localPobVersion"],
+        "remotePobVersion": remote_pob_ver,
+        "pobToolsVersion": local_vers["pobToolsVersion"] if update_available else (local_vers["pobToolsVersion"] or remote_tools_ver),
+        "pobToolsTag": local_vers["pobToolsTag"] if update_available else (local_vers["pobToolsTag"] or remote_tools_tag),
+        "dataVersion": local_vers["dataVersion"] if update_available else (local_vers["dataVersion"] or remote_data_tag),
+        "pobManifestEtag": pob_etag,
+        "checkedAt": time.time(),
+        "engineDir": str(active_dir),
+        "updateAvailable": update_available,
+        "networkError": None,
+        "userHint": None,
+    }
+    if extra:
+        state.update(extra)
+    save_update_state(state, rt_dir)
+    return state
