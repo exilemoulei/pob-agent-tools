@@ -38,7 +38,6 @@ These stay outside `docs/` because tools expect them at fixed paths.
 | [../skills/pob/SKILL.md](../skills/pob/SKILL.md) | Cross-harness agent skill, with topic references in [../skills/pob/references/](../skills/pob/references/) |
 | [../.github/pull_request_template.md](../.github/pull_request_template.md) | What every pull request states: summary, testing (platforms and engine), AI disclosure |
 | [../SECURITY.md](../SECURITY.md) | How to report a vulnerability |
-| [../PROGRESS.md](../PROGRESS.md) | Rolling progress log kept by the maintainers' agents (Chinese) |
 
 ## Adding a doc
 

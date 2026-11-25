@@ -36,7 +36,6 @@ Releases are cut by bumping `__version__` in `pob_cli/src/pob_cli/__init__.py` a
 - `install.ps1`, `install.sh`: one-line installers. `bucket/pob.json`: the Scoop manifest, updated by `release.yml`.
 - `docs/`: [docs/README.md](docs/README.md) indexes the guides (`docs/guides/`) and design notes (`docs/design/`, historical, in Chinese).
 - `.github/workflows/`: `ci.yml` (PRs, engine-less), `engine.yml` (real engine: nightly via `engine-nightly.yml`, on dispatch, as the release gate), `release.yml`, `codeql.yml`.
-- `PROGRESS.md`: the maintainers' agents' progress log.
 
 ## Hard rules
 
