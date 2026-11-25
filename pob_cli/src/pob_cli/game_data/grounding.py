@@ -28,7 +28,7 @@ from .slang import (
     _SLANG_SORTED_KEYS,
     PLAYER_SLANG_MAP,
 )
-from .tw_norm import _fold_search_text, fold_han, normalize_tw_query
+from .tw_norm import _fold_search_text, extract_zh_replica_stem, fold_han, normalize_tw_query
 
 _GROUND_ENTITY_INDEX_CACHE: dict[str, dict[str, Any]] = {}
 
@@ -163,6 +163,12 @@ def _get_ground_entity_index(conn: sqlite3.Connection, db_key: str) -> dict[str,
                 zh_compact = re.sub(r"[\s·・.．:：()（）]", "", zh_clean)
                 if len(zh_compact) >= 2 and zh_compact not in _GROUND_ZH_STOPWORDS:
                     zh_entries.append((zh_compact, kind, int(rid), name))
+                if kind == "unique":
+                    is_rep_g, rep_stem_g = extract_zh_replica_stem(zh_l)
+                    stem_c = re.sub(r"[\s·・.．:：()（）【】\[\]]", "", rep_stem_g) if is_rep_g else ""
+                    if len(stem_c) >= 2 and stem_c not in _GROUND_ZH_STOPWORDS:
+                        for rep_form in (f"仿品{stem_c}", f"赝品{stem_c}", f"{stem_c}仿品"):
+                            zh_entries.append((rep_form, "unique", int(rid), name))
 
     zh_entries.sort(key=lambda x: (-len(x[0]), 0 if x[1] == "gem" else 1, x[3]))
     en_entries.sort(key=lambda x: (-len(x[0]), 0 if x[1] == "gem" else 1, x[3]))

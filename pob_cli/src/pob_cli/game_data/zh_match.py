@@ -18,7 +18,8 @@ from pathlib import Path
 from ..locale_cfg import current_lang
 from .constants import _CJK_RE, ZH_NON_NAME_KEY_RE
 from .paths import list_available_zh_dirs, resolve_pob_dir
-from .tw_norm import _fold_search_text, fold_han
+from .tables_tw import TW_TO_EN_ALIASES
+from .tw_norm import _fold_search_text, extract_zh_replica_stem, fold_han
 
 _ENTITY_JSON_FILES: tuple[str, ...] = (
     "uniques.json",
@@ -37,7 +38,7 @@ _ENTITY_JSON_FILES: tuple[str, ...] = (
     "Z-S30.json",
 )
 _GEM_SUP_STRIP_RE = re.compile(r"(?:[（(]辅[)）]|辅助|輔助)$")
-_EntityMaps = tuple[dict[str, str], dict[str, str]]
+_EntityMaps = tuple[dict[str, str], dict[str, str], dict[str, str]]
 _ZH_ENTITY_MAP_CACHE: dict[tuple[str, float], _EntityMaps] = {}
 
 
@@ -57,19 +58,20 @@ def _put(target: dict[str, str], key: str, en: str) -> None:
 
 
 def _load_zh_dir_entity_map(zh_dir: Path) -> _EntityMaps:
-    """Return `(exact, folded)` reverse maps (Chinese name -> English) for one locale dir."""
+    """Return `(exact, folded, replica_en)` reverse maps (Chinese name -> English) for one locale dir."""
     meta = zh_dir / "meta.json"
     try:
         mtime = meta.stat().st_mtime if meta.is_file() else zh_dir.stat().st_mtime
         cache_key = (str(zh_dir.resolve()), mtime)
     except OSError:
-        return {}, {}
+        return {}, {}, {}
     cached = _ZH_ENTITY_MAP_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
     exact_map: dict[str, str] = {}
     fold_map: dict[str, str] = {}
+    replica_en_map: dict[str, str] = {}
     for fname in _ENTITY_JSON_FILES:
         fpath = zh_dir / fname
         if not fpath.is_file():
@@ -102,14 +104,27 @@ def _load_zh_dir_entity_map(zh_dir: Path) -> _EntityMaps:
                 continue
             _put(exact_map, _exact_entity_lookup_key(zh), en)
             _put(fold_map, _normalize_entity_lookup_key(zh), en)
+            if en.lower().startswith("replica "):
+                replica_en_map.setdefault(_fold_search_text(en), en)
+                is_rep, rep_stem = extract_zh_replica_stem(zh, fold=False)
+                if is_rep and rep_stem:
+                    for rep_zh in (
+                        f"仿品{rep_stem}",
+                        f"仿品·{rep_stem}",
+                        f"{rep_stem}【仿品】",
+                        f"赝品{rep_stem}",
+                        f"赝品·{rep_stem}",
+                    ):
+                        _put(exact_map, _exact_entity_lookup_key(rep_zh), en)
+                        _put(fold_map, _normalize_entity_lookup_key(rep_zh), en)
             if is_gem and "强辅" not in zh and "強輔" not in zh and not en.lower().startswith("awakened "):
                 stem_zh = _GEM_SUP_STRIP_RE.sub("", zh).strip()
                 if stem_zh and stem_zh != zh:
                     _put(exact_map, _exact_entity_lookup_key(stem_zh), en)
                     _put(fold_map, _normalize_entity_lookup_key(stem_zh), en)
 
-    _ZH_ENTITY_MAP_CACHE[cache_key] = (exact_map, fold_map)
-    return exact_map, fold_map
+    _ZH_ENTITY_MAP_CACHE[cache_key] = (exact_map, fold_map, replica_en_map)
+    return exact_map, fold_map, replica_en_map
 
 
 def _locale_order_for(text: str) -> tuple[str, str]:
@@ -140,6 +155,36 @@ def resolve_zh_entity_across_locales(
             hit = pair[idx].get(key)
             if hit and not _CJK_RE.search(hit):
                 return hit
+
+    is_rep, rep_stem = extract_zh_replica_stem(q, fold=False)
+    if is_rep and rep_stem:
+        q_rep = f"仿品{rep_stem}"
+        rep_passes = ((0, _exact_entity_lookup_key(q_rep)), (1, _normalize_entity_lookup_key(q_rep)))
+        for idx, key in rep_passes if folded else rep_passes[:1]:
+            for pair in maps:
+                hit = pair[idx].get(key)
+                if hit and not _CJK_RE.search(hit):
+                    return hit
+        dot_stem = rep_stem.replace("．", "·").replace("・", "·").strip()
+        base_en = TW_TO_EN_ALIASES.get(dot_stem)
+        if not base_en and folded:
+            stem_passes = ((0, _exact_entity_lookup_key(rep_stem)), (1, _normalize_entity_lookup_key(rep_stem)))
+            for idx, key in stem_passes:
+                for pair in maps:
+                    cand = pair[idx].get(key)
+                    if cand and not _CJK_RE.search(cand):
+                        base_en = cand
+                        break
+                if base_en:
+                    break
+        if base_en:
+            rep_target = _fold_search_text(
+                base_en if base_en.lower().startswith("replica ") else f"Replica {base_en}"
+            )
+            for pair in maps:
+                rep_hit = pair[2].get(rep_target)
+                if rep_hit:
+                    return rep_hit
     return None
 
 

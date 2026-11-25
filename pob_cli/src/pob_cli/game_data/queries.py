@@ -433,6 +433,8 @@ def query_multi(
                 limit=limit,
                 zh_available=zh_available,
                 mod_filter=mod_tw,
+                pob_dir=pob_dir,
+                runtime_dir=runtime_dir,
                 raw_query=q_clean,
                 drop_only_sink=sub_sink if kind_norm == "mod" else None,
             )
@@ -459,6 +461,26 @@ def query_multi(
                     if slang_res:
                         res = slang_res
                         resolved_alias = {"from": q_clean, "to": canon_en}
+                if not res and kind_norm != "translate":
+                    from .zh_match import english_for_zh
+
+                    en_canon = english_for_zh(q_clean, pob_dir=pob_dir, runtime_dir=runtime_dir)
+                    if en_canon and _fold_search_text(en_canon) != q_folded:
+                        sib_res = _dispatch_query(
+                            conn,
+                            kind_norm,
+                            _fold_search_text(en_canon),
+                            slot=slot,
+                            ilvl=ilvl,
+                            limit=limit,
+                            zh_available=zh_available,
+                            mod_filter=mod_tw,
+                            pob_dir=pob_dir,
+                            runtime_dir=runtime_dir,
+                        )
+                        if sib_res:
+                            res = sib_res
+                            resolved_alias = {"from": q_clean, "to": en_canon}
                 if not res and not mod_tw:
                     suggestions = _suggest_similar(conn, kind_norm, q_folded, limit=5, zh_available=zh_available)
                     hint = _build_zero_result_hint(kind_norm, q_clean, suggestions)
