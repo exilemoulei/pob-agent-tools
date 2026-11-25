@@ -99,14 +99,12 @@ from .quality import (
     query_gem_quality_breakpoints,
 )
 from .queries import (
-    _TICK_BASE_CD_PRESETS,
     _annotate_legacy_gem_rows,
     _dispatch_query,
     _guardrail_scope_for_kind,
     get_gem_level_bounds,
     query_local_data,
     query_multi,
-    query_tick_breakpoints,
 )
 from .queries_core import (
     _build_fts_match,
@@ -120,6 +118,7 @@ from .queries_core import (
     _unique_matching_mod_lines,
     mod_rolls_on_base,
 )
+from .queries_ticks import _TICK_BASE_CD_PRESETS, query_tick_breakpoints
 from .queries_translate import _query_translate
 from .slang import (
     _GROUND_EN_STOPWORDS,
