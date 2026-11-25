@@ -10,6 +10,8 @@ from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
 from ..snapshot import _call_batch, _finite_float
 from .dewater import dewater_build_in_place
+from .eb_sustain import is_eldritch_battery_active as is_eldritch_battery_active
+from .eb_sustain import is_replica_sorrow_eb_item
 from .summary import _active_item_lines
 from .tree_helpers import apply_node_override
 
@@ -19,20 +21,6 @@ _TATTOO_LABEL_TOKENS = ("tattoo", "文身", "纹身", "紋身")  # zh-CN writes 
 def _is_tattoo_label(label: str) -> bool:
     low = label.lower()
     return any(tok in low for tok in _TATTOO_LABEL_TOKENS)
-
-
-def is_eldritch_battery_active(stats: dict[str, Any], tree_summary: dict[str, Any] | None) -> bool:
-    """Return True when Eldritch Battery protects Mana (via engine stat or allocated keystone)."""
-    raw_eb = stats.get("EnergyShieldProtectsMana")
-    if raw_eb is True or (raw_eb is not False and _finite_float(raw_eb) > 0):
-        return True
-    for ks in (tree_summary or {}).get("keystones") or []:
-        blob = (
-            f"{ks.get('name') or ''} {ks.get('nameZh') or ''}" if isinstance(ks, dict) else str(ks or "")
-        ).lower()
-        if any(t in blob for t in ("eldritch battery", "异能魔力", "異能魔力")):
-            return True
-    return False
 
 
 
@@ -269,25 +257,34 @@ def infer_auto_keep_and_flask_notes(
         auto_keep["usepowercharges"] = "Ralakesh's Impatience"
 
     flask_notes: dict[str, str] = {}
-    if has_hittank and isinstance(items_res, dict):
+    if isinstance(items_res, dict):
         items_by_id = tok["items_by_id"]
         raw_by_slot = tok["raw_by_slot"]
         for slot in items_res.get("slots") or []:
             if not isinstance(slot, dict) or not slot.get("isFlask") or not slot.get("active"):
                 continue
             sname = str(slot.get("name") or "")
+            if not sname:
+                continue
             it = items_by_id.get(slot.get("selItemId") or 0) or {}
-            f_txt = " ".join(
-                [
-                    strip_pob_escapes(str(it.get("title") or "")),
-                    strip_pob_escapes(str(it.get("name") or "")),
-                    strip_pob_escapes(str(it.get("titleZh") or "")),
-                    strip_pob_escapes(str(it.get("raw") or "")),
-                    raw_by_slot.get(sname, ""),
-                ]
-            )
-            if sname and _FLAGELLANT_RE.search(f_txt):
-                flask_notes[sname] = f"Flagellant: recharges on Boss hits; test --keep '{sname}'"
+            raw_slot_txt = raw_by_slot.get(sname, "")
+            if is_replica_sorrow_eb_item(it, raw_slot_txt):
+                flask_notes[sname] = (
+                    f"Eldritch Battery during Effect: stripping disables ES-backed Mana casting; test --keep '{sname}'"
+                )
+                continue
+            if has_hittank:
+                f_txt = " ".join(
+                    [
+                        strip_pob_escapes(str(it.get("title") or "")),
+                        strip_pob_escapes(str(it.get("name") or "")),
+                        strip_pob_escapes(str(it.get("titleZh") or "")),
+                        strip_pob_escapes(str(it.get("raw") or "")),
+                        raw_slot_txt,
+                    ]
+                )
+                if _FLAGELLANT_RE.search(f_txt):
+                    flask_notes[sname] = f"Flagellant: recharges on Boss hits; test --keep '{sname}'"
 
     return auto_keep, flask_notes
 
