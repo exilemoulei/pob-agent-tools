@@ -356,16 +356,17 @@ def _resolve_calcs_target(skills_res: dict[str, Any], group: str | int | None, s
 def _select_calcs_target(w: BridgeWorker, group: str | int | None, skill: str | int | None, restores: list[dict[str, Any]]) -> dict[str, Any]:
     skills_res, init_c = w.call("list_skills", {}), w.call("get_calcs", {})
     sel = init_c.get("selectors") if isinstance(init_c.get("selectors"), dict) else {}
-    o_grp = (sel.get("mainSocketGroup") or {}).get("index") if isinstance(sel.get("mainSocketGroup"), dict) else None
-    o_sk = (sel.get("mainSkill") or {}).get("index") if isinstance(sel.get("mainSkill"), dict) else None
+    o_grp, o_sk = ((sel.get(k) or {}).get("index") if isinstance(sel.get(k), dict) else None for k in ("mainSocketGroup", "mainSkill"))
+    if o_grp is None:  # read-only: nothing is changed that cannot be put back
+        raise ValueError("This engine does not report the Calcs selection; --group/--skill need it.")
     t_grp, t_sk = _resolve_calcs_target(skills_res, group, skill)
-    need_g = o_grp is None or int(t_grp) != int(o_grp)
+    need_g = int(t_grp) != int(o_grp)
     need_s = t_sk is not None and (need_g or o_sk is None or int(t_sk) != int(o_sk))
     if not (need_g or need_s):
         return init_c
     if o_sk is not None:
         restores.append({"var": "mainActiveSkill", "value": int(o_sk)})
-    if need_g and o_grp is not None:
+    if need_g:
         restores.insert(0, {"var": "skill_number", "value": int(o_grp)})
     if need_g:
         w.call("set_calcs_input", {"var": "skill_number", "value": int(t_grp)})
