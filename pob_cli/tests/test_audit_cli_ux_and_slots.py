@@ -579,7 +579,7 @@ def test_real_engine_tree_change_and_calc_selectors() -> None:
     xml = """<?xml version="1.0" encoding="UTF-8"?>
 <PathOfBuilding>
   <Build level="90" targetVersion="3_0" bandit="None" className="Witch" ascendClassName="Necromancer" mainSocketGroup="1"/>
-  <Tree activeSpec="1"><Spec title="Default" treeVersion="3_28" classId="3" ascendClassId="3" nodes="54447"/></Tree>
+  <Tree activeSpec="1"><Spec title="Default" treeVersion="3_30" classId="3" ascendClassId="3" nodes="54447"/></Tree>
   <Skills activeSkillSet="1" defaultGemLevel="20" defaultGemQuality="0">
     <SkillSet id="1">
       <Skill enabled="true" label="Main Fire" mainActiveSkill="1" mainActiveSkillCalcs="1">
