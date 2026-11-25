@@ -1,12 +1,12 @@
 {
-    "version": "0.9.1",
+    "version": "0.10.0",
     "description": "Headless Path of Building (PoE 1) daemon, offline Lua game-data index, and high-SNR CLI for AI agents",
     "homepage": "https://github.com/exilemoulei/pob4agents",
     "license": "GPL-3.0-only",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/exilemoulei/pob4agents/releases/download/v0.9.1/pob4agents-0.9.1-windows-x64.zip",
-            "hash": "2f85ae78cd2d447ed7b6ecd5113bb7985d3870b6fe880707c4ca7f3799c620d3"
+            "url": "https://github.com/exilemoulei/pob4agents/releases/download/v0.10.0/pob4agents-0.10.0-windows-x64.zip",
+            "hash": "6b207a8bebab3b6941ed384ef0b5d52395f20dedd6f3e3099b383334a4fdf607"
         }
     },
     "bin": "pob.exe",
