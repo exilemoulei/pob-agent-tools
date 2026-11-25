@@ -189,6 +189,7 @@ def format_matrix_markdown(res: dict[str, Any], *, target: str = "main") -> str:
     p_key = str(res.get("primaryDpsKey") or base_m["primaryDpsKey"] or "CombinedDPS")
 
     rows: list[list[Any]] = []
+    auto_kept: list[str] = []
     kept: list[str] = []
     rejected: list[str] = []
     for idx, sc in enumerate(sc_list):
@@ -233,6 +234,9 @@ def format_matrix_markdown(res: dict[str, Any], *, target: str = "main") -> str:
 
         st_info = (sc.get("applied") or {}).get("stripped") or {}
         if isinstance(st_info, dict):
+            for ak in st_info.get("autoKept") or []:
+                if ak not in auto_kept:
+                    auto_kept.append(str(ak))
             for k in st_info.get("kept") or []:
                 if k not in kept:
                     kept.append(k)
@@ -250,6 +254,8 @@ def format_matrix_markdown(res: dict[str, Any], *, target: str = "main") -> str:
         parts.append(warn)
     parts.append(header)
     parts.append(table)
+    if auto_kept:
+        parts.append("\n**Auto-Kept (Build-Guaranteed)**: " + "; ".join(auto_kept))
     if kept:
         parts.append("\n**Kept (--keep)**: " + "; ".join(kept))
     rej_lines = keep_rejected_warning(rejected)
@@ -436,6 +442,30 @@ def format_compare_markdown(
         )
         t_rows = [[r["label"], r["mainStr"], r["refStr"], r["diffRefVsMainStr"]] for r in use_rows]
         lines.append(render_table(["Metric", target, ref_target, f"{ref_target} vs {target}"], t_rows))
+
+    pin_dew = baselines.get("pinnacleDewatered") or {}
+    auto_parts: list[str] = []
+    kept_parts: list[str] = []
+    rej_lines: list[str] = []
+    for slot_lbl, st_key in ((target, "mainStripped"), (ref_target, "refStripped")):
+        st_d = pin_dew.get(st_key)
+        if not isinstance(st_d, dict):
+            continue
+        ak = [str(x) for x in (st_d.get("autoKept") or []) if x]
+        if ak:
+            auto_parts.append(f"`{slot_lbl}`: " + "; ".join(ak))
+        kp = [str(x) for x in (st_d.get("kept") or []) if x]
+        if kp:
+            kept_parts.append(f"`{slot_lbl}`: " + "; ".join(kp))
+        for r_ln in keep_rejected_warning(st_d):
+            if r_ln not in rej_lines:
+                rej_lines.append(r_ln)
+    if auto_parts:
+        lines.append("\n**Auto-Kept (Build-Guaranteed)**: " + " | ".join(auto_parts))
+    if kept_parts:
+        lines.append("\n**Kept (--keep)**: " + " | ".join(kept_parts))
+    if rej_lines:
+        lines.extend(rej_lines)
 
     td = res.get("treeDiff") or {}
     ks = td.get("keystones") or {}

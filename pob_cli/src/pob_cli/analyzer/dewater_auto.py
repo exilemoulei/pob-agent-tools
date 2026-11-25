@@ -3,12 +3,35 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
 from ..snapshot import _call_batch, _finite_float
+from .dewater import dewater_build_in_place
 from .summary import _active_item_lines
+
+_TATTOO_LABEL_TOKENS = ("tattoo", "纹身", "紋身")
+
+
+def _is_tattoo_label(label: str) -> bool:
+    low = label.lower()
+    return any(tok in low for tok in _TATTOO_LABEL_TOKENS)
+
+
+def is_eldritch_battery_active(stats: dict[str, Any], tree_summary: dict[str, Any] | None) -> bool:
+    """Return True when Eldritch Battery protects Mana (via engine stat or allocated keystone)."""
+    raw_eb = stats.get("EnergyShieldProtectsMana")
+    if raw_eb is True or (raw_eb is not False and _finite_float(raw_eb) > 0):
+        return True
+    for ks in (tree_summary or {}).get("keystones") or []:
+        blob = (
+            f"{ks.get('name') or ''} {ks.get('nameZh') or ''}" if isinstance(ks, dict) else str(ks or "")
+        ).lower()
+        if any(t in blob for t in ("eldritch battery", "异能魔力", "異能魔力")):
+            return True
+    return False
 
 _MIN_ENDURANCE_RE = re.compile(r"\+\d+\s+to\s+minimum\s+endurance\s+charges|最小耐力球", re.IGNORECASE)
 _MIN_FRENZY_RE = re.compile(r"\+\d+\s+to\s+minimum\s+frenzy\s+charges|最小狂怒球", re.IGNORECASE)
@@ -81,22 +104,31 @@ def _collect_build_tokens(
         for bucket in ("keystones", "ascendancyNodes", "notables"):
             for nd in tree_summary.get(bucket) or []:
                 if isinstance(nd, dict):
-                    for k in ("name", "nameZh"):
-                        v = strip_pob_escapes(str(nd.get(k) or "")).strip().lower()
-                        if v:
-                            node_names_low.add(v)
-                    if nd.get("id") is not None:
-                        try:
-                            node_ids.add(int(nd["id"]))
-                        except (TypeError, ValueError):
-                            pass
+                    lbls = [
+                        strip_pob_escapes(str(nd.get(k) or "")).strip().lower()
+                        for k in ("name", "nameZh")
+                    ]
+                    is_tattoo = str(nd.get("overrideWhy") or "").lower() == "tattoo" or any(
+                        _is_tattoo_label(v) for v in lbls if v
+                    )
+                    if not is_tattoo:
+                        for v in lbls:
+                            if v:
+                                node_names_low.add(v)
+                        if nd.get("id") is not None:
+                            try:
+                                node_ids.add(int(nd["id"]))
+                            except (TypeError, ValueError):
+                                pass
                     for st_ln in nd.get("stats") or []:
                         node_stat_lines.append(strip_pob_escapes(str(st_ln)))
                 elif isinstance(nd, str) and nd.strip():
-                    node_names_low.add(strip_pob_escapes(nd).strip().lower())
+                    v = strip_pob_escapes(nd).strip().lower()
+                    if v and not _is_tattoo_label(v):
+                        node_names_low.add(v)
     for n_lbl, st_lines in alloc_node_stats or []:
         nl = strip_pob_escapes(str(n_lbl or "")).strip().lower()
-        if nl:
+        if nl and not _is_tattoo_label(nl):
             node_names_low.add(nl)
         node_stat_lines.extend(strip_pob_escapes(str(x)) for x in st_lines)
 
@@ -147,20 +179,27 @@ def infer_auto_keep_and_flask_notes(
     has_shaper_of_flames = any(
         any(t in nm for t in ("shaper of flames", "烈焰塑界者", "火焰塑形者")) for nm in node_names
     )
-    if ig_chance >= 100.0:
-        auto_keep["conditionenemyignited"] = f"Main skill IgniteChance {ig_chance:.0f}% >= 100%"
-    elif has_shaper_of_flames or "hits always ignite" in mods_low or "always ignite" in mods_low:
+    if has_shaper_of_flames or "hits always ignite" in mods_low or "always ignite" in mods_low:
         auto_keep["conditionenemyignited"] = "Build has guaranteed Ignite (Shaper of Flames / always Ignite)"
+    elif ig_chance >= 100.0:
+        auto_keep["conditionenemyignited"] = f"Main skill IgniteChance {ig_chance:.0f}% >= 100%"
 
     has_cws = (
         "SupportCastWhenStunned" in tok["enabled_skill_ids"]
         or any(t in gems_blob for t in ("cast when stunned", "晕眩时施放", "暈眩時施放"))
     )
     has_ramako = (61355 in node_ids) or any(
-        any(t in nm for t in ("ramako", "雷默科", "烈阳之光", "烈陽之光", "太阳之光", "太陽之光"))
+        not _is_tattoo_label(nm)
+        and any(
+            t in nm
+            for t in ("ramako, sun's light", "ramako, suns light", "烈阳之光", "烈陽之光", "太阳之光", "太陽之光")
+        )
         for nm in node_names
     )
-    has_tukohama = any(any(t in nm for t in ("tukohama", "图克哈玛", "圖克哈瑪")) for nm in node_names)
+    has_tukohama = any(
+        not _is_tattoo_label(nm) and any(t in nm for t in ("tukohama", "图克哈玛", "圖克哈瑪"))
+        for nm in node_names
+    )
     has_natures_patience = any(any(t in nm for t in ("nature's patience", "自然耐心")) for nm in node_names)
     if has_cws and has_ramako:
         auto_keep["conditionstationary"] = "CwS/Ramako stationary build"
@@ -261,14 +300,33 @@ def best_effort_audit_tree_and_raw(
             if isinstance(t_state, dict) and not t_state.get("_error"):
                 nodes_db = worker.get_cached_tree_data(t_state.get("treeVersion")).get("nodes", {})
                 ov = t_state.get("overrides") or {}
+                synth_tree: dict[str, list[dict[str, Any]]] = {
+                    "keystones": [],
+                    "ascendancyNodes": [],
+                    "notables": [],
+                }
                 for raw_nid in t_state.get("allocatedNodes") or []:
-                    sid = str(int(raw_nid))
+                    nid = int(raw_nid)
+                    sid = str(nid)
                     nd = dict(nodes_db.get(sid) or {})
                     if sid in ov and isinstance(ov[sid], dict):
-                        nd.update(ov[sid])
+                        nd["overrideWhy"] = ov[sid].get("why")
+                        for fld in ("name", "nameZh", "stats", "statsZh"):
+                            if ov[sid].get(fld):
+                                nd[fld] = ov[sid][fld]
+                    nd["id"] = nid
                     nm = str(nd.get("name") or sid)
                     st_lines = [str(x) for x in (nd.get("stats") or []) if str(x).strip()]
                     alloc_node_stats.append((nm, st_lines))
+                    ntype = nd.get("type")
+                    if nd.get("asc") or nd.get("ascendancyName"):
+                        if ntype not in ("AscendClassStart", "ClassStart"):
+                            synth_tree["ascendancyNodes"].append(nd)
+                    elif ntype == "Keystone" or nd.get("isKeystone"):
+                        synth_tree["keystones"].append(nd)
+                    elif ntype == "Notable":
+                        synth_tree["notables"].append(nd)
+                tree_summary = synth_tree
         except Exception:
             pass
 
@@ -296,3 +354,72 @@ def best_effort_audit_tree_and_raw(
             except Exception:
                 equipped_slots_raw = None
     return tree_summary, equipped_slots_raw, alloc_node_stats
+
+
+def dewater_smart_in_place(
+    worker: BridgeWorker,
+    keep: Iterable[str] | str | None = None,
+    *,
+    auto_keep: bool = True,
+    stats: dict[str, Any] | None = None,
+    skills_res: dict[str, Any] | None = None,
+    items_res: dict[str, Any] | None = None,
+    build_info: dict[str, Any] | None = None,
+    tree_summary: dict[str, Any] | None = None,
+) -> dict[str, list[str]]:
+    """Run build-mechanism-aware smart dewatering in place (or bare dewatering when `auto_keep=False`)."""
+    if not auto_keep:
+        return dewater_build_in_place(worker, keep=keep)
+
+    missing_keys: list[str] = []
+    missing_calls: list[tuple[str, dict[str, Any]]] = []
+    if stats is None:
+        missing_keys.append("stats")
+        missing_calls.append(("get_stats", {}))
+    if skills_res is None:
+        missing_keys.append("skills")
+        missing_calls.append(("list_skills", {}))
+    if items_res is None:
+        missing_keys.append("items")
+        missing_calls.append(("list_items", {}))
+    if build_info is None:
+        missing_keys.append("info")
+        missing_calls.append(("get_build_info", {}))
+
+    if missing_calls:
+        try:
+            fetched = _call_batch(worker, missing_calls, raise_on_error=False)
+            for mk, mr in zip(missing_keys, fetched, strict=False):
+                if not isinstance(mr, dict) or mr.get("_error"):
+                    continue
+                if mk == "stats":
+                    stats = mr.get("stats") if isinstance(mr.get("stats"), dict) else mr
+                elif mk == "skills":
+                    skills_res = mr
+                elif mk == "items":
+                    items_res = mr
+                elif mk == "info":
+                    build_info = mr
+        except Exception:
+            pass
+
+    eff_tree, eff_raw, alloc_st = best_effort_audit_tree_and_raw(
+        worker,
+        items_res or {},
+        pre_tree_summary=tree_summary,
+    )
+    ak_reasons, flask_notes = infer_auto_keep_and_flask_notes(
+        stats=stats,
+        skills_res=skills_res,
+        items_res=items_res,
+        build_info=build_info,
+        tree_summary=eff_tree,
+        equipped_slots_raw=eff_raw,
+        alloc_node_stats=alloc_st,
+    )
+    return dewater_build_in_place(
+        worker,
+        keep=keep,
+        auto_keep_reasons=ak_reasons,
+        flask_notes=flask_notes,
+    )

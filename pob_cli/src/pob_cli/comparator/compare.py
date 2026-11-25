@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ..analyzer import (
-    dewater_build_in_place,
+    dewater_smart_in_place,
     inspect_tree,
     resolve_skill_group_index,
     resolve_slot_name,
@@ -280,6 +281,8 @@ def compare_builds(
     *,
     ref_source: str | None = None,
     ref_xml_code: str | None = None,
+    keep: Iterable[str] | str | None = None,
+    auto_keep: bool = True,
     budget_s: float = COMPARE_BUDGET_S,
 ) -> dict[str, Any]:
     """Compare `main` build vs `ref` build across 3 baselines + tree, skill, and item diffs."""
@@ -335,7 +338,16 @@ def compare_builds(
 
     def _eval_main_phase2() -> tuple[dict[str, list[str]], dict[str, Any]]:
         with BuildTransaction(main_worker) as tx:
-            stripped = dewater_build_in_place(main_worker)
+            stripped = dewater_smart_in_place(
+                main_worker,
+                keep=keep,
+                auto_keep=auto_keep,
+                stats=main_orig.get("stats"),
+                skills_res=main_p1["skills"],
+                items_res=main_p1["items"],
+                build_info=main_orig.get("buildInfo"),
+                tree_summary=main_p1["tree"],
+            )
             dewatered = capture_digest(main_worker)
             tx.rollback_verified(main_orig)
             return stripped, dewatered
@@ -345,7 +357,16 @@ def compare_builds(
             _apply_env_config(ref_worker, main_env)
             env_aligned = capture_digest(ref_worker)
             tx.restore()
-            stripped = dewater_build_in_place(ref_worker)
+            stripped = dewater_smart_in_place(
+                ref_worker,
+                keep=keep,
+                auto_keep=auto_keep,
+                stats=ref_orig.get("stats"),
+                skills_res=ref_p1["skills"],
+                items_res=ref_p1["items"],
+                build_info=ref_orig.get("buildInfo"),
+                tree_summary=ref_p1["tree"],
+            )
             dewatered = capture_digest(ref_worker)
             tx.rollback_verified(ref_orig)
             return env_aligned, stripped, dewatered

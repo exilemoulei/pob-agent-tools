@@ -63,7 +63,12 @@ def dispatch_dual_slot_action(
 
     if action == "compare":
         cmp_res = compare_builds(
-            mw, rw, ref_source=params.get("ref_source"), ref_xml_code=params.get("ref_xml_code")
+            mw,
+            rw,
+            ref_source=params.get("ref_source"),
+            ref_xml_code=params.get("ref_xml_code"),
+            keep=norm_keep(params),
+            auto_keep=not bool(params.get("no_auto_keep", params.get("noAutoKeep", False))),
         )
         return manager._attach_state_meta(cmp_res, mw)
 
@@ -137,6 +142,7 @@ def dispatch_dual_slot_action(
             league=params.get("league"),
             realm=None if skip_main else params.get("realm"),
             keep=norm_keep(params),
+            auto_keep=not bool(params.get("no_auto_keep", params.get("noAutoKeep", False))),
             top=top_val,
             no_rank=bool(params.get("no_rank", params.get("noRank", True))),
             ask=params.get("ask"),
@@ -230,7 +236,12 @@ def _h_summary(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[st
 def _h_audit(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from ..analyzer import audit_build
 
-    return audit_build(w, keep=norm_keep(params), attribution=bool(params.get("attribution", True)))
+    return audit_build(
+        w,
+        keep=norm_keep(params),
+        attribution=bool(params.get("attribution", True)),
+        auto_keep=not bool(params.get("no_auto_keep", params.get("noAutoKeep", False))),
+    )
 
 
 def _h_diagnose(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
@@ -269,6 +280,7 @@ def _h_diagnose(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> di
     diag_res = diagnose_build(
         w,
         keep=norm_keep(params),
+        auto_keep=not bool(params.get("no_auto_keep", params.get("noAutoKeep", False))),
         top=top_val,
         no_rank=bool(params.get("no_rank", params.get("noRank", False))),
         ask=params.get("ask"),
@@ -367,7 +379,13 @@ def _h_calc(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[
 def _h_matrix(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from ..comparator import run_matrix
 
-    return run_matrix(w, scenarios=params.get("scenarios"), full=bool(params.get("full", False)), keep=norm_keep(params))
+    return run_matrix(
+        w,
+        scenarios=params.get("scenarios"),
+        full=bool(params.get("full", False)),
+        keep=norm_keep(params),
+        auto_keep=not bool(params.get("no_auto_keep", params.get("noAutoKeep", False))),
+    )
 
 
 def _h_rank_nodes(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:

@@ -23,7 +23,11 @@ from .dewater import (
     _probe_rpc_method,
     _rpc_error_text,
 )
-from .dewater_auto import best_effort_audit_tree_and_raw, infer_auto_keep_and_flask_notes
+from .dewater_auto import (
+    best_effort_audit_tree_and_raw,
+    infer_auto_keep_and_flask_notes,
+    is_eldritch_battery_active,
+)
 from .dewater_steps import _same_state
 from .pitfalls_core import _detect_build_mechanics_and_pitfalls
 from .summary import _compute_effective_mana_spend, _has_doryanis_prototype_equipped
@@ -292,6 +296,7 @@ def _collect_static_health_issues(
     items_res: dict[str, Any],
     skills_res_audit: dict[str, Any] | None,
     warnings: list[str],
+    tree_summary: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     health_issues: list[dict[str, str]] = []
     has_doryani = _has_doryanis_prototype_equipped(items_res)
@@ -357,6 +362,12 @@ def _collect_static_health_issues(
 
     mana_cost = _finite_float(stats.get("ManaCost"))
     mana_unres = _finite_float(stats.get("ManaUnreserved"))
+    es_val = max(0.0, _finite_float(stats.get("EnergyShield")))
+    es_cost = _finite_float(stats.get("ESCost"))
+    eb_active = is_eldritch_battery_active(stats, tree_summary)
+    es_for_mana = max(0.0, es_val - es_cost)
+    payable_pool = (mana_unres + es_for_mana) if eb_active else mana_unres
+    eb_covers_mana = eb_active and es_for_mana >= mana_cost
     raw_mana_regen = (
         stats.get("ManaRegenRecovery")
         if stats.get("ManaRegenRecovery") is not None
@@ -365,22 +376,42 @@ def _collect_static_health_issues(
     mana_regen = _finite_float(raw_mana_regen)
     mana_leech = _finite_float(stats.get("ManaLeechGainRate"))
     speed = _finite_float(stats.get("Speed"))
-    life_unres = _finite_float(stats.get("LifeUnreserved"))
+    raw_life_unres = (
+        stats.get("LifeUnreserved") if stats.get("LifeUnreserved") is not None else stats.get("Life")
+    )
+    life_unres = _finite_float(raw_life_unres, default=1.0)
     spend_info = _compute_effective_mana_spend(stats, skills_res_audit)
     spend_rate = float(spend_info["spendRate"])
     eff_casts = float(spend_info["effectiveCastsPerSec"])
     repeats = int(spend_info["repeats"])
     rec_rate = max(0.0, mana_regen) + mana_leech
     exceeds_recovery = (spend_rate > rec_rate * 1.10) if rec_rate > 0.0 else (spend_rate > 0.0)
-    if mana_cost > 0 and mana_cost > mana_unres and life_unres > 0:
+    if es_cost > 0 and es_cost > es_val:
         health_issues.append(
             {
                 "category": "Sustain",
                 "severity": "HIGH",
-                "message": f"Skill Mana Cost ({mana_cost:.0f}) exceeds Unreserved Mana ({mana_unres:.0f})",
+                "message": f"Skill ES Cost ({es_cost:.0f}) exceeds Energy Shield ({es_val:.0f})",
             }
         )
-    elif mana_cost > 0 and mana_regen < 0:
+    if mana_cost > 0 and mana_cost > payable_pool and life_unres > 0:
+        if eb_active and es_cost > 0:
+            pool_msg = (
+                f"Eldritch Battery remaining ES + Unreserved Mana "
+                f"({es_for_mana:.0f} + {mana_unres:.0f} = {payable_pool:.0f} after {es_cost:.0f} ES Cost)"
+            )
+        elif eb_active:
+            pool_msg = f"Eldritch Battery ES + Unreserved Mana ({es_val:.0f} + {mana_unres:.0f} = {payable_pool:.0f})"
+        else:
+            pool_msg = f"Unreserved Mana ({mana_unres:.0f})"
+        health_issues.append(
+            {
+                "category": "Sustain",
+                "severity": "HIGH",
+                "message": f"Skill Mana Cost ({mana_cost:.0f}) exceeds {pool_msg}",
+            }
+        )
+    elif mana_cost > 0 and not eb_covers_mana and mana_regen < 0:
         health_issues.append(
             {
                 "category": "Sustain",
@@ -388,7 +419,7 @@ def _collect_static_health_issues(
                 "message": f"Net Mana Regen is negative ({mana_regen:.1f}/s) with Mana Cost {mana_cost:.0f}",
             }
         )
-    elif mana_cost > 0 and eff_casts > 0 and exceeds_recovery and life_unres > 0:
+    elif mana_cost > 0 and not eb_covers_mana and eff_casts > 0 and exceeds_recovery and life_unres > 0:
         detail_bits: list[str] = []
         if repeats > 1:
             detail_bits.append(f"raw {speed:.2f}/s / {repeats}x repeats")
@@ -465,6 +496,7 @@ def audit_build(
     keep: Iterable[str] | str | None = None,
     attribution: bool = True,
     *,
+    auto_keep: bool = True,
     include_envelope: bool = True,
     pre_tree_summary: dict[str, Any] | None = None,
     pre_equipped_slots_raw: list[dict[str, Any]] | None = None,
@@ -485,29 +517,38 @@ def audit_build(
         except Exception:
             skills_res_audit, cfg_res_audit = None, None
 
-        health_issues = _collect_static_health_issues(
-            stats, info, items_res, skills_res_audit, digest_before["warnings"]
-        )
-
         eff_tree, eff_raw, alloc_st = best_effort_audit_tree_and_raw(
             worker,
             items_res,
             pre_tree_summary=pre_tree_summary,
             pre_equipped_slots_raw=pre_equipped_slots_raw,
         )
-        auto_keep, flask_notes = infer_auto_keep_and_flask_notes(
-            stats=stats,
-            skills_res=skills_res_audit,
-            items_res=items_res,
-            build_info=info,
+        health_issues = _collect_static_health_issues(
+            stats,
+            info,
+            items_res,
+            skills_res_audit,
+            digest_before["warnings"],
             tree_summary=eff_tree,
-            equipped_slots_raw=eff_raw,
-            alloc_node_stats=alloc_st,
+        )
+
+        ak_reasons, flask_notes = (
+            infer_auto_keep_and_flask_notes(
+                stats=stats,
+                skills_res=skills_res_audit,
+                items_res=items_res,
+                build_info=info,
+                tree_summary=eff_tree,
+                equipped_slots_raw=eff_raw,
+                alloc_node_stats=alloc_st,
+            )
+            if auto_keep
+            else ({}, {})
         )
         dw_defs = getattr(_analyzer.dewater_build_with_records, "__kwdefaults__", None) or {}
         dw_kw: dict[str, Any] = {}
         if "auto_keep_reasons" in dw_defs:
-            dw_kw["auto_keep_reasons"] = auto_keep
+            dw_kw["auto_keep_reasons"] = ak_reasons
         if "flask_notes" in dw_defs:
             dw_kw["flask_notes"] = flask_notes
         stripped, records = _analyzer.dewater_build_with_records(worker, keep=keep, **dw_kw)

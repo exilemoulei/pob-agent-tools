@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from ..analyzer import dewater_build_in_place
+from ..analyzer import dewater_smart_in_place
 from ..bridge_client import BridgeWorker
 from ..mutators import _apply_config_in_place
 from ..snapshot import (
@@ -153,6 +153,7 @@ def _apply_matrix_scenario_in_place(
     plan: dict[str, Any],
     keep: Iterable[str] | str | None = None,
     *,
+    auto_keep: bool = True,
     already_dewatered: bool = False,
     cached_stripped: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
@@ -166,10 +167,10 @@ def _apply_matrix_scenario_in_place(
 
     if plan["base"] == "Pinnacle":
         if not already_dewatered:
-            applied_info["stripped"] = dewater_build_in_place(worker, keep=keep)
+            applied_info["stripped"] = dewater_smart_in_place(worker, keep=keep, auto_keep=auto_keep)
     elif plan["base"] == "Uber":
         if not already_dewatered:
-            applied_info["stripped"] = dewater_build_in_place(worker, keep=keep)
+            applied_info["stripped"] = dewater_smart_in_place(worker, keep=keep, auto_keep=auto_keep)
         uber_cfg = _apply_config_in_place(worker, [("enemyIsBoss", "Uber")])
         applied_info["config"].extend(uber_cfg.get("assignments", []))
 
@@ -208,6 +209,7 @@ def run_matrix(
     *,
     full: bool = False,
     keep: Iterable[str] | str | None = None,
+    auto_keep: bool = True,
 ) -> dict[str, Any]:
     """Evaluate multiple build scenarios in a single atomic 0-residue transaction."""
     import pob_cli.comparator as _comp
@@ -246,7 +248,13 @@ def run_matrix(
             if needs_pinnacle and not has_pinnacle_cache:
                 worker_state = "dirty"
                 ever_mutated = True
-                pinnacle_stripped = dewater_build_in_place(worker, keep=keep)
+                pinnacle_stripped = dewater_smart_in_place(
+                    worker,
+                    keep=keep,
+                    auto_keep=auto_keep,
+                    stats=(baseline_digest or {}).get("stats") if isinstance(baseline_digest, dict) else None,
+                    build_info=(baseline_digest or {}).get("buildInfo") if isinstance(baseline_digest, dict) else None,
+                )
                 if pinnacle_count >= 2:
                     pinnacle_snap = tx.checkpoint()
                     if not has_post_mutations:
@@ -255,6 +263,7 @@ def run_matrix(
                     worker,
                     plan,
                     keep=keep,
+                    auto_keep=auto_keep,
                     already_dewatered=True,
                     cached_stripped=pinnacle_stripped,
                 )
@@ -266,6 +275,7 @@ def run_matrix(
                     worker,
                     plan,
                     keep=keep,
+                    auto_keep=auto_keep,
                     already_dewatered=True,
                     cached_stripped=pinnacle_stripped,
                 )
@@ -273,7 +283,9 @@ def run_matrix(
                 if has_post_mutations:
                     worker_state = "dirty"
                     ever_mutated = True
-                applied_info = _comp._apply_matrix_scenario_in_place(worker, plan, keep=keep)
+                applied_info = _comp._apply_matrix_scenario_in_place(
+                    worker, plan, keep=keep, auto_keep=auto_keep
+                )
 
             digest = capture_digest(worker)
             if idx == 0 and first_is_unmutated_original:

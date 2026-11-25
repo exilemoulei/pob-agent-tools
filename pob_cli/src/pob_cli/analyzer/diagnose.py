@@ -195,7 +195,7 @@ def _assemble_diagnose_mechanics(
     items_info: dict[str, Any],
     alloc_node_stats: list[tuple[str, list[str]]],
     gaps: list[dict[str, str]],
-) -> tuple[dict[str, Any], list[str], list[str]]:
+) -> tuple[dict[str, Any], list[str], list[str], dict[str, Any]]:
     stats_full: dict[str, Any] = {}
     stats_full.update(summary.get("offence") or {})
     stats_full.update(summary.get("defence") or {})
@@ -273,13 +273,14 @@ def _assemble_diagnose_mechanics(
             existing_gap_msgs.add(mgap["message"])
             gaps.append(mgap)
 
-    return build_mechanics, core_synergies, amulet_7th_link
+    return build_mechanics, core_synergies, amulet_7th_link, stats_full
 
 
 def diagnose_build(
     worker: BridgeWorker,
     *,
     keep: Iterable[str] | str | None = None,
+    auto_keep: bool = True,
     top: int = 5,
     no_rank: bool = False,
     ask: str | None = None,
@@ -302,6 +303,8 @@ def diagnose_build(
 
     audit_defs = getattr(_analyzer.audit_build, "__kwdefaults__", None) or {}
     audit_kw: dict[str, Any] = {}
+    if "auto_keep" in audit_defs:
+        audit_kw["auto_keep"] = auto_keep
     if "include_envelope" in audit_defs:
         audit_kw["include_envelope"] = False
     if "pre_tree_summary" in audit_defs:
@@ -363,7 +366,7 @@ def diagnose_build(
     alloc_node_stats, ascendancy_nodes_compact, skill_groups_compact, all_active_skill_names = (
         _collect_diagnose_tree_and_skills(worker, tree_state_diag, tree_summary, all_skills_res)
     )
-    build_mechanics, core_synergies, amulet_7th_link = _assemble_diagnose_mechanics(
+    build_mechanics, core_synergies, amulet_7th_link, stats_full = _assemble_diagnose_mechanics(
         worker,
         summary=summary,
         audit=audit,
@@ -414,22 +417,21 @@ def diagnose_build(
         reverse=True,
     )
 
-    auto_keep_diag, _ = infer_auto_keep_and_flask_notes(
-        stats={**(summary.get("offence") or {}), **(summary.get("defence") or {})},
-        skills_res=all_skills_res,
-        items_res=items_raw_res,
-        build_info=info,
-        tree_summary=tree_summary,
-        equipped_slots_raw=items_info.get("equippedSlots"),
-        alloc_node_stats=alloc_node_stats,
-    )
-    top_nodes, top_gems, rank_errors = (
-        (None, None, [])
-        if no_rank
-        else _run_diagnose_rankings(
-            worker, audit, mg, top=top, keep=keep, auto_keep_reasons=auto_keep_diag
+    if no_rank:
+        top_nodes, top_gems, rank_errors = None, None, []
+    else:
+        ak_diag = (
+            infer_auto_keep_and_flask_notes(
+                stats=stats_full, skills_res=all_skills_res, items_res=items_raw_res,
+                build_info=info, tree_summary=tree_summary,
+                equipped_slots_raw=items_info.get("equippedSlots"), alloc_node_stats=alloc_node_stats,
+            )[0]
+            if auto_keep
+            else {}
         )
-    )
+        top_nodes, top_gems, rank_errors = _run_diagnose_rankings(
+            worker, audit, mg, top=top, keep=keep, auto_keep_reasons=ak_diag
+        )
 
     out_diag: dict[str, Any] = {
         "env": _build_diagnose_env(worker, info, fact_cards, target),

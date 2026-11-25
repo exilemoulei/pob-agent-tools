@@ -347,6 +347,7 @@ def diagnose_compare_builds(
     league: str | None = None,
     realm: str | None = None,
     keep: Iterable[str] | str | None = None,
+    auto_keep: bool = True,
     top: int = 5,
     no_rank: bool = True,
     ask: str | None = None,
@@ -393,7 +394,15 @@ def diagnose_compare_builds(
         ),
         lambda: _load_into(ref_worker, compare_source, compare_xml_code),
     )
-    comparison = compare_builds(main_worker, ref_worker)
+    cmp_defs = getattr(compare_builds, "__kwdefaults__", None) or {}
+    cmp_kw: dict[str, Any] = {}
+    if "keep" in cmp_defs:
+        cmp_kw["keep"] = keep
+    if "auto_keep" in cmp_defs:
+        cmp_kw["auto_keep"] = auto_keep
+    comparison = compare_builds(main_worker, ref_worker, **cmp_kw)
+    diag_defs = getattr(_analyzer.diagnose_build, "__kwdefaults__", None) or {}
+    diag_extra = {"auto_keep": auto_keep} if "auto_keep" in diag_defs else {}
 
     def _diag_a() -> dict[str, Any]:
         return _analyzer.diagnose_build(
@@ -405,6 +414,7 @@ def diagnose_compare_builds(
             pob_dir=pob_dir,
             runtime_dir=runtime_dir,
             target=target,
+            **diag_extra,
         )
 
     def _diag_b() -> dict[str, Any]:
@@ -417,6 +427,7 @@ def diagnose_compare_builds(
             pob_dir=pob_dir,
             runtime_dir=runtime_dir,
             target=ref_target,
+            **diag_extra,
         )
 
     diag_a, diag_b = _run_worker_pair(main_worker, ref_worker, _diag_a, _diag_b)

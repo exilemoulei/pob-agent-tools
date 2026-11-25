@@ -373,6 +373,18 @@ def cmd_rank_gems(
 
 @click.command("compare")
 @click.argument("ref_source", required=False)
+@click.option(
+    "--keep",
+    "keep",
+    multiple=True,
+    help="Keep build-guaranteed config/flask/skill/customMods/party items during dewatering (repeatable or comma-separated).",
+)
+@click.option(
+    "--no-auto-keep",
+    "no_auto_keep",
+    is_flag=True,
+    help="Disable automatic mechanism-based config retention during Pinnacle dewatering.",
+)
 @_target_option(allow_slot_alias=True)
 @click.option(
     "--ref-target",
@@ -386,6 +398,8 @@ def cmd_rank_gems(
 @_output_options
 def cmd_compare(
     ref_source: str | None,
+    keep: tuple[str, ...],
+    no_auto_keep: bool,
     target: str,
     ref_target: str,
     as_json: bool,
@@ -393,9 +407,13 @@ def cmd_compare(
     out_path: str | None,
 ) -> None:
     """Compare target build vs reference build across 3 baselines + tree/skill/equipment diffs."""
-    from .formatters import render_table, strip_pob_escapes
+    from .formatters import format_compare_markdown
 
     params: dict[str, Any] = {"target": target, "ref_target": ref_target}
+    if keep:
+        params["keep"] = list(keep)
+    if no_auto_keep:
+        params["no_auto_keep"] = True
     if ref_source:
         resolved_src, resolved_xml_code = _prepare_load_source(ref_source)
         if resolved_xml_code is not None:
@@ -408,50 +426,7 @@ def cmd_compare(
         _emit_json(res, compact=compact, out_path=out_path)
         return
 
-    m_info = res.get("mainBuildInfo") or {}
-    r_info = res.get("refBuildInfo") or {}
-    lines = [
-        f"### A/B Build Comparison: `{target}` (Lv.{m_info.get('level')} {m_info.get('ascendClassNameZh') or m_info.get('ascendClassName')}) vs `{ref_target}` (Lv.{r_info.get('level')} {r_info.get('ascendClassNameZh') or r_info.get('ascendClassName')})",
-    ]
-
-    baselines = res.get("baselines") or {}
-    for title, rows in (
-        ("Baseline 1: Original Panels (As Configured)", baselines.get("original", [])),
-        (f"Baseline 2: External Target Environment Aligned to `{target}`", (baselines.get("envAlignedToMain") or {}).get("rows", [])),
-        ("Baseline 3: Both Dewatered + Pinnacle Boss (True Baseline)", (baselines.get("pinnacleDewatered") or {}).get("rows", [])),
-    ):
-        lines.append(f"\n#### {title}")
-        t_rows = [[r["label"], r["mainStr"], r["refStr"], r["diffRefVsMainStr"]] for r in rows]
-        lines.append(render_table(["Metric", target, ref_target, f"{ref_target} vs {target}"], t_rows))
-
-    td = res.get("treeDiff") or {}
-    ks = td.get("keystones") or {}
-    lines.append("\n#### Passive Tree Diff")
-    lines.append(
-        f"- **Keystones Only in `{target}`**: {', '.join(x['name'] for x in ks.get('onlyInMain', [])) or '-'}\n"
-        f"- **Keystones Only in `{ref_target}`**: {', '.join(x['name'] for x in ks.get('onlyInRef', [])) or '-'}\n"
-        f"- **Notables Shared**: `{(td.get('notables') or {}).get('sharedCount', 0)}` | **Only in `{target}`**: `{len((td.get('notables') or {}).get('onlyInMain', []))}` | **Only in `{ref_target}`**: `{len((td.get('notables') or {}).get('onlyInRef', []))}`"
-    )
-
-    sd = res.get("skillDiff") or {}
-    m_mg = sd.get("mainGroupMain") or {}
-    r_mg = sd.get("refGroupMain") or {}
-    m_mg_lbl = strip_pob_escapes(m_mg.get("displayLabelZh") or m_mg.get("displayLabel") or "-")
-    r_mg_lbl = strip_pob_escapes(r_mg.get("displayLabelZh") or r_mg.get("displayLabel") or "-")
-    lines.append("\n#### Skill & Aura Diff")
-    lines.append(
-        f"- **`{target}` Primary Skill Group**: `#{m_mg.get('index', '-')}` {m_mg_lbl}\n"
-        f"- **`{ref_target}` Primary Skill Group**: `#{r_mg.get('index', '-')}` {r_mg_lbl}\n"
-        f"- **Active Skills Only in `{target}`**: {', '.join(sd.get('activeSkillsOnlyInMain', [])) or '-'}\n"
-        f"- **Active Skills Only in `{ref_target}`**: {', '.join(sd.get('activeSkillsOnlyInRef', [])) or '-'}\n"
-        f"- **Shared Active Skills**: {', '.join(sd.get('sharedActiveSkills', [])) or '-'}"
-    )
-
-    lines.append("\n#### Equipment Slot Diff")
-    slot_rows = [[s["slot"], s["mainItem"], s["refItem"]] for s in res.get("itemSlotDiff", [])]
-    lines.append(render_table(["Slot", f"{target} Item", f"{ref_target} Item"], slot_rows))
-
-    _emit_text("\n".join(lines), out_path=out_path)
+    _emit_text(format_compare_markdown(res, target=target, ref_target=ref_target), out_path=out_path)
 
 
 @click.command("borrow")

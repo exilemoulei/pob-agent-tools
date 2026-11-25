@@ -24,9 +24,9 @@ pob undo | pob redo | pob stop [--json]
 
 # Read-Only Inspection, Grounding & One-Shot Diagnosis
 pob ground "<prompt_text>" [--limit 8] [--json]                                        # <15ms daemon-free 3.30 entity cards + PoE2/patch trap alerts
-pob diagnose [SOURCE] [-c|--compare REF] [-q|--ask "<text>"] [--char "<name>"] [--league L] [--realm pc|xbox|sony|cn] [--keep <spec>]... [--rank|--no-rank] [--section all|summary|gaps|items|skills|cards|upgrades] [--top 5] [--target <slug>] [--ref-target <slug>] [--json] # One-shot: [Env (NOT PoE2) | rev=N] + Pinnacle audit + gaps/bricks/dead-supports/triggers + 3.30 cards + optional --rank upgrades (or dual-build 3-baseline compare)
+pob diagnose [SOURCE] [-c|--compare REF] [-q|--ask "<text>"] [--char "<name>"] [--league L] [--realm pc|xbox|sony|cn] [--keep <spec>]... [--no-auto-keep] [--rank|--no-rank] [--section all|summary|gaps|items|skills|cards|upgrades] [--top 5] [--target <slug>] [--ref-target <slug>] [--json] # One-shot: [Env (NOT PoE2) | rev=N] + Pinnacle audit + gaps/bricks/dead-supports/triggers + 3.30 cards + optional --rank upgrades (or dual-build 3-baseline compare)
 pob summary [--target <slug>] [--json]                                                 # [Env | rev=N] + Offence (Hit/DoT/FullDPS/Minion*), Defence (EHP/MaxHit/Res), Warnings
-pob audit [--keep <spec>]... [--no-attribution] [--target <slug>] [--json]             # [Env | rev=N] + Hard gaps + 4-dim water audit -> Pinnacle (per-item PoB attribution; --keep var|Flask N|flasks|gem|customMods|party)
+pob audit [--keep <spec>]... [--no-auto-keep] [--no-attribution] [--target <slug>] [--json] # [Env | rev=N] + Hard gaps + 4-dim water audit -> Pinnacle (per-item PoB attribution; --keep var|Flask N|flasks|gem|customMods|party)
 pob config list [--all] [--search "<sub >"] [--with-options] [--target <slug>] [--json] # Active/filtered ConfigTab vars + raw customMods
 pob items [--slot "Weapon 1"|"#1"] [--all] [--raw] [--target <slug>] [--json]          # Equipped table, single slot, or all equipped + allocated jewels raw
 pob item inspect (--slot S | --raw "<item text>" | --file f) [--want "Cold Resistance"]... [--limit 8] [--target <slug>] [--json] # Rare-item affix occupancy and bench candidates (unclamped --limit >= 1); uncertain matches never claim free slots
@@ -57,7 +57,7 @@ pob matrix [Original Pinnacle Uber FlasksOff "Label:Pinnacle,k=v"] [-s <spec>]..
 # ROI Ranking, 3-Baseline A/B Comparison & Transplant
 pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--max-dist 5] [--top 15] [--json]
 pob rank-gems [--group main] [--slot N | --add-link] [--field CombinedDPS|FullDPS] [--top 15] [--json]
-pob compare [<ref_source>] [--json]                                                    # 3 baselines: Original / Target Env Aligned / Pinnacle Dewatered
+pob compare [<ref_source>] [--keep <spec>]... [--no-auto-keep] [--target <slug>] [--ref-target <slug>] [--json] # 3 baselines: Original / Target Env Aligned / Pinnacle Dewatered
 pob borrow [--item-slot "Weapon 1,Amulet"] [--skill-group main] [--apply] [--json]
 
 # Local 0ms Game Data (Daemon-Free, Variadic) & External Economy/PoEDB/Wiki (Cached, Variadic)

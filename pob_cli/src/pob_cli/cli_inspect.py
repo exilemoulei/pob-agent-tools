@@ -197,6 +197,12 @@ def cmd_summary(target: str, as_json: bool, compact: bool, out_path: str | None)
     multiple=True,
     help="Keep build-guaranteed config/flask/skill/customMods/party items during dewatering (repeatable or comma-separated).",
 )
+@click.option(
+    "--no-auto-keep",
+    "no_auto_keep",
+    is_flag=True,
+    help="Disable automatic mechanism-based config retention during Pinnacle dewatering.",
+)
 @click.option("--top", type=int, default=5, show_default=True, help="Top N passive nodes & candidate support gems.")
 @click.option(
     "--rank/--no-rank",
@@ -237,6 +243,7 @@ def cmd_diagnose(
     compare_source: str | None,
     ask_text: str | None,
     keep: tuple[str, ...],
+    no_auto_keep: bool,
     top: int,
     rank: bool | None,
     section: str,
@@ -281,6 +288,8 @@ def cmd_diagnose(
         params["realm"] = realm.strip().lower()
     if keep:
         params["keep"] = list(keep)
+    if no_auto_keep:
+        params["no_auto_keep"] = True
     if ask_text and ask_text.strip():
         params["ask"] = ask_text.strip()
     if source:
@@ -356,6 +365,12 @@ def cmd_ground(
     help="Keep build-guaranteed config/flask/skill/customMods/party items during dewatering (repeatable or comma-separated).",
 )
 @click.option(
+    "--no-auto-keep",
+    "no_auto_keep",
+    is_flag=True,
+    help="Disable automatic mechanism-based config retention during Pinnacle dewatering.",
+)
+@click.option(
     "--no-attribution",
     "no_attribution",
     is_flag=True,
@@ -366,6 +381,7 @@ def cmd_ground(
 @_output_options
 def cmd_audit(
     keep: tuple[str, ...],
+    no_auto_keep: bool,
     no_attribution: bool,
     target: str,
     as_json: bool,
@@ -386,6 +402,8 @@ def cmd_audit(
     params: dict[str, Any] = {"target": target, "attribution": not no_attribution}
     if keep:
         params["keep"] = list(keep)
+    if no_auto_keep:
+        params["no_auto_keep"] = True
     res = invoke_daemon("audit", params)
     if as_json:
         _apply_loop_guard(res)
@@ -411,6 +429,9 @@ def cmd_audit(
         items = stripped.get(dim) or []
         s_rows.append([dim.capitalize(), len(items), "; ".join(items) if items else "_(Clean)_"])
     lines.append(render_table(["Dimension", "Count", "Stripped Items"], s_rows))
+    auto_kept = stripped.get("autoKept") or []
+    if auto_kept:
+        lines.append("\n**Auto-Kept (Build-Guaranteed)**: " + "; ".join(str(x) for x in auto_kept))
     kept = stripped.get("kept") or []
     if kept:
         lines.append("\n**Kept (--keep)**: " + "; ".join(kept))
