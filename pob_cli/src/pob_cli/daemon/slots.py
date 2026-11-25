@@ -20,7 +20,9 @@ from ..updater import (
     get_update_warning,
     is_valid_engine_dir,
     load_update_state,
+    recover_idle_engine,
     resolve_engine_root,
+    unrestored_swap,
 )
 from .read_cache import READ_CACHE_ACTIONS, SlotReadCache
 from .rpc_handlers import dispatch_dual_slot_action, dispatch_game_data, dispatch_slot_action
@@ -105,6 +107,7 @@ class DaemonManager:
         self.skip_update_check = skip_update_check
         self.disable_global_idle = disable_global_idle
         self.update_status: dict[str, Any] = load_update_state(self.runtime_dir)
+        self._engine_fault: str | None = None
         self.started_at = time.time()
         self.last_active_ts = time.time()
 
@@ -237,6 +240,9 @@ class DaemonManager:
 
         launch_bg_check = False
         with self._exclusive_barrier():
+            # An update killed mid-swap leaves a mix of two versions that still looks valid.
+            recover_idle_engine(self.pob_dir)
+            self._engine_fault = unrestored_swap(self.pob_dir)
             checked_at = float(self.update_status.get("checkedAt") or 0.0)
             engine_valid = is_valid_engine_dir(self.pob_dir)
             fresh_ok = (
@@ -286,7 +292,10 @@ class DaemonManager:
 
     def _current_update_warning(self) -> str | None:
         with self._lock:
-            return get_update_warning(self.update_status)
+            # Results from a half-updated engine are not to be trusted, whatever the update state says.
+            if self._engine_fault and not unrestored_swap(self.pob_dir):
+                self._engine_fault = None
+            return self._engine_fault or get_update_warning(self.update_status)
 
     def _attach_warning_if_degraded(self, payload: dict[str, Any]) -> dict[str, Any]:
         warn = self._current_update_warning()

@@ -158,6 +158,9 @@ def _fmt_diagnose_baseline(res: dict[str, Any], *, compact: bool) -> list[str]:
     kept = stripped.get("kept") or []
     if kept:
         lines.append("\n**Kept (--keep)**: " + "; ".join(kept))
+    noted_flasks = [str(f) for f in (stripped.get("flasks") or []) if "[" in str(f) and "]" in str(f)]
+    if noted_flasks:
+        lines.append("\n**Flask Dewater Notes**: " + "; ".join(noted_flasks))
     rej = keep_rejected_warning(stripped)
     if rej:
         lines.extend(rej)
