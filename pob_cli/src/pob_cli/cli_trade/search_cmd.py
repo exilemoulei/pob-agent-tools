@@ -365,7 +365,7 @@ def _emit_search_results(
     "surrogate_k",
     type=click.IntRange(min=0),
     default=None,
-    help="Score fetched pool of max(50, K) with linear surrogate (0 disables), then PoB-eval top --pob-limit.",
+    help="Rank the fetched listings with a linear surrogate (0 disables) and PoB-eval the top --pob-limit; unless --fetch-limit is given, fetches max(50, K), at most 100.",
 )
 @click.option("--auto-query", is_flag=True, help="Generate weighted trade query via PoB TradeQueryGenerator.")
 @click.option("--target", type=_TARGET_SLOT_TYPE, default=_default_target_slot)

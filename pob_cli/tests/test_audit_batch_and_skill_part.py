@@ -275,6 +275,78 @@ def test_config_unknown_top_level_keys_give_actionable_wrap_in_set_hint() -> Non
     assert '"set": {"enemyIsBoss": "Pinnacle"}' in msg2
 
 
+def test_config_var_value_form_is_pointed_at_the_one_variable_it_names() -> None:
+    with pytest.raises(ValueError) as caught:
+        validate_batch_op(1, "config", {"op": "config", "var": "enemyIsBoss", "value": "Pinnacle"})
+    msg = str(caught.value)
+    assert '"set": {"enemyIsBoss": "Pinnacle"}' in msg
+    assert '"var"' not in msg.split('"set":')[1]  # not offered as a config variable called "var"
+
+
+def test_a_remark_on_an_op_and_a_gem_as_pob_reports_it_are_accepted() -> None:
+    for remark in ("why", "desc", "description", "reason", "_todo"):
+        validate_batch_op(1, "set_level", {"op": "set_level", "level": 95, remark: "leveling breakpoint"})
+    with pytest.raises(ValueError, match="unknown key"):
+        validate_batch_op(1, "set_level", {"op": "set_level", "level": 95, "remark": "not a remark name"})
+
+    # One gem exactly as `pob skills --json` prints it (the bridge's gem_summary fields).
+    reported = {
+        "index": 2, "nameSpec": "Added Cold Damage", "name": "Added Cold Damage", "nameZh": "附加冰霜伤害",
+        "gemId": "Metadata/Items/Gems/SupportGemAddedColdDamage", "skillId": "SupportAddedColdDamage",
+        "level": 20, "quality": 20, "enabled": True, "enableGlobal1": True, "enableGlobal2": False, "count": 1,
+        "errMsg": None, "color": 2, "support": True, "hasGlobalEffect": False, "naturalMaxLevel": 20,
+        "reqLevel": 70, "matchesSocket": True, "fromItem": False, "fromNode": False,
+    }  # fmt: skip
+    spec = _normalize_gem_spec(reported)
+    assert (spec["name"], spec["level"], spec["quality"]) == ("Added Cold Damage", 20, 20)
+    assert (spec["enableGlobal1"], spec["enableGlobal2"]) == (True, False)
+
+    # A key nothing reports and nothing applies is still a typo.
+    for stray in ("qualityId", "variant", "lvl"):
+        with pytest.raises(ValueError, match="Unknown key"):
+            _normalize_gem_spec({"name": "Arc", stray: 1})
+
+
+def test_global_effect_flags_named_in_a_gem_spec_are_applied_not_overwritten() -> None:
+    w = _FakeSkillExtWorker()
+    cache = _BatchCache(w)  # type: ignore[arg-type]
+    ops = [
+        {
+            "op": "add_group",
+            "gems": [
+                {"name": "Vaal Righteous Fire", "enableGlobal1": True, "enableGlobal2": False},
+                {"name": "Vaal Discipline"},
+                {"name": "Arc", "enableGlobal1": False},
+            ],
+        }
+    ]
+    _execute_batch_ops(w, ops, cache)  # type: ignore[arg-type]
+    flag_calls = [p for m, p in w.calls if m == "set_gem" and ("enableGlobal1" in p or "enableGlobal2" in p)]
+    by_index = {p["index"]: {k: p[k] for k in ("enableGlobal1", "enableGlobal2") if k in p} for p in flag_calls}
+    assert by_index[1] == {"enableGlobal1": True, "enableGlobal2": False}  # as asked, not the Vaal default
+    assert by_index[2] == {"enableGlobal1": False, "enableGlobal2": True}  # the Vaal default
+    assert by_index[3] == {"enableGlobal1": False}
+
+
+def test_a_skill_part_asked_of_a_host_without_the_extension_is_an_error_not_a_no_op() -> None:
+    w = _FakeSkillExtWorker()
+    real_call = w.call
+
+    def _legacy_host(method: str, params: dict[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
+        if method in ("apply_group_gem_states", "get_group_gem_states"):
+            raise RuntimeError(f"unknown method: {method}")  # what a pob-zh.exe pack answers
+        return real_call(method, params, **kw)
+
+    w.call = _legacy_host  # type: ignore[method-assign]
+    cache = _BatchCache(w)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="cannot set a gem's skill part"):
+        _execute_batch_ops(w, [{"op": "skill", "group": 1, "gem": 2, "skillPart": 2}], cache)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="cannot set a gem's skill part"):
+        _execute_batch_ops(w, [{"op": "add_group", "gems": [{"name": "Arc", "skillPart": 2}]}], cache)  # type: ignore[arg-type]
+    # Nothing asked for: replacing a group still works, the old gems' state is simply not carried.
+    _execute_batch_ops(w, [{"op": "replace_group", "group": 1, "gems": ["Arc"]}], cache)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     ("op_dict", "bad_key"),
     [

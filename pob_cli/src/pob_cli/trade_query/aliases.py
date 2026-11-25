@@ -491,6 +491,10 @@ _DYN_JEWEL_RE = re.compile(r"^(?:jewel[\s_\-]*(\d+)(?:\s*\(#\d+\))?|#(\d+))$", r
 _ABYSS_SOCKET_RE = re.compile(r"^(?:(.+?)[\s_\-]+)?abyssal[\s_\-]+socket[\s_\-]+(\d+)(?:\s*\(#\d+\))?$", re.IGNORECASE)
 
 
+# The item slots PoB gives abyssal socket slots to (`ItemsTab.lua`), six each; weapons also on the swap set.
+_ABYSSAL_SOCKET_PARENTS = frozenset({"Weapon 1", "Weapon 2", "Helmet", "Gloves", "Body Armour", "Boots", "Belt"})
+
+
 def _normalize_base_slot(slot: str) -> str:
     from ..game_data import fold_han  # the Chinese slot aliases are Simplified (头盔, not 頭盔)
 
@@ -503,12 +507,13 @@ def _parse_dynamic_jewel_slot(slot: str | None) -> tuple[str, str] | None:
     raw = (slot or "").strip()
     if m := _DYN_JEWEL_RE.match(raw):
         return ("jewel", f"Jewel {m.group(1)}" if m.group(1) else f"#{m.group(2)}")
-    if m := _ABYSS_SOCKET_RE.match(raw):
-        if not m.group(1):
-            return ("abyss_jewel", f"Abyssal Socket {m.group(2)}")
-        parent = POB_SLOT_BY_SLOT.get(_normalize_base_slot(m.group(1)))
-        if parent and not parent.startswith(("Jewel", "Flask")):
-            return ("abyss_jewel", f"{parent} Abyssal Socket {m.group(2)}")
+    if (m := _ABYSS_SOCKET_RE.match(raw)) and m.group(1) and 1 <= int(m.group(2)) <= 6:
+        # PoB names these slots after the item that holds the socket; there is no bare one.
+        parent_raw = m.group(1)
+        swap = re.search(r"[\s_\-]+swap$", parent_raw, re.IGNORECASE)
+        parent = POB_SLOT_BY_SLOT.get(_normalize_base_slot(parent_raw[: swap.start()] if swap else parent_raw))
+        if parent in _ABYSSAL_SOCKET_PARENTS and (not swap or parent.startswith("Weapon")):
+            return ("abyss_jewel", f"{parent}{' Swap' if swap else ''} Abyssal Socket {int(m.group(2))}")
     return None
 
 

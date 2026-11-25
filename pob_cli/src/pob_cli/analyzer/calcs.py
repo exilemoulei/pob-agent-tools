@@ -370,12 +370,10 @@ def _select_calcs_target(w: BridgeWorker, group: str | int | None, skill: str | 
     if need_g:
         w.call("set_calcs_input", {"var": "skill_number", "value": int(t_grp)})
         if t_sk is not None:
-            for g in skills_res.get("groups") or []:
-                if isinstance(g, dict) and int(g.get("index") or 0) == int(t_grp):
-                    go = g.get("mainActiveSkillCalcs") or g.get("mainActiveSkill")
-                    if go is not None and int(go) != int(t_sk):
-                        restores.insert(0, {"var": "mainActiveSkill", "value": int(go)})
-                    break
+            # The target group's own Calcs-tab skill goes back too; only the selectors report it.
+            go = ((w.call("get_calcs", {}).get("selectors") or {}).get("mainSkill") or {}).get("index")
+            if go is not None and int(go) != int(t_sk):
+                restores.insert(0, {"var": "mainActiveSkill", "value": int(go)})
     if need_s and t_sk is not None:
         w.call("set_calcs_input", {"var": "mainActiveSkill", "value": int(t_sk)})
     return w.call("get_calcs", {})

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections.abc import Collection, Sequence
 from typing import Any
 
 from .constants import MOD_TAG_PREFIX_RE, SLOT_ALIASES
@@ -59,12 +60,78 @@ def _types_match_slot(
     return norm in {re.sub(r"[\s\-]+", "_", tl.split(":", 1)[0].strip()) for tl in types_lower}
 
 
+# One kind of base a slot stands for: the tags it carries, and the tags an influence can add to it.
+BaseTagSet = tuple[frozenset[str], tuple[str, ...]]
+# A base with no class tag of its own ("Random One Hand Sword") names a pick, not an item to roll on.
+_PLACEHOLDER_BASE_TAGS = frozenset({"default", "not_for_sale"})
+# ModExplicit and ModCorrupted cover every gear class, so their `default` weight is a real fallback.
+# The other files hold one family each (jewel, tincture, eldritch), whose `default` is not for gear.
+_DEFAULT_WEIGHT_SOURCES = frozenset({"Explicit", "Corrupted"})
+# PoB rolls these bases from their own mod files, so a gear file's `default` never reaches them.
+_OWN_MOD_FILE_TAGS = frozenset({"flask", "jewel", "abyss_jewel", "tincture", "animal_charm"})
+
+
+def _slot_tag_sets(conn: sqlite3.Connection, master_types: Sequence[str]) -> tuple[BaseTagSet, ...]:
+    """The distinct tag sets of the bases behind a slot's item classes; empty when the index has none."""
+    wanted = [mt.lower() for mt in master_types if mt]
+    if not wanted:
+        return ()
+    marks = ",".join("?" * len(wanted))
+    try:
+        rows = conn.execute(
+            f"SELECT data_json FROM bases WHERE lower(item_type) IN ({marks})"
+            f" OR lower(coalesce(sub_type, '') || ' ' || item_type) IN ({marks})",
+            wanted + wanted,
+        ).fetchall()
+    except sqlite3.Error:
+        return ()
+    found: dict[BaseTagSet, None] = {}
+    for (data_json,) in rows:
+        base = json.loads(data_json)
+        tags = frozenset(base.get("tags") or ())
+        if tags - _PLACEHOLDER_BASE_TAGS:
+            found[(tags, tuple(base.get("influence_tags") or ()))] = None
+    return tuple(found)
+
+
+def mod_rolls_on_base(
+    source: str,
+    weight_keys: Sequence[str],
+    weights: dict[str, int],
+    tags: Collection[str],
+    influence_tags: Sequence[str] = (),
+    *,
+    elevated: bool = False,
+) -> bool:
+    """Whether a mod can roll on a base, by PoB's `Item:GetModSpawnWeight`.
+
+    The first weight key the item carries decides, and its weight may be 0: `{ranged = 0, weapon =
+    1000}` keeps a mod off every bow. An influence adds one tag to the base, so the base is tried
+    bare and once with each influence tag the mod names. A Maven-elevated mod has weight 0 in the
+    data and exists only on a base with its influence, which is how PoB weighs it too.
+    """
+    default_counts = source in _DEFAULT_WEIGHT_SOURCES and _OWN_MOD_FILE_TAGS.isdisjoint(tags)
+    for extra in (None, *(t for t in influence_tags if t in weight_keys)):
+        for key in weight_keys:
+            if key in tags or key == extra:
+                if elevated and key == extra:
+                    return True
+                if weights.get(key, 0) > 0 and (key != "default" or default_counts):
+                    return True
+                break
+    return False
+
+
 def _mod_matches_slot(
     source: str,
     weights_json: str,
     zero_weights_json: str,
     types_json: str,
     slot_spec: tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]],
+    *,
+    weight_keys_json: str | None = None,
+    tag_sets: Sequence[BaseTagSet] = (),
+    elevated: bool = False,
 ) -> bool:
     norm, wk_targets, parent_tags, master_types = slot_spec
     if source == "Bench":
@@ -76,6 +143,13 @@ def _mod_matches_slot(
         return True
 
     weights: dict[str, int] = json.loads(weights_json)
+    if tag_sets and weight_keys_json is not None:
+        weight_keys = json.loads(weight_keys_json)
+        return any(
+            mod_rolls_on_base(source, weight_keys, weights, tags, infl, elevated=elevated) for tags, infl in tag_sets
+        )
+
+    # No bases to go by (a jewel slot, an unknown slot name): the slot's own tag list stands in.
     for k in wk_targets:
         if weights.get(k, 0) > 0:
             return True
@@ -392,13 +466,14 @@ def _query_mods(
     drop_only_sink: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     slot_spec = _normalize_slot_filter(slot) if slot else None
+    tag_sets = _slot_tag_sets(conn, slot_spec[3]) if slot_spec else ()
     where_ilvl = "AND m.level <= ?" if ilvl is not None else ""
     pool_lim = _pool_limit_clause(limit)
 
     if not q_lower:
         sql = f"""
         SELECT m.id, m.source, m.level, m.affix_lower, m.mod_group_lower,
-               m.stats_en_lower, m.stats_zh_lower, m.weights_json, m.zero_weights_json,
+               m.stats_en_lower, m.stats_zh_lower, m.weights_json, m.zero_weights_json, m.weight_keys_json,
                m.types_json, m.data_json
         FROM mods m
         WHERE 1=1 {where_ilvl}
@@ -412,7 +487,7 @@ def _query_mods(
         if fts_expr:
             sql = f"""
             SELECT m.id, m.source, m.level, m.affix_lower, m.mod_group_lower,
-                   m.stats_en_lower, m.stats_zh_lower, m.weights_json, m.zero_weights_json,
+                   m.stats_en_lower, m.stats_zh_lower, m.weights_json, m.zero_weights_json, m.weight_keys_json,
                    m.types_json, m.data_json
             FROM mods_fts f
             JOIN mods m ON m.rowid = f.rowid
@@ -424,7 +499,7 @@ def _query_mods(
         else:
             sql = f"""
             SELECT m.id, m.source, m.level, m.affix_lower, m.mod_group_lower,
-                   m.stats_en_lower, m.stats_zh_lower, m.weights_json, m.zero_weights_json,
+                   m.stats_en_lower, m.stats_zh_lower, m.weights_json, m.zero_weights_json, m.weight_keys_json,
                    m.types_json, m.data_json
             FROM mods m
             WHERE (instr(m.search_en_lower, ?) > 0 OR instr(m.search_zh_lower, ?) > 0) {where_ilvl}
@@ -444,6 +519,7 @@ def _query_mods(
         zh_l,
         weights_j,
         zero_j,
+        keys_j,
         types_j,
         data_json,
     ) in rows:
@@ -458,7 +534,16 @@ def _query_mods(
         else:
             tier = 0
 
-        if slot_spec and not _mod_matches_slot(source, weights_j, zero_j, types_j, slot_spec):
+        if slot_spec and not _mod_matches_slot(
+            source,
+            weights_j,
+            zero_j,
+            types_j,
+            slot_spec,
+            weight_keys_json=keys_j,
+            tag_sets=tag_sets,
+            elevated="elevated" in affix_l,  # PoB's own test: "Elevated Shaper's", "of the Elevated Hunt"
+        ):
             if (
                 drop_only_sink is not None
                 and weights_j == "{}"

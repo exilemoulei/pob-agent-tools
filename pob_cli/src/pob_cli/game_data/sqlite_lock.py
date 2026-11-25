@@ -94,6 +94,7 @@ CREATE TABLE mods (
     stats_zh_lower TEXT NOT NULL,
     weights_json TEXT NOT NULL,
     zero_weights_json TEXT NOT NULL,
+    weight_keys_json TEXT NOT NULL,
     types_json TEXT NOT NULL,
     search_en_lower TEXT NOT NULL,
     search_zh_lower TEXT NOT NULL,

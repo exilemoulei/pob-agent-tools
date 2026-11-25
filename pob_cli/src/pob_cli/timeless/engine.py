@@ -412,7 +412,7 @@ class TimelessSearchEngine:
         for eng in live:
             eng.slot, eng.clear, eng.template = slot, list(clear), tpl
             if hasattr(eng, "_loaded"):
-                eng._loaded, eng._cleared_slots, eng._last_item_id, eng.count = False, (), None, 0
+                eng._loaded, eng._cleared_slots, eng.count = False, (), 0
             else:
                 eng.reset()
         self.first.reset()

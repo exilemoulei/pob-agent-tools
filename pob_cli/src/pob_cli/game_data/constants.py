@@ -10,8 +10,10 @@ from typing import Any
 
 from ..updater import detect_source_checkout_root, get_runtime_dir
 
-# 13: Index 3.30 Vestigial mods + Tattoos/Runegrafts tables (tattoos + tattoos_fts).
-SCHEMA_VERSION = 13
+# 12: Index ModDelve/ModVeiled + DelveDropOnly/IncursionDropOnly/Essence drop-slot tags.
+# 13: Mods keep their weight keys in PoB's order, bases their influence tags (`mod --slot`).
+# 14: Index 3.30 Vestigial mods + Tattoos/Runegrafts tables (tattoos + tattoos_fts).
+SCHEMA_VERSION = 14
 _INDEX_BUILD_LOCK = threading.RLock()
 
 _POB_ESCAPE_RE = re.compile(r"\^x[0-9A-Fa-f]{6}|\^\d")
@@ -254,7 +256,7 @@ SLOT_ALIASES: dict[str, tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]
     "ring_3": (("ring",), ("ring", "default"), ("Ring",)),
     "belt": (("belt",), ("belt", "default"), ("Belt",)),
     "flask": (("flask",), ("flask", "default"), ("Flask",)),
-    "tincture": (("tincture",), ("tincture", "default"), ()),
+    "tincture": (("tincture",), ("tincture", "default"), ("Tincture",)),
     "jewel": (("jewel", "abyss_jewel"), ("jewel", "default"), ()),
     "abyss_jewel": (("abyss_jewel",), ("abyss_jewel", "default"), ()),
     "cluster_jewel": (

@@ -616,3 +616,24 @@ def test_cli_rank_gems_include_legacy_flag(monkeypatch: pytest.MonkeyPatch) -> N
     r_inc = runner.invoke(cli.main, ["rank-gems", "--include-legacy"])
     assert r_inc.exit_code == 0, r_inc.output
     assert captured[-1][1]["include_legacy"] is True
+
+
+@pytest.mark.parametrize("op", ["replace", "add"])
+def test_illegal_level_permission_on_one_gem_of_a_gems_list_is_honoured(op: str) -> None:
+    def _run(gems: list[dict[str, Any]]) -> dict[str, Any]:
+        w = _FakeMutationWorker()
+        if op == "replace":
+            return mutators.replace_skill_group(w, "main", gems)
+        return mutators.add_skill_group(w, gems=gems)
+
+    res = _run([{"name": "Greater Spell Echo", "level": 20, "allowIllegalLevel": True}])
+    assert any("[ILLEGAL-GEM-LEVEL]" in c for c in res.get("cautions", []))
+
+    # The permission is per gem: a second gem in the list is still held to its bounds.
+    with pytest.raises(ValueError, match="Invalid level 20 for Exceptional Support 'Cooldown Recovery'"):
+        _run(
+            [
+                {"name": "Greater Spell Echo", "level": 20, "allowIllegalLevel": True},
+                {"name": "Cooldown Recovery", "level": 20},
+            ]
+        )

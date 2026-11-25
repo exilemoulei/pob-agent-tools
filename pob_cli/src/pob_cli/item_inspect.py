@@ -96,16 +96,16 @@ def _base_key(base_type: str) -> str:
 
 
 @lru_cache(maxsize=8)
-def _cached_mod_rows(db_path_str: str) -> tuple[tuple[str, str, str, str, dict[str, Any]], ...]:
+def _cached_mod_rows(db_path_str: str) -> tuple[tuple[str, str, str, str, str, dict[str, Any]], ...]:
     conn = sqlite3.connect(game_data._sqlite_ro_uri(Path(db_path_str)), uri=True)
     try:
         rows = conn.execute(
-            "SELECT source, weights_json, zero_weights_json, types_json, data_json "
+            "SELECT source, weights_json, zero_weights_json, weight_keys_json, types_json, data_json "
             "FROM mods WHERE source IN ('Explicit', 'Delve', 'Veiled', 'Bench')"
         ).fetchall()
     finally:
         conn.close()
-    return tuple((s, w, z, t, json.loads(p)) for s, w, z, t, p in rows)
+    return tuple((s, w, z, k, t, json.loads(p)) for s, w, z, k, t, p in rows)
 
 
 def classify_mod_affix_types(
@@ -117,7 +117,7 @@ def classify_mod_affix_types(
         return {}
     db_path = game_data.ensure_gamedata_index(pob_dir=pob_dir, runtime_dir=runtime_dir)
     by_tmpl: dict[str, set[str]] = defaultdict(set)
-    for _, _, _, _, entry in _cached_mod_rows(str(db_path)):
+    for _, _, _, _, _, entry in _cached_mod_rows(str(db_path)):
         kind = _affix_type(entry)
         if not kind:
             continue
@@ -160,10 +160,13 @@ def _load_entries(
         ).fetchone()
     finally:
         conn.close()
-    base_tags = set(json.loads(base_row[0]).get("tags") or []) if base_row else set()
+    base = json.loads(base_row[0]) if base_row else {}
+    base_tags = set(base.get("tags") or [])
+    # The item text does not say which influence a line came from, so every one the base can take counts.
+    influence_tags = tuple(base.get("influence_tags") or ())
     slot_spec = game_data._normalize_slot_filter(slot) if slot else None
     out: list[dict[str, Any]] = []
-    for source, weights, zeros, types, entry in _cached_mod_rows(str(db_path)):
+    for source, weights, zeros, keys, types, entry in _cached_mod_rows(str(db_path)):
         if source == "Bench":
             if slot_spec and not game_data._mod_matches_slot(source, weights, zeros, types, slot_spec):
                 continue
@@ -171,8 +174,13 @@ def _load_entries(
             positive = json.loads(weights)
             excluded = set(json.loads(zeros))
             if positive:
-                specific = any(positive.get(tag, 0) > 0 for tag in base_tags if tag != "default")
-                if not specific and not (positive.get("default", 0) > 0 and not (base_tags & excluded)):
+                if not game_data.mod_rolls_on_base(source, json.loads(keys), positive, base_tags, influence_tags):
+                    continue
+            elif "elevated" in str(entry.get("affix") or "").lower():
+                # A Maven-elevated mod has no weight of its own: it sits where its influence mod can.
+                if not game_data.mod_rolls_on_base(
+                    source, json.loads(keys), positive, base_tags, influence_tags, elevated=True
+                ):
                     continue
             else:
                 if base_tags & (excluded - {"default"}):

@@ -176,7 +176,7 @@ def test_conquered_zero_stat_passives_do_not_leak_preconquered_stats() -> None:
     worker = _sample_conquered_worker()
     summary = inspect_tree(worker)
 
-    normals = {n["id"]: n for n in summary["normalNodes"]}
+    normals = {n["id"]: n for n in summary["conqueredSmallPassives"]}
     assert set(normals) == {34171, 34172}
     for nid in (34171, 34172):
         assert normals[nid]["overrideWhy"] == "conquered"
@@ -221,7 +221,7 @@ def test_conquered_override_preserves_explicit_nonempty_stats_zh() -> None:
         "statsZh": ["自定义征服效果"],
     }
     summary = inspect_tree(worker)
-    normals = {n["id"]: n for n in summary["normalNodes"]}
+    normals = {n["id"]: n for n in summary["conqueredSmallPassives"]}
     assert normals[34171]["stats"] == []
     assert normals[34171]["statsZh"] == ["自定义征服效果"]
 
@@ -253,7 +253,7 @@ def test_socket_radius_excludes_blighted_and_marks_equipped_jewel_boundary() -> 
     md = format_tree_markdown(res)
     assert "— Equipped: Elegant Hubris (Active Radius: Large)" in md
     assert "#### Radius `Large` (1 nodes)\n" in md
-    assert "#### Radius `Very Large` (1 nodes) — outside equipped Large radius (unconquered)" in md
+    assert "#### Radius `Very Large` (1 nodes) — outside equipped Large radius (not affected by this jewel)" in md
     assert "_(0 stats — conquered)_" in md
 
     # Empty socket sets equipped fields and withinEquippedRadius to None
@@ -350,6 +350,69 @@ def test_pitfalls_tree_dead_end_tail_cycle_and_load_bearing_bridge() -> None:
     )
     assert any(g["category"] == "TreeWaste" and g["severity"] == "HIGH" for g in core_gaps)
     assert mechanics["conqueredZeroStatWaste"]["deadEndIds"] == [101, 102, 103]
+
+
+def test_parallel_loop_nodes_are_not_offered_for_removal_together() -> None:
+    # 1 - 10 - {40, 41} - 50: two conquered 0-stat nodes in parallel carry the real node 50.
+    nodes_db = {
+        "1": {"id": 1, "name": "Start", "type": "ClassStart", "linked": [10]},
+        "10": {"id": 10, "name": "Hub", "type": "Normal", "linked": [1, 40, 41]},
+        "40": {"id": 40, "name": "Str", "type": "Normal", "linked": [10, 50]},
+        "41": {"id": 41, "name": "Str", "type": "Normal", "linked": [10, 50]},
+        "50": {"id": 50, "name": "Real Notable", "type": "Notable", "linked": [40, 41]},
+    }
+    tree_state = {
+        "treeVersion": "3_25",
+        "allocatedNodes": [1, 10, 40, 41, 50],
+        "overrides": {
+            "40": {"why": "conquered", "name": "Price of Glory", "stats": []},
+            "41": {"why": "conquered", "name": "Price of Glory", "stats": []},
+        },
+    }
+    # PoB's `depends` is per node: with the other path still there, each one alone holds up nothing.
+    worker = _MockTreeWorker(
+        tree_state=tree_state, nodes_db=nodes_db, hover_by_id={40: {"depends": [40]}, 41: {"depends": [41]}}
+    )
+    gaps, info = audit_conquered_zero_stat_nodes(worker, tree_state, nodes_db)
+    assert info is not None and info["deadEndIds"] == [] and info["redundantLoopIds"] == [40, 41]
+    message = gaps[0]["message"]
+    assert "--deallocate 40,41" not in message and "sequentially" not in message
+    assert "not all together" in message and "run the audit again" in message
+    assert "`pob tree change --deallocate 40`" in message
+
+
+def test_without_tree_edges_nothing_is_called_a_dead_end() -> None:
+    # The cached tree data failed to load: no node has a known neighbour.
+    tree_state = {
+        "treeVersion": "3_25",
+        "allocatedNodes": [1, 40, 41, 50],
+        "overrides": {
+            "40": {"why": "conquered", "name": "Price of Glory", "stats": []},
+            "41": {"why": "conquered", "name": "Price of Glory", "stats": []},
+        },
+    }
+    worker = _MockTreeWorker(
+        tree_state=tree_state, nodes_db={}, hover_by_id={40: {"depends": [40]}, 41: {"depends": [41]}}
+    )
+    gaps, info = audit_conquered_zero_stat_nodes(worker, tree_state, {})
+    assert info is not None and info["deadEndIds"] == [] and info["redundantLoopIds"] == [40, 41]
+    assert "--deallocate 40,41" not in gaps[0]["message"] and "not all together" in gaps[0]["message"]
+
+
+def test_dewater_auto_keep_does_not_read_a_conquered_nodes_old_stats() -> None:
+    from pob_cli.analyzer.dewater_auto import best_effort_audit_tree_and_raw
+
+    worker = _sample_conquered_worker()
+    _tree, _raw, node_stats = best_effort_audit_tree_and_raw(worker, worker._items_res)
+    conquered = [lines for name, lines in node_stats if name == "Price of Glory"]
+    assert conquered and all(lines == [] for lines in conquered)
+
+
+def test_tree_summary_carries_only_what_it_shows_of_small_passives() -> None:
+    summary = inspect_tree(_sample_conquered_worker())
+    assert "normalNodes" not in summary
+    for node in summary["conqueredSmallPassives"]:
+        assert set(node) <= {"id", "name", "nameZh", "stats", "statsZh", "overrideWhy"}
 
 
 def test_pitfalls_tree_medium_severity_bridge_only_and_mock_resilience() -> None:

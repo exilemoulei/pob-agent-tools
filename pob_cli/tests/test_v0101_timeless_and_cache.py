@@ -1,6 +1,6 @@
 """Offline unit tests for v0.10.1 Layer 3:
 - `AGY05` multi-socket `pob timeless search`, allocated-vs-unallocated `radiusSummary`,
-  `Engine` item cleanup (`delete_item`), calm `weightShortlist` note, and 0ms `Putrid Seed` check;
+  `Engine` one recalculation per seed, calm `weightShortlist` note, and 0ms `Putrid Seed` check;
 - `SlotReadCache` bounded `OrderedDict` LRU, `noAutoKeep` canonicalization, dual-slot `compare`
   caching, slot invalidation on eviction/lang switch, and mutation `rev` increment contract;
 - `--surrogate-k` + `--pob-limit` slicing and `tx.restore(rebuild=False)` in `_eval_trade_items_cow`.
@@ -35,6 +35,7 @@ from pob_cli.snapshot import (
     undo_build,
 )
 from pob_cli.timeless.engine import TimelessSearchEngine, _build_search_outcomes
+from pob_cli.timeless.lut import RESET_EVERY
 from pob_cli.timeless.worker import CliUsageError, _check_putrid_seed
 from pob_cli.trade_client import MAX_FETCH_MANY, TradeClient
 from pob_cli.trade_eval import eval_trade_items
@@ -585,11 +586,14 @@ def test_parse_socket_spec_and_multi_socket_single_pool_and_radius_summary(
     assert isinstance(TimelessSearchEngine, type)
 
 
-def test_timeless_worker_deletes_temp_items_without_import_code_thrash(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_timeless_worker_recalculates_once_per_seed_and_reloads_periodically(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A seed costs one recalculating RPC. Deleting the replaced jewel would be a second one
+    (`delete_item` ends in a frame like every bridge edit), so the item list is cleared by a reload
+    every RESET_EVERY seeds instead."""
     batches: list[list[tuple[str, dict[str, Any] | None]]] = []
-    next_id = 10
+    recalculating = {"add_item", "delete_item", "unequip_slot", "equip_item", "import_code"}
 
-    class _CleanItemWorker:
+    class _CountingWorker:
         def __init__(self, *_a: Any, **_kw: Any) -> None:
             self.last_good_code: str | None = None
 
@@ -597,30 +601,28 @@ def test_timeless_worker_deletes_temp_items_without_import_code_thrash(monkeypat
             self.last_good_code = restore_code
 
         def call_batch(self, calls: list[tuple[str, dict[str, Any] | None]], timeout: float = 60.0) -> list[dict[str, Any]]:
-            nonlocal next_id
             batches.append(list(calls))
-            out: list[dict[str, Any]] = []
-            for m, _p in calls:
-                if m == "add_item":
-                    next_id += 1
-                    out.append({"item": {"id": next_id}})
-                elif m == "get_stats":
-                    out.append({"stats": {"CombinedDPS": 5000.0}})
-                else:
-                    out.append({"ok": True})
-            return out
+            # `add_item` answers with the new item's id, as the bridge does: the id is what a
+            # per-seed delete would need, so a reply without one could not catch its return.
+            answers = {"get_stats": {"stats": {"CombinedDPS": 5000.0}}, "add_item": {"item": {"id": len(batches)}}}
+            return [answers.get(m, {"ok": True}) for m, _p in calls]
 
         def stop(self) -> None:
             pass
 
-    monkeypatch.setattr(timeless, "BridgeWorker", _CleanItemWorker)
+    monkeypatch.setattr(timeless, "BridgeWorker", _CountingWorker)
     eng = timeless.Engine("CODE", "seed {seed}", "Jewel 9")
-    for s in range(220):  # > RESET_EVERY (150)
+    seeds = RESET_EVERY * 2 + 20
+    for s in range(seeds):
         eng.stats(1000 + s)
 
     all_methods = [m for b in batches for m, _ in b]
-    assert "import_code" not in all_methods  # zero full reload thrash across 220 seeds!
-    assert all_methods.count("delete_item") == 219
+    assert all_methods.count("add_item") == seeds
+    assert "delete_item" not in all_methods
+    assert all_methods.count("import_code") == 2  # one reload per RESET_EVERY seeds, none at the start
+    assert sum(m in recalculating for m in all_methods) == seeds + 2
+    seed_batches = [b for b in batches if any(m == "add_item" for m, _ in b)]
+    assert all([m for m, _ in b] == ["add_item", "get_stats"] for b in seed_batches)
 
 
 # ---------------------------------------------------------------------------
