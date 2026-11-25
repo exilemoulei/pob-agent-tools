@@ -45,20 +45,22 @@ def test_recency_stamp_includes_not_poe2_and_rev() -> None:
     assert stamp_no_rev == "[Env: PoE1 3.30 (NOT PoE2) | Slot: main]"
 
 
-def test_bridge_worker_rev_persists_to_slot_state(tmp_path: Path) -> None:
+def test_slot_history_rev_persists_to_slot_state(tmp_path: Path) -> None:
     from pob_cli.bridge_client import BridgeWorker
+    from pob_cli.snapshot import SlotHistory
 
-    w = BridgeWorker(slot_name="rev_test", pob_dir=tmp_path, runtime_dir=tmp_path)
-    assert w.rev == 0
-    assert w.bump_rev() == 1
-    assert w.bump_rev() == 2
-    w.last_good_code = "dummy_code"
-    w.save_slot_state()
+    h = SlotHistory("rev_test", tmp_path)
+    assert h.rev == 0
+    h.load_build("dummy_code", "pasted")
+    h.commit("dummy_code", "next_code")
+    assert h.rev == 2
 
+    h2 = SlotHistory.load("rev_test", tmp_path)
+    assert h2.rev == 2
+    assert (h2.committed, h2.undo, h2.source_label) == ("next_code", ["dummy_code"], "pasted")
     w2 = BridgeWorker(slot_name="rev_test", pob_dir=tmp_path, runtime_dir=tmp_path)
-    w2.load_slot_state()
-    assert w2.rev == 2
-    assert w2.last_good_code == "dummy_code"
+    h2.bind(w2)
+    assert w2.last_good_code == "next_code"
 
 
 def test_json_bloat_guard_auto_compacts_large_stdout_and_warns(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import re
 import unicodedata
 from collections.abc import Iterable
@@ -340,7 +339,7 @@ def _fold_no_apos(text: str | None) -> str:
 
 def _resolve_slot_from_items(items_res: dict[str, Any], slot_query: str) -> str:
     """Resolve slot query against an already-fetched `list_items` response (avoids duplicate RPCs)."""
-    q = normalize_equipment_slot(slot_query) or slot_query.strip()
+    q = normalize_equipment_slot(_game_data.fold_han(slot_query)) or slot_query.strip()
     slots = items_res.get("slots", [])
 
     m_jewel = re.match(r"^#?(\d+)$", q)
@@ -355,28 +354,16 @@ def _resolve_slot_from_items(items_res: dict[str, Any], slot_query: str) -> str:
     for s in slots:
         if (
             s.get("name", "").lower() == q_lower
-            or (s.get("label") or "").lower() == q_lower
-            or (s.get("labelZh") or "").lower() == q_lower
+            or _game_data.fold_han(s.get("label") or "").lower() == q_lower
+            or _game_data.fold_han(s.get("labelZh") or "").lower() == q_lower
         ):
             return s["name"]
 
     for s in slots:
-        if q_lower in s.get("name", "").lower() or q_lower in (s.get("labelZh") or "").lower():
+        if q_lower in s.get("name", "").lower() or q_lower in _game_data.fold_han(s.get("labelZh") or "").lower():
             return s["name"]
 
     raise ValueError(f"Equipment slot '{slot_query}' not found.")
-
-
-def _call_compat(fn: Any, *args: Any, **kwargs: Any) -> Any:
-    """Call `fn` forwarding only keyword arguments accepted by its signature."""
-    try:
-        sig = inspect.signature(fn)
-    except (TypeError, ValueError):
-        return fn(*args, **kwargs)
-    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-        return fn(*args, **kwargs)
-    filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
-    return fn(*args, **filtered)
 
 
 def _normalize_keep_list(keep: Iterable[str] | str | None) -> list[str]:

@@ -9,6 +9,9 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
+from .compat import call_compat as _call_with_supported_kwargs  # noqa: F401  (re-exported for CLI cmds)
+from .compat import ensure_utf8
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -245,19 +248,13 @@ def _resolve_output_flags(compact: bool = False, out_path: str | Path | None = N
 
 def _echo_utf8(text: str) -> None:
     """Write UTF-8 safely to stdout on Windows consoles."""
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    ensure_utf8(sys.stdout)
     click.echo(text)
 
 
 def _echo_stderr_utf8(text: str) -> None:
     """Write UTF-8 safely to stderr on Windows consoles."""
-    try:
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    ensure_utf8(sys.stderr)
     click.echo(text, err=True)
 
 
@@ -338,6 +335,7 @@ def _daemon_call(
 
     from .daemon import BootstrapMissingError, DaemonRequestError, call_daemon
     from .errors import CrossGameHallucinationError, LegacyPatchTrapError
+    from .guardrails import redact_secrets
     from .updater import format_stderr_update_alert
 
     try:
@@ -345,14 +343,14 @@ def _daemon_call(
     except (CrossGameHallucinationError, LegacyPatchTrapError):
         raise
     except BootstrapMissingError as exc:
-        alert = format_stderr_update_alert(exc.update_status) or str(exc)
+        alert = redact_secrets(format_stderr_update_alert(exc.update_status) or str(exc))
         _echo_stderr_utf8(alert)
         raise click.exceptions.Exit(1) from exc
     except DaemonRequestError as exc:
-        msg = str(exc).strip() or f"Daemon rejected '{action}'."
+        msg = redact_secrets(str(exc).strip()) or f"Daemon rejected '{action}'."
         raise click.ClickException(msg) from exc
     except (RuntimeError, OSError, http.client.HTTPException, ValueError) as exc:
-        detail = str(exc).strip() or type(exc).__name__
+        detail = redact_secrets(str(exc).strip()) or type(exc).__name__
         err = click.ClickException(
             f"PoB daemon failure during '{action}': {detail}\n"
             "Run `pob stop` and retry; check daemon logs in the runtime directory if this persists."
@@ -392,8 +390,15 @@ def _merge_keep_tokens(*sources: Any) -> list[str]:
 def _prepend_warning(body: str, res: dict[str, Any]) -> str:
     from .formatters import render_update_warning
 
+    parts: list[str] = []
     banner = render_update_warning(res.get("updateWarning"))
-    return f"{banner}{body}" if banner else body
+    if banner:
+        parts.append(banner)
+    drift = str(res.get("slotDriftWarning") or "").strip()
+    if drift:
+        parts.append(f"[WARN] {drift}\n\n")
+    parts.append(body)
+    return "".join(parts)
 
 
 def _prepend_active_guardrail_warnings(body: str) -> str:
@@ -404,20 +409,6 @@ def _prepend_active_guardrail_warnings(body: str) -> str:
         return body
     lines = [w.format_markdown() for w in warns]
     return "\n".join(lines) + "\n\n" + body
-
-
-def _call_with_supported_kwargs(fn: Any, *args: Any, **kwargs: Any) -> Any:
-    import inspect
-
-    try:
-        sig = inspect.signature(fn)
-    except (TypeError, ValueError):
-        return fn(*args, **kwargs)
-    has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-    if has_var_kw:
-        return fn(*args, **kwargs)
-    filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
-    return fn(*args, **filtered)
 
 
 def _prepare_load_source(source: str) -> tuple[str | None, str | None]:

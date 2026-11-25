@@ -128,6 +128,14 @@ def cmd_summary(target: str, as_json: bool, compact: bool, out_path: str | None)
     default=None,
     help="Reference build slot slug for --compare (defaults to 'ref' when target=='main', else '<target>_ref').",
 )
+@click.option("--char", "char_name", default=None, help="Character name when SOURCE is an official profile URL.")
+@click.option("--league", "league", default=None, help="Optional league filter for official profile URL import.")
+@click.option(
+    "--realm",
+    type=click.Choice(["pc", "xbox", "sony", "cn"], case_sensitive=False),
+    default=None,
+    help="Official profile realm (`pc`, `xbox`, `sony`, or `cn` for poe.game.qq.com).",
+)
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @_output_options
 @click.pass_context
@@ -141,6 +149,9 @@ def cmd_diagnose(
     no_rank: bool,
     target: str,
     ref_target: str | None,
+    char_name: str | None,
+    league: str | None,
+    realm: str | None,
     as_json: bool,
     compact: bool,
     out_path: str | None,
@@ -161,6 +172,12 @@ def cmd_diagnose(
         "top": top,
         "no_rank": eff_no_rank,
     }
+    if char_name and char_name.strip():
+        params["char_name"] = char_name.strip()
+    if league and league.strip():
+        params["league"] = league.strip()
+    if realm and realm.strip():
+        params["realm"] = realm.strip().lower()
     if keep:
         params["keep"] = list(keep)
     if ask_text and ask_text.strip():
@@ -184,7 +201,17 @@ def cmd_diagnose(
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)
         return
-    _emit_text(format_diagnose_markdown(res), out_path=out_path)
+    md = format_diagnose_markdown(res)
+    extra_notes = [str(n) for n in (res.get("importNotes") or []) if n]
+    extra_warns = [str(w) for w in (res.get("translateWarnings") or []) if w]
+    if extra_notes or extra_warns:
+        tail = ["", "#### Import Notes"]
+        tail.extend(f"- {n}" for n in extra_notes)
+        tail.extend(f"- {w}" for w in extra_warns[:20])
+        if len(extra_warns) > 20:
+            tail.append(f"- ... ({len(extra_warns) - 20} more untranslated CN mods)")
+        md = md + "\n" + "\n".join(tail)
+    _emit_text(md, out_path=out_path)
 
 
 @click.command("ground")

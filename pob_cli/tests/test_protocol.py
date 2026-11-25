@@ -8,9 +8,11 @@ import pytest
 
 from pob_cli.bridge_client import FORBIDDEN_METHODS, BridgeError, BridgeWorker
 from pob_cli.cli import _prepare_load_source
+from pob_cli.errors import CrossGameHallucinationError
 from pob_cli.external_data import _strip_html, query_price
 from pob_cli.formatters import fmt_delta, sanitize_for_output, strip_pob_escapes, to_json_str
 from pob_cli.importers import POE_NINJA_CHAR_RE, share_code_to_xml, xml_to_share_code
+from pob_cli.snapshot import SlotHistory, history_of
 
 
 def test_forbidden_methods_blocked() -> None:
@@ -116,6 +118,22 @@ def test_poe_ninja_character_url_regex() -> None:
     assert m.group("league") == "mirage"
     assert m.group("account") == "ExileAcc-1234"
     assert m.group("name") == "MyNecroChar"
+
+    # A non-English poe.ninja page carries its language first; the link is still a PoE1 one.
+    localized = POE_NINJA_CHAR_RE.match(url.replace("poe.ninja/", "poe.ninja/zh-tw/"))
+    assert localized is not None and localized.groupdict() == m.groupdict()
+
+    from pob_cli.guardrails import validate_url
+    from pob_cli.importers import SHARE_RAW_PATTERNS
+
+    def raw_url(share: str) -> str | None:
+        return next((tpl.format(*mt.groups()) for pat, tpl in SHARE_RAW_PATTERNS if (mt := pat.match(share))), None)
+
+    assert raw_url("https://poe.ninja/poe1/pob/Abc12") == "https://poe.ninja/poe1/pob/Abc12/raw"
+    assert raw_url("https://poe.ninja/zh-tw/poe1/pob/Abc12") == "https://poe.ninja/poe1/pob/Abc12/raw"
+    assert raw_url("https://poe.ninja/ko/pob/Abc12") == "https://poe.ninja/pob/Abc12/raw"
+    with pytest.raises(CrossGameHallucinationError):
+        validate_url(url.replace("poe.ninja/poe1/", "poe.ninja/zh-tw/poe2/"), expected_game="poe1", cli_subcommand="load")
 
 
 def test_fmt_delta() -> None:
@@ -432,15 +450,12 @@ def test_daemon_multi_slot_parallel_locks_and_status(tmp_path: Path, monkeypatch
     entered_barrier = threading.Barrier(2, timeout=3.0)
 
     class _ConcurrentFakeWorker:
-        def __init__(self, slot_name: str = "main", pob_dir: Path | None = None) -> None:
+        def __init__(self, slot_name: str = "main", pob_dir: Path | None = None, runtime_dir: Path | None = None) -> None:
             self.slot_name = slot_name
             self.pob_root = pob_dir or eng
             self.alive = False
             self.last_used = time.time()
             self.last_good_code: str | None = f"code-{slot_name}"
-            self.undo_stack: list[str] = []
-            self.redo_stack: list[str] = []
-            self.source_label: str | None = None
             self.hello_info: dict[str, object] = {"pobVersion": "2.68.1"}
             self.lock = threading.RLock()
 
@@ -525,7 +540,7 @@ def test_daemon_and_updater_do_not_eagerly_import_httpx() -> None:
 def test_bridge_worker_runtime_dir_slot_state_and_kill_resets_translate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verify BridgeWorker honors explicit runtime_dir for slot_state_path, resets translate_enabled on kill, and checks ver_info.buildLoaded."""
+    """Verify the slot history honors an explicit runtime_dir, BridgeWorker resets translate_enabled on kill, and checks ver_info.buildLoaded."""
     import io
     import json
     import queue as _queue
@@ -539,17 +554,16 @@ def test_bridge_worker_runtime_dir_slot_state_and_kill_resets_translate(
     (eng / "PoE1").mkdir(parents=True)
     monkeypatch.setenv("POB_RUNTIME_DIR", str(env_rt))
 
-    w = BridgeWorker(slot_name="alpha", pob_dir=eng, runtime_dir=explicit_rt)
-    assert w.slot_state_path == explicit_rt / "slot_alpha.json"
-    w.last_good_code = "ALPHA_CODE"
-    w.save_slot_state()
+    hist = SlotHistory("alpha", explicit_rt)
+    assert hist.path == explicit_rt / "slot_alpha.json"
+    hist.load_build("ALPHA_CODE", None)
     assert (explicit_rt / "slot_alpha.json").is_file()
     assert not (env_rt / "slot_alpha.json").exists()
 
     # DaemonManager propagates its runtime_dir into created BridgeWorkers
     mgr = daemon_mod.DaemonManager(pob_dir=eng, token="tok", runtime_dir=explicit_rt, offline=True, skip_update_check=True)
     assert mgr.main_worker.runtime_dir == explicit_rt
-    assert mgr.main_worker.slot_state_path == explicit_rt / "slot_main.json"
+    assert history_of(mgr.main_worker).path == explicit_rt / "slot_main.json"
 
     # When ver_info reports buildLoaded=False, start(restore_code=...) runs new_build before import_code,
     # and stop()/_kill_unlocked() resets translate_enabled to None.
@@ -678,11 +692,8 @@ def test_daemon_rw_reentrancy_under_concurrent_reload_and_busy_status(tmp_path: 
 
     class _AliveWorker:
         last_good_code = "CODE"
-        source_label = None
 
         def __init__(self) -> None:
-            self.undo_stack: list[str] = []
-            self.redo_stack: list[str] = []
             self.hello_info: dict[str, object] = {}
 
         def is_alive(self) -> bool:
@@ -825,9 +836,6 @@ def test_daemon_dispatch_zero_coercions_kwargs_and_borrow_slot_error(
             self.slot_name = slot_name
             self.pob_root = pob_dir or eng
             self.last_good_code: str | None = None
-            self.undo_stack: list[str] = []
-            self.redo_stack: list[str] = []
-            self.source_label: str | None = None
             self.hello_info: dict[str, object] = {}
             self.alive = True
 
@@ -910,9 +918,6 @@ def test_daemon_shutdown_concurrency_aborts_inflight_and_waits(
             self.slot_name = slot_name
             self.pob_root = pob_dir or eng
             self.last_good_code: str | None = None
-            self.undo_stack: list[str] = []
-            self.redo_stack: list[str] = []
-            self.source_label: str | None = None
             self.hello_info: dict[str, object] = {}
             self.aborted = False
 
@@ -987,7 +992,9 @@ def test_daemon_edge_hardening_pid_bounds_http_handler_and_lua_arg_reset(tmp_pat
     try:
         port = server.server_address[1]
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
-        conn.request("POST", "/rpc", body=b"{}", headers={"X-PoB-Token": "secret-tok", "Content-Length": "not-an-int"})
+        # No body: the server answers before reading one, and closing a socket with unread bytes makes
+        # Windows reset the connection, which now and then beat the 400 to the client (5 in 3000 runs).
+        conn.request("POST", "/rpc", headers={"X-PoB-Token": "secret-tok", "Content-Length": "not-an-int"})
         resp = conn.getresponse()
         body = resp.read().decode("utf-8")
         conn.close()
@@ -1003,3 +1010,68 @@ def test_daemon_edge_hardening_pid_bounds_http_handler_and_lua_arg_reset(tmp_pat
     arg_reset_pos = lua_src.find("arg = {}")
     launch_pos = lua_src.find('dofile("Launch.lua")')
     assert arg_reset_pos != -1 and launch_pos != -1 and arg_reset_pos < launch_pos
+
+
+def test_call_daemon_offline_tells_a_running_daemon_to_skip_its_update_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`--offline` holds for a daemon started without it, which read POB_OFFLINE only at its start."""
+    import json
+    import os
+
+    import pob_cli.daemon as daemon_mod
+
+    rt = tmp_path / "rt"
+    rt.mkdir()
+    (rt / "daemon.json").write_text(
+        json.dumps({"pid": os.getpid(), "port": 51237, "token": "tok"}), encoding="utf-8"
+    )
+    sent: list[dict] = []
+
+    def _rpc(_port: int, _token: str, payload: dict, **_kw: object) -> tuple[int, dict]:
+        sent.append(payload)
+        return 200, {"ok": True, "result": {}}
+
+    monkeypatch.setattr(daemon_mod, "_http_post_rpc", _rpc)
+
+    def _call(action: str) -> None:
+        daemon_mod.call_daemon(
+            action, {"target": "main"}, auto_start=False, runtime_dir=rt, emit_cold_start_alert=False
+        )
+
+    monkeypatch.setenv("POB_OFFLINE", "1")
+    for action in ("status", "load", "summary"):
+        _call(action)
+    assert [p["params"].get("skip_periodic_check") for p in sent] == [True, True, None]
+    assert all(p["params"]["target"] == "main" for p in sent)
+
+    sent.clear()
+    monkeypatch.delenv("POB_OFFLINE")
+    _call("status")
+    assert "skip_periodic_check" not in sent[0]["params"]
+
+
+def test_write_slot_state_keeps_the_previous_file_when_a_write_dies(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The slot file holds the loaded build and its undo history: never leave half of one behind."""
+    from pob_cli import bridge_protocol as bp
+
+    path = tmp_path / "slot_main.json"
+
+    def write(code: str) -> None:
+        bp.write_slot_state(
+            path, slot_name="main", last_good_code=code, undo_stack=["u1"], redo_stack=[], source_label=None, rev=1
+        )
+
+    write("first")
+    assert bp.read_slot_state(path)["last_good_code"] == "first"
+    assert [p.name for p in tmp_path.iterdir()] == ["slot_main.json"]
+
+    def _killed(*_a: object) -> None:
+        raise OSError("daemon killed before the rename")
+
+    monkeypatch.setattr(bp.os, "replace", _killed)
+    write("second")
+    state = bp.read_slot_state(path)
+    assert state is not None and (state["last_good_code"], state["undo_stack"]) == ("first", ["u1"])

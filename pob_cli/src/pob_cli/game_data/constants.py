@@ -10,7 +10,8 @@ from typing import Any
 
 from ..updater import detect_source_checkout_root, get_runtime_dir
 
-SCHEMA_VERSION = 9
+# 11: zh-rTW id-keyed and lookup files (passives_by_id, ggpk_*, synonyms...) left the index.
+SCHEMA_VERSION = 11
 _INDEX_BUILD_LOCK = threading.RLock()
 
 _POB_ESCAPE_RE = re.compile(r"\^x[0-9A-Fa-f]{6}|\^\d")
@@ -374,8 +375,21 @@ ZH_SKIP_TRANSLATION_FILES: frozenset[str] = frozenset(
         "PoBArchivesProvider.json",
         "SharedItemListControl.json",
         "SharedItemSetListControl.json",
+        # zh-rTW lookup/config files: not en -> zh name tables.
+        "synonyms.json",
+        "display_exclude.json",
+        "exact_only.json",
+        "item_metadata.json",
+        "stat_wrappers.json",
+        "ui_tooltips.json",
     }
 )
+# zh-rTW also ships tables keyed by numeric node ids or internal ids (`passives_by_id.json`
+# maps "30940" -> 聖宗) and raw GGPK text dumps; indexing them makes Chinese names resolve
+# to ids instead of English.
+ZH_SKIP_TRANSLATION_FILE_RE = re.compile(r"(?:_by_id\.json|^ggpk_.*\.json)$")
+# An `en` key that is all digits or a snake_case stat id (`life_regeneration_rate_+%`).
+ZH_NON_NAME_KEY_RE = re.compile(r"^\d+$|^[a-z0-9%+\-]*_[a-z0-9_%+\-]*$")
 
 ZH_FILE_CATEGORY_HINT: dict[str, tuple[str, int]] = {
     "gems.json": ("gem", 1),

@@ -11,6 +11,7 @@ import json
 import re
 import sqlite3
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,58 @@ def _affix_type(entry: dict[str, Any]) -> str | None:
     return None
 
 
+def _base_affix_capacity(
+    rarity: str, base_tags: frozenset[str], item_class: str = "", slot: str | None = None
+) -> dict[str, int]:
+    if rarity == "MAGIC":
+        return {"prefix": 1, "suffix": 1}
+    slot_low = (slot or "").strip().lower()
+    if (
+        "jewel" in base_tags or "abyss_jewel" in base_tags
+        or "jewel" in item_class.lower() or "jewel" in slot_low or slot_low.startswith("#")
+    ):
+        return {"prefix": 2, "suffix": 2}
+    return {"prefix": 3, "suffix": 3}
+
+
+def _base_key(base_type: str) -> str:
+    """The index's own fold: a pasted "Maelström Staff" must find the base stored as "maelstrom staff"."""
+    return game_data._fold_search_text(base_type)
+
+
+@lru_cache(maxsize=8)
+def _cached_mod_rows(db_path_str: str) -> tuple[tuple[str, str, str, str, dict[str, Any]], ...]:
+    conn = sqlite3.connect(game_data._sqlite_ro_uri(Path(db_path_str)), uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT source, weights_json, zero_weights_json, types_json, data_json "
+            "FROM mods WHERE source IN ('Explicit', 'Bench')"
+        ).fetchall()
+    finally:
+        conn.close()
+    return tuple((s, w, z, t, json.loads(p)) for s, w, z, t, p in rows)
+
+
+def classify_mod_affix_types(
+    lines: list[str], *, pob_dir: Path | None = None, runtime_dir: Path | None = None
+) -> dict[str, set[str]]:
+    """Global lookup mapping each mod line to its possible affix side(s) (`prefix`/`suffix`)."""
+    wanted = {normalize_template(ln) for ln in lines if ln.strip()}
+    if not wanted:
+        return {}
+    db_path = game_data.ensure_gamedata_index(pob_dir=pob_dir, runtime_dir=runtime_dir)
+    by_tmpl: dict[str, set[str]] = defaultdict(set)
+    for _, _, _, _, entry in _cached_mod_rows(str(db_path)):
+        kind = _affix_type(entry)
+        if not kind:
+            continue
+        for stat in entry.get("stats") or []:
+            tmpl = normalize_template(str(stat))
+            if tmpl in wanted:
+                by_tmpl[tmpl].add(kind)
+    return {ln: set(by_tmpl.get(normalize_template(ln), ())) for ln in lines}
+
+
 def _bench_slot(
     slot: str | None, base_type: str, *, pob_dir: Path | None, runtime_dir: Path | None
 ) -> str | None:
@@ -86,7 +139,7 @@ def _bench_slot(
     try:
         row = conn.execute(
             "SELECT item_type FROM bases WHERE name_lower=? OR zh_lower=? LIMIT 1",
-            (base_type.lower(), base_type.lower()),
+            (_base_key(base_type), _base_key(base_type)),
         ).fetchone()
     finally:
         conn.close()
@@ -103,18 +156,14 @@ def _load_entries(
     try:
         base_row = conn.execute(
             "SELECT data_json FROM bases WHERE name_lower=? OR zh_lower=? LIMIT 1",
-            (base_type.lower(), base_type.lower()),
+            (_base_key(base_type), _base_key(base_type)),
         ).fetchone()
-        rows = conn.execute(
-            "SELECT source, weights_json, zero_weights_json, types_json, data_json "
-            "FROM mods WHERE source IN ('Explicit', 'Bench')"
-        ).fetchall()
     finally:
         conn.close()
     base_tags = set(json.loads(base_row[0]).get("tags") or []) if base_row else set()
     slot_spec = game_data._normalize_slot_filter(slot) if slot else None
     out: list[dict[str, Any]] = []
-    for source, weights, zeros, types, payload in rows:
+    for source, weights, zeros, types, entry in _cached_mod_rows(str(db_path)):
         if source == "Bench":
             if slot_spec and not game_data._mod_matches_slot(source, weights, zeros, types, slot_spec):
                 continue
@@ -125,7 +174,6 @@ def _load_entries(
             if not specific and not (positive.get("default", 0) > 0 and not (base_tags & excluded)):
                 continue
         # Without a resolved base, keep all explicit candidates and report ambiguity.
-        entry = json.loads(payload)
         if _affix_type(entry):
             out.append(entry)
     return out, bool(base_row), frozenset(base_tags)
@@ -240,16 +288,17 @@ def _classify(
 def inspect_item(
     raw: str, *, slot: str | None = None, wants: tuple[str, ...] = (), limit: int = 8,
     pob_dir: Path | None = None, runtime_dir: Path | None = None,
+    include_suggestions: bool = True,
 ) -> dict[str, Any]:
     item: Item = parse_item_text(raw)
     item_class = _item_class(raw)
     slot = slot or _infer_slot(item_class)
     bench_slot = _bench_slot(slot, item.base_type, pob_dir=pob_dir, runtime_dir=runtime_dir)
     target_mods = [m for m in item.mods if m.kind in ("explicit", "crafted", "fractured", "veiled")]
-    unsupported = [m.raw for m in target_mods if m.kind == "veiled"]
+    unsupported = [m for m in target_mods if m.kind == "veiled"]
     matchable = [m for m in target_mods if m.kind in ("explicit", "crafted", "fractured")]
     entries, base_resolved, base_tags = _load_entries(bench_slot, item.base_type, pob_dir=pob_dir, runtime_dir=runtime_dir)
-    capacity = {"prefix": 3, "suffix": 3}
+    capacity = _base_affix_capacity(item.rarity, base_tags, item_class, slot)
     scaled_types: set[str] = set()
     for mod in item.mods:
         if mod.kind == "implicit":
@@ -266,10 +315,7 @@ def inspect_item(
             affix["tierLevels"] = []
             affix["matchedTier"] = False
             affix["scaledRoll"] = True
-    unmatched = classified["unmatched"] + unsupported
-    # The game merges identical stats from different affixes into one line
-    # (e.g. pure + hybrid "% increased Energy Shield"). Such a line fits no single
-    # tier, so a wording-only match may hide an occupied affix.
+    unmatched = classified["unmatched"] + [m.raw for m in unsupported]
     out_of_range = [
         affix for affix in classified["affixes"]
         if not affix["matchedTier"] and not affix.get("scaledRoll")
@@ -292,7 +338,7 @@ def inspect_item(
     natural_groups = {str(a["group"]) for a in classified["affixes"] if a["source"] != "Bench"}
     existing_templates = [m.template for m in target_mods if m.kind != "crafted"]
     suggestions: list[dict[str, Any]] = []
-    if bench_slot and item.rarity == "RARE" and not (item.corrupted or item.mirrored or item.unidentified):
+    if include_suggestions and bench_slot and item.rarity == "RARE" and not (item.corrupted or item.mirrored or item.unidentified):
         for want in wants or _DEFAULT_WANTS:
             candidates = bench.search(bench_slot, want, limit=15, allow_engine=True)
             best_score = candidates[0].score if candidates else 0

@@ -72,19 +72,23 @@ def normalize_tw_query(text: str) -> str:
 
 
 def _fold_search_text(text: str) -> str:
-    """Fold Unicode diacritics (NFKD), curly apostrophes/dashes, and case for search matching."""
+    """Fold diacritics (NFKD), curly apostrophes/dashes, case and Traditional Chinese for matching.
+
+    Every index column and every query goes through this, so both sides fold alike. Folding the
+    query alone would break Simplified text that keeps a foldable character (覆盖 -> 复盖).
+    """
     if not text:
         return ""
     decomposed = unicodedata.normalize("NFKD", text)
     stripped = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
-    return stripped.translate(_FOLD_CHAR_MAP).lower()
+    return stripped.translate(_FOLD_CHAR_MAP).lower().translate(_HAN_FOLD_ALL)
 
 
 def fold_han(text: str | None) -> str:
     """Fold Traditional Chinese characters to Simplified so both scripts compare equal.
 
-    Apply it to both sides of a comparison: pob-zh.exe shows Traditional (zh-rTW) labels by default
-    while users and our dictionaries mostly use Simplified. Only closes character-level gaps
+    Apply it to both sides of a comparison: the engine shows Traditional (zh-rTW) labels under
+    `pob lang zh-TW` or the legacy pob-zh.exe, while users mostly type Simplified. Only closes character-level gaps
     (聖宗 == 圣宗); names the two translations word differently need `english_for_zh`.
     """
     return str(text).translate(_HAN_FOLD_ALL) if text else ""

@@ -29,5 +29,5 @@ pob sweep --scenario Pinnacle --json-variants '[{"name":"Echo","ops":[{"op":"ski
 ```
 
 ## Tolerant Slot & Flag Aliases
-- Slots accept EN & ZH shortcuts: `ring1`/`左戒指` -> `Ring 1`, `ring2`/`右戒指` -> `Ring 2`, `chest`/`body`/`衣服`/`胸甲` -> `Body Armour`, `helm`/`头盔` -> `Helmet`, `gloves`/`手套` -> `Gloves`, `boots`/`鞋子` -> `Boots`, `amulet`/`项链` -> `Amulet`, `belt`/`腰带` -> `Belt`, `weapon1`/`主手` -> `Weapon 1`, `weapon2`/`offhand`/`副手` -> `Weapon 2`, `flask1..5` -> `Flask 1..5`, `#1` -> Jewel socket #1.
+- Slots accept EN & ZH shortcuts: `ring1`/`左戒指` -> `Ring 1`, `ring2`/`右戒指` -> `Ring 2`, `chest`/`body`/`衣服`/`胸甲` -> `Body Armour`, `helm`/`头盔` -> `Helmet`, `gloves`/`手套` -> `Gloves`, `boots`/`鞋子` -> `Boots`, `amulet`/`项链` -> `Amulet`, `belt`/`腰带` -> `Belt`, `weapon1`/`主手` -> `Weapon 1`, `weapon2`/`offhand`/`副手` -> `Weapon 2`, `flask1..5` -> `Flask 1..5`, `#1` -> Jewel socket #1. Traditional spellings (`頭盔`, `項鍊`) resolve the same way.
 - Flag aliases: `item anoint --oil` (`--notable`), `skill add/set/rm --gem-name` (`--gem`).

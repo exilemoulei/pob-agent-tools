@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import CrossGameHallucinationError, DaemonRequestError, LegacyPatchTrapError
+from ..json_io import read_json_dict
 from ..updater import STATE_BOOTSTRAP_MISSING, load_update_state
 from .runtime import (
     _CREATE_BREAKAWAY_FROM_JOB,
@@ -23,31 +24,18 @@ from .runtime import (
     _daemon_lock_file,
     _daemon_state_file,
     _get_runtime_dir,
+    _is_offline_env,
     _is_pid_alive,
     _maybe_emit_degraded_alert,
 )
 
 
 def read_daemon_state(runtime_dir: Path | None = None) -> dict[str, Any] | None:
-    state_file = _daemon_state_file(runtime_dir)
-    if not state_file.exists():
-        return None
-    try:
-        data = json.loads(state_file.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
+    return read_json_dict(_daemon_state_file(runtime_dir))
 
 
 def _read_boot_error(runtime_dir: Path | None = None) -> dict[str, Any] | None:
-    err_file = _daemon_boot_error_file(runtime_dir)
-    if not err_file.exists():
-        return None
-    try:
-        data = json.loads(err_file.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
+    return read_json_dict(_daemon_boot_error_file(runtime_dir))
 
 
 def _http_post_rpc(
@@ -355,6 +343,11 @@ def call_daemon(
     """Send an authenticated RPC to the local PoB daemon, starting it automatically if not running."""
     import pob_cli.daemon as _daemon_pkg
 
+    if action in ("status", "load") and _is_offline_env():
+        # A daemon reads POB_OFFLINE once, when it starts. One started without it would still run its
+        # periodic engine update check on these two actions, whatever `--offline` this command has.
+        params = {**(params or {}), "skip_periodic_check": True}
+
     rt_dir = _get_runtime_dir(runtime_dir)
     state_file = _daemon_state_file(rt_dir)
 
@@ -369,20 +362,36 @@ def call_daemon(
                 pass
             state = None
         else:
+            pid_alive = isinstance(pid, int) and not isinstance(pid, bool) and _is_pid_alive(pid)
             try:
                 port, token = _parse_daemon_endpoint(state)
                 status_code, data = _daemon_pkg._http_post_rpc(
                     port, token, {"action": action, "params": params or {}}, timeout=timeout
                 )
             except TimeoutError:
-                if isinstance(pid, int) and not isinstance(pid, bool) and _is_pid_alive(pid):
+                if pid_alive:
                     raise
                 try:
                     state_file.unlink()
                 except OSError:
                     pass
                 state = None
-            except (ConnectionError, OSError, http.client.HTTPException, KeyError, TypeError, ValueError):
+            except (ConnectionError, OSError, http.client.HTTPException) as exc:
+                # Refused means nothing listens on the port, so no daemon got the action. Any other
+                # failure from a live daemon may come after it ran the action: sending it again to a
+                # second daemon could apply an edit twice, with two daemons sharing one runtime dir.
+                if pid_alive and not isinstance(exc, ConnectionRefusedError):
+                    raise RuntimeError(
+                        f"The PoB daemon (pid {pid}) did not answer '{action}' cleanly ({exc!r}); it may "
+                        "still be running it. Check with `pob status`, or run `pob stop` if this repeats."
+                    ) from exc
+                try:
+                    state_file.unlink()
+                except OSError:
+                    pass
+                state = None
+            except (KeyError, TypeError, ValueError):
+                # A malformed daemon.json: nothing was sent.
                 try:
                     state_file.unlink()
                 except OSError:

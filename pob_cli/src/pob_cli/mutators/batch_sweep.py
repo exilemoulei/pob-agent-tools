@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import inspect
-import math
-import re
 from collections.abc import Iterable
 from typing import Any
 
 from ..bridge_client import BridgeWorker
 from ..errors import CrossGameHallucinationError
-from ..formatters import _parse_numeric_or_none, fmt_num, strip_pob_escapes
 from ..guardrails import GuardrailScope, check_input
-from ..snapshot import diff_digest, run_mutation
-from .batch_ops import _execute_batch_ops
-from .common import _BatchCache, _call_compat, _merge_cautions, _normalize_keep_list
-
-_CJK_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
+from ..snapshot import (
+    BuildTransaction,
+    capture_direct_digest,
+    diff_digest,
+    run_mutation,
+    supports_direct_calc,
+)
+from .batch_ops import _execute_batch_ops, ops_scope
+from .common import _BatchCache, _merge_cautions, _normalize_keep_list
+from .sweep_report import _compact_sweep_summary, _extract_compact_calcs
 
 
 def _normalize_return_sections(return_sections: list[str] | str | None) -> list[str]:
@@ -73,10 +75,10 @@ def _collect_return_sections(
                     f"Unsupported audit return modifier '{raw_sec}'. "
                     "Use 'audit', 'audit:full', or 'audit:attribution'."
                 )
-            out["audit"] = _call_compat(_analyzer.audit_build, worker, keep=keep_arg, attribution=attr)
+            out["audit"] = _analyzer.audit_build(worker, keep=keep_arg, attribution=attr)
         elif head_low == "matrix":
             scenarios = [s.strip() for s in body.split(";") if s.strip()] if body else None
-            out["matrix"] = _call_compat(_comparator.run_matrix, worker, scenarios=scenarios, keep=keep_arg)
+            out["matrix"] = _comparator.run_matrix(worker, scenarios=scenarios, keep=keep_arg)
         elif head_low == "calc":
             kws = [k.strip() for k in body.split(";") if k.strip()] if body else []
             if not kws:
@@ -125,33 +127,13 @@ def run_batch(
     sections = _normalize_return_sections(return_sections)
 
     if apply and no_undo:
-        with worker.lock:
-            fallback_code = getattr(worker, "last_good_code", None)
-            if not fallback_code:
-                fallback_code = str(worker.call("export_code", {}).get("code") or "") or None
+        with BuildTransaction(worker, scope=ops_scope(ops), will_commit=True) as tx:
             cache = _BatchCache(worker)
-            try:
-                step_results = _execute_batch_ops(worker, ops, cache)
-                digest_after = _mut.capture_digest(worker)
-                returns_map = _collect_return_sections(worker, sections, keep=keep) if sections else None
-            except Exception:
-                if fallback_code:
-                    try:
-                        worker.call("import_code", {"code": fallback_code, "mode": "replace"})
-                    except Exception:
-                        pass
-                raise
-
-            if returns_map and isinstance(returns_map.get("export"), str) and returns_map["export"]:
-                snap_after = returns_map["export"]
-            else:
-                snap_after = str(worker.call("export_code", {}).get("code") or "")
-            if snap_after:
-                worker.last_good_code = snap_after
-            worker.redo_stack.clear()
-            save_fn = getattr(worker, "save_slot_state", None)
-            if callable(save_fn):
-                save_fn()
+            step_results = _execute_batch_ops(worker, ops, cache)
+            digest_after = _mut.capture_digest(worker)
+            returns_map = _collect_return_sections(worker, sections, keep=keep) if sections else None
+            exported = returns_map.get("export") if returns_map else None
+            tx.commit(undoable=False, after_code=exported if isinstance(exported, str) and exported else None)
 
             batch_cautions: list[str] = []
             for st in step_results:
@@ -170,8 +152,7 @@ def run_batch(
                     "points": digest_after.get("buildInfo", {}).get("points", {}),
                 },
                 "diff": None,
-                "undoDepth": len(worker.undo_stack),
-                "redoDepth": len(worker.redo_stack),
+                **tx.history.depths(),
             }
             if batch_cautions:
                 result["cautions"] = batch_cautions
@@ -195,7 +176,7 @@ def run_batch(
             detail["cautions"] = batch_cautions
         return detail
 
-    res = run_mutation(worker, _do_batch, apply=apply)
+    res = run_mutation(worker, _do_batch, apply=apply, scope=ops_scope(ops))
     cautions = (res.get("detail") or {}).get("cautions")
     if cautions:
         res["cautions"] = list(cautions)
@@ -204,169 +185,48 @@ def run_batch(
     return res
 
 
-def _json_safe_num(val: Any) -> float | str | None:
-    if val is None:
-        return None
-    parsed = _parse_numeric_or_none(val)
-    if parsed is None:
-        return str(val)
-    if math.isfinite(parsed):
-        return parsed
-    return fmt_num(parsed)
+def _sweep_keep(keep: Iterable[str] | str | None, scenario: str | dict[str, Any] | None) -> list[str] | None:
+    merged_keep: list[str] = []
+    for tok in _normalize_keep_list(keep):
+        if tok not in merged_keep:
+            merged_keep.append(tok)
+    if isinstance(scenario, dict) and scenario.get("keep") is not None:
+        for tok in _normalize_keep_list(scenario.get("keep")):
+            if tok not in merged_keep:
+                merged_keep.append(tok)
+    return merged_keep or None
 
 
-def _safe_ele_max_hit(stats: dict[str, Any]) -> float | str | None:
-    """Compute elemental max hit (`min(Fire, Cold, Lightning)`) safely across `inf`/`NaN`/None."""
-    vals: list[float] = []
-    for k in ("FireMaximumHitTaken", "ColdMaximumHitTaken", "LightningMaximumHitTaken"):
-        raw_v = stats.get(k)
-        if raw_v is None:
-            continue
-        parsed = _parse_numeric_or_none(raw_v)
-        if parsed is not None and not math.isnan(parsed):
-            vals.append(parsed)
-    if not vals:
-        return None
-    m = min(vals)
-    return m if math.isfinite(m) else fmt_num(m)
-
-
-def _compact_sweep_summary(digest: dict[str, Any]) -> dict[str, Any]:
-    """Build a compact, RFC-8259-safe offence/defence summary from a `capture_digest` dict."""
-    stats = digest.get("stats") or {}
-    return {
-        "primaryDpsKey": digest.get("primaryDpsKey"),
-        "primaryDps": digest.get("primaryDps"),
-        "fullDps": _json_safe_num(stats.get("FullDPS")),
-        "combinedDps": _json_safe_num(stats.get("CombinedDPS")),
-        "totalDps": _json_safe_num(stats.get("TotalDPS")),
-        "totalDotDps": _json_safe_num(stats.get("TotalDotDPS")),
-        "minionCombinedDps": _json_safe_num(stats.get("MinionCombinedDPS")),
-        "averageDamage": _json_safe_num(stats.get("AverageDamage")),
-        "speed": _json_safe_num(stats.get("Speed")),
-        "critChance": _json_safe_num(stats.get("CritChance")),
-        "critMultiplier": _json_safe_num(stats.get("CritMultiplier")),
-        "hitChance": _json_safe_num(stats.get("HitChance")),
-        "manaCost": _json_safe_num(stats.get("ManaCost")),
-        "totalEhp": digest.get("totalEhp"),
-        "life": digest.get("life"),
-        "energyShield": _json_safe_num(stats.get("EnergyShield")),
-        "mana": _json_safe_num(stats.get("Mana")),
-        "manaUnreserved": _json_safe_num(stats.get("ManaUnreserved")),
-        "armour": _json_safe_num(stats.get("Armour")),
-        "evasion": _json_safe_num(stats.get("Evasion")),
-        "physMaxHit": _json_safe_num(stats.get("PhysicalMaximumHitTaken")),
-        "eleMaxHit": _safe_ele_max_hit(stats),
-        "fireMaxHit": _json_safe_num(stats.get("FireMaximumHitTaken")),
-        "coldMaxHit": _json_safe_num(stats.get("ColdMaximumHitTaken")),
-        "lightningMaxHit": _json_safe_num(stats.get("LightningMaximumHitTaken")),
-        "chaosMaxHit": _json_safe_num(stats.get("ChaosMaximumHitTaken")),
-        "fireResist": _json_safe_num(stats.get("FireResist")),
-        "coldResist": _json_safe_num(stats.get("ColdResist")),
-        "lightningResist": _json_safe_num(stats.get("LightningResist")),
-        "chaosResist": _json_safe_num(stats.get("ChaosResist")),
-        "spellSuppression": _json_safe_num(stats.get("EffectiveSpellSuppressionChance")),
-        "blockChance": _json_safe_num(stats.get("EffectiveBlockChance")),
-        "spellBlockChance": _json_safe_num(stats.get("EffectiveSpellBlockChance")),
-        "points": (digest.get("buildInfo") or {}).get("points", {}),
-    }
-
-
-def _extract_compact_calcs(
+def _sweep_variant(
     worker: BridgeWorker,
-    calc_keywords: list[str],
-    *,
-    limit_per_keyword: int = 5,
-) -> dict[str, list[dict[str, Any]]]:
-    """Fetch `get_calcs` ONCE and extract compact matching row values (no breakdown dumps)."""
-    has_cjk = any(_CJK_RE.search(str(kw)) for kw in calc_keywords)
-    toggled_translate = False
-    if has_cjk:
-        caps = getattr(worker, "caps", None) or {}
-        if caps.get("translateToggle", not caps):
-            tracked = getattr(worker, "translate_enabled", None)
-            if tracked is None:
-                info_dict = getattr(worker, "hello_info", None) or getattr(worker, "info", None) or {}
-                if isinstance(info_dict, dict) and "translate" in info_dict:
-                    tracked = info_dict.get("translate")
-            if tracked is False:
-                try:
-                    worker.call("set_translate", {"enabled": True})
-                    toggled_translate = True
-                except Exception:
-                    toggled_translate = False
-    try:
-        calcs = worker.call("get_calcs", {})
-    finally:
-        if toggled_translate:
-            try:
-                worker.call("set_translate", {"enabled": False})
-            except Exception:
-                pass
+    tx: BuildTransaction,
+    var: dict[str, Any],
+    v_name: str,
+    base_digest: dict[str, Any],
+    kw_list: list[str],
+    use_direct: bool,
+) -> dict[str, Any]:
+    """Run one variant's ops on the base build and measure it; raises on a bad variant."""
+    import pob_cli.mutators as _mut
 
-    rows_index: list[dict[str, Any]] = []
-    for sec in calcs.get("sections", []):
-        sec_id = str(sec.get("id") or "")
-        for sub in sec.get("subsections", []):
-            sub_en = strip_pob_escapes(str(sub.get("label") or ""))
-            sub_zh = strip_pob_escapes(str(sub.get("labelZh") or sub_en))
-            for row in sub.get("rows", []):
-                r_en = strip_pob_escapes(str(row.get("label") or ""))
-                r_zh = strip_pob_escapes(str(row.get("labelZh") or r_en))
-                vals: list[dict[str, Any]] = []
-                cell_texts: list[str] = []
-                for cell in row.get("cells", []):
-                    raw_v = strip_pob_escapes(str(cell.get("raw") or ""))
-                    txt_v = strip_pob_escapes(str(cell.get("text") or raw_v))
-                    if raw_v or txt_v:
-                        vals.append({"raw": raw_v or txt_v, "text": txt_v or raw_v})
-                        cell_texts.append(f"{raw_v} {txt_v}")
-                hay_row = f"{r_en} {r_zh}".lower()
-                hay_sub = f"{sec_id} {sub_en} {sub_zh}".lower()
-                hay_full = f"{hay_sub} {hay_row} {' '.join(cell_texts).lower()}"
-                rows_index.append(
-                    {
-                        "sectionId": sec_id,
-                        "subsection": sub_en,
-                        "subsectionZh": sub_zh,
-                        "rowLabel": r_en,
-                        "rowLabelZh": r_zh,
-                        "values": vals,
-                        "_hay_row": hay_row,
-                        "_hay_row_compact": re.sub(r"[\s_\-]+", "", hay_row),
-                        "_hay_full": hay_full,
-                        "_hay_full_compact": re.sub(r"[\s_\-]+", "", hay_full),
-                    }
-                )
-
-    out: dict[str, list[dict[str, Any]]] = {}
-    for kw in calc_keywords:
-        q = kw.strip().lower()
-        q_compact = re.sub(r"[\s_\-]+", "", q)
-        if not q:
-            out[kw] = []
-            continue
-        scored: list[tuple[int, int, dict[str, Any]]] = []
-        for pos, r in enumerate(rows_index):
-            if q in r["_hay_row"] or (q_compact and q_compact in r["_hay_row_compact"]):
-                score = 3
-            elif q in r["_hay_full"] or (q_compact and q_compact in r["_hay_full_compact"]):
-                score = 1
-            else:
-                continue
-            scored.append((score, pos, r))
-        scored.sort(key=lambda x: (-x[0], x[1]))
-        out[kw] = [
-            {
-                "sectionId": r["sectionId"],
-                "subsection": r["subsection"],
-                "rowLabel": r["rowLabel"],
-                "rowLabelZh": r["rowLabelZh"],
-                "values": r["values"],
-            }
-            for _, _, r in scored[:limit_per_keyword]
-        ]
-    return out
+    v_ops = var.get("ops") or []
+    if not isinstance(v_ops, list):
+        raise ValueError(f"Variant '{v_name}' 'ops' must be a list of batch operations.")
+    step_results = _execute_batch_ops(worker, v_ops, _BatchCache(worker)) if v_ops else []
+    v_digest = capture_direct_digest(worker, base_digest=base_digest) if use_direct else _mut.capture_digest(worker)
+    entry: dict[str, Any] = {
+        "name": v_name,
+        "ok": True,
+        "steps": step_results,
+        "summary": _compact_sweep_summary(v_digest),
+        "diffVsBase": diff_digest(base_digest, v_digest),
+        "warnings": v_digest.get("warnings", []),
+    }
+    if kw_list:
+        # get_calcs reads the calc output of the last engine frame, which a lazy restore left stale.
+        tx.fresh()
+        entry["calcs"] = _extract_compact_calcs(worker, kw_list)
+    return entry
 
 
 def run_sweep(
@@ -392,134 +252,92 @@ def run_sweep(
     for kw in kw_list:
         check_input(kw, scope=GuardrailScope.CALC_QUERY, expected_game="poe1")
 
-    merged_keep: list[str] = []
-    for tok in _normalize_keep_list(keep):
-        if tok not in merged_keep:
-            merged_keep.append(tok)
-    if isinstance(scenario, dict) and scenario.get("keep") is not None:
-        for tok in _normalize_keep_list(scenario.get("keep")):
-            if tok not in merged_keep:
-                merged_keep.append(tok)
-    eff_keep: list[str] | None = merged_keep or None
+    eff_keep = _sweep_keep(keep, scenario)
+    variant_ops = [v["ops"] for v in variants if isinstance(v, dict) and isinstance(v.get("ops"), list)]
+    scope = ops_scope(base_ops, *variant_ops)
+    has_scenario = scenario is not None and (not isinstance(scenario, str) or bool(scenario.strip()))
 
-    with worker.lock:
-        prev_last_good = getattr(worker, "last_good_code", None)
-        orig_code = worker.call("export_code", {})["code"]
+    with BuildTransaction(worker, scope=scope) as tx:
+        assert tx.base is not None
+        use_direct = supports_direct_calc(worker)
         results: list[dict[str, Any]] = []
         base_steps: list[dict[str, Any]] = []
         scenario_applied: dict[str, Any] | None = None
         orig_digest: dict[str, Any] | None = None
-        restore_check: dict[str, Any] | None = None
-        will_mutate_base = bool(base_ops) or (
-            scenario is not None and (not isinstance(scenario, str) or scenario.strip())
-        )
+        fallbacks: list[str] = []
 
-        try:
+        if base_ops or has_scenario:
+            orig_digest = (
+                capture_direct_digest(worker) if (use_direct and tx.base.kind == "cow") else _mut.capture_digest(worker)
+            )
+        if base_ops:
+            base_steps = _execute_batch_ops(worker, base_ops, _BatchCache(worker))
+        if has_scenario:
+            from ..comparator import _apply_matrix_scenario_in_place, _parse_matrix_scenario
+
+            plan = _parse_matrix_scenario(scenario)
+            scenario_applied = _apply_matrix_scenario_in_place(worker, plan, keep=eff_keep)
+        base_cp = tx.checkpoint() if (base_ops or has_scenario) else tx.base
+
+        full_base = _mut.capture_digest(worker)
+        if orig_digest is None:
+            orig_digest = full_base
+        # Variants are measured by direct_calc, so their baseline must come from the same pass.
+        base_digest = capture_direct_digest(worker, base_digest=full_base) if use_direct else full_base
+        base_calcs = _extract_compact_calcs(worker, kw_list) if kw_list else None
+
+        dirty = False
+        for idx, var in enumerate(variants):
+            if not isinstance(var, dict):
+                results.append(
+                    {
+                        "name": f"Variant {idx + 1}",
+                        "ok": False,
+                        "error": f"Variant entry #{idx + 1} must be a JSON object.",
+                    }
+                )
+                continue
+            v_name = str(var.get("name") or f"Variant {idx + 1}").strip()
+            if dirty:
+                # direct_calc recalculates on its own, so the restore can leave the calc output stale.
+                note = tx.restore(base_cp, rebuild=not use_direct)
+                if note:
+                    fallbacks.append(f"before '{v_name}': {note}")
+            dirty = bool(var.get("ops"))
             try:
-                if will_mutate_base:
-                    orig_digest = _mut.capture_digest(worker)
+                results.append(_sweep_variant(worker, tx, var, v_name, base_digest, kw_list, use_direct))
+            except CrossGameHallucinationError:
+                raise
+            except Exception as exc:
+                dirty = True
+                results.append({"name": v_name, "ok": False, "error": str(exc)})
 
-                sweep_base_code = orig_code
-                mutated_base = False
+        restore_check = tx.rollback_verified(orig_digest)
+        if restore_check.get("fallback"):
+            fallbacks.append(str(restore_check["fallback"]))
 
-                if base_ops:
-                    base_steps = _execute_batch_ops(worker, base_ops, _BatchCache(worker))
-                    mutated_base = True
+    baseline_payload: dict[str, Any] = {
+        "summary": _compact_sweep_summary(base_digest),
+        "warnings": base_digest.get("warnings", []),
+    }
+    if base_calcs is not None:
+        baseline_payload["calcs"] = base_calcs
 
-                if scenario is not None and (not isinstance(scenario, str) or scenario.strip()):
-                    from ..comparator import _apply_matrix_scenario_in_place, _parse_matrix_scenario
-
-                    plan = _parse_matrix_scenario(scenario)
-                    scenario_applied = _call_compat(
-                        _apply_matrix_scenario_in_place, worker, plan, keep=eff_keep
-                    )
-                    mutated_base = True
-
-                if mutated_base:
-                    sweep_base_code = worker.call("export_code", {})["code"]
-
-                base_digest = _mut.capture_digest(worker)
-                if orig_digest is None:
-                    orig_digest = base_digest
-                base_calcs = _extract_compact_calcs(worker, kw_list) if kw_list else None
-
-                dirty = False
-                for idx, var in enumerate(variants):
-                    if not isinstance(var, dict):
-                        results.append(
-                            {
-                                "name": f"Variant {idx + 1}",
-                                "ok": False,
-                                "error": f"Variant entry #{idx + 1} must be a JSON object.",
-                            }
-                        )
-                        continue
-
-                    v_name = str(var.get("name") or f"Variant {idx + 1}").strip()
-                    v_ops = var.get("ops") or []
-
-                    if dirty:
-                        worker.call("import_code", {"code": sweep_base_code, "mode": "replace"})
-                        dirty = False
-
-                    try:
-                        if not isinstance(v_ops, list):
-                            raise ValueError(f"Variant '{v_name}' 'ops' must be a list of batch operations.")
-                        step_results: list[dict[str, Any]] = []
-                        if v_ops:
-                            dirty = True
-                            step_results = _execute_batch_ops(worker, v_ops, _BatchCache(worker))
-
-                        v_digest = _mut.capture_digest(worker)
-                        v_diff = diff_digest(base_digest, v_digest)
-                        v_calcs = _extract_compact_calcs(worker, kw_list) if kw_list else None
-
-                        entry: dict[str, Any] = {
-                            "name": v_name,
-                            "ok": True,
-                            "steps": step_results,
-                            "summary": _compact_sweep_summary(v_digest),
-                            "diffVsBase": v_diff,
-                            "warnings": v_digest.get("warnings", []),
-                        }
-                        if v_calcs is not None:
-                            entry["calcs"] = v_calcs
-                        results.append(entry)
-                    except CrossGameHallucinationError:
-                        dirty = True
-                        raise
-                    except Exception as exc:
-                        dirty = True
-                        results.append({"name": v_name, "ok": False, "error": str(exc)})
-            finally:
-                worker.call("import_code", {"code": orig_code, "mode": "replace"})
-
-            from ..analyzer import verify_restored
-
-            restore_check = verify_restored(worker, orig_code, orig_digest or {})
-        finally:
-            if hasattr(worker, "last_good_code"):
-                worker.last_good_code = prev_last_good
-
-        baseline_payload: dict[str, Any] = {
-            "summary": _compact_sweep_summary(base_digest),
-            "warnings": base_digest.get("warnings", []),
-        }
-        if base_calcs is not None:
-            baseline_payload["calcs"] = base_calcs
-
-        return {
-            "scenario": scenario,
-            "scenarioApplied": scenario_applied,
-            "baseOpsCount": len(base_ops or []),
-            "baseSteps": base_steps,
-            "calcKeywords": kw_list,
-            "baseline": baseline_payload,
-            "variants": results,
-            "succeeded": sum(1 for r in results if r.get("ok")),
-            "failed": sum(1 for r in results if not r.get("ok")),
-            "restoreCheck": restore_check,
-        }
+    out: dict[str, Any] = {
+        "scenario": scenario,
+        "scenarioApplied": scenario_applied,
+        "baseOpsCount": len(base_ops or []),
+        "baseSteps": base_steps,
+        "calcKeywords": kw_list,
+        "baseline": baseline_payload,
+        "variants": results,
+        "succeeded": sum(1 for r in results if r.get("ok")),
+        "failed": sum(1 for r in results if not r.get("ok")),
+        "restoreCheck": restore_check,
+    }
+    if fallbacks:
+        out["restoreFallbacks"] = fallbacks
+    return out
 
 
 def trade_eval_items(

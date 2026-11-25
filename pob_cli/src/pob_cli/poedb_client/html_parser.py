@@ -399,9 +399,11 @@ _MOD_FILTER_ALIASES: dict[str, str] = {
 
 
 def _mod_matches_filter(mod: dict[str, Any], mod_filter: str) -> bool:
+    from ..game_data import fold_han  # aliases and the cn page are Simplified; users type 能量護盾 too
+
     terms: list[str] = []
     for raw in re.split(r"[|,，]", mod_filter):
-        tok = raw.strip().lower()
+        tok = fold_han(raw.strip().lower())
         if not tok:
             continue
         terms.append(tok)
@@ -420,6 +422,7 @@ def _mod_matches_filter(mod: dict[str, Any], mod_filter: str) -> bool:
             " ".join(str(x) for x in (mod.get("tags") or ())),
         ]
     ).lower()
+    hay = fold_han(hay)
     return any(t in hay for t in terms)
 
 

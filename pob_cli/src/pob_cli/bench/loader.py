@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import game_data
+from ..guardrails import normalize_equipment_slot
 
 DATA_FILE = Path(__file__).resolve().parents[1] / "data" / "bench_costs.json"
 UNKNOWN_COST = "unknown (verify in-game)"
@@ -76,7 +77,9 @@ _SLOT_ALIASES: dict[str, str] = {
     "foot": "boots",
     "feet": "boots",
     "shield": "shield",
+    "盾牌": "shield",
     "quiver": "quiver",
+    "箭袋": "quiver",
     "ring": "ring1",
     "ring1": "ring1",
     "ring_1": "ring1",
@@ -167,7 +170,11 @@ def slot_key(slot: str) -> str:
     compact = raw.replace("_", "")
     if compact in _SLOT_ALIASES:
         return _SLOT_ALIASES[compact]
-    return raw
+    # Not a bench key: try the slot names the other commands take (手套, 頭盔, "Body Armour").
+    eq = (normalize_equipment_slot(game_data.fold_han(slot)) or "").lower().replace(" ", "_")
+    if eq in ("head", "body"):  # graft slots, not the helmet and body armour that bench calls so
+        return raw
+    return _SLOT_ALIASES.get(eq) or _SLOT_ALIASES.get(eq.replace("_", "")) or raw
 
 
 def classes_to_slots(classes: Sequence[str]) -> tuple[str, ...]:

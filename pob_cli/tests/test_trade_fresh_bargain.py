@@ -350,6 +350,18 @@ def test_trade_search_bargain_reuses_any_age_asc_search_and_guards_under_5(
     assert data4["marketChaos"] is None
     assert all(not c["bargain"] for c in data4["candidates"])
 
+    # At the site's 10000-match cap the cheapest page is not the real floor: nothing flagged.
+    class _FakeClientCapped(_FakeClient10):
+        def search(self, league: str, query: dict[str, Any]) -> dict[str, Any]:
+            return {**super().search(league, query), "total": 10000}
+
+    monkeypatch.setattr(cli_trade, "TradeClient", _FakeClientCapped)
+    capped = json.loads(CliRunner().invoke(main, args).output)
+    assert capped["marketChaos"] is None
+    assert all(not c["bargain"] for c in capped["candidates"])
+    report = CliRunner().invoke(main, [a for a in args if a != "--json"]).output
+    assert "- Market: no going price: the search matches 10000+ listings" in report
+
 
 def test_trade_search_bench_craft_preserves_bargain_seller_and_url(
     monkeypatch: pytest.MonkeyPatch,

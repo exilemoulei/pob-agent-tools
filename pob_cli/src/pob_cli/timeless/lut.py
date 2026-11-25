@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import html
 import math
 import os
 import random
 import re
 import sys
-import xml.etree.ElementTree as ET
 import zlib
 from collections import defaultdict
 from collections.abc import Callable, Sequence
@@ -17,9 +15,25 @@ from typing import Any
 
 from ..errors import CrossGameHallucinationError
 from ..formatters import _parse_numeric_or_none
+from ..game_data import fold_han
 from ..guardrails import validate_engine_root
-from ..importers import share_code_to_xml
+from ..locale_cfg import current_lang
 from ..updater import resolve_engine_root
+from .xml_helpers import (
+    _ALLOCATES_RE as _ALLOCATES_RE,
+)
+from .xml_helpers import (
+    _active_tree_spec as _active_tree_spec,
+)
+from .xml_helpers import (
+    _extract_allocated_notable_names as _extract_allocated_notable_names,
+)
+from .xml_helpers import (
+    _extract_xml_allocated_nodes as _extract_xml_allocated_nodes,
+)
+from .xml_helpers import (
+    _is_historic_socket_jewel as _is_historic_socket_jewel,
+)
 
 # Jewels stored as one byte per (notable, seed) in `Data/TimelessJewelData/<stem>.zip`.
 # The others (Glorious Vanity, the Abyss family) use variable-length records: every seed is calculated.
@@ -30,6 +44,19 @@ FLAT_TABLES = {
     "Elegant Hubris": "ElegantHubris",
     "Heroic Tragedy": "HeroicTragedy",
 }
+JEWEL_TYPE_IDS: dict[str, int] = {
+    "Glorious Vanity": 1, "Lethal Pride": 2, "Brutal Restraint": 3,
+    "Militant Faith": 4, "Elegant Hubris": 5, "Heroic Tragedy": 6,
+    "Festering Vengeance": 7, "Extinguishing Grasp": 8,
+    "Baleful Dominion": 9, "Destructive Aspiration": 10, "Reclaimed Malevolence": 11,
+}
+LUT_STEMS: dict[str, str] = {
+    **FLAT_TABLES,
+    "Glorious Vanity": "GloriousVanity",
+    "Festering Vengeance": "AbyssTecrod", "Extinguishing Grasp": "AbyssUlaman",
+    "Baleful Dominion": "AbyssKurgal", "Destructive Aspiration": "AbyssAmanamu",
+    "Reclaimed Malevolence": "AbyssZorath",
+}
 SEED_STEP = {"Elegant Hubris": 20}  # PoB Modules/Data.lua: this one only exists in multiples of 20
 STAT_KEYS = (
     "CombinedDPS", "FullDPS", "TotalDPS", "TotalDotDPS", "MinionCombinedDPS",
@@ -39,36 +66,25 @@ STAT_KEYS = (
     "EffectiveBlockChance", "EffectiveSpellBlockChance", "EffectiveSpellSuppressionChance",
     "Str", "Dex", "Int",
 )
-# Static Chinese display-name fallback for the 11 Historic jewels (matches PobTools-zh zh-rCN),
-# so Chinese `--jewel` input and localized `timeless list` names work even on POSIX `headless_runner.lua`
-# where `tj_open` returns `labelZh == label`.
+# Static Simplified & Traditional Chinese display names and aliases for the 11 Historic jewels.
 JEWEL_ZH_NAMES: dict[str, str] = {
-    "Brutal Restraint": "残酷的约束",
-    "Elegant Hubris": "优雅的狂妄",
-    "Glorious Vanity": "光彩夺目",
-    "Lethal Pride": "致命的骄傲",
-    "Militant Faith": "好战的信仰",
-    "Heroic Tragedy": "英勇悲剧",
-    "Festering Vengeance": "溃烂复仇",
-    "Extinguishing Grasp": "熄灭之握",
-    "Baleful Dominion": "噩兆统御",
-    "Destructive Aspiration": "毁灭渴望",
-    "Reclaimed Malevolence": "再造恶意",
+    "Brutal Restraint": "残酷的约束", "Elegant Hubris": "优雅的狂妄", "Glorious Vanity": "光彩夺目",
+    "Lethal Pride": "致命的骄傲", "Militant Faith": "好战的信仰", "Heroic Tragedy": "英勇悲剧",
+    "Festering Vengeance": "溃烂复仇", "Extinguishing Grasp": "熄灭之握", "Baleful Dominion": "噩兆统御",
+    "Destructive Aspiration": "毁灭渴望", "Reclaimed Malevolence": "再造恶意",
+}
+JEWEL_ZH_TW_NAMES: dict[str, str] = {
+    "Brutal Restraint": "殘酷的紀律", "Elegant Hubris": "優雅的高傲", "Glorious Vanity": "輝煌的虛榮",
+    "Lethal Pride": "致命的驕傲", "Militant Faith": "激進的信仰", "Heroic Tragedy": "英勇的悲劇",
+    "Festering Vengeance": "潰爛復仇", "Extinguishing Grasp": "撲滅之握", "Baleful Dominion": "邪惡統治",
+    "Destructive Aspiration": "滅亡之願", "Reclaimed Malevolence": "重奪惡意",
 }
 _JEWEL_ZH_ALIASES: dict[str, str] = {
     **{zh: en for en, zh in JEWEL_ZH_NAMES.items()},
-    # Common community / PoEDB / Traditional Chinese aliases
-    "残酷的纪律": "Brutal Restraint",
-    "殘酷的紀律": "Brutal Restraint",
-    "优雅的高傲": "Elegant Hubris",
-    "優雅的高傲": "Elegant Hubris",
-    "辉煌的虚荣": "Glorious Vanity",
-    "輝煌的虛榮": "Glorious Vanity",
-    "致命的驕傲": "Lethal Pride",
-    "激进的信仰": "Militant Faith",
-    "激進的信仰": "Militant Faith",
-    "英勇的悲剧": "Heroic Tragedy",
-    "英勇的悲劇": "Heroic Tragedy",
+    **{zh: en for en, zh in JEWEL_ZH_TW_NAMES.items()},
+    **{fold_han(zh): en for en, zh in JEWEL_ZH_TW_NAMES.items()},
+    "优雅的傲慢": "Elegant Hubris", "军团的荣耀": "Glorious Vanity",
+    "军团的信仰": "Militant Faith", "英雄悲剧": "Heroic Tragedy",
 }
 # PoE 3.30 renamed Glorious Vanity's Ahuana -> Mazcotl; accept either name against either PoB version.
 _CONQUEROR_ALIASES: dict[str, str] = {
@@ -81,7 +97,6 @@ MIN_SEEN = 2  # ... holding every (node, table byte) at least this often
 VERIFY_BATCH = 50  # estimated-best groups calculated per round
 SELF_CHECK = 10  # groups whose second seed is recalculated at the end to confirm the grouping
 _SEED_LINE = re.compile(r"^(?:\{variant:[\d,]+\})?(.*\((\d+)-(\d+)\).* (\w+))$")
-_ALLOCATES_RE = re.compile(r"Allocates ([^\r\n<]+)")
 
 
 def default_workers() -> int:
@@ -257,11 +272,44 @@ def load_node_index(game_dir: Path) -> dict[int, int]:
     return {node: row for node, row in rows.items() if row < n_notable}
 
 
-def load_table(game_dir: Path, stem: str) -> bytes:
-    """Decompressed lookup table. Reads PoB's file only; never writes next to it."""
-    table_path = Path(game_dir) / "Data" / "TimelessJewelData" / f"{stem}.zip"
+def _read_lut_zip_or_parts(base_dir: Path, stem: str) -> tuple[bytes | None, Path]:
+    whole = base_dir / f"{stem}.zip"
+    if whole.is_file():
+        return whole.read_bytes(), whole
+    part0 = base_dir / f"{stem}.zip.part0"
+    if part0.is_file():
+        parts: list[tuple[int, Path]] = []
+        for p in base_dir.glob(f"{stem}.zip.part*"):
+            suf = p.name.rsplit(".part", 1)[-1]
+            if suf.isdigit():
+                parts.append((int(suf), p))
+        if parts:
+            parts.sort(key=lambda x: x[0])
+            return b"".join(p.read_bytes() for _, p in parts), part0
+    return None, whole
+
+
+def load_table(
+    game_dir: Path,
+    stem: str,
+    *,
+    runtime_dir: Path | str | None = None,
+    cache_dir: Path | None = None,
+    missing_reason: str = "",
+) -> bytes:
+    """Decompressed lookup table from PoB's folder, else from `cache_dir` (what `ensure_lut_files` returned).
+
+    Either may hold one `.zip` or PoB's split `.zip.part*` files. Never writes next to PoB. Raises
+    RuntimeError, with `missing_reason` (why fetching it failed), when neither holds the table.
+    `runtime_dir` is unused and kept for callers."""
+    raw, table_path = _read_lut_zip_or_parts(Path(game_dir) / "Data" / "TimelessJewelData", stem)
+    if raw is None and cache_dir is not None:
+        raw, table_path = _read_lut_zip_or_parts(Path(cache_dir), stem)
+    if raw is None:
+        why = f": {missing_reason}" if missing_reason else ""
+        raise RuntimeError(f"PoB's {stem} lookup table is neither installed nor in the timeless cache{why}")
     try:
-        return zlib.decompress(table_path.read_bytes())
+        return zlib.decompress(raw)
     except zlib.error as exc:
         raise RuntimeError(f"Failed to decompress timeless jewel table {table_path}: {exc}") from exc
 
@@ -373,6 +421,7 @@ def narrow_down(
         )
         if not open_sigs:
             return {
+                "method": "additiveFit",
                 "calculated": len(results),
                 "maxError": (math.exp(error) - 1.0) if use_log else error,
                 "relative": use_log,
@@ -384,10 +433,15 @@ def narrow_down(
         say(f"{len(results)} calculated; {max(0, len(open_sigs) - VERIFY_BATCH)} could still reach the top {top}")
 
 
-def _local_jewel_name(name: str, dialog_local: dict[str, str]) -> str:
+def _local_jewel_name(name: str, dialog_local: dict[str, str], runtime_dir: Path | str | None = None) -> str:
+    lang = current_lang(Path(runtime_dir) if runtime_dir else None)
+    if lang == "en":
+        return name
     local = dialog_local.get(name)
     if local and local != name:
         return local
+    if lang == "zh-TW":
+        return JEWEL_ZH_TW_NAMES.get(name, JEWEL_ZH_NAMES.get(name, name))
     return JEWEL_ZH_NAMES.get(name, name)
 
 
@@ -398,110 +452,8 @@ def _resolve_jewel_static(name: str, jewels: dict[str, Any]) -> str | None:
     for key in jewels:
         if key.lower() == q_low:
             return key
-    zh_mapped = _JEWEL_ZH_ALIASES.get(query)
+    # The names are Simplified, with a Traditional spelling for some: fold so the rest match too.
+    zh_mapped = _JEWEL_ZH_ALIASES.get(query) or _JEWEL_ZH_ALIASES.get(fold_han(query))
     if zh_mapped and zh_mapped in jewels:
         return zh_mapped
     return None
-
-
-def _active_tree_spec(root: ET.Element) -> ET.Element | None:
-    """Return the active `<Spec>` element under `<Tree>` (1-based `activeSpec`, defaulting to 1st)."""
-    tree_el = root if root.tag == "Tree" else root.find(".//Tree")
-    if tree_el is None:
-        return None
-    specs = tree_el.findall("Spec")
-    if not specs:
-        return None
-    raw_spec = (tree_el.attrib.get("activeSpec") or "").strip()
-    if raw_spec:
-        try:
-            spec_idx = int(raw_spec)
-        except ValueError:
-            spec_idx = 1
-        if 1 <= spec_idx <= len(specs):
-            return specs[spec_idx - 1]
-    return specs[0]
-
-
-def _extract_xml_allocated_nodes(xml: str) -> set[int] | None:
-    """Return allocated node IDs from the active `<Tree><Spec nodes="..."/>` when explicitly present."""
-    if not xml or "<Tree" not in xml:
-        return None
-    try:
-        root = ET.fromstring(xml)
-    except ET.ParseError:
-        return None
-    active_spec = _active_tree_spec(root)
-    if active_spec is None:
-        return None
-    nodes_attr = (active_spec.attrib.get("nodes") or "").strip()
-    if not nodes_attr:
-        return None
-    parsed = {int(tok) for tok in re.findall(r"\d+", nodes_attr)}
-    return parsed or None
-
-
-def _extract_allocated_notable_names(xml: str, code: str = "") -> set[str]:
-    """Extract notable names from `Allocates <Name>` lines across active ItemSet slots and active Tree sockets."""
-    text = xml
-    if not text and code:
-        try:
-            text = share_code_to_xml(code)
-        except Exception:
-            text = ""
-    if not text:
-        return set()
-
-    scoped_texts: list[str] | None = None
-    if "<Items" in text:
-        try:
-            root = ET.fromstring(text)
-            items_el = root if root.tag == "Items" else root.find(".//Items")
-            if items_el is not None:
-                items_by_id: dict[str, str] = {}
-                for item_el in items_el.findall("Item"):
-                    item_id = (item_el.attrib.get("id") or "").strip()
-                    if item_id:
-                        items_by_id[item_id] = "".join(item_el.itertext())
-                active_set_id = (items_el.attrib.get("activeItemSet") or "").strip()
-                item_sets = items_el.findall("ItemSet")
-                active_set = None
-                if item_sets:
-                    if active_set_id:
-                        active_set = next(
-                            (s for s in item_sets if (s.attrib.get("id") or "").strip() == active_set_id),
-                            None,
-                        )
-                    if active_set is None:
-                        active_set = item_sets[0]
-                slot_parent = active_set if active_set is not None else items_el
-                slot_els = slot_parent.findall("Slot")
-                active_spec = _active_tree_spec(root)
-                tree_socket_els = active_spec.findall("./Sockets/Socket") if active_spec is not None else []
-                if (slot_els or tree_socket_els) and items_by_id:
-                    equipped_ids = {
-                        (el.attrib.get("itemId") or "").strip()
-                        for el in (*slot_els, *tree_socket_els)
-                    } - {"", "0"}
-                    scoped_texts = [items_by_id[iid] for iid in equipped_ids if iid in items_by_id]
-        except ET.ParseError:
-            scoped_texts = None
-
-    sources = scoped_texts if scoped_texts is not None else [text]
-    granted: set[str] = set()
-    for src in sources:
-        for match in _ALLOCATES_RE.findall(src):
-            cleaned = html.unescape(match).strip()
-            if cleaned:
-                granted.add(cleaned)
-    return granted
-
-
-def _is_historic_socket_jewel(socket_info: dict[str, Any], jewels: dict[str, Any]) -> bool:
-    """Detect equipped Historic jewels, including PoB Timeless Jewel Finder titles like 'Lethal Pride 12345; ...'."""
-    if socket_info.get("baseName") == "Timeless Jewel":
-        return True
-    title = str(socket_info.get("title") or "")
-    if not title:
-        return False
-    return any(title == k or title.startswith(k + " ") for k in jewels)

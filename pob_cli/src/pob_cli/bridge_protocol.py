@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import collections
 import json
+import os
 import queue
 import re
 import subprocess
@@ -13,6 +14,8 @@ import zlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from .json_io import read_json_dict as read_slot_state  # noqa: F401  (re-exported for bridge_client)
 
 MAX_UNDO_STEPS = 30
 
@@ -46,6 +49,36 @@ class BridgeError(RuntimeError):
 
 class BridgeTimeoutError(BridgeError):
     """Raised when an RPC call exceeds its deadline and the worker is recycled."""
+
+
+class BridgeRejectedError(BridgeError):
+    """The engine answered the RPC with an error: the process is healthy and refused only this call.
+
+    `kind` is the daemon's `errorKind` from `ENGINE_ERROR_KINDS`: "request" (exit 1) or "daemon" (exit 5).
+    """
+
+    def __init__(self, message: str, *, code: str | None = None, kind: str = "daemon") -> None:
+        super().__init__(message)
+        self.code = code
+        self.kind = kind
+
+
+# The one table from an engine error to the daemon's `errorKind`: (Lua `error.code`, start of the
+# message, "" for any, errorKind). Unlisted errors, timeouts and crashes are faults ("daemon", exit 5).
+# `lua_error` is also what a PoB bug or missing data raises, so of its messages only the share-code
+# checks in bridge.lua's `decode_share_code`, which fail on nothing but the code given, are listed.
+ENGINE_ERROR_KINDS: tuple[tuple[str, str, str], ...] = (
+    ("bad_request", "", "request"),
+    ("lua_error", "empty code", "request"),
+    ("lua_error", "code too large", "request"),
+    ("lua_error", "not a Path of Building code", "request"),
+    ("lua_error", "code did not decode to a build", "request"),
+    ("lua_error", "code is not a build file for this game", "request"),
+)
+ENGINE_REJECTED_HINT = (
+    "The engine is running and rejected this input: check the build code or arguments and retry "
+    "(no need to `pob stop`)."
+)
 
 
 def _decode_share_code_xml(code: str) -> str | None:
@@ -91,12 +124,13 @@ def _get_local_tree_versions(game_dir: Path) -> tuple[set[str], tuple[int, int] 
     for entry in tree_data_dir.iterdir():
         if not entry.is_dir():
             continue
-        names.add(entry.name)
         parsed = _parse_tree_version_tuple(entry.name)
-        if parsed is not None:
-            if max_tuple is None or parsed > max_tuple:
-                max_tuple = parsed
-                max_str = f"{parsed[0]}_{parsed[1]}"
+        if parsed is not None and (max_tuple is None or parsed > max_tuple):
+            max_tuple = parsed
+            max_str = f"{parsed[0]}_{parsed[1]}"
+        if (entry / ".incomplete").exists() or not any(entry.iterdir()):
+            continue
+        names.add(entry.name)
     return names, max_tuple, max_str
 
 
@@ -135,6 +169,20 @@ def validate_import_xml_guardrail(code: str) -> None:
         validate_build_xml(xml_text, expected_game="poe1")
 
 
+def parse_version_caps(ver_info: Any) -> dict[str, Any]:
+    """Extract capability flags from a `version` RPC result (always returns a dict)."""
+    if not isinstance(ver_info, dict):
+        return {}
+    raw = ver_info.get("caps")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def get_worker_caps(worker: Any) -> dict[str, Any]:
+    """Return a worker's parsed `version` RPC capability dict (defaulting to {} for FakeWorker)."""
+    raw = getattr(worker, "caps", None)
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
 def validate_rpc_method(method: str, caps: dict[str, Any]) -> None:
     """Enforce static R1/R3/R4/R7/R11 blocklist and dynamic R2 sidebarBreakdown capability."""
     if method in FORBIDDEN_METHODS:
@@ -149,6 +197,17 @@ def format_rpc_error(err_obj: Any) -> str:
     if isinstance(err_obj, dict):
         return err_obj.get("message") or json.dumps(err_obj, ensure_ascii=False)
     return str(err_obj or "unknown bridge error")
+
+
+def rpc_rejection(method: str, err_obj: Any) -> BridgeRejectedError:
+    """The exception for an RPC the engine answered with `err_obj`, classified by `ENGINE_ERROR_KINDS`."""
+    code = err_obj.get("code") if isinstance(err_obj, dict) else None
+    code = code if isinstance(code, str) else None
+    text = format_rpc_error(err_obj)
+    first = text.split("\n", 1)[0].strip()
+    kind = next((k for c, start, k in ENGINE_ERROR_KINDS if c == code and first.startswith(start)), "daemon")
+    # A rejected input needs no Lua stack trace; a fault keeps it for the bug report.
+    return BridgeRejectedError(f"RPC '{method}' failed: {first if kind == 'request' else text}", code=code, kind=kind)
 
 
 def compact_source_label(label: Any) -> str | None:
@@ -189,20 +248,13 @@ def write_slot_state(
             "rev": int(rev),
             "updated_at": time.time(),
         }
-        state_path.write_text(json.dumps(payload), encoding="utf-8")
+        # Temp file, then rename: a daemon killed mid-write would otherwise leave half a JSON, and
+        # the slot would come back empty with its undo history gone.
+        tmp_path = state_path.with_suffix(f".{os.getpid()}.tmp")
+        tmp_path.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp_path, state_path)
     except Exception:
         pass
-
-
-def read_slot_state(state_path: Path) -> dict[str, Any] | None:
-    """Load persisted slot state JSON if present and valid."""
-    if not state_path.exists():
-        return None
-    try:
-        data = json.loads(state_path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
 
 
 def stdout_reader_loop(
@@ -290,44 +342,33 @@ def await_startup_handshake(
     return hello_info, pob_version, bridge_version
 
 
-def restore_build_on_start(
-    raw_call: Callable[[str, dict[str, Any], float], dict[str, Any]],
-    target_code: str,
-    build_loaded: Any,
-) -> bool:
-    """Restore a saved build code during startup, skipping redundant new_build{} when possible (R4)."""
-    if build_loaded is False:
-        raw_call("new_build", {}, 10.0)
-        try:
-            raw_call("import_code", {"code": target_code, "mode": "replace"}, 15.0)
-            return True
-        except Exception:
-            try:
-                raw_call("new_build", {}, 10.0)
-            except Exception:
-                pass
-            return False
-
-    try:
-        raw_call("import_code", {"code": target_code, "mode": "new"}, 15.0)
-        return True
-    except Exception as exc:
-        if "no build is loaded" in str(exc).lower():
-            try:
-                raw_call("new_build", {}, 10.0)
-                raw_call("import_code", {"code": target_code, "mode": "replace"}, 15.0)
-                return True
-            except Exception:
-                try:
-                    raw_call("new_build", {}, 10.0)
-                except Exception:
-                    pass
-                return False
-        try:
-            raw_call("new_build", {}, 10.0)
-        except Exception:
-            pass
-        return False
+def sync_worker_state(
+    worker: Any,
+    method: str,
+    params: dict[str, Any] | None,
+    result: dict[str, Any],
+) -> None:
+    """Mirror locale and translation state an RPC result reports onto the worker."""
+    if method in ("set_translate", "set_locale"):
+        # tree_data carries translated names (nameZh), so a language switch must refetch it.
+        worker._tree_data_cache.clear()
+    if method == "set_translate":
+        if isinstance(result.get("enabled"), bool):
+            worker.translate_enabled = result["enabled"]
+        elif isinstance(result.get("translate"), bool):
+            worker.translate_enabled = result["translate"]
+        elif params is not None and "enabled" in params:
+            worker.translate_enabled = bool(params["enabled"])
+    elif method == "set_locale":
+        if isinstance(result.get("lang"), str):
+            worker.locale = result["lang"]
+        if isinstance(result.get("translate"), bool):
+            worker.translate_enabled = result["translate"]
+        elif isinstance(result.get("enabled"), bool):
+            worker.translate_enabled = result["enabled"]
+    elif method == "version":
+        if isinstance(result.get("translate"), bool):
+            worker.translate_enabled = result["translate"]
 
 
 def collect_batch_responses(
@@ -374,36 +415,37 @@ def collect_batch_responses(
 
 def decode_batch_responses(
     calls: list[tuple[str, dict[str, Any] | None]],
-    pre_errors: dict[int, str],
+    pre_errors: dict[int, BridgeError],
     send_entries: list[tuple[int, int, str, dict[str, Any]]],
     raw_responses: dict[int, dict[str, Any]],
     *,
     check_tv_mismatch: Callable[[str], str | None],
     sync_state: Callable[[str, dict[str, Any] | None, dict[str, Any]], None],
-) -> tuple[list[dict[str, Any]], str | None, bool]:
-    """Assemble ordered batch RPC results, capturing first error and failed import_code flag."""
+) -> tuple[list[dict[str, Any]], BridgeError | None, bool]:
+    """Assemble ordered batch RPC results, capturing the first error (classified like a single RPC's)."""
     results: list[dict[str, Any]] = [{} for _ in range(len(calls))]
-    first_error: str | None = None
+    first_error: BridgeError | None = None
     had_import_error = False
 
-    for idx, err_msg in pre_errors.items():
+    for idx, pre_exc in pre_errors.items():
+        err_msg = str(pre_exc)
         results[idx] = {"ok": False, "error": err_msg, "_error": err_msg, "method": calls[idx][0]}
         if first_error is None:
-            first_error = err_msg
+            first_error = pre_exc
 
     for idx, _, method, params in send_entries:
         msg = raw_responses[idx]
         if msg.get("ok") is False or ("error" in msg and msg["error"] is not None):
             err_text = format_rpc_error(msg.get("error"))
-            full_err = f"RPC '{method}' failed: {err_text}"
+            exc = rpc_rejection(method, msg.get("error"))
             if method == "import_code":
                 had_import_error = True
                 tv_hint = check_tv_mismatch(str(params.get("code") or ""))
-                if tv_hint and tv_hint not in full_err:
-                    full_err = f"{full_err} | {tv_hint}"
+                if tv_hint and tv_hint not in str(exc):
+                    exc.args = (f"{exc} | {tv_hint}",)
             results[idx] = {"ok": False, "error": err_text, "_error": err_text, "method": method}
             if first_error is None:
-                first_error = full_err
+                first_error = exc
         else:
             result = msg.get("result")
             res_dict = result if isinstance(result, dict) else {"value": result}
@@ -411,3 +453,37 @@ def decode_batch_responses(
             results[idx] = res_dict
 
     return results, first_error, had_import_error
+
+
+def apply_worker_locale(worker: Any, norm: str) -> dict[str, Any]:
+    """Execute `set_locale` / `set_translate` on an unlocked running `BridgeWorker`."""
+    want_translate = norm != "en"
+    prev_locale = worker.locale
+    if not worker.is_running:
+        worker.locale = norm
+        return {"ok": True, "lang": norm, "translate": want_translate, "started": False}
+    try:
+        res = worker._raw_call_unlocked("set_locale", {"lang": norm}, timeout=5.0)
+        worker.locale = norm
+        return res
+    except BridgeError:
+        if norm != "zh-TW" and worker.caps.get("translateToggle", True):
+            tr_res = worker._raw_call_unlocked("set_translate", {"enabled": want_translate}, timeout=5.0)
+            worker.translate_enabled = bool(tr_res.get("enabled", want_translate))
+            worker.locale = norm
+            return {
+                "ok": True,
+                "lang": norm,
+                "translate": worker.translate_enabled,
+                "fallback": "set_translate",
+            }
+        if norm == prev_locale and want_translate == worker.translate_enabled:
+            return {"ok": True, "lang": norm, "translate": worker.translate_enabled, "fallback": "noop"}
+        return {
+            "ok": False,
+            "lang": prev_locale or "zh-CN",
+            "requestedLang": norm,
+            "translate": worker.translate_enabled,
+            "fallback": "unsupported",
+            "error": "Engine does not support runtime locale switching; restart worker to apply.",
+        }

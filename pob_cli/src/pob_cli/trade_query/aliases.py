@@ -490,7 +490,9 @@ _BRACE_NUM_RE = re.compile(r"\{\d+\}")
 def _normalize_slot(slot: str | None) -> str:
     if not slot:
         return ""
-    cleaned = re.sub(r"[\s\-]+", "_", slot.strip().lower()).strip("_")
+    from ..game_data import fold_han  # the Chinese slot aliases are Simplified (头盔, not 頭盔)
+
+    cleaned = re.sub(r"[\s\-]+", "_", fold_han(slot.strip().lower())).strip("_")
     cleaned = re.sub(r"_+", "_", cleaned)
     return _SLOT_COMPACT_ALIASES.get(cleaned, cleaned)
 
@@ -527,9 +529,10 @@ def infer_weapon_category_from_base(base_type: str, pob_root: Path | None = None
             db_path = game_data.ensure_gamedata_index(pob_dir=resolved_root)
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
             try:
+                folded = game_data._fold_search_text(cleaned)  # the index's own fold
                 row = conn.execute(
                     "SELECT item_type, sub_type FROM bases WHERE name_lower = ? OR zh_lower = ? LIMIT 1",
-                    (lowered, lowered),
+                    (folded, folded),
                 ).fetchone()
             finally:
                 conn.close()
@@ -556,9 +559,14 @@ def translate_stat_query(text: str) -> str:
     """
     import pob_cli.trade_query as _tq
 
-    raw = (text or "").strip()
-    if not raw or not _CJK_RE.search(raw):
-        return raw
+    original = (text or "").strip()
+    if not original or not _CJK_RE.search(original):
+        return original
+    from ..game_data import fold_han
+
+    # The alias table is Simplified, while pob-zh shows Traditional names (能量護盾). Unfolded, such
+    # a query skipped the table and the fuzzy fallback picked another stat ("Has no Energy Shield").
+    raw = fold_han(original)
 
     # Direct exact lookup
     direct = ZH_STAT_ALIASES.get(raw)
@@ -608,4 +616,4 @@ def translate_stat_query(text: str) -> str:
     except Exception:
         pass
 
-    return raw
+    return original

@@ -10,7 +10,7 @@ from ..analyzer import resolve_skill_group_index
 from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
 from ..guardrails import check_poe2_class_or_ascendancy
-from ..snapshot import run_mutation
+from ..snapshot import BuildScope, run_mutation
 from .common import _BatchCache, _fold_search_text
 
 LOADOUT_SENTINELS = frozenset(
@@ -285,7 +285,7 @@ def create_new_build(
             name=name,
         )
 
-    res = run_mutation(worker, _do_new_build, apply=apply)
+    res = run_mutation(worker, _do_new_build, apply=apply, scope=BuildScope.REPLACES_BUILD)
     res["buildInfo"] = (res.get("detail") or {}).get("buildInfo")
     return res
 
@@ -440,4 +440,7 @@ def switch_main(
             loadout_index=loadout_index,
         )
 
-    return run_mutation(worker, _do_switch, apply=apply)
+    switches_set = any(
+        v is not None for v in (spec_index, item_set_id, skill_set_id, config_set_id, loadout_index)
+    )
+    return run_mutation(worker, _do_switch, apply=apply, scope=BuildScope.SETS if switches_set else BuildScope.ACTIVE_SETS)

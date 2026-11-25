@@ -43,8 +43,6 @@ class FakeWorker:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.batch_calls: list[list[tuple[str, dict[str, Any]]]] = []
         self.last_good_code: str | None = "ORIGINAL_LAST_GOOD"
-        self.undo_stack: list[str] = []
-        self.redo_stack: list[str] = []
         self.config: dict[str, Any] = {
             "bandit": "Eramir",
             "enemyIsBoss": "None",
@@ -67,9 +65,8 @@ class FakeWorker:
         self.has_mageblood = False
         self._saved: dict[str, dict[str, Any]] = {}
         self._next_code_id = 0
-
-    def save_slot_state(self) -> None:
-        return None
+        # The slot's committed build is the live one, as on a real worker outside a transaction.
+        self._saved["ORIGINAL_LAST_GOOD"] = self._snapshot()
 
     # -- stats model: each condition contributes a fixed, known amount -------------
     def _stats(self) -> dict[str, Any]:
@@ -805,6 +802,7 @@ def test_dewater_and_attribution_use_call_batch_pipelining() -> None:
 def test_run_matrix_three_scenarios_caches_pinnacle_and_preserves_last_good_code() -> None:
     w = FakeWorker()
     w.last_good_code = "SENTINEL_LAST_GOOD"
+    w._saved["SENTINEL_LAST_GOOD"] = w._snapshot()
     before = w._snapshot()
 
     res = run_matrix(w, scenarios=["Original", "Pinnacle", "Uber"], keep=["conditionStationary"])
@@ -1136,13 +1134,14 @@ def test_vaal_main_skill_switches_main_active_skill_and_restores_in_attribution(
 
     class VaalMainSkillWorker(FakeWorker):
         def __init__(self) -> None:
-            super().__init__()
             self.main_active_skill = 1
+            super().__init__()
             self.gems[(1, 1)] = {
                 "enabled": True,
                 "enableGlobal1": orig_g1,
                 "enableGlobal2": True,
             }
+            self._saved["ORIGINAL_LAST_GOOD"] = self._snapshot()
 
         def _snapshot(self) -> dict[str, Any]:
             snap = super()._snapshot()

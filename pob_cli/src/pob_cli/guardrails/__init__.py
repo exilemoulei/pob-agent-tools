@@ -11,6 +11,11 @@ from .build_gate import (
     validate_engine_root,
     validate_url,
 )
+from .redact import (
+    get_auth_env_status,
+    redact,
+    redact_secrets,
+)
 from .reply_scanner import (
     ReplyIssue,
     detect_build_source_in_text,
@@ -98,11 +103,14 @@ __all__ = [
     "extract_scannable_item_parts",
     "get_active_warning_dicts",
     "get_active_warnings",
+    "get_auth_env_status",
     "match_phrase_zh",
     "match_word_en",
     "normalize_equipment_slot",
     "normalize_guardrail_text",
     "normalize_zh_compact",
+    "redact",
+    "redact_secrets",
     "reset_cli_warnings",
     "scan_assistant_reply",
     "scan_text_traps",

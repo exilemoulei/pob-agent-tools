@@ -26,11 +26,7 @@ class _StubSlotWorker:
         self.alive = False
         self.last_used = time.time()
         self.last_good_code: str | None = f"code-{slot_name}"
-        self.undo_stack: list[str] = []
-        self.redo_stack: list[str] = []
-        self.source_label: str | None = None
         self.hello_info: dict[str, Any] = {"pobVersion": "2.68.1"}
-        self.rev: int = 0
         self.lock = threading.RLock()
 
     @property
@@ -48,13 +44,6 @@ class _StubSlotWorker:
 
     def ensure_alive(self) -> None:
         self.alive = True
-
-    def bump_rev(self) -> int:
-        self.rev += 1
-        return self.rev
-
-    def save_slot_state(self) -> None:
-        return None
 
     def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if method == "export_code":

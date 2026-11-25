@@ -58,6 +58,9 @@ def test_cold_build_and_warm_query_benchmarks(tmp_path: Path, monkeypatch: pytes
         ("translate", "Dark Bargain", {}),
     ]
     for kind, query, kwargs in warm_cases:
+        # The first call of a kind loads per-process tables (the zh dictionaries take ~90 ms), so time
+        # a second one: otherwise the result depends on which tests ran earlier in the process.
+        query_local_data(kind, query, pob_dir=REAL_POB_DIR, runtime_dir=tmp_path, **kwargs)  # type: ignore[arg-type]
         tq = time.perf_counter()
         res = query_local_data(kind, query, pob_dir=REAL_POB_DIR, runtime_dir=tmp_path, **kwargs)  # type: ignore[arg-type]
         elapsed_ms = (time.perf_counter() - tq) * 1000.0
@@ -167,7 +170,9 @@ def test_unique_and_base_and_translate(tmp_path: Path) -> None:
     assert sap["name"] == "Sap of the Seasons"
     assert sap["zh_name"] == "四季之侵"
     assert sap["base_type"] == "Prismatic Tincture"
-    assert sap["base_type_zh"] == "虹彩酊剂"
+    # Not every PobTools-zh data release translates this base (data-25 does not).
+    if sap["base_type_zh"] is not None:
+        assert sap["base_type_zh"] == "虹彩酊剂"
     assert sap["item_class"] == "Tincture"
     # PobTools-zh data-26 dropped Foulborn translations; older data carries them.
     if sap["zh_foulborn_name"] is not None:
@@ -317,11 +322,109 @@ def test_no_zh_fallback_resolution_and_auto_rebuild(tmp_path: Path, monkeypatch:
         query_local_data("invalid_kind", "foo", runtime_dir=rt)
 
 
+def test_a_new_index_prunes_superseded_ones_but_keeps_the_newest_other(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each engine update names a new 50 MB index; the old ones used to pile up for ever."""
+    monkeypatch.delenv("POB_ROOT", raising=False)
+    monkeypatch.delenv("POB_CACHE_DIR", raising=False)
+    rt = tmp_path / "rt"
+    _create_synthetic_pob_dir(rt / "engine")
+    cache_dir = rt / "cache"
+    cache_dir.mkdir(parents=True)
+    for age, name in enumerate(("gamedata_2.60.0_new.sqlite", "gamedata_2.50.0_old.sqlite", "gamedata_2.40.0_older.sqlite")):
+        stale = cache_dir / name
+        stale.write_bytes(b"old index")
+        os.utime(stale, (1_700_000_000 - age * 86400, 1_700_000_000 - age * 86400))
+    (cache_dir / "trade_stats.json").write_text("{}", encoding="utf-8")
+
+    db_path = ensure_gamedata_index(runtime_dir=rt)
+    assert db_path.parent == cache_dir
+    assert sorted(p.name for p in cache_dir.iterdir() if p.suffix == ".sqlite") == sorted(
+        [db_path.name, "gamedata_2.60.0_new.sqlite"]
+    )
+    assert (cache_dir / "trade_stats.json").is_file()
+
+
+def test_tree_index_rebuilds_when_any_dictionary_file_it_reads_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pob_cli.game_data import ensure_treedata_index
+
+    monkeypatch.delenv("POB_ROOT", raising=False)
+    monkeypatch.delenv("POB_CACHE_DIR", raising=False)
+    rt = tmp_path / "rt"
+    engine_dir = _create_synthetic_pob_dir(rt / "engine")
+    tree_dir = engine_dir / "PoE1" / "TreeData" / "3_30"
+    tree_dir.mkdir(parents=True)
+    (tree_dir / "tree.lua").write_text("return {}", encoding="utf-8")
+    zh_dir = engine_dir / "Data" / "poe1" / "zh-rCN"
+    zh_dir.mkdir(parents=True)
+    season = zh_dir / "Z-S29.json"
+    season.write_text('{"entries": {}}', encoding="utf-8")
+
+    first, _ = ensure_treedata_index(runtime_dir=rt)
+    season.write_text('{"entries": {"Some Notable": "某个天赋"}}', encoding="utf-8")
+    second, _ = ensure_treedata_index(runtime_dir=rt)
+    assert second != first and second.is_file()
+
+
 def test_fold_search_text_diacritics_and_punctuation() -> None:
     assert _fold_search_text("Doppelgänger Guise") == "doppelganger guise"
     assert _fold_search_text("Mjölner") == "mjolner"
     assert _fold_search_text("Watcher’s Eye") == "watcher's eye"
     assert _fold_search_text("Precursor‘s — Emblem") == "precursor's - emblem"
+
+
+def test_traditional_queries_match_the_simplified_index_and_unknown_slots_match_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pob-zh shows Traditional names, the dictionary is Simplified: index and query fold alike."""
+    import json
+
+    from pob_cli import item_inspect
+
+    assert _fold_search_text("圖騰") == _fold_search_text("图腾") == "图腾"
+    # 覆 is a foldable character that Simplified text keeps, so only folding both sides is safe.
+    assert _fold_search_text("覆盖") == _fold_search_text("覆蓋")
+
+    monkeypatch.delenv("POB_ROOT", raising=False)
+    rt = tmp_path / "rt"
+    engine_dir = _create_synthetic_pob_dir(rt / "engine")
+    zh_dir = engine_dir / "Data" / "poe1" / "zh-rCN"
+    zh_dir.mkdir(parents=True)
+    (zh_dir / "meta.json").write_text(json.dumps({"version": "1.0.0"}), encoding="utf-8")
+    (zh_dir / "gems.json").write_text(
+        json.dumps({"entries": {"Test Bolt": "覆盖图腾"}}, ensure_ascii=False), encoding="utf-8"
+    )
+    (engine_dir / "PoE1" / "Data" / "ModExplicit.lua").write_text(
+        """return {
+    ["TestLife1"] = { type = "Prefix", affix = "Testing", "+(10-20) to maximum Life", level = 10, group = "IncreasedLife", weightKey = { "amulet", "default" }, weightVal = { 1000, 0 }, modTags = { "life" } },
+    ["TestLife2"] = { type = "Prefix", affix = "Generic", "+(30-40) to maximum Life", level = 20, group = "IncreasedLife", weightKey = { "default" }, weightVal = { 1000 }, modTags = { "life" } },
+}""",
+        encoding="utf-8",
+    )
+    (engine_dir / "PoE1" / "Data" / "Bases" / "staff.lua").write_text(
+        """local itemBases = ...
+itemBases["Maelstrom Staff"] = { type = "Staff", tags = { staff = true, default = true, }, req = { level = 64, }, }""",
+        encoding="utf-8",
+    )
+
+    for query in ("覆盖图腾", "覆蓋圖騰", "圖騰"):
+        gems = query_local_data("gem", query, runtime_dir=rt)
+        assert [g["name"] for g in gems["results"]] == ["Test Bolt"], query
+        assert query_local_data("translate", query, runtime_dir=rt)["results"][0]["en"] == "Test Bolt"
+
+    def mods(slot: str) -> list[str]:
+        res = query_local_data("mod", "maximum Life", runtime_dir=rt, slot=slot)
+        return sorted(m["id"] for m in res["results"])
+
+    assert mods("amulet") == mods("项链") == mods("項鍊") == ["TestLife1", "TestLife2"]
+    # A typo used to inherit the default weight and list every generic mod as if it were a slot.
+    assert mods("amulat") == []
+
+    # Pasted item text carries the game's spelling; the index stores the folded base name.
+    assert item_inspect._bench_slot("weapon1", "Maelström Staff", pob_dir=None, runtime_dir=rt) == "staff"
 
 
 def test_synthetic_diacritics_special_uniques_item_skills_shared_cache_and_multi(

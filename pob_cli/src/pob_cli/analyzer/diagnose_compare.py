@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from ..bridge_client import BridgeWorker
+from ..snapshot import history_of
 from .constants import _PANTHEON_HINTS
 
 
@@ -147,7 +148,7 @@ def _build_diagnose_env(
         pob_ver = hello.get("pobVersion") or "unknown"
     tree_ver = info.get("treeVersion") or "3_30"
     patch_str = str(tree_ver).replace("_", ".") if str(tree_ver).startswith("3_") else "3.30"
-    worker_rev = getattr(worker, "rev", None)
+    worker_rev = history_of(worker).rev
     env: dict[str, Any] = {
         "game": "poe1",
         "patch": patch_str,
@@ -169,6 +170,9 @@ def diagnose_compare_builds(
     xml_code: str | None = None,
     compare_source: str | None = None,
     compare_xml_code: str | None = None,
+    char_name: str | None = None,
+    league: str | None = None,
+    realm: str | None = None,
     keep: Iterable[str] | str | None = None,
     top: int = 5,
     no_rank: bool = True,
@@ -182,25 +186,40 @@ def diagnose_compare_builds(
     import pob_cli.analyzer as _analyzer
 
     from ..comparator import _run_worker_pair, compare_builds
-    from ..importers import load_build_into_worker
+    from ..snapshot import load_build
 
-    def _load_main() -> None:
-        if source or xml_code:
-            load_build_into_worker(main_worker, source=source, xml_code=xml_code)
-            if hasattr(main_worker, "bump_rev"):
-                main_worker.bump_rev()
-                if hasattr(main_worker, "save_slot_state"):
-                    main_worker.save_slot_state()
+    def _load_into(
+        worker: Any,
+        src: str | None,
+        code: str | None,
+        *,
+        c_name: str | None = None,
+        c_league: str | None = None,
+        c_realm: str | None = None,
+    ) -> None:
+        if src or code:
+            load_build(
+                worker,
+                source=src,
+                xml_code=code,
+                char_name=c_name,
+                league=c_league,
+                realm=c_realm,
+            )
 
-    def _load_ref() -> None:
-        if compare_source or compare_xml_code:
-            load_build_into_worker(ref_worker, source=compare_source, xml_code=compare_xml_code)
-            if hasattr(ref_worker, "bump_rev"):
-                ref_worker.bump_rev()
-                if hasattr(ref_worker, "save_slot_state"):
-                    ref_worker.save_slot_state()
-
-    _run_worker_pair(main_worker, ref_worker, _load_main, _load_ref)
+    _run_worker_pair(
+        main_worker,
+        ref_worker,
+        lambda: _load_into(
+            main_worker,
+            source,
+            xml_code,
+            c_name=char_name,
+            c_league=league,
+            c_realm=realm,
+        ),
+        lambda: _load_into(ref_worker, compare_source, compare_xml_code),
+    )
     comparison = compare_builds(main_worker, ref_worker)
 
     def _diag_a() -> dict[str, Any]:

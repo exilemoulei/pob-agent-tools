@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import sys
@@ -32,6 +33,8 @@ from .manifest import (
 )
 from .paths import _find_legacy_dir, _get_runtime_dir, is_valid_engine_dir, seed_from_legacy_dir
 from .remote import (
+    POBTOOLS_APP_ONLY_PREFIXES,
+    POBTOOLS_DATA_ONLY_PREFIXES,
     _download_and_stage_release_zip,
     _download_pob_files_to_staging,
     _pick_data_asset,
@@ -147,6 +150,7 @@ def _fetch_remote_metadata(
             proxy=proxy,
             mirror=mirror,
             timeout=check_timeout,
+            slim=True,
         )
         fut_tools = pool.submit(
             pkg.fetch_pobtools_latest_info,
@@ -189,20 +193,17 @@ def _repair_and_diff_manifest(
     use_fast_stat = not force
 
     if pob_status == "not_modified":
-        tampered = find_local_manifest_mismatches(poe1_dir, fast_stat=use_fast_stat, cache_dir=cache_dir)
+        tampered = find_local_manifest_mismatches(poe1_dir, fast_stat=use_fast_stat, cache_dir=cache_dir, slim=True)
         if tampered:
             _, remote_manifest, new_etag = _pkg().fetch_pob_manifest_remote(
-                etag=None, proxy=proxy, mirror=mirror, timeout=check_timeout
+                etag=None, proxy=proxy, mirror=mirror, timeout=check_timeout, slim=True
             )
 
     if remote_manifest is not None:
         remote_pob_ver = remote_manifest.version
         to_download, to_delete = diff_pob_manifest(
-            poe1_dir,
-            remote_manifest,
-            verify_local_sha1=True,
-            fast_stat=use_fast_stat and check_only,
-            cache_dir=cache_dir,
+            poe1_dir, remote_manifest, verify_local_sha1=True, fast_stat=use_fast_stat and check_only,
+            cache_dir=cache_dir, slim=True,
         )
     return remote_manifest, new_etag, remote_pob_ver, to_download, to_delete
 
@@ -294,7 +295,7 @@ def _stage_incremental_updates(
                     proxy=proxy,
                     mirror=mirror,
                     skip_prefixes=("PoE1",),
-                    only_prefixes=() if _pkg().is_windows() else ("Data",),
+                    only_prefixes=POBTOOLS_APP_ONLY_PREFIXES,
                 )
             )
 
@@ -309,8 +310,13 @@ def _stage_incremental_updates(
                     proxy=proxy,
                     mirror=mirror,
                     skip_prefixes=("PoE1",),
+                    only_prefixes=POBTOOLS_DATA_ONLY_PREFIXES,
                 )
             )
+    if not _pkg().is_windows():
+        # Best effort: a runtime stamped with an older pin is refreshed along with an update, never blocks it.
+        with contextlib.suppress(Exception):  # staging_dir is <engine>/.staging
+            staged_files.update(_pkg().ensure_posix_runtime(staging_dir.parent, staging_dir, proxy=proxy, mirror=mirror))
     return staged_files
 
 

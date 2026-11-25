@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..bridge_client import BridgeWorker
+from ..errors import DaemonRequestError
+from ..snapshot import SlotHistory, history_of
 from ..updater import (
     OK_STATES,
     STATE_BOOTSTRAP_MISSING,
@@ -26,7 +28,6 @@ from .runtime import (
     REF_IDLE_TIMEOUT_SEC,
     UPDATE_RECHECK_INTERVAL_SEC,
     BootstrapMissingError,
-    _call_compat,
     _daemon_state_file,
     _get_runtime_dir,
     _is_offline_env,
@@ -34,6 +35,7 @@ from .runtime import (
 )
 from .slot_updates import (
     build_status_payload,
+    handle_set_lang_action,
     handle_update_action,
     hot_reload_update,
     maybe_periodic_update_check,
@@ -112,6 +114,9 @@ class DaemonManager:
         self._active_ops = 0
         self._reader_depths: dict[int, int] = {}
 
+        # A slot is its worker, its history and its lock; the history outlives the worker, so idle
+        # recycling and hot reload start a new worker on the same committed build and revision.
+        self._histories: dict[str, SlotHistory] = {}
         self._workers: dict[str, BridgeWorker] = {"main": self._new_worker("main")}
         self._slot_locks: dict[str, threading.RLock] = {"main": threading.RLock()}
         self.server: ThreadingHTTPServer | None = None
@@ -124,12 +129,18 @@ class DaemonManager:
     def _new_worker(self, slot_name: str) -> BridgeWorker:
         import pob_cli.daemon as _daemon_pkg
 
-        return _call_compat(
-            _daemon_pkg.BridgeWorker,
+        worker = _daemon_pkg.BridgeWorker(
             slot_name=slot_name,
             pob_dir=self.pob_dir,
             runtime_dir=self.runtime_dir,
         )
+        with self._lock:
+            history = self._histories.get(slot_name)
+            if history is None:
+                history = SlotHistory.load(slot_name, self.runtime_dir)
+                self._histories[slot_name] = history
+        history.bind(worker)
+        return worker
 
     @property
     def main_worker(self) -> BridgeWorker:
@@ -424,12 +435,16 @@ class DaemonManager:
         if busy:
             entry["busy"] = True
         if worker is not None:
-            entry["undoDepth"] = len(worker.undo_stack)
-            entry["redoDepth"] = len(worker.redo_stack)
+            history = history_of(worker)
+            entry.update(history.depths())
             if slot_name == "main":
                 entry["hello"] = worker.hello_info
-            if worker.source_label:
-                entry["sourceLabel"] = worker.source_label
+            if history.source_label:
+                entry["sourceLabel"] = history.source_label
+            restore_failed = getattr(worker, "restore_failed", None)
+            if restore_failed:
+                # The saved build could not be restored at boot: why, and the file it was put aside in.
+                entry["restoreFailed"] = restore_failed
         return entry
 
     def dispatch(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -444,6 +459,9 @@ class DaemonManager:
 
         if action == "update":
             return handle_update_action(self, params)
+
+        if action == "lang":
+            return handle_set_lang_action(self, params)
 
         if action in ("status", "load") and not params.get("skip_periodic_check"):
             self._maybe_periodic_update_check()
@@ -471,32 +489,40 @@ class DaemonManager:
             slot_lock = self._get_slot_lock(target)
             with slot_lock:
                 worker = self._get_worker_in_barrier(target)
-                res_slot = self._dispatch_slot(action, params, worker)
-                if action in ("load", "undo", "redo") or (
-                    isinstance(res_slot, dict) and res_slot.get("applied") is True
+                drift_warn: str | None = None
+                if (
+                    target == "main"
+                    and action not in ("load", "new_build", "diagnose")
+                    and not getattr(worker, "last_good_code", None)
                 ):
-                    self._bump_worker_rev(worker)
+                    with self._lock:
+                        loaded_others = sorted(
+                            name
+                            for name, other in self._workers.items()
+                            if name != "main" and getattr(other, "last_good_code", None)
+                        )
+                    if loaded_others:
+                        drift_warn = (
+                            f"[WARN] Target slot 'main' has no loaded build, while named slot(s) "
+                            f"{', '.join(loaded_others)} are loaded. Pass `--target {loaded_others[0]}` "
+                            "if you intended to inspect or mutate that build."
+                        )
+                try:
+                    res_slot = self._dispatch_slot(action, params, worker)
+                except DaemonRequestError as exc:
+                    if drift_warn and drift_warn not in str(exc):
+                        raise DaemonRequestError(f"{drift_warn}\n{exc}") from exc
+                    raise
+                if drift_warn and isinstance(res_slot, dict):
+                    res_slot.setdefault("slotDriftWarning", drift_warn)
                 if action in _STATE_META_ACTIONS:
                     return self._attach_state_meta(res_slot, worker)
                 return res_slot
 
     @staticmethod
-    def _bump_worker_rev(w: BridgeWorker) -> int | None:
-        bump = getattr(w, "bump_rev", None)
-        if callable(bump):
-            new_rev = int(bump())
-            save = getattr(w, "save_slot_state", None)
-            if callable(save):
-                save()
-            return new_rev
-        return None
-
-    @staticmethod
     def _attach_state_meta(res: Any, w: BridgeWorker) -> Any:
         if isinstance(res, dict):
-            raw_rev = getattr(w, "rev", None)
-            if isinstance(raw_rev, int) and not isinstance(raw_rev, bool):
-                res.setdefault("rev", raw_rev)
+            res.setdefault("rev", history_of(w).rev)
             slot_nm = getattr(w, "slot_name", None)
             if isinstance(slot_nm, str) and slot_nm:
                 res.setdefault("targetSlot", slot_nm)

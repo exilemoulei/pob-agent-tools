@@ -728,3 +728,32 @@ def test_non_json_response_does_not_chain_json_decode_error(tmp_path: Path):
         client.leagues()
     assert exc_info.value.__cause__ is None
     assert "0123456789abcdef" not in str(exc_info.value)
+
+
+def test_rate_limiter_records_each_request_once_so_the_wait_ends_with_the_oldest_hit(tmp_path: Path):
+    """5 per 10 s with margin 1: after 4 searches a second apart, the 5th waits for the first to expire."""
+    now, advance = _make_clock(1_700_000_000.0)
+    sleeps: list[float] = []
+    limiter = TradeRateLimiter(cache_dir=tmp_path, limit_margin=1, max_wait_sec=15.0, sleep=sleeps.append, now=now)
+
+    for hits in (1, 2, 3, 4):
+        assert limiter.before_request("search") == 0.0
+        advance(0.3)  # the response arrives
+        limiter.record_response(
+            "search",
+            {
+                "X-Rate-Limit-Policy": "trade-search-request-limit",
+                "X-Rate-Limit-Rules": "Ip",
+                "X-Rate-Limit-Ip": "5:10:60",
+                "X-Rate-Limit-Ip-State": f"{hits}:10:0",
+            },
+        )
+        advance(0.7)
+
+    # t = 4.0. The first hit was recorded at 0.3 and leaves the 10 s window at 10.3. Recording every
+    # request twice (once reserved, once on its response) used to stretch this to 8.0 s.
+    assert limiter.before_request("search") == pytest.approx(6.3)
+    stamps = json.loads(limiter.state_path.read_text(encoding="utf-8"))["policies"][
+        "trade-search-request-limit"
+    ]["timestamps"]
+    assert len(stamps) == 5

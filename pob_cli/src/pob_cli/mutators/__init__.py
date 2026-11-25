@@ -6,11 +6,7 @@ from ..snapshot import capture_digest
 from .batch_ops import _execute_batch_ops
 from .batch_sweep import (
     _collect_return_sections,
-    _compact_sweep_summary,
-    _extract_compact_calcs,
-    _json_safe_num,
     _normalize_return_sections,
-    _safe_ele_max_hit,
     run_batch,
     run_sweep,
     trade_eval_items,
@@ -29,7 +25,6 @@ from .build_state import (
 from .common import (
     _BatchCache,
     _call_batch,
-    _call_compat,
     _check_agnostic_dealloc_caution,
     _fold_no_apos,
     _fold_search_text,
@@ -90,6 +85,7 @@ from .skills_resolve import (
     _resolve_gem_in_group,
     _resolve_gem_specs_batch,
 )
+from .sweep_report import _compact_sweep_summary, _extract_compact_calcs, _json_safe_num, _safe_ele_max_hit
 from .tree import (
     _apply_tree_changes_in_place,
     _resolve_node_token,
@@ -114,7 +110,6 @@ __all__ = [
     "_apply_vaal_defaults_batch",
     "_build_add_gem_params",
     "_call_batch",
-    "_call_compat",
     "_check_agnostic_dealloc_caution",
     "_coerce_config_value",
     "_collect_return_sections",

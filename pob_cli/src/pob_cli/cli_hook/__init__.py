@@ -9,6 +9,7 @@ from typing import Any
 
 import click
 
+from ..compat import ensure_utf8
 from .gates import handle_pre_prompt, handle_pre_tool, handle_verify_stop
 from .protocols import decode_input, encode_output, read_stdin_json
 
@@ -16,10 +17,7 @@ _PROTOCOLS = click.Choice(["raw", "agy", "claude"], case_sensitive=False)
 
 
 def _emit_compact_json(obj: dict[str, Any]) -> None:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    ensure_utf8(sys.stdout)
     click.echo(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
 
 

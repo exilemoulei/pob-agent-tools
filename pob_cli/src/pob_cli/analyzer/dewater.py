@@ -13,7 +13,7 @@ from ..snapshot import (
     _call_batch,
     _json_safe_stat,
     _safe_min_ele_max_hit,
-    capture_digest,
+    verify_build,
 )
 from .constants import _KEEP_KEYWORDS
 from .dewater_steps import (
@@ -192,52 +192,13 @@ def _digest_metrics(digest: dict[str, Any], dps_key: str) -> dict[str, float | s
     }
 
 
-def _parse_stat_for_compare(val: Any) -> float | None:
-    if val is None or isinstance(val, bool):
-        return None
-    if isinstance(val, str) and not val.strip():
-        return None
-    return _parse_numeric_or_none(val)
-
-
 def verify_restored(
     worker: BridgeWorker,
     before_code: str,
     before_digest: dict[str, Any],
 ) -> dict[str, Any]:
     """Check that rolling back to ``before_code`` really reproduced the original build."""
-    after_code = worker.call("export_code", {}).get("code")
-    if before_code and after_code == before_code:
-        return {"verified": True, "detail": "restored build exports identical code"}
-    after = capture_digest(worker).get("stats") or {}
-    before = (before_digest.get("stats") or {}) if isinstance(before_digest, dict) else {}
-    differing: list[str] = []
-    for k in set(before.keys()) | set(after.keys()):
-        b = _parse_stat_for_compare(before.get(k))
-        a = _parse_stat_for_compare(after.get(k))
-        if b is None and a is None:
-            continue
-        if b is None or a is None:
-            differing.append(k)
-            continue
-        if math.isnan(b) or math.isnan(a):
-            if not (math.isnan(b) and math.isnan(a)):
-                differing.append(k)
-            continue
-        if math.isinf(b) or math.isinf(a):
-            if a != b:
-                differing.append(k)
-            continue
-        if abs(a - b) > 1e-6 * max(1.0, abs(b)):
-            differing.append(k)
-    if differing:
-        differing.sort()
-        return {
-            "verified": False,
-            "detail": f"{len(differing)} stat(s) differ from before the run (e.g. {', '.join(differing[:5])})",
-            "differing": differing,
-        }
-    return {"verified": True, "detail": "export code differs, but every stat recalculates identical"}
+    return verify_build(worker, before_digest, code=before_code or "")
 
 
 def _rpc_error_text(res: Any) -> str | None:

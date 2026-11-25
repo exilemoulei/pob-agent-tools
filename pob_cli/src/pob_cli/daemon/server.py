@@ -11,8 +11,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..bridge_client import BridgeError
+from ..bridge_client import BridgeError, BridgeRejectedError
+from ..bridge_protocol import ENGINE_REJECTED_HINT
 from ..errors import CrossGameHallucinationError, DaemonRequestError, LegacyPatchTrapError
+from ..guardrails import redact_secrets
 from .runtime import (
     GAME_ID,
     BootstrapMissingError,
@@ -104,22 +106,36 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
             except (DaemonRequestError, ValueError) as exc:
                 self._send_json(
                     400,
-                    {"ok": False, "error": str(exc), "type": type(exc).__name__, "errorKind": "request"},
+                    {
+                        "ok": False,
+                        "error": redact_secrets(str(exc)),
+                        "type": type(exc).__name__,
+                        "errorKind": "request",
+                    },
                 )
             except BridgeError as exc:
-                self._send_json(
-                    400,
-                    {"ok": False, "error": str(exc), "type": "BridgeError", "errorKind": "daemon"},
-                )
+                # A healthy engine that refused bad input is a request error (exit 1); everything
+                # else, timeouts and crashes included, is a fault (exit 5). See ENGINE_ERROR_KINDS.
+                kind = exc.kind if isinstance(exc, BridgeRejectedError) else "daemon"
+                message = redact_secrets(str(exc))
+                payload: dict[str, Any] = {
+                    "ok": False,
+                    "error": f"{message}\n{ENGINE_REJECTED_HINT}" if kind == "request" else message,
+                    "type": type(exc).__name__,
+                    "errorKind": kind,
+                }
+                if isinstance(exc, BridgeRejectedError) and exc.code:
+                    payload["engineCode"] = exc.code
+                self._send_json(400, payload)
             except Exception as exc:
                 self._send_json(
                     400,
                     {
                         "ok": False,
-                        "error": str(exc),
+                        "error": redact_secrets(str(exc)),
                         "type": exc.__class__.__name__,
                         "errorKind": "daemon",
-                        "trace": traceback.format_exc(limit=4),
+                        "trace": redact_secrets(traceback.format_exc(limit=4)),
                     },
                 )
 
@@ -171,15 +187,20 @@ def _serve_daemon(
     try:
         manager.start()
     except Exception as exc:
+        upd_status: dict[str, Any] | None = None
+        if isinstance(exc, BootstrapMissingError) and isinstance(exc.update_status, dict):
+            upd_status = dict(exc.update_status)
+            if isinstance(upd_status.get("networkError"), str):
+                upd_status["networkError"] = redact_secrets(upd_status["networkError"])
         err_payload = {
-            "error": str(exc),
+            "error": redact_secrets(str(exc)),
             "type": exc.__class__.__name__,
             "state": (
                 exc.update_status.get("state")
                 if isinstance(exc, BootstrapMissingError)
                 else "boot_error"
             ),
-            "updateStatus": exc.update_status if isinstance(exc, BootstrapMissingError) else None,
+            "updateStatus": upd_status,
             "ts": time.time(),
         }
         try:

@@ -492,3 +492,5 @@ def test_poedb_modsview_prioritizes_normal_prefix_suffix_and_supports_filter() -
     assert total_m == 3
     assert all("energy shield" in m["text"].lower() for m in filtered)
     assert filtered[0]["level"] == 86
+    # The Traditional spelling (the default pob-zh locale) reaches the same alias.
+    assert _extract_mods_from_modsview(mv, limit_mods=10, mod_filter="能量護盾")[0] == filtered

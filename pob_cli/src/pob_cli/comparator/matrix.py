@@ -6,10 +6,17 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from ..analyzer import dewater_build_in_place, verify_restored
+from ..analyzer import dewater_build_in_place
 from ..bridge_client import BridgeWorker
 from ..mutators import _apply_config_in_place
-from ..snapshot import _call_batch, capture_digest, compact_digest_summary, diff_digest
+from ..snapshot import (
+    BuildSnapshot,
+    BuildTransaction,
+    _call_batch,
+    capture_digest,
+    compact_digest_summary,
+    diff_digest,
+)
 
 DEFAULT_MATRIX_SCENARIOS: list[str] = ["Original", "Pinnacle", "Uber", "FlasksOff"]
 
@@ -214,112 +221,119 @@ def run_matrix(
         and not _plan_has_post_base_mutations(parsed_plans[0])
     )
 
-    with worker.lock:
-        prev_last_good = getattr(worker, "last_good_code", None)
-        try:
-            baseline_code = worker.call("export_code", {})["code"]
-            baseline_digest: dict[str, Any] | None = (
-                None if first_is_unmutated_original else capture_digest(worker)
-            )
-            results: list[dict[str, Any]] = []
-            first_digest: dict[str, Any] | None = None
+    with BuildTransaction(worker) as tx:
+        baseline_snap = tx.base
+        pinnacle_snap: BuildSnapshot | None = None
+        results: list[dict[str, Any]] = []
+        first_digest: dict[str, Any] | None = None
+        pinnacle_stripped: dict[str, list[str]] | None = None
+        worker_state = "original"
+        ever_mutated = False
 
-            pinnacle_code: str | None = None
-            pinnacle_stripped: dict[str, list[str]] | None = None
-            worker_state = "original"
-            ever_mutated = False
+        baseline_digest = None if first_is_unmutated_original else capture_digest(worker)
+        for idx, plan in enumerate(parsed_plans):
+            needs_pinnacle = plan["base"] in ("Pinnacle", "Uber")
+            has_pinnacle_cache = pinnacle_snap is not None
+            want_base = "pinnacle" if (needs_pinnacle and has_pinnacle_cache) else "original"
 
-            try:
-                for idx, plan in enumerate(parsed_plans):
-                    needs_pinnacle = plan["base"] in ("Pinnacle", "Uber")
-                    want_base = "pinnacle" if (needs_pinnacle and pinnacle_code is not None) else "original"
+            if worker_state != want_base:
+                worker_state = "dirty"
+                tx.restore(pinnacle_snap if want_base == "pinnacle" else baseline_snap)
+                worker_state = want_base
 
-                    if worker_state != want_base:
-                        target_code = pinnacle_code if want_base == "pinnacle" else baseline_code
-                        worker_state = "dirty"
-                        worker.call("import_code", {"code": target_code, "mode": "replace"})
-                        worker_state = want_base
+            has_post_mutations = _plan_has_post_base_mutations(plan)
 
-                    has_post_mutations = _plan_has_post_base_mutations(plan)
-
-                    if needs_pinnacle and pinnacle_code is None:
-                        worker_state = "dirty"
-                        ever_mutated = True
-                        pinnacle_stripped = dewater_build_in_place(worker, keep=keep)
-                        if pinnacle_count >= 2:
-                            pinnacle_code = worker.call("export_code", {})["code"]
-                            if not has_post_mutations:
-                                worker_state = "pinnacle"
-                        applied_info = _comp._apply_matrix_scenario_in_place(
-                            worker,
-                            plan,
-                            keep=keep,
-                            already_dewatered=True,
-                            cached_stripped=pinnacle_stripped,
-                        )
-                    elif needs_pinnacle and pinnacle_code is not None:
-                        if has_post_mutations:
-                            worker_state = "dirty"
-                            ever_mutated = True
-                        applied_info = _comp._apply_matrix_scenario_in_place(
-                            worker,
-                            plan,
-                            keep=keep,
-                            already_dewatered=True,
-                            cached_stripped=pinnacle_stripped,
-                        )
-                    else:
-                        if has_post_mutations:
-                            worker_state = "dirty"
-                            ever_mutated = True
-                        applied_info = _comp._apply_matrix_scenario_in_place(worker, plan, keep=keep)
-
-                    digest = capture_digest(worker)
-                    if idx == 0 and first_is_unmutated_original:
-                        baseline_digest = digest
-                    if first_digest is None:
-                        first_digest = digest
-                    deltas_vs_first = diff_digest(first_digest, digest)
-
-                    compact = compact_digest_summary(digest)
-                    summary_only = {k: v for k, v in compact.items() if k != "coreStats"}
-                    if full:
-                        entry_digest = digest
-                    else:
-                        entry_digest = {
-                            "primaryDpsKey": compact["primaryDpsKey"],
-                            "primaryDps": compact["primaryDps"],
-                            "totalEhp": compact["totalEhp"],
-                            "life": compact["life"],
-                            "warnings": compact["warnings"],
-                        }
-
-                    results.append(
-                        {
-                            "name": plan["name"],
-                            "base": plan["base"],
-                            "applied": applied_info,
-                            "summary": summary_only,
-                            "coreStats": compact["coreStats"],
-                            "digest": entry_digest,
-                            "deltasVsFirst": deltas_vs_first,
-                        }
-                    )
-            finally:
-                if worker_state != "original":
-                    worker.call("import_code", {"code": baseline_code, "mode": "replace"})
-
-            if not ever_mutated:
-                restore_check: dict[str, Any] = {"verified": True, "detail": "build was not mutated"}
+            if needs_pinnacle and not has_pinnacle_cache:
+                worker_state = "dirty"
+                ever_mutated = True
+                pinnacle_stripped = dewater_build_in_place(worker, keep=keep)
+                if pinnacle_count >= 2:
+                    pinnacle_snap = tx.checkpoint()
+                    if not has_post_mutations:
+                        worker_state = "pinnacle"
+                applied_info = _comp._apply_matrix_scenario_in_place(
+                    worker,
+                    plan,
+                    keep=keep,
+                    already_dewatered=True,
+                    cached_stripped=pinnacle_stripped,
+                )
+            elif needs_pinnacle and has_pinnacle_cache:
+                if has_post_mutations:
+                    worker_state = "dirty"
+                    ever_mutated = True
+                applied_info = _comp._apply_matrix_scenario_in_place(
+                    worker,
+                    plan,
+                    keep=keep,
+                    already_dewatered=True,
+                    cached_stripped=pinnacle_stripped,
+                )
             else:
-                restore_check = verify_restored(worker, baseline_code, baseline_digest or {})
-        finally:
-            if hasattr(worker, "last_good_code"):
-                worker.last_good_code = prev_last_good
+                if has_post_mutations:
+                    worker_state = "dirty"
+                    ever_mutated = True
+                applied_info = _comp._apply_matrix_scenario_in_place(worker, plan, keep=keep)
 
-        return {
-            "baseline": results[0]["name"] if results else "Original",
-            "full": bool(full),
-            "scenarios": results,
-            "restoreCheck": restore_check,
-        }
+            digest = capture_digest(worker)
+            if idx == 0 and first_is_unmutated_original:
+                baseline_digest = digest
+            if first_digest is None:
+                first_digest = digest
+            deltas_vs_first = diff_digest(first_digest, digest)
+
+            compact = compact_digest_summary(digest)
+            summary_only = {k: v for k, v in compact.items() if k != "coreStats"}
+            if full:
+                entry_digest = digest
+            else:
+                entry_digest = {
+                    "primaryDpsKey": compact["primaryDpsKey"],
+                    "primaryDps": compact["primaryDps"],
+                    "totalEhp": compact["totalEhp"],
+                    "life": compact["life"],
+                    "warnings": compact["warnings"],
+                }
+
+            results.append(
+                {
+                    "name": plan["name"],
+                    "base": plan["base"],
+                    "applied": applied_info,
+                    "summary": summary_only,
+                    "coreStats": compact["coreStats"],
+                    "digest": entry_digest,
+                    "deltasVsFirst": deltas_vs_first,
+                }
+            )
+
+        if worker_state != "original":
+            tx.rollback()
+        else:
+            tx.release()
+        if not ever_mutated:
+            restore_check: dict[str, Any] = {"verified": True, "detail": "build was not mutated"}
+        else:
+            # A drifted CoW restore is repaired here, so a leftover edit never reaches the next commit.
+            restore_check = tx.verify(baseline_digest or {})
+        if tx.notes:
+            restore_check = {**restore_check, "fallback": list(tx.notes)}
+
+        scenario_envelope: dict[str, Any] | None = None
+        if (getattr(worker, "caps", None) or {}).get("agentProbes"):
+            try:
+                env_res = worker.call("eval_scenario_envelope", {})
+                if isinstance(env_res, dict) and not env_res.get("_error"):
+                    scenario_envelope = env_res
+            except Exception:
+                scenario_envelope = None
+
+    out_mat: dict[str, Any] = {
+        "baseline": results[0]["name"] if results else "Original",
+        "full": bool(full),
+        "scenarios": results,
+        "restoreCheck": restore_check,
+    }
+    if scenario_envelope is not None:
+        out_mat["scenarioEnvelope"] = scenario_envelope
+    return out_mat

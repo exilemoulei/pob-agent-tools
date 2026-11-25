@@ -895,12 +895,12 @@ def test_rank_gems_from_item_trigger_does_not_unlock_socketed_triggers() -> None
 
 
 def test_base64_source_label_compaction_and_graft_slot_resolution() -> None:
-    from pob_cli.bridge_client import BridgeWorker
+    from pob_cli.bridge_protocol import compact_source_label
 
     huge_b64 = "eNrt" + ("A" * 500)
-    assert BridgeWorker._compact_source_label(huge_b64) == f"share_code({len(huge_b64)} chars)"
-    assert BridgeWorker._compact_source_label("https://pobb.in/abc123") == "https://pobb.in/abc123"
-    assert BridgeWorker._compact_source_label("C:/pob/builds/test.xml") == "C:/pob/builds/test.xml"
+    assert compact_source_label(huge_b64) == f"share_code({len(huge_b64)} chars)"
+    assert compact_source_label("https://pobb.in/abc123") == "https://pobb.in/abc123"
+    assert compact_source_label("C:/pob/builds/test.xml") == "C:/pob/builds/test.xml"
 
     # Graft slot vs Body Armour disambiguation
     assert normalize_equipment_slot("body") == "Body Armour"
@@ -1011,3 +1011,29 @@ def test_gem_quality_breakpoints_and_330_slang_grounding() -> None:
         "PATCH_330_SWORD_OF_AGES_TEMPORAL_MIRAGE",
         "PATCH_330_SKILL_GEM_QUALITY_SCOPE",
     }.issubset(pids)
+
+
+def test_traditional_slot_names_resolve_like_simplified_ones() -> None:
+    """The slot aliases are Simplified and the engine's labels Traditional: either script must match both."""
+    from pob_cli.mutators.common import _resolve_slot_from_items
+    from pob_cli.turn_receipts import classify_cli_args
+
+    items = {
+        "slots": [
+            {"name": "Helmet", "labelZh": "頭部"},
+            {"name": "Flask 1", "labelZh": "藥劑 1"},
+            {"name": "Jewel 7", "labelZh": "珠寶插槽 7"},
+            {"name": "Jewel 9", "label": "珠寶插槽 9"},
+        ]
+    }
+    for query, expected in (
+        ("頭盔", "Helmet"),
+        ("头盔", "Helmet"),
+        ("藥劑1", "Flask 1"),
+        ("珠宝插槽 7", "Jewel 7"),
+        ("珠寶插槽 7", "Jewel 7"),
+        ("珠寶插槽 9", "Jewel 9"),
+    ):
+        assert analyzer.resolve_slot_name(None, query, items_res=items) == expected  # type: ignore[arg-type]
+        assert _resolve_slot_from_items(items, query) == expected
+    assert classify_cli_args(["item", "inspect", "--slot", "頭盔"])["inspectedSlots"] == ["Helmet"]

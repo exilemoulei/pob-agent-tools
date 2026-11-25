@@ -8,7 +8,7 @@ import sqlite3
 from typing import Any
 
 from .constants import MOD_TAG_PREFIX_RE, SLOT_ALIASES
-from .tw_norm import _fold_search_text, normalize_tw_query
+from .tw_norm import _fold_search_text, fold_han, normalize_tw_query
 
 
 def _fts_phrase(token: str) -> str:
@@ -24,11 +24,13 @@ def _build_fts_match(query_lower: str) -> tuple[str | None, list[str]]:
 
 
 def _normalize_slot_filter(slot: str) -> tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
-    norm = re.sub(r"[\s\-]+", "_", slot.strip().lower())
+    norm = re.sub(r"[\s\-]+", "_", fold_han(slot.strip().lower()))
     if norm in SLOT_ALIASES:
         wk, parent_tags, master_types = SLOT_ALIASES[norm]
         return norm, wk, parent_tags, master_types
-    return norm, (norm,), (norm, "default"), (slot.strip(),)
+    # Not a known slot: only mods that name it as a weight key or bench type match. With parent
+    # tags it would inherit the default weight, and a typo would list every generic mod.
+    return norm, (norm,), (), (slot.strip(),)
 
 
 def _mod_matches_slot(
@@ -57,7 +59,7 @@ def _mod_matches_slot(
             return True
 
     # PoB default-weight inheritance: rolls if default > 0 and no parent/slot tag is explicitly 0
-    if weights.get("default", 0) > 0 and source in ("Explicit", "Corrupted"):
+    if parent_tags and weights.get("default", 0) > 0 and source in ("Explicit", "Corrupted"):
         zeros = set(json.loads(zero_weights_json))
         if not any(pt in zeros for pt in parent_tags):
             return True

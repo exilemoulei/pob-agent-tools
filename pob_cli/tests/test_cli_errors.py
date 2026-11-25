@@ -19,6 +19,13 @@ import pytest
 from click.testing import CliRunner
 
 from pob_cli import cli_trade, daemon, updater
+from pob_cli.bridge_protocol import (
+    ENGINE_REJECTED_HINT,
+    BridgeError,
+    BridgeRejectedError,
+    BridgeTimeoutError,
+    rpc_rejection,
+)
 from pob_cli.cli import DAEMON_FAILURE_EXIT_CODE, main
 from pob_cli.daemon import BootstrapMissingError, DaemonRequestError
 from pob_cli.trade_client import TradeClient
@@ -221,6 +228,91 @@ def test_rpc_handler_marks_error_kind(failure: Exception, kind: str) -> None:
         thread.join(timeout=2)
 
 
+# --- engine rejections: a healthy engine refusing bad input exits 1, faults exit 5 ----------
+
+_LUA_TRACE = "\nstack traceback:\n\t[C]: in function 'error'\n\tbridge.lua:2046: in function 'decode_share_code'"
+
+
+@pytest.mark.parametrize(
+    ("err_obj", "kind", "shown"),
+    [
+        ({"code": "lua_error", "message": "not a Path of Building code" + _LUA_TRACE}, "request", None),
+        ({"code": "lua_error", "message": "empty code" + _LUA_TRACE}, "request", None),
+        ({"code": "lua_error", "message": "code did not decode to a build: bad tag" + _LUA_TRACE}, "request", None),
+        ({"code": "bad_request", "message": "missing method"}, "request", None),
+        # lua_error is also a PoB bug or missing data, so anything not in the table stays a fault.
+        ({"code": "lua_error", "message": "bridge.lua:12: attempt to index a nil value" + _LUA_TRACE}, "daemon", "stack"),
+        ({"code": "lua_error", "message": "unknown method: frobnicate" + _LUA_TRACE}, "daemon", "stack"),
+        ({"code": "no_bridge", "message": "bridge.lua did not register a dispatcher"}, "daemon", None),
+        ({"code": "bad_json", "message": "invalid JSON"}, "daemon", None),
+        ("corrupt", "daemon", None),  # legacy pob-zh.exe hosts answer with a bare string
+    ],
+)
+def test_engine_error_kinds_table(err_obj: Any, kind: str, shown: str | None) -> None:
+    exc = rpc_rejection("import_code", err_obj)
+    assert isinstance(exc, BridgeRejectedError) and isinstance(exc, BridgeError)
+    assert exc.kind == kind
+    assert exc.code == (err_obj.get("code") if isinstance(err_obj, dict) else None)
+    assert str(exc).startswith("RPC 'import_code' failed: ")
+    if kind == "request":
+        assert "stack traceback" not in str(exc)
+    if shown == "stack":
+        assert "stack traceback" in str(exc)
+
+
+@pytest.mark.parametrize(
+    ("failure", "kind", "code"),
+    [
+        (BridgeRejectedError("RPC 'import_code' failed: empty code", code="lua_error", kind="request"), "request", "lua_error"),
+        (BridgeRejectedError("RPC 'get_calcs' failed: boom", code="lua_error"), "daemon", "lua_error"),
+        (BridgeTimeoutError("RPC 'get_calcs' timed out after 15.0s"), "daemon", None),
+    ],
+)
+def test_rpc_handler_maps_engine_rejections(failure: Exception, kind: str, code: str | None) -> None:
+    class FailingManager:
+        token = "test-token"
+
+        def dispatch(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+            raise failure
+
+    server = TCPServer(("127.0.0.1", 0), daemon.make_handler(FailingManager()))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = _post_rpc_stdlib(server.server_address[1], "test-token", {"action": "load", "params": {}})
+        assert status == 400
+        assert body["errorKind"] == kind
+        assert body["type"] == type(failure).__name__
+        assert body.get("engineCode") == code
+        assert body["error"].startswith(str(failure))
+        assert (ENGINE_REJECTED_HINT in body["error"]) == (kind == "request")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_engine_rejected_input_exits_1_with_an_input_hint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = {
+        "ok": False,
+        "error": f"RPC 'import_code' failed: not a Path of Building code\n{ENGINE_REJECTED_HINT}",
+        "type": "BridgeRejectedError",
+        "errorKind": "request",
+        "engineCode": "lua_error",
+    }
+    monkeypatch.setattr(daemon, "read_daemon_state", lambda *a, **k: {"pid": os.getpid(), "port": 1, "token": "t"})
+    monkeypatch.setattr(daemon, "_http_post_rpc", lambda *a, **k: (400, payload))
+    monkeypatch.setattr(updater, "load_update_state", lambda *a, **k: {})
+
+    res = CliRunner().invoke(main, ["summary"])
+
+    assert res.exit_code == 1, res.output
+    assert "not a Path of Building code" in res.output
+    assert ENGINE_REJECTED_HINT in res.output
+    assert "Run `pob stop` and retry" not in res.output
+    assert "Traceback" not in res.output
+
+
 # --- cmd_load / cmd_update / cmd_stop / batch item_edit / trade --pob on -------------------
 
 
@@ -352,8 +444,6 @@ def test_batch_item_edit_empty_slot_returns_request_error_kind_and_exit_1(
         def __init__(self) -> None:
             self.lock = threading.RLock()
             self.last_good_code = "SNAP_1"
-            self.undo_stack: list[str] = []
-            self.redo_stack: list[str] = []
             self.slot_name = "main"
 
         def ensure_alive(self) -> None:
@@ -567,7 +657,7 @@ def test_run_sweep_computes_and_returns_restore_check() -> None:
     class _SweepWorker:
         def __init__(self, *, break_restore: bool = False) -> None:
             self.lock = threading.RLock()
-            self.last_good_code = "SENTINEL_GOOD"
+            self.last_good_code = "CODE_100000"  # the committed build is the live one
             self.dps = 100_000.0
             self.break_restore = break_restore
             self.export_calls_order: list[str] = []
@@ -610,7 +700,7 @@ def test_run_sweep_computes_and_returns_restore_check() -> None:
         base_ops=[{"op": "config", "set": {"usePowerCharges": True}}],
     )
     assert res_ok["restoreCheck"]["verified"] is True
-    assert w_ok.last_good_code == "SENTINEL_GOOD"
+    assert w_ok.last_good_code == "CODE_100000"
 
     # 2. Failed rollback surfaces restoreCheck.verified == False with differing stats
     w_bad = _SweepWorker(break_restore=True)
@@ -620,7 +710,7 @@ def test_run_sweep_computes_and_returns_restore_check() -> None:
     )
     assert res_bad["restoreCheck"]["verified"] is False
     assert "CombinedDPS" in res_bad["restoreCheck"].get("differing", [])
-    assert w_bad.last_good_code == "SENTINEL_GOOD"
+    assert w_bad.last_good_code == "CODE_100000"
 
 
 @pytest.mark.parametrize(
@@ -698,10 +788,7 @@ def test_pob_load_missing_at_file_and_invalid_share_code_exit_1(
         def __init__(self) -> None:
             self.lock = threading.RLock()
             self.last_good_code = None
-            self.undo_stack: list[str] = []
-            self.redo_stack: list[str] = []
             self.slot_name = "main"
-            self.source_label = None
 
         def ensure_alive(self) -> None:
             return None

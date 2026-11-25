@@ -7,6 +7,9 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
+from ..guardrails import get_auth_env_status
+from ..locale_cfg import get_active_lang, normalize_lang, set_active_lang
+from ..snapshot import history_of
 from ..updater import (
     is_valid_engine_dir,
     resolve_engine_root,
@@ -41,7 +44,11 @@ def hot_reload_update(
     force: bool = False,
     offline: bool = False,
 ) -> dict[str, Any]:
-    """Atomically snapshot all slots, stop workers to unlock Windows DLLs, update engine, and restore slots."""
+    """Stop every slot's worker (unlocking Windows DLLs), update the engine, and restart the slots.
+
+    Each slot keeps its `SlotHistory`, so a new worker comes back on the committed build with the
+    same undo/redo stacks and revision; outside a transaction the live build is the committed one.
+    """
     import pob_cli.daemon as _daemon_pkg
 
     with manager._update_check_lock, manager._exclusive_barrier():
@@ -49,22 +56,9 @@ def hot_reload_update(
             return manager.update_status
         saved_slots: dict[str, dict[str, Any]] = {}
         for slot_name, worker in list(manager._workers.items()):
-            was_alive = worker.is_alive()
-            code = worker.last_good_code
-            if was_alive:
-                try:
-                    exported = worker.update_checkpoint()
-                    if exported:
-                        code = exported
-                except Exception:
-                    pass
-            saved_slots[slot_name] = {
-                "was_alive": was_alive,
-                "code": code,
-                "undo": list(worker.undo_stack),
-                "redo": list(worker.redo_stack),
-                "source_label": worker.source_label,
-            }
+            history = history_of(worker)
+            manager._histories[slot_name] = history
+            saved_slots[slot_name] = {"was_alive": worker.is_alive(), "code": history.committed}
             try:
                 worker.stop()
             except Exception:
@@ -90,10 +84,6 @@ def hot_reload_update(
             if slot_name != "main" and not (snap["was_alive"] or snap["code"]):
                 continue
             w = manager._new_worker(slot_name)
-            w.last_good_code = snap["code"]
-            w.undo_stack = snap["undo"]
-            w.redo_stack = snap["redo"]
-            w.source_label = snap["source_label"]
             if engine_valid and (slot_name == "main" or snap["was_alive"]):
                 w.start()
             new_workers[slot_name] = w
@@ -192,26 +182,106 @@ def handle_update_action(manager: DaemonManager, params: dict[str, Any]) -> dict
     return manager._attach_warning_if_degraded(dict(updated))
 
 
+def _available_locales(pob_dir: Any) -> list[str]:
+    avail: list[str] = []
+    try:
+        from pathlib import Path
+
+        from ..game_data.paths import list_available_zh_dirs
+
+        names = {d.name for d in list_available_zh_dirs(Path(pob_dir))} if pob_dir else set()
+        avail = [lang for lang, sub in (("zh-CN", "zh-rCN"), ("zh-TW", "zh-rTW")) if sub in names]
+    except Exception:
+        pass
+    return [*avail, "en"]
+
+
+def handle_set_lang_action(manager: DaemonManager, params: dict[str, Any]) -> dict[str, Any]:
+    rt_dir = getattr(manager, "runtime_dir", None)
+    raw_lang = params.get("lang")
+    persisted_info: dict[str, Any] | None = None
+    env_overridden: str | None = None
+    updated_slots: dict[str, Any] = {}
+    barrier_fn = getattr(manager, "_exclusive_barrier", manager._reader_barrier)
+
+    with barrier_fn():
+        if raw_lang is not None and str(raw_lang).strip():
+            norm = normalize_lang(str(raw_lang))
+            if params.get("persist", True):
+                persisted_info = set_active_lang(norm, runtime_dir=rt_dir)
+            target_lang = norm
+            # POB_LANG copied into the daemon at start would otherwise outrank this explicit
+            # switch forever: status would keep reporting it and new slots would start in it.
+            daemon_env = os.environ.get("POB_LANG", "").strip()
+            if daemon_env and daemon_env != norm:
+                env_overridden = daemon_env
+                os.environ["POB_LANG"] = norm
+            with manager._lock:
+                workers_snap = list(manager._workers.items())
+            for sname, w in workers_snap:
+                slock = manager._get_slot_lock(sname)
+                with slock:
+                    set_fn = getattr(w, "set_locale", None)
+                    if callable(set_fn):
+                        try:
+                            updated_slots[sname] = set_fn(target_lang)
+                        except Exception as exc:
+                            updated_slots[sname] = {"ok": False, "error": str(exc)}
+        else:
+            target_lang, _ = get_active_lang(rt_dir)
+        eff_lang, eff_src = get_active_lang(rt_dir)
+    out: dict[str, Any] = {
+        "lang": eff_lang if raw_lang is None else target_lang,
+        "effectiveLang": eff_lang,
+        "source": eff_src,
+        "availableLocales": _available_locales(getattr(manager, "pob_dir", None)),
+        "slotsUpdated": updated_slots,
+    }
+    if persisted_info:
+        out["persistedLang"] = persisted_info["lang"]
+        out["configPath"] = persisted_info["configPath"]
+    if env_overridden:
+        out["daemonEnvOverridden"] = env_overridden
+    return out
+
+
 def build_status_payload(manager: DaemonManager) -> dict[str, Any]:
+    # Never wait for the boot update check (it can take a network timeout): report it as running.
+    boot_t = getattr(manager, "_boot_update_thread", None)
+    boot_running = boot_t is not None and boot_t.is_alive()
     with manager._reader_barrier():
         with manager._lock:
             workers_snap = dict(manager._workers)
-            pob_dir_str = str(manager.pob_dir)
+            pob_dir_val = getattr(manager, "pob_dir", None)
+            pob_dir_str = str(pob_dir_val)
             upd_copy = dict(manager.update_status)
+        if not upd_copy and boot_running:
+            upd_copy = {"state": "checking"}
         slots_status = {sname: manager._slot_status_entry(sname, w) for sname, w in workers_snap.items()}
+        main_w = workers_snap.get("main")
+        main_caps = dict(getattr(main_w, "caps", None) or {})
         main_entry = slots_status.get("main") or manager._slot_status_entry("main", None)
+        if main_caps and isinstance(main_entry, dict):
+            main_entry.setdefault("caps", main_caps)
         ref_entry = slots_status.get("ref") or {
             "alive": False,
             "buildInfo": None,
             "hasLoadedBuild": False,
         }
+        eff_lang, eff_src = get_active_lang(getattr(manager, "runtime_dir", None))
         res: dict[str, Any] = {
             "game": GAME_ID,
             "pid": os.getpid(),
             "uptimeSec": round(time.time() - manager.started_at, 1),
             "idleSec": round(time.time() - manager.last_active_ts, 1),
             "engineDir": pob_dir_str,
+            "lang": eff_lang,
+            "langSource": eff_src,
+            "availableLocales": _available_locales(pob_dir_val),
+            "winLuaHost": bool(main_caps.get("winLuaHost")),
+            "caps": main_caps,
             "updateStatus": upd_copy,
+            "auth": get_auth_env_status(),
             "main": main_entry,
             "ref": ref_entry,
             "slots": slots_status,

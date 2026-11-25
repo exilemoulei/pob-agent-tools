@@ -158,6 +158,46 @@ def app_dir() -> Path:
     return Path(sys.executable).resolve().parent
 
 
+def _is_abs_archive_path(raw: str) -> bool:
+    if not raw:
+        return False
+    if raw.startswith(("/", "\\")):
+        return True
+    return len(raw) >= 2 and raw[1] == ":" and raw[0].isalpha()
+
+
+def _validate_tar_members(archive_name: str, members: list[tarfile.TarInfo], dest_resolved: Path) -> None:
+    seen_symlinks: set[Path] = set()
+    for member in members:
+        if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
+            raise UpdateError(f"Unsafe special entry in {archive_name}: {member.name}")
+        norm_name = member.name.replace("\\", "/")
+        if _is_abs_archive_path(member.name) or ".." in Path(norm_name).parts:
+            raise UpdateError(f"Unsafe path in {archive_name}: {member.name}")
+        target = (dest_resolved / member.name).resolve()
+        if not target.is_relative_to(dest_resolved):
+            raise UpdateError(f"Unsafe path in {archive_name}: {member.name}")
+        if any(parent in seen_symlinks for parent in target.parents):
+            raise UpdateError(f"Unsafe symlink traversal in {archive_name}: {member.name}")
+        if member.issym():
+            if _is_abs_archive_path(member.linkname):
+                raise UpdateError(f"Unsafe symlink in {archive_name}: {member.name} -> {member.linkname}")
+            if not (target.parent / member.linkname).resolve().is_relative_to(dest_resolved):
+                raise UpdateError(f"Unsafe symlink in {archive_name}: {member.name} -> {member.linkname}")
+            seen_symlinks.add(target)
+        elif member.islnk():
+            norm_link = member.linkname.replace("\\", "/")
+            if _is_abs_archive_path(member.linkname) or ".." in Path(norm_link).parts:
+                raise UpdateError(f"Unsafe hardlink in {archive_name}: {member.name} -> {member.linkname}")
+            if not (dest_resolved / member.linkname).resolve().is_relative_to(dest_resolved):
+                raise UpdateError(f"Unsafe hardlink in {archive_name}: {member.name} -> {member.linkname}")
+        member.mode &= 0o777
+
+
+def _supports_tar_data_filter() -> bool:
+    return getattr(tarfile, "data_filter", None) is not None
+
+
 def _extract(archive: Path, dest: Path) -> None:
     dest_resolved = dest.resolve()
     if archive.name.endswith(".zip"):
@@ -168,7 +208,12 @@ def _extract(archive: Path, dest: Path) -> None:
             zf.extractall(dest)
         return
     with tarfile.open(archive, "r:gz") as tf:
-        tf.extractall(dest, filter="data")
+        if _supports_tar_data_filter():
+            tf.extractall(dest, filter="data")
+            return
+        members = tf.getmembers()
+        _validate_tar_members(archive.name, members, dest_resolved)
+        tf.extractall(dest, members=members)
 
 
 @contextmanager

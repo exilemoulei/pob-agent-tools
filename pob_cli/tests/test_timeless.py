@@ -383,6 +383,8 @@ def test_describe_worker_uses_call_batch_and_chinese_fallback(game_dir: Path) ->
     assert timeless._resolve_jewel("致命的骄傲", jewels, eng) == "Lethal Pride"
     assert timeless._resolve_jewel("辉煌的虚荣", jewels, eng) == "Glorious Vanity"
     assert timeless._resolve_jewel("溃烂复仇", jewels, eng) == "Festering Vengeance"
+    # Traditional spellings without a hand-written alias resolve through the fold.
+    assert timeless._resolve_jewel("潰爛復仇", jewels, eng) == "Festering Vengeance"
 
 
 class FakeEngine:
@@ -1116,8 +1118,11 @@ def test_real_engine_tables_match_their_seed_ranges() -> None:
     from pob_cli.bridge_client import BridgeWorker
 
     game_dir = BridgeWorker("test").game_dir
-    if not (game_dir / "Data" / "TimelessJewelData" / "NodeIndexMapping.lua").is_file():
+    lut_dir = game_dir / "Data" / "TimelessJewelData"
+    if not (lut_dir / "NodeIndexMapping.lua").is_file():
         pytest.skip("no local PoB engine data")
+    if not (lut_dir / "LethalPride.zip").is_file():
+        pytest.skip("slim engine install omits static .zip timeless LUTs (uses timeless_prng)")
     jewels = timeless.load_jewels(game_dir)
     index = timeless.load_node_index(game_dir)
     assert set(timeless.FLAT_TABLES) <= set(jewels)

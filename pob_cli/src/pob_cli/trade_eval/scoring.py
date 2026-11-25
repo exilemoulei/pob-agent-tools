@@ -37,6 +37,7 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 
 PREFERRED_BONUS = 1.6
 POB_EHP_WEIGHT = 0.25
+MIN_SURROGATE_PREFILTER_K = 50
 
 
 # ---------------------------------------------------------------------------
@@ -376,3 +377,155 @@ def score_deltas(deltas: list[ModDelta]) -> float:
 def deltas_for_example(current: Item | None, candidate: Item) -> list[ModDelta]:
     """Small helper kept for tests and callers that only need the delta list."""
     return compare_items(current, candidate)
+
+
+# ---------------------------------------------------------------------------
+# Linear grad-Build surrogate pre-filter (Dead-End Rule P3: enforce K >= 50)
+# ---------------------------------------------------------------------------
+
+
+def compute_grad_weights(
+    worker: Any,
+    *,
+    stat: str | None = None,
+    ehp_weight: float = 0.5,
+    include_resists: bool = True,
+) -> dict[str, Any] | None:
+    """Query `compute_grad_build` marginal sensitivity weights when `worker.caps.agentProbes` is active."""
+    caps = getattr(worker, "caps", None) or {}
+    if not caps.get("agentProbes"):
+        return None
+    params: dict[str, Any] = {
+        "ehpWeight": float(ehp_weight),
+        "includeResists": bool(include_resists),
+    }
+    if stat:
+        params["stat"] = stat
+    try:
+        res = worker.call("compute_grad_build", params)
+        if isinstance(res, dict) and isinstance(res.get("weights"), dict) and not res.get("_error"):
+            return res
+    except Exception:
+        pass
+    return None
+
+
+def extract_item_surrogate_features(item: Item) -> dict[str, float]:
+    """Extract coarse 24-dim feature values from parsed `Item` mods for linear surrogate pre-ranking."""
+    feats: dict[str, float] = {}
+
+    def _add(key: str, amount: float) -> None:
+        if math.isfinite(amount) and amount != 0.0:
+            feats[key] = feats.get(key, 0.0) + amount
+
+    for mod in item.mods:
+        tmpl = mod.template
+        vals = [float(v) for v in (mod.values or ()) if math.isfinite(float(v))]
+        if not vals:
+            continue
+        val = sum(vals) / len(vals)
+        if not math.isfinite(val):
+            continue
+        if "adds # to # physical damage" in tmpl:
+            _add("flat_phys", val)
+        elif "adds # to # fire damage" in tmpl:
+            _add("flat_fire", val)
+        elif "adds # to # cold damage" in tmpl:
+            _add("flat_cold", val)
+        elif "adds # to # lightning damage" in tmpl:
+            _add("flat_light", val)
+        elif "adds # to # chaos damage" in tmpl:
+            _add("flat_chaos", val)
+        elif "increased spell damage" in tmpl:
+            _add("inc_spell_dmg", val)
+        elif "increased attack" in tmpl and "damage" in tmpl:
+            _add("inc_attack_dmg", val)
+        elif "increased" in tmpl and "damage" in tmpl:
+            _add("inc_damage", val)
+        elif "critical strike chance" in tmpl:
+            _add("inc_crit_chance", val)
+        elif "critical strike multiplier" in tmpl:
+            _add("crit_multi", val)
+        elif "attack speed" in tmpl or "cast speed" in tmpl:
+            _add("inc_speed", -val if "reduced" in tmpl else val)
+        elif "to level of" in tmpl and "gem" in tmpl:
+            _add("gem_level", val)
+        elif "penetrates" in tmpl and "resistance" in tmpl:
+            _add("minus_enemy_res", val)
+        elif "to maximum life" in tmpl:
+            _add("flat_life", val)
+        elif "increased maximum life" in tmpl:
+            _add("inc_life", val)
+        elif "to maximum energy shield" in tmpl:
+            _add("flat_es", val)
+        elif "increased" in tmpl and "energy shield" in tmpl:
+            _add("inc_es", val)
+        elif "to armour" in tmpl:
+            _add("flat_armour", val)
+        elif "to evasion" in tmpl:
+            _add("flat_evasion", val)
+        elif "to maximum mana" in tmpl:
+            _add("flat_mana", val)
+        elif "to all elemental resistances" in tmpl:
+            _add("fire_res", val)
+            _add("cold_res", val)
+            _add("light_res", val)
+        elif "to fire resistance" in tmpl:
+            _add("fire_res", val)
+        elif "to cold resistance" in tmpl:
+            _add("cold_res", val)
+        elif "to lightning resistance" in tmpl:
+            _add("light_res", val)
+        elif "to chaos resistance" in tmpl:
+            _add("chaos_res", val)
+        elif "to strength" in tmpl:
+            _add("flat_life", 0.5 * val)
+        elif "to intelligence" in tmpl:
+            _add("flat_mana", 0.5 * val)
+            _add("inc_es", 0.2 * val)
+    return feats
+
+
+def _weight_scalar(entry: Any) -> float:
+    if isinstance(entry, (int, float)):
+        return float(entry) if math.isfinite(float(entry)) else 0.0
+    if isinstance(entry, dict):
+        for key in ("scorePerUnit", "score_per_unit", "dStatPerUnit", "relDpsPerUnit"):
+            raw = entry.get(key)
+            if isinstance(raw, (int, float)) and math.isfinite(float(raw)):
+                return float(raw)
+    return 0.0
+
+
+def score_candidate_surrogate(item: Item, grad_weights: dict[str, Any]) -> float:
+    """Compute linear dot-product pre-filter score against `compute_grad_build` weights."""
+    raw_weights = grad_weights.get("weights") if isinstance(grad_weights.get("weights"), dict) else grad_weights
+    if not isinstance(raw_weights, dict):
+        return 0.0
+    feats = extract_item_surrogate_features(item)
+    total = 0.0
+    for dim, val in feats.items():
+        if dim in raw_weights:
+            total += val * _weight_scalar(raw_weights[dim])
+    return total if math.isfinite(total) else 0.0
+
+
+def prefilter_candidates_with_surrogate(
+    candidates: list[Candidate],
+    grad_weights: dict[str, Any] | None,
+    *,
+    top_k: int = MIN_SURROGATE_PREFILTER_K,
+) -> list[Candidate]:
+    """Pre-filter candidates using linear `grad Build` weights with a hard `K >= 50` floor (Rule P3)."""
+    effective_k = max(MIN_SURROGATE_PREFILTER_K, int(top_k))
+    if not grad_weights or len(candidates) <= effective_k:
+        return list(candidates)
+    raw_w = grad_weights.get("weights") if isinstance(grad_weights.get("weights"), dict) else grad_weights
+    if not isinstance(raw_w, dict) or not raw_w:
+        return list(candidates)
+    scored = [
+        (score_candidate_surrogate(cand.item, grad_weights), idx, cand)
+        for idx, cand in enumerate(candidates)
+    ]
+    scored.sort(key=lambda row: (-row[0], row[1]))
+    return [row[2] for row in scored[:effective_k]]

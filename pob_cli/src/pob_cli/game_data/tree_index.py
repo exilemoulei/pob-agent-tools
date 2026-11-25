@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .paths import (
+    _prune_old_indexes,
     _resolve_poe1_data_dirs,
     _shared_cache_dir,
     _sqlite_ro_uri,
@@ -21,7 +22,7 @@ from .paths import (
 )
 from .tw_norm import _fold_search_text
 
-TREE_SCHEMA_VERSION = 4
+TREE_SCHEMA_VERSION = 5
 _TREE_INDEX_LOCK = threading.RLock()
 _VALID_TREE_INDEX_CACHE: set[tuple[str, str, str]] = set()
 
@@ -38,6 +39,20 @@ _TREE_MASTERY_ITEM_RE = re.compile(
 )
 _TREE_LUA_STR_RE = re.compile(r'"((?:\\[\s\S]|[^"\\])*)"')
 _TREE_ASC_ID_NAME_RE = re.compile(r'\["id"\]\s*=\s*"([^"]+)"\s*,\s*\["name"\]\s*=\s*"([^"]+)"')
+
+
+# Every dictionary file _load_tree_zh_maps reads besides tree_sd.json. The index hash covers the
+# same list: it used to cover three of them, so a change to the others left stale Chinese names.
+_TREE_ZH_NAME_FILES: tuple[str, ...] = (
+    "tree_dn.json",
+    "Z-S25.json",
+    "Z-S26.json",
+    "Z-S27.json",
+    "Z-S28.json",
+    "Z-S29.json",
+    "Z-S30.json",
+    "Z-S30-Pearl_of_Tsoatha-Passive_Tree.json",
+)
 
 
 def _find_latest_tree_lua(poe1_dir: Path) -> tuple[str, Path]:
@@ -90,16 +105,7 @@ def _load_tree_zh_maps(zh_dir: Path | None) -> tuple[dict[str, str], dict[str, s
     sd_map: dict[str, str] = {}
     if zh_dir is None or not zh_dir.is_dir():
         return dn_map, sd_map
-    for fn in (
-        "tree_dn.json",
-        "Z-S25.json",
-        "Z-S26.json",
-        "Z-S27.json",
-        "Z-S28.json",
-        "Z-S29.json",
-        "Z-S30.json",
-        "Z-S30-Pearl_of_Tsoatha-Passive_Tree.json",
-    ):
+    for fn in _TREE_ZH_NAME_FILES:
         p = zh_dir / fn
         if not p.is_file():
             continue
@@ -324,14 +330,15 @@ def ensure_treedata_index(
     """Build (if missing/stale) and return `(db_path, tree_version)` for 0ms daemon-free passive tree queries."""
     rt_dir = resolve_runtime_dir(runtime_dir)
     resolved_pob = resolve_pob_dir(pob_dir, rt_dir)
-    poe1_dir, zh_dir = _resolve_poe1_data_dirs(resolved_pob)
+    poe1_dir, zh_dir = _resolve_poe1_data_dirs(resolved_pob, runtime_dir=rt_dir)
     tree_ver, tree_lua_path = _find_latest_tree_lua(poe1_dir)
 
     hasher = hashlib.blake2b(digest_size=4)
     st = tree_lua_path.stat()
     hasher.update(f"{tree_ver}:{st.st_size}:{st.st_mtime_ns};".encode())
     if zh_dir is not None and zh_dir.is_dir():
-        for fn in ("tree_dn.json", "tree_sd.json", "Z-S30.json"):
+        hasher.update(f"{zh_dir.name};".encode())
+        for fn in (*_TREE_ZH_NAME_FILES, "tree_sd.json"):
             zp = zh_dir / fn
             if zp.is_file():
                 zst = zp.stat()
@@ -470,6 +477,7 @@ def ensure_treedata_index(
                 if not _is_tree_db_valid():
                     raise
             _VALID_TREE_INDEX_CACHE.add(cache_key)
+            _prune_old_indexes(cache_dir, "treedata_*.sqlite", db_path)
             return db_path, tree_ver
         finally:
             try:

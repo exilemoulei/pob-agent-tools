@@ -6,6 +6,7 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
+from ..game_data import fold_han
 from .loader import BenchRecipe, BenchSearchResult, normalize_line, normalize_template, slot_key
 
 _EN_WORD_RE = re.compile(r"[a-z0-9]+")
@@ -82,7 +83,8 @@ def _en_tokens(text: str) -> list[str]:
 
 
 def _clean_zh_for_match(text: str) -> str:
-    return _ZH_NOISE_RE.sub("", text.lower())
+    # Used on the query and on the recipe text, so Traditional and Simplified compare equal.
+    return fold_han(_ZH_NOISE_RE.sub("", text.lower()))
 
 
 def _is_subsequence(needle: str, haystack: str) -> bool:

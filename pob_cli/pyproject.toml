@@ -51,7 +51,8 @@ version = { attr = "pob_cli.__version__" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-pob_cli = ["data/*.json", "lua/*.lua"]
+# Keep in step with pob.spec: timeless_prng.lua reads data/*.lua.gz at runtime.
+pob_cli = ["data/*.json", "data/*.lua.gz", "lua/*.lua"]
 
 [tool.ruff]
 src = ["src"]

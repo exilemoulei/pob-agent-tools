@@ -6,7 +6,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from ..bridge_client import BridgeWorker
-from .runtime import _call_compat
 
 if TYPE_CHECKING:
     from .slots import DaemonManager
@@ -43,8 +42,7 @@ def _h_switch_main(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -
 def _h_new_build(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from .. import mutators
 
-    return _call_compat(
-        mutators.create_new_build,
+    return mutators.create_new_build(
         w,
         class_name=params.get("class_name") or params.get("className"),
         ascendancy=params.get("ascendancy") or params.get("ascendancy_name") or params.get("ascendancyName"),
@@ -81,6 +79,7 @@ def _h_item_edit(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> 
         replace_mods=rep_tuples or None,
         add_mods=params.get("add_mods") or params.get("addMods"),
         remove_mods=params.get("remove_mods") or params.get("removeMods"),
+        allow_illegal_affixes=bool(params.get("allow_illegal_affixes", params.get("allowIllegalAffixes", False))),
         apply=bool(params.get("apply", False)),
     )
 
@@ -89,16 +88,14 @@ def _h_item_unequip(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) 
     from .. import mutators
 
     slot_val = str(params.get("slot") or params.get("slotName") or "")
-    return _call_compat(mutators.unequip_item, w, slot=slot_val, slot_name=slot_val, apply=bool(params.get("apply", False)))
+    return mutators.unequip_item(w, slot=slot_val, apply=bool(params.get("apply", False)))
 
 
 def _h_item_db(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from .. import mutators
 
     idx_val = params.get("index") if params.get("index") is not None else params.get("item_index")
-    fn = getattr(mutators, "search_and_try_item_db", None) or mutators.query_item_db
-    return _call_compat(
-        fn,
+    return mutators.search_and_try_item_db(
         w,
         query=str(params.get("query") or ""),
         db_type=str(params.get("db_type") or params.get("dbType") or "UNIQUE"),
@@ -183,8 +180,7 @@ def _h_skill_rm(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> d
 def _h_skill_new_group(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from .. import mutators
 
-    return _call_compat(
-        mutators.add_skill_group,
+    return mutators.add_skill_group(
         w,
         gems=params.get("gems"),
         label=params.get("label"),
@@ -204,11 +200,9 @@ def _h_skill_replace_group(_m: DaemonManager, params: dict[str, Any], w: BridgeW
     from .. import mutators
 
     grp_val = params.get("group") if params.get("group") is not None else "main"
-    return _call_compat(
-        mutators.replace_skill_group,
+    return mutators.replace_skill_group(
         w,
         group=grp_val,
-        group_selector=str(grp_val),
         gems=params.get("gems") or [],
         label=params.get("label"),
         slot=params.get("slot"),
@@ -225,8 +219,7 @@ def _h_skill_replace_group(_m: DaemonManager, params: dict[str, Any], w: BridgeW
 def _h_tree_change(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from .. import mutators
 
-    return _call_compat(
-        mutators.change_tree,
+    return mutators.change_tree(
         w,
         allocate=params.get("allocate"),
         deallocate=params.get("deallocate"),
@@ -269,8 +262,7 @@ def _h_config_set(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) ->
 def _h_batch(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from .. import mutators
 
-    return _call_compat(
-        mutators.run_batch,
+    return mutators.run_batch(
         w,
         ops=params.get("ops") or [],
         apply=bool(params.get("apply", False)),
@@ -283,8 +275,7 @@ def _h_batch(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict
 def _h_sweep(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from .. import mutators
 
-    return _call_compat(
-        mutators.run_sweep,
+    return mutators.run_sweep(
         w,
         variants=params.get("variants") or [],
         base_ops=params.get("base_ops") or params.get("baseOps"),

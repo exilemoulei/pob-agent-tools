@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import copy
 import statistics
 from typing import Any
 
-from ..trade_client import MAX_FETCH_IDS, NoResults, TradeError
+from ..trade_client import MAX_FETCH_IDS, MAX_FETCH_MANY, NoResults, TradeError
 from ..trade_eval import listing_age_hours
 from ..trade_query import build_query
 from .common import _price_of
+
+# The trade site stops matching at this many listings and sorts only those, so the "cheapest"
+# page of a search that hits it is not the real floor.
+RESULT_CAP = 10000
 
 
 def _chaos_rates(client: Any, league: str, proxy: str | None) -> dict[str, float]:
@@ -86,6 +91,16 @@ def _market_chaos(cheapest: list[dict[str, Any]], rates: dict[str, float]) -> fl
     return statistics.median(prices) if len(prices) >= 5 else None
 
 
+def _clone_without_max_age(query: dict[str, Any], *, price_asc: bool = False) -> dict[str, Any]:
+    cloned = copy.deepcopy(query)
+    tf = ((cloned.get("query") or {}).get("filters") or {}).get("trade_filters")
+    if isinstance(tf, dict) and isinstance(tf.get("filters"), dict):
+        tf["filters"].pop("indexed", None)
+    if price_asc:
+        cloned["sort"] = {"price": "asc"}
+    return cloned
+
+
 def _fetch_with_fresh_and_market(
     *,
     client: Any,
@@ -98,11 +113,12 @@ def _fetch_with_fresh_and_market(
     search_sort: str,
     sort_by: str,
     proxy: str | None,
+    has_auto_query: bool = False,
 ) -> dict[str, Any]:
     """Execute trade search + optional fresh filtering/fallback, chaos rates, and bargain baseline."""
     import pob_cli.cli_trade as _ct
 
-    want = max(0, min(fetch_limit, 20))
+    want = max(0, min(fetch_limit, MAX_FETCH_MANY))
     rows: list[dict[str, Any]] = []
     query_id = ""
     total = 0
@@ -119,7 +135,7 @@ def _fetch_with_fresh_and_market(
     if max_age is not None and not rows and want:
         # Nothing that fresh: show the older listings rather than an empty report.
         # `query` is replaced so the links and the JSON match what is listed.
-        query = build_query(**query_args)
+        query = _clone_without_max_age(query) if has_auto_query else build_query(**query_args)
         query_id, total, rows, fetched = _search_rows(
             client, league_name, query, want=want, max_age=None
         )
@@ -135,24 +151,35 @@ def _fetch_with_fresh_and_market(
     market: float | None = None
     market_note = ""
     if bargain is not None:
-        if (max_age is None or stale_fallback) and search_sort == "asc" and want >= 10:
+        market_total = total
+        # Read the body's sort: an --auto-query search sorts by weighted sum unless told otherwise.
+        if (max_age is None or stale_fallback) and query.get("sort") == {"price": "asc"} and want >= 10:
             cheapest = rows[:10]  # this search already is "cheapest first, any age"
         else:
             try:
-                cheapest = _search_rows(
+                mkt_query = (
+                    _clone_without_max_age(query, price_asc=True)
+                    if has_auto_query
+                    else build_query(**{**query_args, "search_sort": "asc"})
+                )
+                market_total, cheapest = _search_rows(
                     client,
                     league_name,
-                    build_query(**{**query_args, "search_sort": "asc"}),
+                    mkt_query,
                     want=10,
                     max_age=None,
-                )[2]
+                )[1:3]
             except TradeError:
                 cheapest = []
-        market = _market_chaos(cheapest, rates)
+        capped = market_total >= RESULT_CAP
+        market = None if capped else _market_chaos(cheapest, rates)
         market_note = (
             f"median of the {len(cheapest)} cheapest listings (any age) is {market:g} chaos; "
             f"BARGAIN = at least {bargain:g}% below that (price only - judge the item by the PoB columns)"
             if market
+            else f"no going price: the search matches {RESULT_CAP}+ listings, the site's cap, so its "
+            "cheapest page is not the real floor; narrow the search - nothing flagged"
+            if capped
             else "no going price (under 5 priced listings, or the market search failed); nothing flagged"
         )
 

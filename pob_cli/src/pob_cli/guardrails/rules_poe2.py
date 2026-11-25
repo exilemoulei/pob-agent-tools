@@ -110,7 +110,6 @@ POE2_ONLY_REVERSE_TRAPS_FOR_POB1: tuple[TrapRule, ...] = (
             "crossbow",
             "flail",
             "spear",
-            "buckler",
             "weapon.quarterstaff",
             "weapon.crossbow",
             "weapon.flail",
@@ -160,6 +159,15 @@ POE2_ONLY_REVERSE_TRAPS_FOR_POB1: tuple[TrapRule, ...] = (
         ),
         remediation="Use `pob2` for PoE2 Focus/Quarterstaff slots, or `--slot shield` / `--slot staff` in `pob`.",
         equivalent_command="pob2 trade search --slot quarterstaff",
+    ),
+    TrapRule(
+        rule_id="POE2_BUCKLER_SLOT_ONLY",
+        # Refused only as a slot or category: Goathide, Crusader ... Buckler are PoE1 shield bases.
+        scopes=frozenset({S.SLOT, S.CATEGORY}),
+        en_exact=("buckler",),
+        error="`Buckler` as an equipment slot/category is PoE2-only (in PoE1 a buckler is a `shield` base).",
+        remediation="Use `pob2` for the PoE2 Buckler slot, or `--slot shield` in `pob`.",
+        equivalent_command="pob2 trade search --slot buckler",
     ),
     TrapRule(
         rule_id="POE2_CHARM_BELT_SLOTS",

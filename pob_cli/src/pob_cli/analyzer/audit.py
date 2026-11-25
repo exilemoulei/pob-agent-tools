@@ -9,6 +9,7 @@ from typing import Any
 from ..bridge_client import BridgeWorker
 from ..formatters import _parse_numeric_or_none
 from ..snapshot import (
+    BuildTransaction,
     _call_batch,
     _finite_float,
     _json_safe_stat,
@@ -462,62 +463,68 @@ def audit_build(
     worker: BridgeWorker,
     keep: Iterable[str] | str | None = None,
     attribution: bool = True,
+    *,
+    include_envelope: bool = True,
 ) -> dict[str, Any]:
     """Run static build health checks + non-destructive 4-part PoB inflation ('water') audit."""
     import pob_cli.analyzer as _analyzer
 
-    with worker.lock:
-        prev_last_good = getattr(worker, "last_good_code", None)
+    with BuildTransaction(worker) as tx:
+        items_res = worker.call("list_items", {})
+        digest_before = capture_digest(worker)
+        stats = digest_before["stats"]
+        info = digest_before["buildInfo"]
         try:
-            export_res, items_res = _call_batch(
+            skills_res_audit, cfg_res_audit = _call_batch(
                 worker,
-                [("export_code", {}), ("list_items", {})],
+                [("list_skills", {}), ("list_config", {})],
             )
-            snap_code = export_res["code"]
-            digest_before = capture_digest(worker)
-            stats = digest_before["stats"]
-            info = digest_before["buildInfo"]
+        except Exception:
+            skills_res_audit, cfg_res_audit = None, None
+
+        health_issues = _collect_static_health_issues(
+            stats, info, items_res, skills_res_audit, digest_before["warnings"]
+        )
+
+        stripped, records = _analyzer.dewater_build_with_records(worker, keep=keep)
+        digest_dewatered = capture_digest(worker)
+        dewater_diff = diff_digest(digest_before, digest_dewatered)
+        water_attribution = (
+            _analyzer.attribute_water(worker, records, digest_dewatered, digest_before["primaryDpsKey"])
+            if attribution
+            else []
+        )
+        restore_check = tx.rollback_verified(digest_before)
+
+        mech_gaps, mech_audit = _detect_build_mechanics_and_pitfalls(
+            stats=stats,
+            skills_res=skills_res_audit,
+            items_res=items_res,
+            cfg_res=cfg_res_audit,
+            warnings=digest_before["warnings"],
+            build_info=info,
+            stripped_flasks=list((stripped or {}).get("flasks") or []),
+        )
+        health_issues.extend(mech_gaps)
+        audit_core_synergies = list(mech_audit.get("coreSynergies") or [])
+        agent_probe_res: dict[str, Any] | None = None
+        scenario_envelope_res: dict[str, Any] | None = None
+        if (getattr(worker, "caps", None) or {}).get("agentProbes"):
             try:
-                skills_res_audit, cfg_res_audit = _call_batch(
-                    worker,
-                    [("list_skills", {}), ("list_config", {})],
-                )
+                p_res = worker.call("agent_probe_build", {})
+                if isinstance(p_res, dict) and not p_res.get("_error"):
+                    agent_probe_res = p_res
             except Exception:
-                skills_res_audit, cfg_res_audit = None, None
+                pass
+            if include_envelope:
+                try:
+                    env_res = worker.call("eval_scenario_envelope", {})
+                    if isinstance(env_res, dict) and not env_res.get("_error"):
+                        scenario_envelope_res = env_res
+                except Exception:
+                    pass
 
-            health_issues = _collect_static_health_issues(
-                stats, info, items_res, skills_res_audit, digest_before["warnings"]
-            )
-
-            try:
-                stripped, records = _analyzer.dewater_build_with_records(worker, keep=keep)
-                digest_dewatered = capture_digest(worker)
-                dewater_diff = diff_digest(digest_before, digest_dewatered)
-                water_attribution = (
-                    _analyzer.attribute_water(worker, records, digest_dewatered, digest_before["primaryDpsKey"])
-                    if attribution
-                    else []
-                )
-            finally:
-                worker.call("import_code", {"code": snap_code, "mode": "replace"})
-            restore_check = _analyzer.verify_restored(worker, snap_code, digest_before)
-
-            mech_gaps, mech_audit = _detect_build_mechanics_and_pitfalls(
-                stats=stats,
-                skills_res=skills_res_audit,
-                items_res=items_res,
-                cfg_res=cfg_res_audit,
-                warnings=digest_before["warnings"],
-                build_info=info,
-                stripped_flasks=list((stripped or {}).get("flasks") or []),
-            )
-            health_issues.extend(mech_gaps)
-            audit_core_synergies = list(mech_audit.get("coreSynergies") or [])
-        finally:
-            if hasattr(worker, "last_good_code"):
-                worker.last_good_code = prev_last_good
-
-        return {
+        out_audit: dict[str, Any] = {
             "healthIssues": health_issues,
             "core_synergies": audit_core_synergies,
             "inflationStripped": stripped,
@@ -527,3 +534,8 @@ def audit_build(
             "dewateredPinnacle": _build_audit_panel(digest_dewatered),
             "dewaterDiff": dewater_diff,
         }
+        if agent_probe_res is not None:
+            out_audit["agentProbe"] = agent_probe_res
+        if scenario_envelope_res is not None:
+            out_audit["scenarioEnvelope"] = scenario_envelope_res
+        return out_audit

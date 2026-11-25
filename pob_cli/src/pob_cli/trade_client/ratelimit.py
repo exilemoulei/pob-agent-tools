@@ -268,6 +268,7 @@ class TradeRateLimiter:
                 for t in (entry.get("in_flight") or [])
                 if isinstance(t, (int, float))
             ]
+            reserved = bool(in_flight)
             if in_flight:
                 in_flight.pop(0)
             if in_flight:
@@ -280,7 +281,10 @@ class TradeRateLimiter:
                 for t in (entry.get("timestamps") or [])
                 if isinstance(t, (int, float))
             ]
-            timestamps.append(now)
+            if not reserved:
+                # before_request already recorded a reserved request. Recording it again made the
+                # window look twice as full, so the wait was measured from a later request.
+                timestamps.append(now)
             entry["timestamps"] = sorted(timestamps)[-_MAX_TRACKED_TIMESTAMPS:]
             prev_upd = float(entry.get("updated_at") or 0.0)
             entry["updated_at"] = max(now, prev_upd + 1e-6)

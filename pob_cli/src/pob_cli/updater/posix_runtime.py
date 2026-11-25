@@ -8,6 +8,11 @@ Order of preference:
 
 Releases up to v0.8.0 published no runtime, and pre-0.9 pob asked for `pob-runtime-<platform>.tar.gz`
 without any check; neither name is published, so those versions keep compiling from source.
+
+An installed runtime carries `bin/runtime.stamp`, the pin it was built from (`runtime_pin()`). A missing
+or different stamp makes the next online `pob bootstrap` or engine update refresh it (bundled, this
+pob's own release, or a source build); until then, and whenever that refresh fails, the installed
+runtime keeps running, so an install from before the stamp still works offline.
 """
 
 from __future__ import annotations
@@ -26,8 +31,10 @@ from .constants import (
     _ASSET_TIMEOUT_SPEC,
     _CHECK_TIMEOUT_SPEC,
     ASSET_MAX_RETRIES,
+    POSIX_LUAJIT_COMMIT,
     POSIX_LUAJIT_TARBALL_SHA256,
     POSIX_LUAJIT_TARBALL_URL,
+    POSIX_LUAUTF8_TAG,
     POSIX_LUAUTF8_TARBALL_SHA256,
     POSIX_LUAUTF8_TARBALL_URL,
     UpdateError,
@@ -38,6 +45,7 @@ from .releases import asset_url, latest_release_tag, release_platform_tag, signe
 from .remote import _download_bytes_with_retry
 
 RUNTIME_FILES = (Path("bin") / "luajit", Path("bin") / "lua-utf8.so")
+RUNTIME_STAMP = Path("bin") / "runtime.stamp"
 # Compound assignment is what stock LuaJIT lacks and PoB >= 2.68 needs; lua-utf8 must load from bin/.
 _SELF_TEST_LUA = (
     'local c = 1; c += 41; assert(c == 42); local s = "po"; s ..= "b"; assert(s == "pob"); '
@@ -47,6 +55,39 @@ _SELF_TEST_LUA = (
 
 def _pkg() -> Any:
     return sys.modules["pob_cli.updater"]
+
+
+def runtime_pin() -> str:
+    """The sources this pob builds its runtime from; `bin/runtime.stamp` holds the installed one's."""
+    return f"luajit={POSIX_LUAJIT_COMMIT} lua-utf8={POSIX_LUAUTF8_TAG}"
+
+
+def _runtime_overridden() -> bool:
+    return bool(
+        _pkg().is_windows()
+        or os.environ.get("POB_ENGINE_CMD", "").strip()
+        or os.environ.get("POB_LUAJIT", "").strip()
+    )
+
+
+def posix_runtime_is_current(engine_dir: Path) -> bool:
+    """True when the engine's runtime is installed and stamped with this pob's pin (or is not ours to manage)."""
+    if _runtime_overridden():
+        return True
+    eng = Path(engine_dir)
+    if not all((eng / rel).is_file() for rel in RUNTIME_FILES):
+        return False
+    try:
+        return (eng / RUNTIME_STAMP).read_text(encoding="utf-8").strip() == runtime_pin()
+    except OSError:
+        return False
+
+
+def _stamped(files: dict[Path, Path], staging_dir: Path, pin: str) -> dict[Path, Path]:
+    stamp = staging_dir / "_posix_stamp" / RUNTIME_STAMP
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(pin + "\n", encoding="utf-8")
+    return {**files, RUNTIME_STAMP: stamp}
 
 
 def runtime_asset_name(version: str, platform: str | None = None) -> str:
@@ -124,7 +165,7 @@ def _bundled_posix_runtime(staging_dir: Path) -> dict[Path, Path] | None:
         os.chmod(out / rel, 0o755)
     if _self_test_runtime(out / "bin") is not None:
         return None
-    return {rel: out / rel for rel in RUNTIME_FILES}
+    return _stamped({rel: out / rel for rel in RUNTIME_FILES}, staging_dir, runtime_pin())
 
 
 def _sha256(data: bytes) -> str:
@@ -145,12 +186,18 @@ def _try_download_prebuilt_posix_runtime(
     *,
     proxy: str | None = None,
     mirror: str | None = None,
+    own_release_only: bool = False,
 ) -> dict[Path, Path] | None:
-    """Download and verify a prebuilt runtime from a pob4agents release; None means build from source."""
+    """Download and verify a prebuilt runtime from a pob4agents release; None means build from source.
+
+    The installed stamp is the one the archive ships (from build_posix_runtime.sh). An older archive
+    without one is stamped with `runtime_pin()` when it is this pob's own release, else with its tag,
+    so a later refresh (`own_release_only`) replaces it with a matching one.
+    """
     make_client = _pkg()._make_http_client
     try:
         with make_client(timeout=_to_httpx_timeout(_CHECK_TIMEOUT_SPEC), proxy=proxy, follow_redirects=False) as c:
-            tags = _release_tags(c, mirror)
+            tags = [f"v{__version__}"] if own_release_only else _release_tags(c, mirror)
         with make_client(timeout=_to_httpx_timeout(_ASSET_TIMEOUT_SPEC), proxy=proxy, follow_redirects=True) as c:
             for tag in tags:
                 sums = signed_sums(c, tag, mirror)
@@ -174,7 +221,12 @@ def _try_download_prebuilt_posix_runtime(
                 if _self_test_runtime(extract_root / "bin") is not None:
                     # Built for a newer libc than this machine has, for example: compile instead.
                     return None
-                return {rel: extract_root / rel for rel in RUNTIME_FILES}
+                shipped = extract_root / RUNTIME_STAMP  # releases after 0.9.0 carry the stamp of their build
+                if shipped.is_file():
+                    pin = shipped.read_text(encoding="utf-8").strip()
+                else:
+                    pin = runtime_pin() if tag == f"v{__version__}" else f"release {tag}"
+                return _stamped({rel: extract_root / rel for rel in RUNTIME_FILES}, staging_dir, pin)
     except Exception:
         return None
     return None
@@ -271,7 +323,7 @@ def _build_posix_runtime_from_source(
         if failure is not None:
             raise UpdateError(f"Compiled POSIX LuaJIT runtime failed self-test: {failure}")
 
-        return {rel: staging_dir / rel for rel in RUNTIME_FILES}
+        return _stamped({rel: staging_dir / rel for rel in RUNTIME_FILES}, staging_dir, runtime_pin())
 
 
 def ensure_posix_runtime(
@@ -281,19 +333,25 @@ def ensure_posix_runtime(
     proxy: str | None = None,
     mirror: str | None = None,
 ) -> dict[Path, Path]:
-    """Ensure macOS/Linux native LuaJIT + lua-utf8.so exist: bundled, verified download, or source build."""
-    if _pkg().is_windows():
-        return {}
-    if os.environ.get("POB_ENGINE_CMD", "").strip() or os.environ.get("POB_LUAJIT", "").strip():
+    """Stage a macOS/Linux LuaJIT + lua-utf8.so runtime when the engine has none or an outdated one.
+
+    Returns the files to install (with `bin/runtime.stamp`), or {} when the installed runtime is
+    current. A runtime that is installed but stamped differently (or not at all) is refreshed only
+    from sources that match this pob's pin, and a failed refresh keeps the installed one.
+    """
+    if posix_runtime_is_current(engine_dir):
         return {}
     eng = Path(engine_dir)
-    if all((eng / rel).is_file() for rel in RUNTIME_FILES):
-        return {}
-
-    bundled = _bundled_posix_runtime(staging_dir)
-    if bundled:
-        return bundled
-    prebuilt = _try_download_prebuilt_posix_runtime(staging_dir, proxy=proxy, mirror=mirror)
-    if prebuilt:
-        return prebuilt
-    return _build_posix_runtime_from_source(staging_dir, proxy=proxy, mirror=mirror)
+    installed = all((eng / rel).is_file() for rel in RUNTIME_FILES)
+    try:
+        return (
+            _bundled_posix_runtime(staging_dir)
+            or _try_download_prebuilt_posix_runtime(
+                staging_dir, proxy=proxy, mirror=mirror, own_release_only=installed
+            )
+            or _build_posix_runtime_from_source(staging_dir, proxy=proxy, mirror=mirror)
+        )
+    except Exception:
+        if installed:
+            return {}
+        raise

@@ -49,6 +49,7 @@ POSIX_PLATFORMS = ("macos-arm64", "macos-x64", "linux-x64", "linux-arm64")
 PLATFORMS = (WINDOWS, *POSIX_PLATFORMS)
 PLATFORM_EXT = {WINDOWS: "zip", **dict.fromkeys(POSIX_PLATFORMS, "tar.gz")}
 RUNTIME_FILES = ("bin/luajit", "bin/lua-utf8.so")
+RUNTIME_STAMP = "bin/runtime.stamp"  # written by build_posix_runtime.sh; shipped when present
 LEGACY_WINDOWS_ALIAS = "pob-windows-x64.zip"
 
 _VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
@@ -195,7 +196,8 @@ def pack_posix(dist_dir: Path, runtime_dir: Path, out_dir: Path, version: str, p
     _reproducible_tar_gz(tar_path, dist_dir, _tree(dist_dir))
     for alias in names[1:]:
         shutil.copyfile(tar_path, out_dir / alias)
-    _reproducible_tar_gz(out_dir / runtime_name(version, platform), runtime_dir, ["bin", *RUNTIME_FILES])
+    stamp = [RUNTIME_STAMP] if (runtime_dir / RUNTIME_STAMP).is_file() else []
+    _reproducible_tar_gz(out_dir / runtime_name(version, platform), runtime_dir, ["bin", *RUNTIME_FILES, *stamp])
     return tar_path, _sha256(tar_path)
 
 

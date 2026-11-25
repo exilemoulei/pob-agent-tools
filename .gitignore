@@ -24,3 +24,6 @@ dist-py/
 release-assets/
 .pytest_cache/
 .coverage
+
+# Internal working notes (not published)
+docs/internal/

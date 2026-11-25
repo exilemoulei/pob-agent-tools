@@ -80,6 +80,9 @@ def test_slot_category_and_pob_slot_mappings() -> None:
     assert tq.category_for_slot("flask3") == "flask"
     assert tq.category_for_slot("abyss_jewel") == "jewel.abyss"
     assert tq.category_for_slot("cluster_jewel") == "jewel.cluster"
+    # Chinese slot names resolve in either script.
+    assert tq.category_for_slot("頭盔") == tq.category_for_slot("头盔") == "armour.helmet"
+    assert tq.category_for_slot("腰帶") == "accessory.belt"
 
     assert tq.pob_slot_for_slot("Body Armour") == "Body Armour"
     assert tq.pob_slot_for_slot("chest") == "Body Armour"
@@ -284,6 +287,15 @@ def test_tiny_entry_does_not_hijack_long_unrelated_query() -> None:
     # Regression guard for PR #1's broken `entry_template in target -> 0.9` heuristic.
     assert tq.resolve_stat("Completely Fictional Quantum Damage Overdrive", SAMPLE_ENTRIES) is None
     assert tq.resolve_stat("Unicorn Rainbow Life Explosion", SAMPLE_ENTRIES) is None
+
+
+@pytest.mark.parametrize(
+    ("traditional", "simplified"),
+    [("能量護盾", "能量护盾"), ("暴擊率", "暴击率"), ("火焰傷害", "火焰伤害"), ("閃避", "闪避"), ("護甲", "护甲")],
+)
+def test_translate_stat_query_folds_traditional_names(traditional: str, simplified: str) -> None:
+    """Traditional names reach the Simplified alias table instead of a fuzzy guess at another stat."""
+    assert tq.translate_stat_query(traditional) == tq.ZH_STAT_ALIASES[simplified]
 
 
 def test_translate_stat_query_ignores_partial_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

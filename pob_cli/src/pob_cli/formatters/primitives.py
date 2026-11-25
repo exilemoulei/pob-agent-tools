@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ..compat import ensure_utf8
+
 _tabulate_checked = False
 _tabulate_fn: Any = None
 
@@ -312,17 +314,11 @@ def emit_json(
                     f"[pob hint] Large JSON output ({orig_kb:.1f} KB > 16 KB). "
                     "Prefer default Markdown (omit --json) or pass --out <file> to keep context lean.\n"
                 )
-            try:
-                sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            ensure_utf8(sys.stderr)
             sys.stderr.write(hint)
             sys.stderr.flush()
 
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    ensure_utf8(sys.stdout)
     sys.stdout.write(text + "\n")
     sys.stdout.flush()
     return text

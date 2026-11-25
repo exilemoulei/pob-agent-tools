@@ -467,6 +467,8 @@ def test_reverse_cli_trap_commands(argv: list[str], expected_rule: str, expected
         (["data", "base", "Crossbow", "--json"], "POE2_WEAPONS_AND_FOCUS_OFFHAND"),
         (["trade", "search", "--slot", "focus", "--json"], "POE2_FOCUS_AND_QUARTERSTAFF_SLOT_ONLY"),
         (["trade", "search", "--slot", "quarterstaff", "--json"], "POE2_FOCUS_AND_QUARTERSTAFF_SLOT_ONLY"),
+        (["trade", "search", "--slot", "buckler", "--json"], "POE2_BUCKLER_SLOT_ONLY"),
+        (["trade", "search", "--category", "armour.buckler", "--json"], "POE2_WEAPONS_AND_FOCUS_OFFHAND"),
         (["trade", "search", "--slot", "charm1", "--json"], "POE2_CHARM_BELT_SLOTS"),
         (["trade", "search", "--category", "armour.focus", "--json"], "POE2_WEAPONS_AND_FOCUS_OFFHAND"),
         (["trade", "stats", "maximum Spirit", "--json"], "POE2_SPIRIT_RESERVATION"),
@@ -569,6 +571,10 @@ def test_item_raw_blocks_poe2_rune_tag_soul_core_and_charm_mods() -> None:
         ("Quarterstaff", GuardrailScope.ITEM_RAW),
         ("Quarterstaff", GuardrailScope.STAT_QUERY),
         ("Quarterstaff", GuardrailScope.CALC_QUERY),
+        # PoE1 shield bases (Goathide, Crusader ... Buckler) outside SLOT / CATEGORY
+        ("buckler", GuardrailScope.DATA_QUERY),
+        ("Crusader Buckler", GuardrailScope.DATA_QUERY),
+        ("Buckler", GuardrailScope.ITEM_RAW),
     ],
 )
 def test_zero_false_positives_for_poe1_terms(text: str, scope: GuardrailScope) -> None:

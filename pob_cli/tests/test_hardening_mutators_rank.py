@@ -27,8 +27,6 @@ class _FakeMutationWorker:
         gem_search_map: dict[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         self.lock = threading.RLock()
-        self.undo_stack: list[str] = []
-        self.redo_stack: list[str] = []
         self.last_good_code: str | None = "CODE_INIT"
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self._groups = groups if groups is not None else [
@@ -50,9 +48,6 @@ class _FakeMutationWorker:
             "100": {"id": 100, "name": "Test Node"},
         }
         self._gem_search_map = gem_search_map or {}
-
-    def save_slot_state(self) -> None:
-        pass
 
     def get_cached_tree_data(self, _tv: Any = None) -> dict[str, Any]:
         return {"nodes": self._tree_nodes}

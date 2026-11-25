@@ -90,6 +90,35 @@ _OUT_OR_REDIRECT_RE = re.compile(
     re.IGNORECASE,
 )
 _STRIP_JSON_FLAGS_RE = re.compile(r"(?:^|\s)--(?:json|compact)(?=\s|$)")
+_SECRET_FILE_RE = re.compile(
+    r"(?:^|[/\\\"'\s])(?:daemon\.json|oauth_token\.json|Settings\.xml)(?:$|[\"'`\s;,|&)>])",
+    re.IGNORECASE,
+)
+_SECRET_ENV_NAME_RE = re.compile(
+    r"\b(?:POESESSID|POE_COOKIE|POE_CN_SESSID|POE_CN_COOKIE)\b",
+    re.IGNORECASE,
+)
+_ENV_DUMP_RE = re.compile(
+    r"(?:\b(?:get-childitem|gci|dir|ls|get-item|gi|get-content|gc|cat)\b[^\n;|&]*\benv:"
+    r"|\bprintenv\b"
+    r"|\bos\.environ\b"
+    r"|\bprocess\.env\b"
+    r"|\[(?:System\.)?Environment\]::GetEnvironmentVariables?\b"
+    r"|\bexport\s+-p\b)",
+    re.IGNORECASE,
+)
+_STANDALONE_ENV_SET_RE = re.compile(
+    r"(?:^|(?:&&|\|\||[;&|\r\n]|(?:\bcmd(?:\.exe)?\s+/[ck]|\b(?:ba|z|da)?sh\s+-\w*c|\b(?:pwsh|powershell)(?:\.exe)?\s+-(?:c|command)))\s*[\"']?)"
+    r"\s*(?:"
+    r"env(?=\s*(?:$|[;&|\r\n>\"'`])|\s+-)"
+    r"|set(?=\s*(?:$|[;&|\r\n>\"'`])|\s+[A-Za-z_][A-Za-z0-9_]*(?:\s|$|[;&|\r\n>\"'`]))"
+    r")",
+    re.IGNORECASE,
+)
+_NO_SECRET_ENV_DUMP_REASON = (
+    "禁止读取敏感凭据文件（daemon.json / oauth_token.json / Settings.xml）或打印环境变量/会话凭据（NO_SECRET_ENV_DUMP）。"
+    "请运行 `pob status` 查看纯布尔认证状态（set/unset），切勿回显或打印任何凭据值。"
+)
 
 _POB_HELP_QUICK_REF = (
     "禁止运行 pob --help 浪费步数（NO_POB_HELP）。核心命令速查：\n"
@@ -253,12 +282,21 @@ def _deny_tool(rule_id: str, reason: str) -> dict[str, Any]:
     return {"decision": "deny", "ruleId": rule_id, "reason": reason, "rewrittenCommand": None}
 
 
+def _is_secret_env_dump_cmd(cmd: str) -> bool:
+    return bool(
+        _SECRET_ENV_NAME_RE.search(cmd)
+        or _ENV_DUMP_RE.search(cmd)
+        or _STANDALONE_ENV_SET_RE.search(cmd)
+        or _SECRET_FILE_RE.search(cmd)
+    )
+
+
 def handle_pre_tool(
     req: dict[str, Any],
     *,
     runtime_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Gate 2: enforce deterministic pre-tool rules (shell + file/grep engine-Lua guards)."""
+    """Gate 2: enforce deterministic pre-tool rules (shell + file/grep engine-Lua & secret guards)."""
     tool_name = str(req.get("toolName") or "").strip().lower()
     if tool_name in _FILE_INSPECT_TOOLS:
         cand_paths: list[str] = []
@@ -269,6 +307,8 @@ def handle_pre_tool(
             v = req.get(k)
             if isinstance(v, str) and v.strip():
                 cand_paths.append(v.strip())
+        if any(_SECRET_FILE_RE.search(p) for p in cand_paths):
+            return _deny_tool("NO_SECRET_ENV_DUMP", _NO_SECRET_ENV_DUMP_REASON)
         if any(_RAW_LUA_PATH_RE.search(p) or _RAW_ENGINE_DIR_RE.search(p) for p in cand_paths):
             return _deny_tool(
                 "NO_RAW_ENGINE_LUA",
@@ -282,6 +322,10 @@ def handle_pre_tool(
     cmd = str(req.get("commandLine") or "").strip()
     if not cmd:
         return _allow_tool()
+
+    # Rule 0: NO_SECRET_ENV_DUMP
+    if _is_secret_env_dump_cmd(cmd):
+        return _deny_tool("NO_SECRET_ENV_DUMP", _NO_SECRET_ENV_DUMP_REASON)
 
     # Rule 1: NO_RAW_ENGINE_LUA
     if _RAW_LUA_READER_RE.search(cmd) and (_RAW_LUA_PATH_RE.search(cmd) or _RAW_ENGINE_DIR_RE.search(cmd)):
@@ -383,8 +427,21 @@ def handle_verify_stop(
         )
         return _allow_stop(stop_retries, advisory=advisory)
 
-    receipts = read_turn_receipts(turn_start_ts, session_id=session_id, runtime_dir=runtime_dir)
+    explicit_slot = str(req.get("targetSlot") or os.environ.get("POB_SLOT") or "").strip().lower()
+    receipts = read_turn_receipts(
+        turn_start_ts,
+        session_id=session_id,
+        slot_filter=explicit_slot or None,
+        runtime_dir=runtime_dir,
+    )
     summary = summarize_turn_receipts(receipts)
+    v2_summary = (
+        summarize_turn_receipts(
+            [r for r in receipts if (str(r.get("slot") or "").strip().lower() or "main") == explicit_slot]
+        )
+        if explicit_slot
+        else summary
+    )
     failed_checks: list[str] = []
 
     # V1: reply hallucination & fallacy scanner
@@ -392,16 +449,24 @@ def handle_verify_stop(
     if v1_issues:
         failed_checks.append("V1")
 
-    # V2: compute receipt & post-apply rev freshness
+    # V2: compute receipt & post-apply rev freshness (scoped to explicit_slot when supplied)
     has_src_user, src_hint_user = detect_build_source_in_text(user_text)
     has_build_src = bool((state.get("hasBuildSource") if same_turn else False) or has_src_user)
     build_source_hint = src_hint_user or (state.get("buildSourceHint") if same_turn else None)
     panel_claims = detect_panel_or_delta_claims(assistant_text)
     v2_info: dict[str, Any] | None = None
-    target_slot = str(summary.get("lastSlot") or "main")
+    target_slot = str(
+        explicit_slot
+        or (v2_summary.get("lastSlot") if v2_summary.get("hasCompute") else None)
+        or summary.get("lastSlot")
+        or "main"
+    )
 
-    if has_build_src or panel_claims:
-        if not summary.get("hasCompute"):
+    # If the model attempted an external build load/profile check that errored (e.g. 401/403/multi-char)
+    # and made ZERO fabricated panel claims, do not falsely fail V2 or query another slot.
+    honest_failed_load = bool(has_build_src and not panel_claims and v2_summary.get("attemptedBuildLoadFailed"))
+    if (has_build_src or panel_claims) and not honest_failed_load:
+        if not v2_summary.get("hasCompute"):
             failed_checks.append("V2")
             v2_info = {
                 "reasonKind": "missing_compute",
@@ -409,8 +474,8 @@ def handle_verify_stop(
                 "buildSourceHint": build_source_hint,
             }
         else:
-            applied_revs: dict[str, int] = summary.get("maxAppliedRevBySlot") or {}
-            compute_revs: dict[str, int] = summary.get("maxComputeRevBySlot") or {}
+            applied_revs: dict[str, int] = v2_summary.get("maxAppliedRevBySlot") or {}
+            compute_revs: dict[str, int] = v2_summary.get("maxComputeRevBySlot") or {}
             for slot_name, max_app_rev in applied_revs.items():
                 comp_rev = compute_revs.get(slot_name)
                 if comp_rev is None or comp_rev < max_app_rev:

@@ -39,7 +39,7 @@ from pob_cli.mutators import (
     switch_main,
     unequip_item,
 )
-from pob_cli.snapshot import diff_digest, undo_build
+from pob_cli.snapshot import diff_digest, history_of, undo_build
 
 POB_DIR = find_runnable_engine()
 
@@ -363,9 +363,7 @@ def pob_worker():
         "set_custom_mods",
         {"list": [{"title": "Default", "text": "+25 to maximum Mana", "enabled": True}]},
     )
-    worker.update_checkpoint()
-    worker.undo_stack.clear()
-    worker.redo_stack.clear()
+    history_of(worker).load_build(worker.call("export_code", {})["code"], None)
 
     try:
         yield worker
@@ -511,7 +509,7 @@ def test_modify_config_append_custom_mods_what_if_and_apply(pob_worker: BridgeWo
             undo_build(pob_worker)
     finally:
         undo_build(pob_worker)
-        pob_worker.redo_stack.clear()
+        history_of(pob_worker).redo.clear()
 
     assert _capture_semantic_state(pob_worker) == before_state
 
@@ -550,7 +548,7 @@ def test_edit_item_mods_what_if_and_apply(pob_worker: BridgeWorker) -> None:
         assert "+150 to maximum Life" in (ring_after["raw"] or "")
     finally:
         undo_build(pob_worker)
-        pob_worker.redo_stack.clear()
+        history_of(pob_worker).redo.clear()
 
     assert _capture_semantic_state(pob_worker) == before_state
 
@@ -640,15 +638,15 @@ def test_set_class_ascendancy_what_if_and_apply(pob_worker: BridgeWorker) -> Non
         assert cur["secondaryAscendClassId"] > 0
     finally:
         undo_build(pob_worker)
-        pob_worker.redo_stack.clear()
+        history_of(pob_worker).redo.clear()
 
     assert _capture_semantic_state(pob_worker) == before_state
 
 
 def test_run_matrix_zero_residue(pob_worker: BridgeWorker) -> None:
     before_state = _capture_semantic_state(pob_worker)
-    before_undo = list(pob_worker.undo_stack)
-    before_redo = list(pob_worker.redo_stack)
+    before_undo = list(history_of(pob_worker).undo)
+    before_redo = list(history_of(pob_worker).redo)
     before_last_good = pob_worker.last_good_code
 
     # Default 4 scenarios
@@ -690,8 +688,8 @@ def test_run_matrix_zero_residue(pob_worker: BridgeWorker) -> None:
 
     # Strict 0-residue & stack preservation check
     assert _capture_semantic_state(pob_worker) == before_state
-    assert pob_worker.undo_stack == before_undo
-    assert pob_worker.redo_stack == before_redo
+    assert history_of(pob_worker).undo == before_undo
+    assert history_of(pob_worker).redo == before_redo
     assert pob_worker.last_good_code == before_last_good
 
 
@@ -707,13 +705,10 @@ class _FakeBridgeWorker:
         import threading
 
         self.lock = threading.RLock()
-        self.undo_stack: list[str] = []
-        self.redo_stack: list[str] = []
         self.last_good_code: str | None = None
         self.caps: dict = {}
         self.calls: list[tuple[str, dict]] = []
         self.batch_calls: list[list[tuple[str, dict]]] = []
-        self.save_slot_state_calls: int = 0
 
         # Mutable simulated build state
         self.allocated: set[int] = {1, 2, 3, 4, 5, 6, 7}
@@ -755,9 +750,6 @@ class _FakeBridgeWorker:
                 "raw": "Rarity: UNIQUE\nKaom's Heart\nGlorious Plate\nImplicits: 0\n+500 to maximum Life",
             },
         ]
-
-    def save_slot_state(self) -> None:
-        self.save_slot_state_calls += 1
 
     def get_cached_tree_data(self, tree_version: str | None = None) -> dict:
         return {"nodes": self.nodes_db}
@@ -1071,7 +1063,7 @@ def test_batch_tab_caching_replace_group_and_no_undo_fast_mode() -> None:
     assert len(export_calls) == 1
     assert w.last_good_code != initial_snap
     assert w.last_good_code == w._snapshot()
-    assert w.save_slot_state_calls == 1
+    assert history_of(w).rev == 1  # one commit, one slot save
 
     # Verify tree invalidated skills cache (list_skills called again for set_group after tree)
     list_skill_calls = [m for m, _ in w.calls if m == "list_skills"]
@@ -1269,15 +1261,11 @@ def test_run_batch_no_undo_fresh_slot_rollback_and_redo_clear() -> None:
     assert w._snapshot() == orig_snap
     assert w.config_vars["usePowerCharges"] is False
 
-    # 2. Successful no_undo commit clears redo_stack BEFORE save_slot_state()
-    w.redo_stack = ["STALE_REDO_CODE"]
+    # 2. Successful no_undo commit clears the redo stack BEFORE the slot is saved
+    hist = history_of(w)
+    hist.redo = ["STALE_REDO_CODE"]
     redo_len_at_save: list[int] = []
-
-    def _spy_save() -> None:
-        redo_len_at_save.append(len(w.redo_stack))
-        w.save_slot_state_calls += 1
-
-    w.save_slot_state = _spy_save  # type: ignore[method-assign]
+    hist.save = lambda: redo_len_at_save.append(len(hist.redo))  # type: ignore[method-assign]
     res = run_batch(
         w,
         [{"op": "config", "set": {"usePowerCharges": True}}],
@@ -1285,7 +1273,7 @@ def test_run_batch_no_undo_fresh_slot_rollback_and_redo_clear() -> None:
         no_undo=True,
     )
     assert res["redoDepth"] == 0
-    assert w.redo_stack == []
+    assert hist.redo == []
     assert redo_len_at_save == [0]
 
 
@@ -1415,6 +1403,64 @@ def test_create_new_build_buildinfo_safe_ele_max_hit_and_compact_calcs_cjk() -> 
     assert w_en.translate_enabled is False
 
 
+def test_calc_names_the_calcs_tab_skill_and_warns_when_it_is_not_the_main_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PoB's Calcs tab keeps its own skill selection, so `pob calc` says whose numbers it shows."""
+    from click.testing import CliRunner
+
+    from pob_cli import cli_inspect_parts
+    from pob_cli.cli import main
+
+    groups = [{"val": 1, "label": "Arc", "labelZh": "电弧"}, {"val": 2, "label": "Hexblast"}]
+    skills = [{"val": 1, "label": "Vaal Arc"}, {"val": 2, "label": "Arc"}]
+    main_skill = 1
+    row = {"label": "Average Hit", "cells": [{"raw": "327610", "text": "327,610"}]}
+    w = _FakeBridgeWorker()
+
+    def _call(method: str, params: dict | None = None, timeout: float | None = None) -> dict:
+        if method == "get_calcs":
+            return {
+                "sections": [{"id": "SkillHitDamage", "subsections": [{"label": "Hit Damage", "rows": [row]}]}],
+                "selectors": {
+                    "mainSocketGroup": {"index": 1, "list": groups},
+                    "mainSkill": {"index": 1, "list": skills},
+                },
+            }
+        if method == "get_build_header":
+            return {
+                "mainSocketGroup": {"index": main_group, "list": groups},
+                "mainSkill": {"index": main_skill, "list": skills},
+            }
+        raise AssertionError(method)
+
+    w.call = _call  # type: ignore[method-assign]
+
+    main_group = 2
+    res = search_calcs_breakdown(w, "Average Hit", no_breakdown=True)
+    skill = res["calcsSkill"]
+    assert (skill["socketGroup"], skill["label"], skill["mainSocketGroup"]) == (1, "Arc", 2)
+    assert skill["isMainSkill"] is False
+
+    monkeypatch.setattr(cli_inspect_parts, "invoke_daemon", lambda *_a, **_kw: res)
+    out = CliRunner().invoke(main, ["calc", "Average Hit"]).output
+    assert "- Calcs tab skill: #1 电弧 / Vaal Arc" in out
+    assert "[WARN]" in out and "not the main skill (#2 Hexblast" in out
+
+    # Same socket group, another active skill in it: the two must not read as the same thing.
+    main_group, main_skill = 1, 2
+    other = search_calcs_breakdown(w, "Average Hit", no_breakdown=True)
+    assert other["calcsSkill"]["isMainSkill"] is False
+    monkeypatch.setattr(cli_inspect_parts, "invoke_daemon", lambda *_a, **_kw: other)
+    assert "not the main skill (#1 电弧 / Arc)" in CliRunner().invoke(main, ["calc", "Average Hit"]).output
+
+    main_skill = 1
+    same = search_calcs_breakdown(w, "Average Hit", no_breakdown=True)
+    assert same["calcsSkill"]["isMainSkill"] is True
+    monkeypatch.setattr(cli_inspect_parts, "invoke_daemon", lambda *_a, **_kw: same)
+    assert "[WARN]" not in CliRunner().invoke(main, ["calc", "Average Hit"]).output
+
+
 # ---------------------------------------------------------------------------
 # Real headless PoB integration tests for standalone helpers, expanded batch & sweep
 # ---------------------------------------------------------------------------
@@ -1453,7 +1499,7 @@ def test_standalone_helpers_new_build_groups_unequip(pob_worker: BridgeWorker) -
         assert main_grp["label"] == "Replaced Arc"
     finally:
         undo_build(pob_worker)
-        pob_worker.redo_stack.clear()
+        history_of(pob_worker).redo.clear()
     assert _capture_semantic_state(pob_worker) == before_state
 
     # 3. unequip_item (what-if, 0-residue)
@@ -1513,8 +1559,8 @@ def test_expanded_run_batch_ops_and_return_sections(pob_worker: BridgeWorker) ->
 
 def test_run_sweep_real_engine_with_scenario_calcs_and_fault_isolation(pob_worker: BridgeWorker) -> None:
     before_state = _capture_semantic_state(pob_worker)
-    before_undo = list(pob_worker.undo_stack)
-    before_redo = list(pob_worker.redo_stack)
+    before_undo = list(history_of(pob_worker).undo)
+    before_redo = list(history_of(pob_worker).redo)
     before_last_good = pob_worker.last_good_code
 
     sweep_res = run_sweep(
@@ -1567,8 +1613,8 @@ def test_run_sweep_real_engine_with_scenario_calcs_and_fault_isolation(pob_worke
 
     # Strict 0-residue & stack preservation check
     assert _capture_semantic_state(pob_worker) == before_state
-    assert pob_worker.undo_stack == before_undo
-    assert pob_worker.redo_stack == before_redo
+    assert history_of(pob_worker).undo == before_undo
+    assert history_of(pob_worker).redo == before_redo
     assert pob_worker.last_good_code == before_last_good
 
 
@@ -1889,9 +1935,6 @@ def test_daemon_request_error_guards_and_rpc_classification(
             self.slot_name = slot_name
             self.pob_root = pob_dir or eng
             self.last_good_code: str | None = None
-            self.undo_stack: list[str] = []
-            self.redo_stack: list[str] = []
-            self.source_label: str | None = None
             self.hello_info: dict[str, object] = {}
             self.lock = threading.RLock()
 

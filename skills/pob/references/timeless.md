@@ -20,3 +20,5 @@ pob timeless search --jewel "致命的骄傲" --socket 26725 --mod "5% chance to
 # Exact full evaluation mode (slower, checks every seed in PoB)
 pob timeless search --jewel "Brutal Restraint" --socket 26725 --conqueror Balbala --stat TotalEHP --exact
 ```
+
+Without `--exact`, Glorious Vanity and the Abyss jewels calculate only a shortlist picked by PoB's timeless weight finder (the footer says so), and a better seed can lie outside it. Use `--exact` when the best seed matters.

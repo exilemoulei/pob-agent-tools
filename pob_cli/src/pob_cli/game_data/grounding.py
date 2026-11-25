@@ -24,7 +24,7 @@ from .slang import (
     _SLANG_SORTED_KEYS,
     PLAYER_SLANG_MAP,
 )
-from .tw_norm import _fold_search_text, normalize_tw_query
+from .tw_norm import _fold_search_text, fold_han, normalize_tw_query
 
 _GROUND_ENTITY_INDEX_CACHE: dict[str, dict[str, Any]] = {}
 
@@ -351,6 +351,7 @@ def ground_text_entities(
     t0 = time.perf_counter()
     raw = str(text or "").strip()
     raw_tw = normalize_tw_query(raw) if raw else ""
+    folded_tw = fold_han(raw_tw)  # slang keys and the index are Simplified
     limit = max(0, int(limit))
 
     traps = scan_text_traps(raw_tw)
@@ -358,7 +359,7 @@ def ground_text_entities(
     resolved_slang: list[dict[str, str]] = []
     if raw_tw and limit > 0:
         for slang in _SLANG_SORTED_KEYS:
-            if slang in raw_tw:
+            if slang in folded_tw:
                 canon_en, kind_hint = PLAYER_SLANG_MAP[slang]
                 resolved_slang.append({"slang": slang, "canonical": canon_en, "kind": kind_hint})
 
@@ -414,7 +415,7 @@ def ground_text_entities(
                 if len(entities) < limit:
                     idx = _get_ground_entity_index(conn, f"{db_path}:{pob_ver}:{data_ver}")
                     has_cjk = bool(_CJK_RE.search(raw_tw))
-                    text_zh_compact = normalize_zh_compact(raw_tw) if has_cjk else ""
+                    text_zh_compact = normalize_zh_compact(folded_tw) if has_cjk else ""
                     text_en_norm = normalize_guardrail_text(raw_tw)
                     has_ascii = bool(re.search(r"[a-z]{3,}", text_en_norm))
 

@@ -6,13 +6,14 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
-from .guardrails import normalize_equipment_slot
+from .guardrails import normalize_equipment_slot, redact_secrets
 from .updater.paths import get_runtime_dir
 
 RECEIPTS_FILENAME = "turn_receipts.jsonl"
@@ -22,6 +23,9 @@ MAX_RECEIPT_BYTES = 256 * 1024
 _EXCLUDED_TOP_COMMANDS = frozenset({"hook", "serve", "_daemon"})
 _HELP_VERSION_FLAGS = frozenset({"--help", "-h", "--version"})
 _GLOBAL_VALUE_FLAGS = frozenset({"--target", "--runtime-dir", "--pob-root", "--cache-dir", "--proxy"})
+# The `user:password@` part of a URL inside one argument: everything up to the last `@` of the
+# authority, so an e-mail user name or a space in the password is covered too.
+_URL_USERINFO_RE = re.compile(r"(://)[^/?#]*@")
 
 _COMPUTE_SINGLE_CMDS = frozenset(
     {
@@ -121,10 +125,19 @@ def _extract_command_tokens(args: Sequence[str]) -> list[str]:
     return positionals
 
 
+def _receipt_slot(raw: str) -> str | None:
+    """Canonical slot for a receipt. Folded first, so `頭盔` records as Helmet just like `头盔`."""
+    from .game_data import fold_han
+
+    return normalize_equipment_slot(fold_han(raw))
+
+
 def classify_cli_args(raw_args: Sequence[str]) -> dict[str, Any]:
     """Classify CLI argv into receipt metadata without side effects."""
-    args = [str(a) for a in raw_args if a is not None]
-    cmd_str = " ".join(args)[:240]
+    # The ledger is a plain file: a proxy or mirror URL can carry a password (http://user:pass@host),
+    # and CLI args can accidentally contain cookies/tokens. Scrub before deriving any receipt fields.
+    args = [redact_secrets(_URL_USERINFO_RE.sub(r"\g<1>***@", str(a))) for a in raw_args if a is not None]
+    cmd_str = redact_secrets(" ".join(args))[:240]
 
     if not args or any(tok in _HELP_VERSION_FLAGS for tok in args):
         return {
@@ -184,13 +197,13 @@ def classify_cli_args(raw_args: Sequence[str]) -> dict[str, Any]:
     inspected_slots: list[str] = []
     if subcommand in ("item inspect", "items"):
         if eq_slot_raw and eq_slot_raw.strip():
-            norm_eq = normalize_equipment_slot(eq_slot_raw)
+            norm_eq = _receipt_slot(eq_slot_raw)
             if norm_eq:
                 inspected_slots.append(norm_eq)
         elif subcommand == "items" and _has_flag(args, "--all"):
             inspected_slots.append("*")
     elif subcommand == "trade search" and _has_flag(args, "--bench-craft") and eq_slot_raw and eq_slot_raw.strip():
-        norm_eq = normalize_equipment_slot(eq_slot_raw)
+        norm_eq = _receipt_slot(eq_slot_raw)
         if norm_eq:
             inspected_slots.append(norm_eq)
 
@@ -244,7 +257,7 @@ def record_daemon_receipt_hint(
                     frame["inspectedSlots"].append("*")
             p_slot = params.get("slot")
             if isinstance(p_slot, str) and p_slot.strip():
-                norm_eq = normalize_equipment_slot(p_slot)
+                norm_eq = _receipt_slot(p_slot)
                 if norm_eq and norm_eq not in frame["inspectedSlots"]:
                     frame["inspectedSlots"].append(norm_eq)
 
@@ -361,9 +374,10 @@ def read_turn_receipts(
     since_ts: float,
     *,
     session_id: str | None = None,
+    slot_filter: str | None = None,
     runtime_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Read receipt entries with `ts >= since_ts`, scoped by `session_id` when tagged (fail-open)."""
+    """Read receipt entries with `ts >= since_ts`, scoped by `session_id` (and optional `slot_filter` for untagged rows)."""
     path = get_runtime_dir(runtime_dir) / RECEIPTS_FILENAME
     if not path.is_file():
         return []
@@ -374,6 +388,7 @@ def read_turn_receipts(
         return []
     threshold = float(since_ts)
     want_sess = str(session_id or "").strip()
+    want_slot = str(slot_filter or "").strip().lower()
     for ln in lines:
         s = ln.strip()
         if not s:
@@ -390,6 +405,10 @@ def read_turn_receipts(
         rec_sess = str(obj.get("sessionId") or "").strip()
         if want_sess and rec_sess and rec_sess != want_sess:
             continue
+        if want_sess and not rec_sess and want_slot:
+            rec_slot = str(obj.get("slot") or "").strip().lower()
+            if rec_slot and rec_slot != want_slot:
+                continue
         out.append(obj)
     return out
 
@@ -402,6 +421,7 @@ def summarize_turn_receipts(receipts: Sequence[dict[str, Any]]) -> dict[str, Any
     has_fresh_diagnose = False
     has_web_research = False
     attempted_web_research = False
+    attempted_build_load_failed = False
     inspected_slots: list[str] = []
     inspected_seen: set[str] = set()
     max_applied_rev: dict[str, int] = {}
@@ -420,6 +440,8 @@ def summarize_turn_receipts(receipts: Sequence[dict[str, Any]]) -> dict[str, Any
         if is_web:
             attempted_web_research = True
         if rec.get("exitCode", 0) != 0:
+            if subcmd in ("diagnose", "load", "profile"):
+                attempted_build_load_failed = True
             continue
         if is_web:
             has_web_research = True
@@ -461,6 +483,7 @@ def summarize_turn_receipts(receipts: Sequence[dict[str, Any]]) -> dict[str, Any
         "hasFreshDiagnose": has_fresh_diagnose,
         "hasWebResearch": has_web_research,
         "attemptedWebResearch": attempted_web_research,
+        "attemptedBuildLoadFailed": attempted_build_load_failed,
         "inspectedSlots": inspected_slots,
         "maxAppliedRevBySlot": max_applied_rev,
         "maxComputeRevBySlot": max_compute_rev,

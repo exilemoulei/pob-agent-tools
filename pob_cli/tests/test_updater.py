@@ -22,6 +22,7 @@ from pob_cli.bridge_client import (
     BridgeError,
     BridgeWorker,
 )
+from pob_cli.snapshot import history_of
 from pob_cli.updater import (
     POB_MANIFEST_URL,
     POBTOOLS_DOWNLOAD_BASE,
@@ -443,6 +444,8 @@ def test_clean_bootstrap_from_github_dual_upstream(tmp_path: Path, monkeypatch: 
         {
             "Data/translations_version.json": json.dumps({"dataVersion": "data-24"}).encode("utf-8"),
             "Data/poe1/zh-rCN/gems.json": b"{}",
+            "Data/poe1/zh-rTW/gems.json": b"{}",
+            "Data/poe1/ko-KR/gems.json": b"{}",
         }
     )
     pob_main = b"-- official PoB 2.68.1\n"
@@ -509,13 +512,93 @@ def test_clean_bootstrap_from_github_dual_upstream(tmp_path: Path, monkeypatch: 
     assert res["localPobVersion"] == "2.68.1"
     assert res["pobToolsVersion"] == "1.8.12"
     assert res["dataVersion"] == "data-24"
-    if upd_mod.is_windows():
-        assert (target / "pob-zh.exe").read_bytes() == b"MZ-new-host"
-    else:
-        assert not (target / "pob-zh.exe").exists()
-        assert (target / "Data" / "bridge" / "bridge.lua").read_bytes() == b"-- bridge"
+    assert not (target / "pob-zh.exe").exists()
+    assert (target / "Data" / "bridge" / "bridge.lua").read_bytes() == b"-- bridge"
     assert (target / "Data" / "poe1" / "zh-rCN" / "gems.json").is_file()
+    assert (target / "Data" / "poe1" / "zh-rTW" / "gems.json").is_file()
+    assert not (target / "Data" / "poe1" / "ko-KR").exists()
     assert (target / "PoE1" / "Modules" / "Main.lua").read_bytes() == pob_main
+
+
+def test_mirror_serves_the_routine_check_but_hashes_come_from_github(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hashes read through a mirror prove nothing about files that mirror serves."""
+    from pob_cli.updater import UpdateError, fetch_pob_manifest_remote, fetch_pobtools_latest_info
+    from pob_cli.updater.remote import _download_and_stage_release_zip
+
+    mirror = "https://mirror.example.com"
+    manifest_url = f"{POBTOOLS_DOWNLOAD_BASE}/v1.8.12/PobTools-manifest-v1.8.12.json"
+
+    def pob_xml(version: str) -> str:
+        return (
+            "<?xml version='1.0' encoding='UTF-8'?><PoBVersion>"
+            f'<Version number="{version}" />'
+            '<Source part="program" url="https://raw.githubusercontent.com/PathOfBuildingCommunity/PathOfBuilding/{branch}/src/" />'
+            f'<File name="Modules/Main.lua" part="program" sha1="{hashlib.sha1(b"main").hexdigest()}" />'
+            "</PoBVersion>"
+        )
+
+    seen: list[str] = []
+    github_up = True
+    github_cut_off = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        seen.append(url)
+        via_mirror = url.startswith(mirror)
+        if not via_mirror and not github_up:
+            raise httpx.ConnectError("GitHub unreachable")
+        plain = url.removeprefix(mirror + "/")
+        if plain == POBTOOLS_LATEST_URL:
+            return httpx.Response(302, headers={"Location": "https://github.com/x/y/releases/tag/v1.8.12"})
+        if plain == manifest_url:
+            return httpx.Response(200, json={"version": "1.8.12", "assets": []})
+        if plain == POB_MANIFEST_URL:
+            if request.headers.get("If-None-Match"):
+                return httpx.Response(304)
+            if github_cut_off and not via_mirror:
+                return httpx.Response(200, text=pob_xml("2.68.1")[:60])
+            return httpx.Response(200, text=pob_xml("9.9.9" if via_mirror else "2.68.1"))
+        return httpx.Response(200, content=b"not the zip the manifest hashed")
+
+    _patch_updater_http(monkeypatch, handler)
+
+    def requests_of(call: Any) -> tuple[Any, list[str]]:
+        seen.clear()
+        return call(), list(seen)
+
+    # The routine check (a tag, or a 304) stays on the mirror: no extra round trip, no GitHub timeout.
+    assert requests_of(lambda: fetch_pobtools_latest_info(mirror=mirror, fetch_manifest=False))[1] == [
+        f"{mirror}/{POBTOOLS_LATEST_URL}"
+    ]
+    assert requests_of(lambda: fetch_pob_manifest_remote(mirror=mirror, etag="abc")) == (
+        ("not_modified", None, "abc"),
+        [f"{mirror}/{POB_MANIFEST_URL}"],
+    )
+
+    # Anything that carries hashes comes from GitHub itself, whatever the mirror says.
+    assert requests_of(lambda: fetch_pobtools_latest_info(mirror=mirror))[1] == [POBTOOLS_LATEST_URL, manifest_url]
+    (status, manifest, _etag), urls = requests_of(lambda: fetch_pob_manifest_remote(mirror=mirror))
+    assert (status, manifest.version) == ("ok", "2.68.1")
+    assert urls == [f"{mirror}/{POB_MANIFEST_URL}", POB_MANIFEST_URL]
+
+    # A cut-off answer from GitHub is no answer: the mirror's copy stands.
+    github_cut_off = True
+    assert fetch_pob_manifest_remote(mirror=mirror)[1].version == "9.9.9"
+    github_cut_off = False
+
+    # Without a route to GitHub the mirror's copy is used, so those users can still update.
+    github_up = False
+    info, urls = requests_of(lambda: fetch_pobtools_latest_info(mirror=mirror))
+    assert info["version"] == "1.8.12"
+    assert urls[-2:] == [f"{mirror}/{POBTOOLS_LATEST_URL}", f"{mirror}/{manifest_url}"]
+    assert fetch_pob_manifest_remote(mirror=mirror)[1].version == "9.9.9"
+
+    # The engine zip itself may come through the mirror, but never without a hash to check it by.
+    for asset in ({"name": "PobTools-1.8.12.zip"}, {"name": "PobTools-1.8.12.zip", "sha256": "00" * 32}):
+        with pytest.raises(UpdateError, match="SHA256 mismatch"):
+            _download_and_stage_release_zip("v1.8.12", asset, tmp_path, mirror=mirror)
 
 
 def test_posix_engine_validation_command_and_manifest_filtering(
@@ -628,8 +711,9 @@ def test_bridge_worker_dynamic_r2_and_import_code_deadlock_recovery(
         valid_xml = valid_xml.replace('characterLevelAutoMode="true"', 'characterLevelAutoMode="false"')
         assert 'level="77"' in valid_xml
         worker.call("import_code", {"code": _encode_xml(valid_xml), "mode": "replace"})
-        checkpoint = worker.update_checkpoint()
+        checkpoint = worker.call("export_code", {})["code"]
         assert checkpoint
+        history_of(worker).load_build(checkpoint, None)
         info_before = worker.call("get_build_info", {})
         assert info_before["level"] == 77
 
@@ -695,15 +779,12 @@ def test_daemon_hot_reload_serializes_concurrent_get_worker_and_status(
     check_calls = 0
 
     class _FakeWorker:
-        def __init__(self, slot_name: str = "main", pob_dir: Path | None = None) -> None:
+        def __init__(self, slot_name: str = "main", pob_dir: Path | None = None, runtime_dir: Path | None = None) -> None:
             self.slot_name = slot_name
             self.pob_root = pob_dir or eng
             self.alive = False
             self.stopped = False
             self.last_good_code: str | None = None
-            self.undo_stack: list[str] = []
-            self.redo_stack: list[str] = []
-            self.source_label: str | None = None
             self.hello_info: dict[str, Any] = {"pobVersion": "2.67.2"}
 
         def is_alive(self) -> bool:
@@ -722,9 +803,6 @@ def test_daemon_hot_reload_serializes_concurrent_get_worker_and_status(
             if self.stopped:
                 raise AssertionError("ensure_alive() called on stopped worker mid-hot-reload!")
             self.alive = True
-
-        def update_checkpoint(self) -> str:
-            return "fake-code"
 
         def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
             if self.stopped:
@@ -846,8 +924,13 @@ def test_get_shared_cache_dir_priority_and_isolation(
     monkeypatch.setenv("POB_ROOT", str(other_eng))
     assert get_shared_cache_dir(swarm_rt) == swarm_rt / "cache"
 
-    # 4. If parent ALREADY has an existing `cache/` directory -> shares it
+    # 4. A folder next to the engine that is only *named* cache is somebody else's: leave it alone
     (tmp_path / "custom_parent" / "cache").mkdir()
+    (tmp_path / "custom_parent" / "cache" / "thumbnails.db").write_bytes(b"not ours")
+    assert get_shared_cache_dir(swarm_rt) == swarm_rt / "cache"
+
+    # 4a. Once pob has written to it (an index or a trade cache file) -> shares it
+    (tmp_path / "custom_parent" / "cache" / "trade_ratelimit.json").write_text("{}", encoding="utf-8")
     assert get_shared_cache_dir(swarm_rt) == tmp_path / "custom_parent" / "cache"
 
     # 4b. Explicit pob_root parameter takes precedence over env POB_ROOT (isolates legacy/custom engines)
@@ -926,14 +1009,11 @@ def test_daemon_start_non_blocking_background_update_check(
     recorded_kwargs: dict[str, Any] = {}
 
     class _FastFakeWorker:
-        def __init__(self, slot_name: str = "main", pob_dir: Path | None = None) -> None:
+        def __init__(self, slot_name: str = "main", pob_dir: Path | None = None, runtime_dir: Path | None = None) -> None:
             self.slot_name = slot_name
             self.pob_root = pob_dir or eng
             self.alive = False
             self.last_good_code: str | None = None
-            self.undo_stack: list[str] = []
-            self.redo_stack: list[str] = []
-            self.source_label: str | None = None
             self.hello_info: dict[str, Any] = {"pobVersion": "2.68.1"}
 
         def is_alive(self) -> bool:
@@ -1008,9 +1088,6 @@ def test_daemon_boot_bg_update_triggers_hot_reload_and_fresh_ok_checks_update_av
             self.pob_root = pob_dir or eng
             self.alive = False
             self.last_good_code: str | None = None
-            self.undo_stack: list[str] = []
-            self.redo_stack: list[str] = []
-            self.source_label: str | None = None
             self.hello_info: dict[str, Any] = {}
 
         def is_alive(self) -> bool:
@@ -1021,9 +1098,6 @@ def test_daemon_boot_bg_update_triggers_hot_reload_and_fresh_ok_checks_update_av
 
         def stop(self) -> None:
             self.alive = False
-
-        def update_checkpoint(self) -> str:
-            return ""
 
     def _fake_check(**kwargs: Any) -> dict[str, Any]:
         is_check_only = bool(kwargs.get("check_only", False))

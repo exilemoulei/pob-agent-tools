@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ..compat import ensure_utf8
+
 _CMD_ARG_KEYS: tuple[str, ...] = ("CommandLine", "command", "cmd", "script")
 _PATH_ARG_KEYS: tuple[str, ...] = (
     "path", "file_path", "filePath", "Path", "TargetFile", "SearchPath",
@@ -29,10 +31,7 @@ def _extract_target_paths(args: dict[str, Any]) -> list[str]:
 def read_stdin_json() -> dict[str, Any]:
     """Read UTF-8 JSON object from stdin; fail-open to `{}` on empty or invalid JSON."""
     try:
-        try:
-            sys.stdin.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-        except Exception:
-            pass
+        ensure_utf8(sys.stdin)
         raw = sys.stdin.read()
     except Exception:
         return {}

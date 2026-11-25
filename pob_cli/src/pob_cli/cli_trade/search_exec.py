@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any
 
@@ -21,6 +22,8 @@ from ..trade_query import (
     build_query,
     plan_stats,
 )
+from ..trade_query.auto_query import apply_cli_filters_to_auto_query as _apply_cli_filters_to_auto_query
+from ..trade_query.auto_query import fit_complexity, wrap_auto_query
 from ..updater import format_stderr_update_alert
 from .common import (
     _conversion_payload,
@@ -268,6 +271,7 @@ def _execute_trade_api_query(
     fetch_limit: int,
     compact: bool,
     out_path: str | None,
+    auto_query_body: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     import pob_cli.cli_trade as _ct
 
@@ -337,7 +341,41 @@ def _execute_trade_api_query(
                 "pseudo_filters": pseudo_filters or None,
                 "allow_corrupted": allow_corrupted,
             }
-            query = build_query(**query_args, max_age_hours=max_age)
+            is_auto = isinstance(auto_query_body, dict)
+            auto_complexity: int | None = None
+            manual_args = (
+                {**query_args, "search_sort": "asc"}
+                if (is_auto and str(search_sort).startswith("sum"))
+                else query_args
+            )
+            built_manual = build_query(**manual_args, max_age_hours=max_age)
+            if is_auto:
+                extra_groups = list((built_manual.get("query") or {}).get("stats") or [])
+                if pseudo_filters and extra_groups and extra_groups[-1].get("filters") == list(pseudo_filters):
+                    extra_groups.pop()
+                query = _apply_cli_filters_to_auto_query(
+                    wrap_auto_query(copy.deepcopy(auto_query_body)),
+                    status=status,
+                    budget=budget,
+                    currency=currency,
+                    max_age=max_age,
+                    ilvl_min=ilvl_min,
+                    open_prefix=open_prefix,
+                    open_suffix=open_suffix,
+                    open_affix=open_affix,
+                    category=resolved_category,
+                    search_sort=search_sort if search_sort != "asc" else None,
+                    allow_corrupted=False if (plan.conversions and not allow_corrupted) else None,
+                    extra_stat_groups=extra_groups or None,
+                )
+                if str(search_sort).startswith("sum"):
+                    merged_stats = (query.get("query") or {}).get("stats") or []
+                    if not any(isinstance(g, dict) and g.get("type") == "weight" for g in merged_stats):
+                        raise ValueError("--search-sort sum requires at least one weighted stat group.")
+                # The manual groups and filters above count too; trim generated filters to fit.
+                auto_complexity, _dropped = fit_complexity(query)
+            else:
+                query = built_manual
         except ValueError as exc:
             _err_utf8(str(exc))
             ctx.exit(1)
@@ -354,6 +392,9 @@ def _execute_trade_api_query(
                 "benchOptions": bench_options,
                 "query": query,
             }
+            if is_auto:
+                payload["autoQuery"] = True
+                payload["complexity"] = auto_complexity
             _emit_json(payload, compact=compact, out_path=out_path, sanitize=True)
             return None
 
@@ -369,6 +410,7 @@ def _execute_trade_api_query(
                 search_sort=search_sort,
                 sort_by=sort_by,
                 proxy=proxy,
+                has_auto_query=isinstance(auto_query_body, dict),
             )
         except TradeError as exc:
             _trade_error(ctx, exc)

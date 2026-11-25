@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from .constants import _CJK_PARTICLE_RE, _CJK_RE
 from .queries_core import _build_fts_match, _fts_phrase
 from .tw_norm import _fold_search_text, normalize_tw_query
+from .zh_match import resolve_zh_entity_across_locales
 
 
 def _query_translate_no_zh(conn: sqlite3.Connection, q_lower: str, limit: int) -> list[dict[str, Any]]:
-    """Graceful fallback when Data/poe1/zh-rCN is absent."""
+    """Graceful fallback when Data/poe1/zh-rCN and Data/poe1/zh-rTW are absent."""
     results: list[dict[str, Any]] = []
     for tbl, cat in (("gems", "gem"), ("uniques", "unique"), ("bases", "base")):
         for name, name_l in conn.execute(
@@ -269,7 +271,39 @@ def _query_translate_cjk_fallback(
     return scored
 
 
-def _query_translate(conn: sqlite3.Connection, q_lower: str, limit: int, zh_available: bool) -> list[dict[str, Any]]:
+def _lookup_canonical_en_in_conn(
+    conn: sqlite3.Connection, canon_en: str
+) -> list[tuple[tuple[int, int, int, str], dict[str, Any]]]:
+    en_folded = _fold_search_text(canon_en)
+    rows = conn.execute(
+        """
+        SELECT en, en_lower, zh, zh_lower, category, cat_rank
+        FROM translations
+        WHERE en_lower = ?
+        ORDER BY cat_rank ASC, length(zh_lower) ASC
+        LIMIT 5
+        """,
+        (en_folded,),
+    ).fetchall()
+    out: list[tuple[tuple[int, int, int, str], dict[str, Any]]] = []
+    for en, en_l, zh, zh_l, cat, cat_rank in rows:
+        out.append(((0, cat_rank, min(len(en_l), len(zh_l)), en_l), {"en": en, "zh": zh, "category": cat, "match_type": "exact"}))
+    return out
+
+
+def _query_translate(
+    conn: sqlite3.Connection,
+    q_lower: str,
+    limit: int,
+    zh_available: bool,
+    *,
+    pob_dir: Path | None = None,
+    runtime_dir: Path | None = None,
+    raw_query: str | None = None,
+) -> list[dict[str, Any]]:
+    # Callers pass the query already folded; `raw_query` keeps the user's script for exact matches.
+    unfolded = (raw_query or "").strip() or q_lower
+    raw_query = q_lower
     if q_lower:
         q_lower = _fold_search_text(normalize_tw_query(q_lower))
     if not q_lower:
@@ -279,9 +313,11 @@ def _query_translate(conn: sqlite3.Connection, q_lower: str, limit: int, zh_avai
 
     candidates = _query_translate_candidates(conn, q_lower, limit)
     scored: list[tuple[tuple[int, int, int, str], dict[str, Any]]] = []
+    has_exact = False
     for _, en, en_l, zh, zh_l, cat, cat_rank in candidates:
         if en_l == q_lower or zh_l == q_lower:
             tier, mtype = 0, "exact"
+            has_exact = True
         elif en_l.startswith(q_lower) or zh_l.startswith(q_lower):
             tier, mtype = 1, "prefix"
         else:
@@ -292,6 +328,24 @@ def _query_translate(conn: sqlite3.Connection, q_lower: str, limit: int, zh_avai
                 {"en": en, "zh": zh, "category": cat, "match_type": mtype},
             )
         )
+
+    exact_en = (
+        resolve_zh_entity_across_locales(unfolded, pob_dir=pob_dir, runtime_dir=runtime_dir, folded=False)
+        if _CJK_RE.search(unfolded)
+        else None
+    )
+    if exact_en:
+        # An unfolded hit in either dictionary outranks a folded hit in the active-locale index:
+        # under zh-TW, 术士手套 folds onto 術士手套 (Warlock Gloves) but means Sorcerer Gloves.
+        exact_rows = _lookup_canonical_en_in_conn(conn, exact_en)
+        scored.extend(((-1, *key[1:]), item) for key, item in exact_rows)
+        has_exact = has_exact or bool(exact_rows)
+    if not has_exact and (_CJK_RE.search(raw_query) or _CJK_RE.search(q_lower)):
+        sibling_en = resolve_zh_entity_across_locales(
+            raw_query, pob_dir=pob_dir, runtime_dir=runtime_dir
+        ) or resolve_zh_entity_across_locales(q_lower, pob_dir=pob_dir, runtime_dir=runtime_dir)
+        if sibling_en:
+            scored.extend(_lookup_canonical_en_in_conn(conn, sibling_en))
 
     if not scored:
         scored = _query_translate_entity_fallback(conn, q_lower)

@@ -63,6 +63,10 @@ _CALC_TOKEN_SYNONYMS: dict[str, tuple[str, ...]] = {
     "block": ("格挡",),
     "leech": ("偷取",),
     "cost": ("消耗",),
+    "回复": ("recovery", "regen", "regeneration"),
+    "魔力回复": ("mana recovery", "mana regen"),
+    "生命回复": ("life recovery", "life regen"),
+    "有效生命": ("effective hit pool", "effective health pool", "ehp"),
 }
 
 
@@ -306,6 +310,53 @@ def _build_calc_matches(
     return out_matches
 
 
+def _calcs_skill(worker: BridgeWorker, calcs: dict[str, Any]) -> dict[str, Any]:
+    """Which skill the Calcs tab shows, as a `calcsSkill` result entry.
+
+    PoB's Calcs tab keeps its own socket group and active skill, saved with the build and apart
+    from the main skill that `pob summary` reports, so its rows can describe another skill.
+    """
+    selectors = calcs.get("selectors") if isinstance(calcs.get("selectors"), dict) else {}
+
+    def _pick(sel: Any) -> tuple[int | None, dict[str, Any]]:
+        if not isinstance(sel, dict):
+            return None, {}
+        try:
+            idx = int(sel["index"])
+        except (KeyError, TypeError, ValueError):
+            return None, {}
+        entries = sel.get("list") if isinstance(sel.get("list"), list) else []
+        entry = entries[idx - 1] if 0 < idx <= len(entries) and isinstance(entries[idx - 1], dict) else {}
+        return idx, entry
+
+    group_idx, group = _pick(selectors.get("mainSocketGroup"))
+    if group_idx is None:
+        return {}
+    # Not guarded: a failed call can make the worker restore its last good build, and rows read
+    # before that must not be paired with breakdowns read after it.
+    header = worker.call("get_build_header", {})
+    header = header if isinstance(header, dict) else {}
+    main_idx, main_group = _pick(header.get("mainSocketGroup"))
+    skill_idx, skill = _pick(selectors.get("mainSkill"))
+    main_skill_idx, main_skill = _pick(header.get("mainSkill"))
+    info: dict[str, Any] = {
+        "socketGroup": group_idx,
+        "label": group.get("label"),
+        "labelZh": group.get("labelZh"),
+        "skillLabel": skill.get("label"),
+        "skillLabelZh": skill.get("labelZh"),
+        "mainSocketGroup": main_idx,
+        "mainLabel": main_group.get("label"),
+        "mainLabelZh": main_group.get("labelZh"),
+        "mainSkillLabel": main_skill.get("label"),
+        "mainSkillLabelZh": main_skill.get("labelZh"),
+        "isMainSkill": None if main_idx is None else (
+            group_idx == main_idx and (skill_idx or 1) == (main_skill_idx or 1)
+        ),
+    }
+    return {"calcsSkill": info}
+
+
 def search_calcs_breakdown(
     worker: BridgeWorker,
     keyword: str | None = None,
@@ -330,6 +381,7 @@ def search_calcs_breakdown(
         orig_translate, toggled_translate = _ensure_calcs_translate_enabled(worker)
         try:
             calcs = worker.call("get_calcs", {})
+            calcs_skill = _calcs_skill(worker, calcs)
             indexed_rows = _index_calc_rows(calcs)
 
             per_kw_scored: list[tuple[str, list[tuple[float, int, dict[str, Any]]]]] = []
@@ -391,6 +443,7 @@ def search_calcs_breakdown(
                         no_breakdown=no_breakdown,
                         bd_map=bd_map,
                     ),
+                    **calcs_skill,
                 }
 
             per_kw_results: list[dict[str, Any]] = []
@@ -424,6 +477,7 @@ def search_calcs_breakdown(
                 "results": per_kw_results,
                 "totalMatches": sum(r["totalMatches"] for r in per_kw_results),
                 "matches": combined_matches,
+                **calcs_skill,
             }
         finally:
             if toggled_translate and orig_translate is not None:

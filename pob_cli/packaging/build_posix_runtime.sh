@@ -6,6 +6,7 @@
 # Output:
 #   <OUT_DIR>/bin/luajit
 #   <OUT_DIR>/bin/lua-utf8.so
+#   <OUT_DIR>/bin/runtime.stamp  (the pins above; pob does not rebuild a runtime whose stamp matches its own)
 #
 # Usage:
 #   ./build_posix_runtime.sh <OUT_DIR>
@@ -111,4 +112,7 @@ LUA_CPATH="$OUT_DIR/bin/?.so;;" "$OUT_DIR/bin/luajit" -e '
   print("OK: LuaJIT=" .. jit.version .. " utf8=ok zlib=" .. ffi.string(z.zlibVersion()))
 '
 
-ls -lh "$OUT_DIR/bin/luajit" "$OUT_DIR/bin/lua-utf8.so"
+# Same format as runtime_pin() in pob_cli/src/pob_cli/updater/posix_runtime.py (a test checks).
+printf 'luajit=%s lua-utf8=%s\n' "$LUAJIT_COMMIT" "$LUAUTF8_TAG" > "$OUT_DIR/bin/runtime.stamp"
+
+ls -lh "$OUT_DIR/bin/luajit" "$OUT_DIR/bin/lua-utf8.so" "$OUT_DIR/bin/runtime.stamp"

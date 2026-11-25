@@ -248,6 +248,34 @@ def cmd_calc(
     kw_disp = ", ".join(kw_list)
     row_limit = max(1, limit)
 
+    def _header(total: int) -> list[str]:
+        out = [f"### Calcs Breakdown for `{kw_disp}` ({total} matches)"]
+        skill = res.get("calcsSkill")
+
+        def _named(group_no: Any, group: Any, active: Any) -> str:
+            """`#3 Group / Active skill`; the skill only when it is not the group's own name."""
+            group, active = strip_pob_escapes(group), strip_pob_escapes(active)
+            return f"#{group_no} {group}" + (f" / {active}" if active and active != group else "")
+
+        if isinstance(skill, dict):
+            shown = _named(
+                skill.get("socketGroup"),
+                skill.get("labelZh") or skill.get("label"),
+                skill.get("skillLabelZh") or skill.get("skillLabel"),
+            )
+            out.append(f"- Calcs tab skill: {shown}")
+            if skill.get("isMainSkill") is False:
+                main = _named(
+                    skill.get("mainSocketGroup"),
+                    skill.get("mainLabelZh") or skill.get("mainLabel"),
+                    skill.get("mainSkillLabelZh") or skill.get("mainSkillLabel"),
+                )
+                out.append(
+                    f"> [WARN] These rows are for {shown}, the skill selected in PoB's Calcs tab, not the "
+                    f"main skill ({main}). `pob summary` reports the main skill."
+                )
+        return out
+
     def _append_calc_match(lines_out: list[str], m: dict[str, Any]) -> None:
         cell_texts = " | ".join(
             str(c.get("text") or c.get("raw") or c.get("value") or "")
@@ -279,7 +307,7 @@ def cmd_calc(
         if total_shown == 0 and not matches:
             _emit_text(f"No calculation rows matched `{kw_disp}`.", out_path=out_path)
             return
-        lines = [f"### Calcs Breakdown for `{kw_disp}` ({res.get('totalMatches', total_shown)} matches)"]
+        lines = _header(res.get("totalMatches", total_shown))
         for sub in sub_dicts:
             sub_kw = str(sub.get("keyword") or "-")
             sub_matches = sub.get("matches") or []
@@ -297,7 +325,7 @@ def cmd_calc(
         _emit_text(f"No calculation rows matched `{kw_disp}`.", out_path=out_path)
         return
 
-    lines = [f"### Calcs Breakdown for `{kw_disp}` ({res.get('totalMatches', len(matches))} matches)"]
+    lines = _header(res.get("totalMatches", len(matches)))
     for m in matches[:row_limit]:
         _append_calc_match(lines, m)
 

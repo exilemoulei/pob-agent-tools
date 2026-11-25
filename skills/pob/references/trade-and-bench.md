@@ -26,8 +26,8 @@ pob trade search --slot ring2 --stat "冰霜抗性=42" --allow-conversion --conv
 # Bench-craft max-roll PoB simulation (--bench-craft; keeps originals + legal craft variants, PoB-ranked by default)
 pob trade search --slot gloves --budget 20 --currency divine --stat "to Dexterity=55" --bench-craft "Area Damage" --pob on
 
-# Fresh instant-buyout listings only (--max-age hours; if none is that fresh, older ones are shown and the report's `Listed:` line says so), underpriced ones flagged BARGAIN and listed first (--bargain percent below the going price, price only)
-pob trade search --slot ring1 --stat "生命>=80" --status securable --max-age 15 --bargain 30
+# Fresh instant-buyout listings only (--max-age hours; if none is that fresh, older ones are shown and the report's `Listed:` line says so), underpriced ones flagged BARGAIN and listed first (--bargain percent below the going price, price only; a search matching 10,000+ listings flags nothing, so narrow it)
+pob trade search --slot ring1 --stat "生命>=80" --stat "冰抗>=40" --status securable --max-age 15 --bargain 30
 
 # Preview Harvest swap on a pasted item
 pob trade convert --file item.txt --to fire

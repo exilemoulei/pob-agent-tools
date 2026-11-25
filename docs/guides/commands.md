@@ -5,15 +5,18 @@ Every subcommand with its flags, in one place. For when to use which, start with
 ```powershell
 # Optimization flow: pob audit (dewater & gaps) -> weights / rank-nodes / rank-gems / anoint / bench -> pob trade search (verified via PoB)
 # Global output & slot targeting: --target <slug> (alias --slot where non-conflicting; default POB_SLOT or main); --compact (1-line JSON); --out <file> (UTF-8 no-BOM).
+# Exit codes: 0 ok; 1 bad request (bad arguments, PoE2 input, or a build code the engine rejects while it keeps running); 5 daemon or engine fault (timeout, crash, any other engine error: `pob stop` and retry); `pob trade` uses 0..6 (docs/guides/trade.md).
 
 # Lifecycle, Foreground Daemon, Engine Bootstrap/Update & Build I/O (127.0.0.1 + X-PoB-Token)
 pob serve [--offline] [--proxy <url>] [--port N] [--runtime-dir <dir>]                 # Foreground persistent daemon (use IsDaemon:true in job-reaped shells)
-pob bootstrap [--proxy <url>] [--mirror <url>] [--no-zh] [--from-dir <dir>] [--json]   # Install/seed managed engine (PobTools-zh + PoB master)
+pob bootstrap [--proxy <url>] [--mirror <url>] [--no-zh] [--from-dir <dir>] [--json]   # Install/seed slim managed engine (native LuaJIT _lua-host on Windows, zero pob-zh.exe; PobTools-zh bridge + zh-rCN/zh-rTW + PoB master)
 pob update [--check] [--force] [--proxy <url>] [--mirror <url>] [--offline] [--json]   # Incremental SHA1 update (hot-reloads live daemon slots)
-pob status [--json]                                                                    # Daemon PID, PoB/PobTools/Data versions, updateStatus, all named slots
+pob status [--json]                                                                    # Daemon PID, PoB/PobTools/Data versions, active lang, caps/winLuaHost, boolean Auth env status, updateStatus, all named slots (a slot whose saved build failed to restore at boot carries `restoreFailed`: error, codeFile, skipped)
+pob lang [zh-CN|zh-TW|en] [--json]                                                     # Get or persist display language (default zh-CN Simplified, switchable to fixed zh-TW Traditional or en; POB_LANG env overrides). Exit 1 for a locale the engine lacks, 5 when a running daemon does not answer; --json has dictLoaded, daemonSynced, envIgnored
 pob self-update [--check] [--version X.Y.Z] [--proxy <url>] [--mirror <url>] [--json]  # Update pob itself (standalone builds; signed release only); --check reports latest + the update command for this install; network/disk/swap failure exits 5
+pob profile [ACCOUNT_OR_URL] [--realm pc|xbox|sony|cn] [--league L] [--proxy U] [--json] # 0-engine official profile character list (pathofexile.com public no-cookie, or poe.game.qq.com via env POE_CN_SESSID)
 pob new [--class C] [--asc A] [--secondary-asc S] [--level N] [--target <slug>] [--json]
-pob load "<url|code|@path.xml>" [--target <slug>] [--json]                             # XML, Base64, 8 share sites, or poe.ninja char URL
+pob load [SOURCE] [--char "<name>"] [--league L] [--realm pc|xbox|sony|cn] [--target <slug>] [--json] # XML, Base64, 8 share sites, poe.ninja char URL, or official Intl/CN profile URL
 pob save <out.xml> | pob export-code [--target <slug>] [--json]                        # Export XML (CLI disk write, R11) or Base64 code
 pob switch-main [--spec S] [--skill-group G] [--skill N] [--part N] [--item-set I] [--skill-set S] [--config-set C] [--loadout L]
 pob undo | pob redo | pob stop [--json]
@@ -21,7 +24,7 @@ pob undo | pob redo | pob stop [--json]
 # Read-Only Inspection, Grounding, Hook Guardrails & One-Shot Diagnosis
 pob ground "<prompt_text>" [--limit 8] [--json]                                        # <15ms daemon-free 3.30 entity cards + PoE2/patch trap alerts
 pob hook <pre-prompt|pre-tool|verify-stop> [--protocol raw|agy|claude]                 # Stdin/stdout JSON lifecycle guardrails (grounding + [MECHANICS-RESEARCH-REQUIRED], shell pre-tool deny/rewrite, stop V1..V5 + auto-remediation)
-pob diagnose [SOURCE] [-c|--compare REF] [-q|--ask "<text>"] [--keep <spec>]... [--top 5] [--no-rank] [--target <slug>] [--ref-target <slug>] [--json] # One-shot: [Env (NOT PoE2) | rev=N] + Pinnacle audit + gaps/bricks/dead-supports/triggers + 3.30 cards + upgrades (or dual-build 3-baseline compare)
+pob diagnose [SOURCE] [-c|--compare REF] [-q|--ask "<text>"] [--char "<name>"] [--league L] [--realm pc|xbox|sony|cn] [--keep <spec>]... [--top 5] [--no-rank] [--target <slug>] [--ref-target <slug>] [--json] # One-shot: [Env (NOT PoE2) | rev=N] + Pinnacle audit + gaps/bricks/dead-supports/triggers + 3.30 cards + upgrades (or dual-build 3-baseline compare)
 pob summary [--target <slug>] [--json]                                                 # [Env | rev=N] + Offence (Hit/DoT/FullDPS/Minion*), Defence (EHP/MaxHit/Res), Warnings
 pob audit [--keep <spec>]... [--no-attribution] [--target <slug>] [--json]             # [Env | rev=N] + Hard gaps + 4-dim water audit -> Pinnacle (per-item PoB attribution; --keep var|Flask N|flasks|gem|customMods|party)
 pob config list [--all] [--search "<sub >"] [--with-options] [--target <slug>] [--json] # Active/filtered ConfigTab vars + raw customMods
@@ -29,11 +32,11 @@ pob items [--slot "Weapon 1"|"#1"] [--all] [--raw] [--target <slug>] [--json]   
 pob item inspect (--slot S | --raw "<item text>" | --file f) [--want "Cold Resistance"]... [--target <slug>] [--json] # Rare-item affix occupancy and bench candidates; uncertain matches never claim free slots
 pob skills [--group main|1|"label"] [--target <slug>] [--json]                         # Skill groups or per-gem DPS tooltips
 pob tree [--search "<kw>" ...] [--type Keystone|Notable|Mastery|Socket|Ascendancy ...] [--allocated|--unallocated] [--max-cost N] [--show-path] [--masteries] [--socket-radius <id|#1>] [--json]
-pob calc "<kw1>" ["<kw2>" ...] [--limit 20] [--no-breakdown] [--target <slug>] [--json] # Variadic EN/ZH get_calcs + calcs_breakdown formulas/tables
+pob calc "<kw1>" ["<kw2>" ...] [--limit 20] [--no-breakdown] [--target <slug>] [--json] # Variadic EN/ZH get_calcs + calcs_breakdown formulas/tables; rows are for the skill PoB's Calcs tab selects (named in the output as `calcsSkill`, with a warning when it is not the main skill)
 
 # What-If Simulation (0-residue rollback by default) & Persistent Mutation (--apply)
 pob item try [--slot S] (--raw "<text>" | --file f) [--tooltip-only] [--apply]
-pob item edit --slot S [--replace-mod <old> <new>]... [--add-mod <ln>]... [--remove-mod <sub >]... [--apply]
+pob item edit --slot S [--replace-mod <old> <new>]... [--add-mod <ln>]... [--remove-mod <sub >]... [--allow-illegal-affixes] [--apply] # Enforces the affix cap by default (Rare 3P/3S, Rare jewel 2P/2S, Magic 1P/1S); --allow-illegal-affixes bypasses for synthetic tests (batch/sweep item_edit op: "allowIllegalAffixes": true)
 pob item unequip --slot S [--apply]
 pob item db "<query>" [--type UNIQUE|RARE] [--slot S] [--index N] [--equip] [--with-tooltips] [--with-raw] [--apply] [--limit 15]
 pob item flask <1..5|all> <on|off> [--apply]
@@ -71,13 +74,13 @@ pob wiki "<q1>" ["<q2>" ...] [--proxy <url>] [--json]                           
 
 # Official PoE1 Trade (Read-Only, PoB-Verified) & Crafting Bench
 pob trade stats "<text|中文>" [--slot S] [--limit 5] [--proxy U] [--json]              # Local TradeSiteStats.lua (0ms) or API fallback
-pob trade search --slot S [--stat "text|中文=min"]... [--sum "a[*w]|b[*w]>=min"]... [--want T]... [--bench-craft "<stat>"]... [--budget N] [--currency chaos_equiv|chaos|divine] [--status available|securable|online|any] [--max-age HOURS] [--bargain PCT] [--search-sort asc|desc|sum] [--sort score|price|pob|sum] [--allow-conversion [--convert-to E]] [--open-prefix|--open-suffix|--open-affix] [--pob auto|on|off] [--target <slug>] [--dump-query] [--proxy U] [--json] # --bench-craft keeps originals + max-roll bench variants (PoB-ranked; budget=listing only; hard --stat pre-craft)
+pob trade search --slot S [--stat "text|中文=min"]... [--sum "a[*w]|b[*w]>=min"]... [--want T]... [--bench-craft "<stat>"]... [--budget N] [--currency chaos_equiv|chaos|divine] [--status available|securable|online|any] [--max-age HOURS] [--bargain PCT] [--search-sort asc|desc|sum] [--sort score|price|pob|sum] [--allow-conversion [--convert-to E]] [--open-prefix|--open-suffix|--open-affix] [--pob auto|on|off] [--auto-query] [--target <slug>] [--dump-query] [--proxy U] [--json] # --bench-craft keeps originals + max-roll bench variants (PoB-ranked; budget=listing only; hard --stat pre-craft); --auto-query searches PoB's weighted query sorted by weighted sum (unless --search-sort is given), trimming its lowest weights to keep the whole query within complexity 160
 pob trade plan <search.json>... --budget N [--score dps=W,ehp=W] [--top 10] [--json]  # Offline: at most one PoB-verified listing per slot from saved `trade search --json` files, max Σ score within budget (default dps=1,ehp=0.25); per-slot deltas are verified alone, the sum is an estimate
 pob trade convert (--text T | --file f) --to fire|cold|lightning [--out f] [--json]    # Harvest 3.30 swap preview (same tier, rerolled)
 pob bench list --slot S [--search "<text|中文>"] [--affix prefix|suffix] [--limit 25] [--json]
 pob bench suggest --slot S --stat "<text|中文>" [--affix prefix|suffix] [--limit 5] [--json]
 
-# Timeless Jewel Seed Search (PoB-verified on parallel throwaway engines; other Historic jewels removed)
+# Timeless Jewel Seed Search (hybrid PRNG+mmap in-engine synthesis for Legion & 3.30 Abyss, PoB-verified; other Historic jewels removed)
 pob timeless list [--target <slug>] [--json]                                           # 11 timeless jewels (EN/ZH) + build's allocated sockets
 pob timeless search --jewel "<name|中文>" --socket <nodeId> [--conqueror C] [--stat CombinedDPS|FullDPS|TotalEHP|...] [--mod "<ln>"]... [--top 15] [--workers N] [--exact] [--idle] [--target <slug>] [--json]
 ```

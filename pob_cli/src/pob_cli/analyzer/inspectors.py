@@ -7,6 +7,7 @@ from typing import Any
 
 from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
+from ..game_data import fold_han
 from ..snapshot import _call_batch
 from .constants import _ALWAYS_SHOW_VISIBLE_CONFIG_VARS, _KNOWN_CONFIG_DEFAULTS
 
@@ -31,7 +32,9 @@ def resolve_slot_name(
             if s.get("name") == raw_q and (s.get("selItemId") or s.get("shown")):
                 return s["name"]
 
-    q = normalize_equipment_slot(raw_q) or raw_q
+    # Fold both sides: a Traditional query must hit the Simplified aliases, and the engine's labels
+    # are Traditional by default.
+    q = normalize_equipment_slot(fold_han(raw_q)) or raw_q
 
     m_jewel = re.match(r"^#?(\d+)$", q)
     if m_jewel:
@@ -45,13 +48,13 @@ def resolve_slot_name(
     for s in slots:
         if (
             s.get("name", "").lower() == q_lower
-            or (s.get("label") or "").lower() == q_lower
-            or (s.get("labelZh") or "").lower() == q_lower
+            or fold_han(s.get("label") or "").lower() == q_lower
+            or fold_han(s.get("labelZh") or "").lower() == q_lower
         ):
             return s["name"]
 
     for s in slots:
-        if q_lower in s.get("name", "").lower() or q_lower in (s.get("labelZh") or "").lower():
+        if q_lower in s.get("name", "").lower() or q_lower in fold_han(s.get("labelZh") or "").lower():
             return s["name"]
 
     raise ValueError(f"Equipment slot '{slot_query}' not found.")

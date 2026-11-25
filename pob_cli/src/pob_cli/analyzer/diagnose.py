@@ -15,9 +15,15 @@ from .diagnose_compare import (
     _merge_traps_and_ask_grounding,
     _run_diagnose_rankings,
 )
-from .diagnose_probes import _detect_dead_main_supports, _extract_trigger_attack_aps
+from .diagnose_probes import (
+    _detect_dead_main_supports,
+    _extract_trigger_attack_aps,
+    _gaps_from_agent_probe,
+    _probe_agent_build,
+)
 from .inspectors import inspect_items
 from .pitfalls_core import _detect_build_mechanics_and_pitfalls
+from .pitfalls_triggers import deduplicate_trigger_gaps
 from .summary import _is_tincture_item, extract_summary
 from .tree_inspect import inspect_tree
 
@@ -196,7 +202,12 @@ def _assemble_diagnose_mechanics(
     except Exception:
         pass
 
-    trig_aps = _extract_trigger_attack_aps(worker, all_skills_res, items_raw_res, stats_full)
+    agent_probe = audit.get("agentProbe")
+    if not isinstance(agent_probe, dict):
+        agent_probe = _probe_agent_build(worker)
+    trig_aps = _extract_trigger_attack_aps(
+        worker, all_skills_res, items_raw_res, stats_full, agent_probe=agent_probe
+    )
     stripped_flasks = list(((audit.get("inflationStripped") or {}).get("flasks")) or [])
     diag_mech_gaps, build_mechanics = _detect_build_mechanics_and_pitfalls(
         stats=stats_full,
@@ -214,6 +225,10 @@ def _assemble_diagnose_mechanics(
     dead_sup_gaps, dead_sup_records = _detect_dead_main_supports(worker, mg, stats_full)
     if dead_sup_records:
         build_mechanics["deadSupports"] = dead_sup_records
+    probe_gaps = _gaps_from_agent_probe(agent_probe)
+    if agent_probe is not None:
+        build_mechanics["agentProbe"] = agent_probe
+    diag_mech_gaps = deduplicate_trigger_gaps(diag_mech_gaps, agent_probe)
 
     core_synergies: list[str] = []
     seen_syn_keys: set[str] = set()
@@ -229,8 +244,27 @@ def _assemble_diagnose_mechanics(
         core_synergies.append(s)
     amulet_7th_link = list(build_mechanics.get("amulet7thLink") or [])
 
+    from .pitfalls_triggers import _OVERSPEED_TRIG_RE, canonical_trigger_key
+
+    evaluated_tkeys = {
+        canonical_trigger_key(str(t.get("name") or ""))
+        for t in (build_mechanics.get("triggers") or [])
+        if isinstance(t, dict)
+    } | {
+        canonical_trigger_key(str(c.get("triggerName") or ""))
+        for c in ((agent_probe or {}).get("triggerCliffs") or [])
+        if isinstance(c, dict)
+    }
+    audit_extra_trig = []
+    for ag in audit.get("healthIssues") or []:
+        if isinstance(ag, dict) and ag.get("category") == "TriggerOverspeed":
+            m_at = _OVERSPEED_TRIG_RE.match(str(ag.get("message") or ""))
+            at_key = canonical_trigger_key(m_at.group(1)) if m_at else ""
+            if not at_key or at_key not in evaluated_tkeys:
+                audit_extra_trig.append(ag)
+
     existing_gap_msgs = {str(g.get("message") or "") for g in gaps}
-    for mgap in (*diag_mech_gaps, *dead_sup_gaps):
+    for mgap in (*diag_mech_gaps, *audit_extra_trig, *dead_sup_gaps, *probe_gaps):
         if mgap["message"] not in existing_gap_msgs:
             existing_gap_msgs.add(mgap["message"])
             gaps.append(mgap)
@@ -256,7 +290,8 @@ def diagnose_build(
 
     top = max(1, int(top))
     summary = extract_summary(worker)
-    audit = _analyzer.audit_build(worker, keep=keep, attribution=True)
+    audit_kw = {"include_envelope": False} if "include_envelope" in (getattr(_analyzer.audit_build, "__kwdefaults__", None) or {}) else {}
+    audit = _analyzer.audit_build(worker, keep=keep, attribution=True, **audit_kw)
     items_info = inspect_items(worker, all_raw=True)
     with worker.lock:
         all_skills_res, cfg_res_diag, items_raw_res, tree_state_diag = _call_batch(
@@ -280,7 +315,7 @@ def diagnose_build(
     pts = info.get("points") or {}
     used_pts, used_max = int(pts.get("used") or 0), int(pts.get("usedMax") or 0)
 
-    gaps = list(audit.get("healthIssues") or [])
+    gaps = [g for g in (audit.get("healthIssues") or []) if g.get("category") != "TriggerOverspeed"]
     if used_max > 0 and used_pts < used_max:
         gaps.append(
             {
@@ -394,6 +429,8 @@ def diagnose_build(
         "rankErrors": rank_errors,
         "restoreCheck": audit.get("restoreCheck"),
     }
+    if build_mechanics.get("agentProbe") is not None:
+        out_diag["agentProbe"] = build_mechanics["agentProbe"]
     if ask_grounding is not None:
         out_diag["askGrounding"] = ask_grounding
     return out_diag
