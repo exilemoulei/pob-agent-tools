@@ -13,7 +13,7 @@ from .constants import UpdateError
 from .self_update import _lock
 
 BACKUP_DIRNAME = ".bak"
-_DISCARDED_DIRNAME = ".bak-done"
+_KEPT_MARKER = ".bak-kept"
 STAGING_DIRNAME = ".staging"
 LOCK_FILENAME = ".update.lock"
 _PARTIAL_SUFFIX = ".pob-partial"
@@ -77,37 +77,62 @@ def backup_file(src: Path, bak: Path) -> None:
 def discard_backup(engine_dir: Path) -> None:
     """Drop the backups of a swap that is being kept.
 
-    One rename decides it. Deleting `.bak` file by file could be cut short and leave a folder
-    that looks like an interrupted swap, and the next run would put old files back over an
+    The marker goes down first and comes off last. Deleting `.bak` file by file can be cut
+    short, or refused halfway while a scanner holds one file open, and what is left looks like
+    an interrupted swap: without the marker the next run would put old files back over an
     update that had gone through.
     """
     eng = Path(engine_dir)
+    if not (eng / BACKUP_DIRNAME).is_dir():
+        return
+    with suppress(OSError):  # a folder that takes no new file still gets the plain delete
+        (eng / _KEPT_MARKER).touch()
+    _finish_discard(eng)
+
+
+def _finish_discard(eng: Path) -> None:
     bak_dir = eng / BACKUP_DIRNAME
-    done_dir = eng / _DISCARDED_DIRNAME
-    shutil.rmtree(done_dir, ignore_errors=True)
-    if not bak_dir.is_dir():
-        return
-    try:
-        os.rename(bak_dir, done_dir)
-    except OSError:
-        shutil.rmtree(bak_dir, ignore_errors=True)  # no rename here: the plain delete is all there is
-        return
-    shutil.rmtree(done_dir, ignore_errors=True)
+    shutil.rmtree(bak_dir, ignore_errors=True)
+    if not bak_dir.exists():
+        # Only once `.bak` is gone: a marker left behind would have the next run's backups deleted.
+        with suppress(OSError):
+            (eng / _KEPT_MARKER).unlink(missing_ok=True)
+
+
+def backup_in_the_way(engine_dir: Path) -> str | None:
+    """Why no new swap may start in `engine_dir`, or None when nothing of an earlier one is left."""
+    eng = Path(engine_dir)
+    bak_dir = eng / BACKUP_DIRNAME
+    if (eng / _KEPT_MARKER).exists():
+        return (
+            f"The backups of the last update in {bak_dir} could not be deleted, most likely because "
+            "another program holds one of them open. The engine itself is complete. "
+            "Close that program or delete the folder, then retry."
+        )
+    if bak_dir.is_dir():
+        return (
+            f"An earlier update was cut short and its files in {bak_dir} could not be put back, "
+            "most likely because an engine is still running. Run `pob stop` and retry; "
+            "delete that folder only to keep the engine exactly as it is now."
+        )
+    return None
 
 
 def restore_interrupted_apply(engine_dir: Path) -> int:
     """Put back the files an update had replaced when it was cut short; return how many.
 
     A finished apply, kept or rolled back, removes its backup folder. One that is still there
-    marks a run killed between its first replaced file and its probe, which leaves the engine a
-    mix of two versions that still passes for a valid one. Files the dead run added stay: nothing
+    without the kept marker belongs to a run killed between its first replaced file and its
+    probe, which leaves the engine a mix of two versions that still passes for a valid one. Files the dead run added stay: nothing
     recorded them, and the next update check finds whatever is missing next to them.
 
     A backup that cannot be put back (a running engine holds the file open on Windows) stays in
     `.bak` for the next try, so `.bak` still being there afterwards means the restore is not done.
     """
     eng = Path(engine_dir)
-    shutil.rmtree(eng / _DISCARDED_DIRNAME, ignore_errors=True)
+    if (eng / _KEPT_MARKER).exists():
+        _finish_discard(eng)  # that swap was kept: its backups are leftovers, not something to put back
+        return 0
     bak_dir = eng / BACKUP_DIRNAME
     if not bak_dir.is_dir():
         return 0

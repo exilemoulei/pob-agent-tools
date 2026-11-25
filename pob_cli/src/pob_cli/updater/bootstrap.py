@@ -27,6 +27,7 @@ from .engine_lock import (
     BACKUP_DIRNAME,
     STAGING_DIRNAME,
     backup_file,
+    backup_in_the_way,
     discard_backup,
     engine_update_lock,
     restore_interrupted_apply,
@@ -68,17 +69,10 @@ def _apply_staged_files_with_gate(
 
     # A backup folder still here belongs to a run that died mid-swap: its files go back first.
     restore_interrupted_apply(eng)
-    if bak_dir.is_dir():
+    blocked = backup_in_the_way(eng)
+    if blocked:
         shutil.rmtree(staging_dir, ignore_errors=True)
-        return {
-            "ok": False,
-            "rolledBack": False,
-            "probe": None,
-            "error": (
-                f"An earlier update was cut short and its files in {bak_dir} could not be put back, "
-                "most likely because an engine is still running. Run `pob stop` and retry."
-            ),
-        }
+        return {"ok": False, "rolledBack": False, "untouched": True, "probe": None, "error": blocked}
     bak_dir.mkdir(parents=True, exist_ok=True)
 
     backed_up: list[tuple[Path, Path]] = []
@@ -199,10 +193,14 @@ def _bootstrap_from_dir(
     staged = {p.relative_to(staging_dir): p for p in staging_dir.rglob("*") if p.is_file()}
     apply_res = _apply_staged_files_with_gate(eng_dir, staged, probe_fn=probe_callable)
     if not apply_res["ok"]:
-        raise EngineGateError(
-            f"Offline bootstrap failed gate_result probe: {apply_res.get('error')}. "
+        if apply_res.get("untouched"):
+            raise EngineGateError(f"Offline bootstrap did not start: {apply_res.get('error')}")
+        outcome = (
             f"{eng_dir} was put back as it was."
+            if apply_res.get("rolledBack")
+            else f"Not every file of {eng_dir} could be put back; run `pob stop` and repeat the command."
         )
+        raise EngineGateError(f"Offline bootstrap failed gate_result probe: {apply_res.get('error')}. {outcome}")
     probe = apply_res["probe"]
     vers = detect_local_versions(eng_dir, rt_dir)
     state = {
@@ -411,6 +409,7 @@ def _bootstrap_engine_locked(
         apply_res = _apply_staged_files_with_gate(eng_dir, staged_files, probe_fn=probe_callable)
         if not apply_res["ok"]:
             err = apply_res.get("error") or "gate_result failed"
+            rolled_back = bool(apply_res.get("rolledBack"))
             state = {
                 "state": STATE_DEGRADED_ROLLBACK,
                 "localPobVersion": None,
@@ -420,8 +419,10 @@ def _bootstrap_engine_locked(
                 "checkedAt": time.time(),
                 "engineDir": str(eng_dir),
                 "networkError": err,
-                "userHint": _build_user_hint(STATE_DEGRADED_ROLLBACK, None, err),
+                "userHint": _build_user_hint(STATE_DEGRADED_ROLLBACK, None, err, rolled_back=rolled_back),
             }
+            if rolled_back:
+                state["rolledBack"] = True
             save_update_state(state, rt_dir)
             raise EngineGateError(err)
 

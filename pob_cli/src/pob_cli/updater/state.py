@@ -157,6 +157,8 @@ def _build_user_hint(
     state_name: str,
     local_pob_version: str | None = None,
     network_error: str | None = None,
+    *,
+    rolled_back: bool = True,
 ) -> str | None:
     if state_name in OK_STATES:
         return None
@@ -176,6 +178,12 @@ def _build_user_hint(
             "请配置代理后执行 `pob bootstrap --proxy http://127.0.0.1:<port>`"
             "（或设置 HTTPS_PROXY / POB_PROXY / POB_GITHUB_MIRROR），"
             "或使用 `pob bootstrap --from-dir <本地PobTools目录>` 离线导入。"
+        )
+    if state_name == STATE_DEGRADED_ROLLBACK and not rolled_back:
+        # The swap was refused or could not be undone in full: do not promise a clean old engine.
+        return (
+            f"PoB 引擎更新未完成，引擎目录未能确认恢复到更新前的状态{err_part}。"
+            "请先执行 `pob stop`，再执行 `pob update --force` 重试。"
         )
     if state_name == STATE_DEGRADED_ROLLBACK:
         return (
@@ -401,7 +409,7 @@ def _save_degraded_state(
         "checkedAt": time.time(),
         "engineDir": str(engine_dir),
         "networkError": err_msg,
-        "userHint": _build_user_hint(state_name, local_vers["localPobVersion"], err_msg),
+        "userHint": _build_user_hint(state_name, local_vers["localPobVersion"], err_msg, rolled_back=rolled_back),
     }
     if rolled_back:
         state["rolledBack"] = True

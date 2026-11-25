@@ -221,24 +221,89 @@ def test_a_kept_swap_cannot_be_mistaken_for_an_interrupted_one(
     staged = _stage(engine, {"PoE1/Modules/Main.lua": b"new main\n"})
     real_rmtree = engine_lock_mod.shutil.rmtree
 
-    def _killed_while_deleting(path: Any, *args: Any, **kwargs: Any) -> None:
-        if Path(path).name == ".bak-done" and Path(path).exists():
-            return  # the process dies here, with the old files still on disk
+    def _backups_stay(path: Any, *args: Any, **kwargs: Any) -> None:
+        # The process dies while deleting, or a scanner holds a backup open: old files stay on disk.
+        if Path(path).name == ".bak" and Path(path).exists():
+            return
         real_rmtree(path, *args, **kwargs)
 
-    monkeypatch.setattr(engine_lock_mod.shutil, "rmtree", _killed_while_deleting)
+    monkeypatch.setattr(engine_lock_mod.shutil, "rmtree", _backups_stay)
     res = bootstrap_mod._apply_staged_files_with_gate(engine, staged, probe_fn=lambda _p: dict(OK_PROBE))
     assert res["ok"] is True
-    assert not (engine / ".bak").exists()
-    assert (engine / ".bak-done" / "PoE1" / "Modules" / "Main.lua").read_bytes() == b"old main\n"
+    assert (engine / ".bak" / "PoE1" / "Modules" / "Main.lua").read_bytes() == b"old main\n"
+    assert (engine / ".bak-kept").is_file()
+
+    # Still undeletable: nothing is put back, and a new swap waits with a reason that fits.
+    with engine_update_lock(engine):
+        assert main.read_bytes() == b"new main\n"
+    assert recover_idle_engine(engine) == 0 and main.read_bytes() == b"new main\n"
+    blocked = bootstrap_mod._apply_staged_files_with_gate(
+        engine, _stage(engine, {"PoE1/Modules/Main.lua": b"newer main\n"}), probe_fn=lambda _p: dict(OK_PROBE)
+    )
+    assert blocked["ok"] is False and blocked["rolledBack"] is False
+    assert "could not be deleted" in blocked["error"] and "engine itself is complete" in blocked["error"]
+    assert main.read_bytes() == b"new main\n" and (engine / ".bak-kept").is_file()
 
     monkeypatch.undo()
     with engine_update_lock(engine):
         assert main.read_bytes() == b"new main\n"  # the update that went through stays
-        assert not (engine / ".bak-done").exists()
+        assert not (engine / ".bak").exists() and not (engine / ".bak-kept").exists()
+
+    # With the marker gone, a later swap that dies is put back as usual.
+    _old_main_backed_up(engine)
+    assert restore_interrupted_apply(engine) == 1 and main.read_bytes() == b"old main\n"
 
     discard_backup(engine)  # nothing to drop is fine
-    assert not (engine / ".bak").exists()
+    assert not (engine / ".bak").exists() and not (engine / ".bak-kept").exists()
+
+
+def test_a_failed_swap_that_could_not_be_undone_is_not_reported_as_rolled_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = tmp_path / "rt"
+    engine = _make_fake_engine(rt / "engine", files={"Modules/Main.lua": b"working main\n"})
+    source = _make_fake_engine(tmp_path / "pack", files={"Modules/Main.lua": b"broken main\n"})
+    main = engine / "PoE1" / "Modules" / "Main.lua"
+    real_replace, real_copy2 = os.replace, bootstrap_mod.shutil.copy2
+
+    def _failing_probe(_engine: Path) -> dict[str, Any]:
+        def _in_use(src: Any, dst: Any, *a: Any, **k: Any) -> Any:
+            if Path(dst) == main:
+                raise PermissionError(13, "The process cannot access the file", str(dst))
+            return real_replace(src, dst)
+
+        def _copy_in_use(src: Any, dst: Any, *a: Any, **k: Any) -> Any:
+            if Path(dst) == main:
+                raise PermissionError(13, "The process cannot access the file", str(dst))
+            return real_copy2(src, dst, *a, **k)
+
+        # From here on the engine the probe started holds Main.lua open, so the rollback cannot replace it.
+        monkeypatch.setattr(bootstrap_mod.os, "replace", _in_use)
+        monkeypatch.setattr(bootstrap_mod.shutil, "copy2", _copy_in_use)
+        monkeypatch.setattr(engine_lock_mod.os, "replace", _in_use)
+        return {"ok": False, "error": "Build.Init"}
+
+    with pytest.raises(updater.EngineGateError) as caught:
+        updater.bootstrap_engine(from_dir=source, runtime_dir=rt, probe_fn=_failing_probe)
+    assert "was put back as it was" not in str(caught.value) and "pob stop" in str(caught.value)
+    assert main.read_bytes() == b"broken main\n"
+    assert (engine / ".bak" / "PoE1" / "Modules" / "Main.lua").read_bytes() == b"working main\n"
+
+    # The next run cannot swap either, and says that nothing was touched instead of blaming the probe.
+    with pytest.raises(updater.EngineGateError, match="did not start") as again:
+        updater.bootstrap_engine(from_dir=source, runtime_dir=rt, probe_fn=lambda _p: dict(OK_PROBE))
+    assert "could not be put back" in str(again.value)
+
+    hint_kept = updater.state._build_user_hint(updater.STATE_DEGRADED_ROLLBACK, "2.68.1", "Build.Init")
+    hint_mixed = updater.state._build_user_hint(
+        updater.STATE_DEGRADED_ROLLBACK, "2.68.1", "Build.Init", rolled_back=False
+    )
+    assert "已自动回滚" in hint_kept
+    assert "回滚" not in hint_mixed and "pob stop" in hint_mixed and "Build.Init" in hint_mixed
+
+    monkeypatch.undo()
+    with engine_update_lock(engine):
+        assert main.read_bytes() == b"working main\n" and not (engine / ".bak").exists()
 
 
 def test_a_rollback_cut_short_keeps_its_backups_for_the_next_writer(
