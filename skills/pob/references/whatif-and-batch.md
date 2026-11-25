@@ -18,7 +18,7 @@ pob matrix Original Pinnacle Uber FlasksOff "BossWithFrenzy:Pinnacle,useFrenzyCh
 
 ## Atomic Multi-Op Transaction (`pob batch`)
 Supported op types (19): `config`, `flask`, `item`, `item_db`, `item_edit`, `unequip`, `anoint`, `tree`, `tree_reset`, `import_tree_url`, `skill`, `add_group`, `delete_group`, `set_group`, `replace_group`, `new_build`, `set_level`, `set_class`, `switch_main`.
-- `"config"` supports multi-key `"set": {"useFrenzyCharges": true, "enemyIsBoss": "Pinnacle"}` (as well as single `"var"`/`"value"` and `"custom_mods"`).
+- `"config"` takes `"set": {"useFrenzyCharges": true, "enemyIsBoss": "Pinnacle"}` (one or many variables), `"reset"`, and `"customMods"` / `"appendCustomMods"`; a bare `"var"`/`"value"` pair is refused with the `"set"` form to use.
 - `"skill"` supports `"skill_part"` (1-based sub-skill part index for multi-part gems such as `Ice Spear`, `Blade Vortex`, or transfigured variants).
 ```powershell
 pob batch --json-ops '[{"op":"config","set":{"usePowerCharges":true,"enemyIsBoss":"Pinnacle"}},{"op":"anoint","slot":"Amulet","notable":"Whispers of Doom"},{"op":"skill","group":"main","gem":1,"skill_part":2}]' --return summary,audit

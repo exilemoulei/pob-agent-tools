@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from pob_cli.analyzer.dewater_steps import _dewater_config_and_custom_mods
 from pob_cli.analyzer.pitfalls_core import _detect_build_mechanics_and_pitfalls
 from pob_cli.formatters.build_md import (
@@ -80,15 +82,16 @@ def test_custom_mods_mixed_330_viscera_runegraft_and_unverified_padding() -> Non
     rec = records[0]
     label = rec["label"]
     assert "//" not in label and "# comment" not in label
-    assert "MIXED: 3.30 Viscera/Runegraft simulation" in label
+    assert "MIXED: Viscera/Runegraft lines" in label
     assert "30% increased bonuses gained from equipped gloves" in label
     assert "50% reduced bonuses gained from equipped boots" in label
-    assert "unverified custom [+200% to critical hit chance]" in label
-    assert "verify Head/Body/Arm/Leg slots" in label
+    assert "other custom lines [+200% to critical hit chance]" in label
+    # PoB 2.69 models the grafts and Runegrafts themselves; the advice must not be to keep a copy.
+    assert "PoB models an equipped Viscera or allocated Runegraft itself" in label
 
     notes = stripped.get("customMods330Notes") or []
     assert len(notes) == 1
-    assert "mixes 3.30 Viscera/Runegraft simulation" in notes[0]
+    assert "mixes Viscera/Runegraft lines" in notes[0] and "counts twice" in notes[0]
     assert "+200% to critical hit chance" in notes[0]
     assert rec.get("customMods330Notes") == notes
 
@@ -116,8 +119,8 @@ def test_custom_mods_pure_330_simulation_vs_kept() -> None:
     assert len(records) == 1
     lbl = records[0]["label"]
     assert "MIXED:" not in lbl
-    assert "3.30 Viscera/Runegraft simulation" in lbl
-    assert "pass --keep customMods if active in-game" in lbl
+    assert "Viscera/Runegraft lines" in lbl and "PoB models" in lbl
+    assert "if active in-game" not in lbl
     assert len(stripped.get("customMods330Notes") or []) == 1
 
     stripped_kept = _make_empty_stripped()
@@ -130,13 +133,13 @@ def test_custom_mods_pure_330_simulation_vs_kept() -> None:
 
 def test_diagnose_and_build_md_render_330_custom_mods_callout() -> None:
     mixed_label = (
-        "customMods[Default] (MIXED: 3.30 Viscera/Runegraft simulation "
+        "customMods[Default] (MIXED: Viscera/Runegraft lines "
         "[30% increased bonuses gained from equipped gloves; 50% reduced bonuses gained from equipped boots] "
-        "+ unverified custom [+200% to critical hit chance]; verify Head/Body/Arm/Leg slots or keep only verified 3.30 lines)"
+        "+ other custom lines [+200% to critical hit chance]; PoB models an equipped Viscera or allocated Runegraft itself)"
     )
     note_txt = (
-        "`customMods[Default]` mixes 3.30 Viscera/Runegraft simulation "
-        "[30% increased bonuses gained from equipped gloves] with unverified custom lines [+200% to critical hit chance]."
+        "`customMods[Default]` mixes Viscera/Runegraft lines "
+        "[30% increased bonuses gained from equipped gloves] with other custom lines [+200% to critical hit chance]."
     )
     diag_payload: dict[str, Any] = {
         "buildInfo": {"level": 96, "className": "Witch", "ascendClassName": "Necromancer"},
@@ -291,6 +294,54 @@ def test_convocation_automation_not_flagged_when_manual_combat_minion_skill_exis
     assert not [g for g in gaps if g["category"] == "TriggerMechanic"]
 
 
+def _convocation_case(main_gem: dict[str, Any], *, automated: bool, condition: bool) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    conv: list[dict[str, Any]] = [{"name": "Convocation", "skillId": "Convocation", "enabled": True, "support": False}]
+    if automated:
+        conv.append({"name": "Automation Support", "enabled": True, "support": True})
+    skills_res = {
+        "mainSocketGroup": 1,
+        "groups": [
+            {"index": 1, "isMain": True, "enabled": True, "slot": "Body Armour", "gems": [main_gem]},
+            {"index": 2, "enabled": True, "slot": "Boots", "gems": conv},
+        ],
+    }
+    text = "Minions are Aggressive if you've used a Minion Skill Recently" if condition else "10% increased Minion Damage"
+    return _detect_build_mechanics_and_pitfalls(
+        stats={"MinionCombinedDPS": 3_000_000, "MinionLife": 50_000, "FireResist": 75, "ColdResist": 75, "LightningResist": 75},
+        skills_res=skills_res,
+        items_res={"items": [], "slots": []},
+        cfg_res={"sections": [], "customMods": [{"title": "Viscera", "text": text, "enabled": True}]},
+    )
+
+
+@pytest.mark.parametrize(
+    "main_gem",
+    [
+        {"name": "Blink Arrow", "skillId": "BlinkArrow", "enabled": True, "support": False},
+        {"name": "Mirror Arrow", "skillId": "MirrorArrow", "enabled": True, "support": False},
+        {"name": "Holy Strike", "skillId": "HolyStrike", "enabled": True, "support": False},
+        {"name": "Dark Pact", "skillId": "DarkPact", "enabled": True, "support": False},
+    ],
+)
+def test_a_minion_skill_cast_by_hand_feeds_the_condition_whatever_convocation_does(main_gem: dict[str, Any]) -> None:
+    gaps, mechanics = _convocation_case(main_gem, automated=True, condition=True)
+    assert not [g for g in gaps if g["category"] == "TriggerMechanic"]
+    # And hand-cast Convocation is then not what the condition hangs on.
+    _, mechanics = _convocation_case(main_gem, automated=False, condition=True)
+    assert "minionSkillTrigger" not in mechanics
+
+
+def test_manual_convocation_is_no_advisory_on_a_build_without_the_condition() -> None:
+    spectre = {"name": "Raise Spectre", "skillId": "RaiseSpectre", "enabled": True, "support": False}
+    gaps, mechanics = _convocation_case(spectre, automated=False, condition=False)
+    assert "minionSkillTrigger" not in mechanics
+    assert not [s for s in mechanics.get("coreSynergies") or [] if "Convocation" in s]
+    assert not [g for g in gaps if g["category"] == "TriggerMechanic"]
+    # With the condition and nothing else feeding it, automating Convocation is the brick it warns of.
+    gaps, _ = _convocation_case(spectre, automated=True, condition=True)
+    assert [g for g in gaps if g["category"] == "TriggerMechanic"]
+
+
 def test_manual_convocation_records_load_bearing_mechanic_and_renders_in_diagnose() -> None:
     skills_res = {
         "mainSocketGroup": 1,
@@ -363,18 +414,23 @@ def test_skill_and_reference_docs_330_wickerman_vestigial_and_cli_contracts() ->
     assert len(skill_md.splitlines()) <= 85
     assert len(trig_md.splitlines()) <= 45
 
-    for token in ("{vestigial}", "====", "Wickerman", "Viscera", "Convocation", "pob data tattoo"):
+    for token in ("{vestigial}", "Wickerman", "Viscera", "Convocation", "pob data tattoo|runegraft"):
         assert token in skill_md, f"Missing {token!r} in SKILL.md"
+    # What the engine does not bear out stays out: PoB has no `====` blocks, offers no Vestigial
+    # implicit to a quiver, and models Viscera and Runegrafts itself.
+    for doc_text in (skill_md, anti_md):
+        assert "====" not in doc_text and "NEW 3.30 MECHANIC" not in doc_text
+        assert "never on a quiver" in doc_text and "counts twice" in doc_text
+        assert "simulated in `customMods`" not in doc_text
 
     for token in (
         "Vestigial",
-        "Enshrouding",
         "+200 to maximum Life",
         "Cloak of Flame",
         "Wickerman",
         "Runegraft of the Bound",
         "pob data tattoo",
-        "runegraft",
+        "pob data runegraft",
     ):
         assert token in anti_md, f"Missing {token!r} in poe1-330-anti-hallucination.md"
 
@@ -383,6 +439,12 @@ def test_skill_and_reference_docs_330_wickerman_vestigial_and_cli_contracts() ->
 
     for token in ('"set"', '"skill_part"', "--group", "--skill", "--allocate", "--out"):
         assert token in batch_md, f"Missing {token!r} in whatif-and-batch.md"
+    # The batch validator refuses a bare var/value pair on a config step; the doc must not offer it.
+    from pob_cli.mutators.batch_validate import validate_batch_op
+
+    with pytest.raises(ValueError, match='"set"'):
+        validate_batch_op(1, "config", {"op": "config", "var": "enemyIsBoss", "value": "Pinnacle"})
+    assert "is refused" in batch_md
 
     for token in ("Elegant Hubris", "Price of Glory", "TreeWaste", "--socket-radius"):
         assert token in timeless_md, f"Missing {token!r} in timeless.md"

@@ -39,13 +39,13 @@ def extract_custom_mods_330_notes(*sources: Any) -> list[str]:
                 _add(entry.get("customMods330Notes"))
                 _add(entry.get("customMods330Note"))
                 lbl = str(entry.get("label") or entry.get("item") or "").strip()
-                if "3.30 Viscera/Runegraft simulation" in lbl and lbl not in fallback_rows:
+                if "Viscera/Runegraft lines" in lbl and lbl not in fallback_rows:
                     fallback_rows.append(lbl)
     if not notes and fallback_rows:
         for lbl in fallback_rows:
             _add(
-                f"{lbl} — check equipped `Head/Body/Arm/Leg` Viscera & Runegrafts (`pob data tattoo`); "
-                "pass `--keep customMods` only for verified active 3.30 lines."
+                f"{lbl}: check `pob items` and `pob tree` for the Viscera or Runegraft itself; "
+                "pass `--keep customMods` only for what the build does not already carry."
             )
     return notes
 

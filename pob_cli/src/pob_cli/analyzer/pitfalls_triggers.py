@@ -31,14 +31,10 @@ _COMBAT_MINION_TOKENS: tuple[str, ...] = (
     "summon raging spirit", "愤怒狂灵", "憤怒狂靈", "summon skeletons", "召唤魔卫", "召喚魔衛",
     "absolution", "赦罪", "dominating blow", "霸气之击", "霸氣之擊", "animate weapon", "幻化武器",
     "bodyswap of sacrifice", "牺牲之灵体转换", "献祭之移形换位", "獻祭之移形換位", "summon reaper", "召唤追命死灵",
-    "blink arrow of bombarding", "blink arrow of prismatic", "mirror arrow of bombarding", "mirror arrow of prismatic",
+    "blink arrow", "闪现射击", "閃現射擊", "mirror arrow", "魅影射击", "魅影射擊", "holy strike",
     "flesh offering", "血肉奉献", "bone offering", "骸骨奉献", "spirit offering", "灵魂奉献",
-)
-_PASSIVE_MINION_TOKENS: tuple[str, ...] = (
-    "raise spectre", "召唤灵体", "召喚靈體", "animate guardian", "幻化守卫", "幻化守衛",
-    "raise zombie", "魔卫复苏", "魔衛復甦", "golem", "魔像", "summon skitterbots", "召唤飞掠者",
-    "summon holy relic", "召唤圣物", "summon phantasm", "herald of purity", "纯净之捷",
-    "herald of agony", "苦痛之捷", "dark pact", "暗夜血契", "death wish", "死亡之愿",
+    # Minion-tagged skills a build casts as its main skill.
+    "dark pact", "暗夜血契", "death wish", "死亡之愿",
 )
 
 
@@ -332,7 +328,7 @@ def _check_minion_convocation_trigger(
     raw_map = ctx.get("raw_by_slot") or {}
     trig_conv: list[tuple[Any, str, str]] = []
     man_conv: list[tuple[Any, str]] = []
-    has_minion_gem = has_manual_combat = False
+    has_manual_combat = False
 
     for g in ctx.get("groups") or []:
         if not isinstance(g, dict) or not g.get("enabled", True) or "Swap" in str(g.get("slot") or ""):
@@ -361,16 +357,9 @@ def _check_minion_convocation_trigger(
             if gsid == "Convocation" or any(t in ("convocation", "号召", "號召") for t in toks):
                 (trig_conv.append((g_idx, g_slot, t_lbl)) if is_trig else man_conv.append((g_idx, g_slot)))
             elif not is_sup and gsid not in ("Automation", "SupportAutomation"):
-                if any(tok in joined for tok in _COMBAT_MINION_TOKENS):
-                    has_minion_gem = True
-                    has_manual_combat = has_manual_combat or (not is_trig)
-                elif any(tok in joined for tok in _PASSIVE_MINION_TOKENS) or gsid.startswith(("Raise", "Summon", "Animate")):
-                    has_minion_gem = True
+                if not is_trig and any(tok in joined for tok in _COMBAT_MINION_TOKENS):
+                    has_manual_combat = True
 
-    st = ctx.get("stats") or {}
-    uses_minions = has_minion_gem or bool(recent) or any(
-        _finite_float(st.get(k), default=0.0) > 0 for k in ("MinionCombinedDPS", "MinionTotalDPS", "MinionTotalDot", "MinionLife")
-    )
     if recent and trig_conv and not man_conv and not has_manual_combat:
         f_idx, f_slot, f_trig = trig_conv[0]
         loc = f"Group #{f_idx}" if f_idx is not None else f_slot
@@ -378,7 +367,7 @@ def _check_minion_convocation_trigger(
             "category": "TriggerMechanic", "severity": "HIGH",
             "message": (
                 f"Convocation + {f_trig} ({loc}): `{f_trig}` triggers `Convocation` rather than 'using' it, "
-                f"failing `if you've used a Minion Skill Recently` ({', '.join(recent[:3])}, e.g. 3.30 Wickerman "
+                f"failing `if you've used a Minion Skill Recently` ({', '.join(recent[:3])}, e.g. Wickerman "
                 "`Greater Overseer's Whip` minion aggression) with no manual combat minion skill. "
                 "Unlink `Automation Support` / trigger support and cast `Convocation` manually."
             ),
@@ -389,21 +378,19 @@ def _check_minion_convocation_trigger(
             "hasUsedMinionSkillRecentlyMod": True,
             "recentMinionModSources": recent,
         }
-    elif man_conv and uses_minions:
+    elif man_conv and recent and not has_manual_combat:
+        # Only a build that carries the condition, and feeds it with nothing else, depends on this.
         f_idx, f_slot = man_conv[0]
         loc = f"Group #{f_idx}" if f_idx is not None else f_slot
         note = (
-            f"Manual Convocation (unautomated, {loc}): ACTIVE 3.30 trigger dependency — sustains "
-            f"`if you've used a Minion Skill Recently` ({', '.join(recent[:3])}, e.g. 3.30 Wickerman "
+            f"Manual Convocation (unautomated, {loc}) is what sustains "
+            f"`if you've used a Minion Skill Recently` ({', '.join(recent[:3])}, e.g. Wickerman "
             "`Greater Overseer's Whip` minion aggression). Do NOT link `Automation Support` / `CwDT` or remove `Convocation`!"
-            if recent else
-            "Manual Convocation (unautomated: preserves 'used a Minion Skill Recently' triggers such as "
-            "3.30 Wickerman Greater Overseer's Whip minion aggression — do NOT link Automation Support or remove Convocation)"
         )
         mechanics["minionSkillTrigger"] = {
-            "status": "active_dependency" if recent else "manual_preserved",
+            "status": "active_dependency",
             "manualConvocationGroups": [i for i, _ in man_conv],
-            "hasUsedMinionSkillRecentlyMod": bool(recent),
+            "hasUsedMinionSkillRecentlyMod": True,
             "recentMinionModSources": recent,
             "note": note,
         }

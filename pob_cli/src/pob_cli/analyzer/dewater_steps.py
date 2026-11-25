@@ -48,7 +48,7 @@ _SIM_330_CUSTOM_MOD_RE = re.compile(
     r"|\b(?:runegrafts?|wickerman|viscera|scholar['’]s\s+leg|overseer['’]s\s+whip)\b"
     r"|(?:从)?装备的(?:手套|鞋子|头盔|胸甲|盾牌|箭袋|戒指|项链|腰带)获得的加成(?:提高|降低|增加|减少)"
     r"|近期(?:内|內)?使用(?:过|過)召唤生物技能.*召唤生物.*侵略"
-    r"|(?:符文嫁接|柳条人|脏器)",
+    r"|(?:符文之[结結]|符文嫁接|柳条人|内脏|脏器)",
     re.IGNORECASE,
 )
 
@@ -77,23 +77,25 @@ def _classify_custom_mod_block(
     if other_lines:
         other_str = _preview_mod_lines(other_lines)
         label = (
-            f"customMods[{display_title}] (MIXED: 3.30 Viscera/Runegraft simulation [{sim_str}] "
-            f"+ unverified custom [{other_str}]; verify Head/Body/Arm/Leg slots or keep only verified 3.30 lines)"
+            f"customMods[{display_title}] (MIXED: Viscera/Runegraft lines [{sim_str}] "
+            f"+ other custom lines [{other_str}]; PoB models an equipped Viscera or allocated Runegraft itself)"
         )
         note = (
-            f"`customMods[{display_title}]` mixes 3.30 Viscera/Runegraft simulation [{sim_str}] "
-            f"with unverified custom lines [{other_str}]; verify `Head/Body/Arm/Leg` Viscera & Runegrafts "
-            "(`pob data tattoo`) and strip unverified lines before using `--keep`."
+            f"`customMods[{display_title}]` mixes Viscera/Runegraft lines [{sim_str}] with other custom lines "
+            f"[{other_str}]. PoB models an equipped Wickerman Viscera (`pob items`) and an allocated Runegraft "
+            "(`pob tree`) itself, so a line that repeats one counts twice; `--keep customMods` only what the build "
+            "does not already carry."
         )
         return label, note, sim_330_lines, other_lines
 
     label = (
-        f"customMods[{display_title}] (3.30 Viscera/Runegraft simulation [{sim_str}]; "
-        "pass --keep customMods if active in-game)"
+        f"customMods[{display_title}] (Viscera/Runegraft lines [{sim_str}]; "
+        "PoB models an equipped Viscera or allocated Runegraft itself)"
     )
     note = (
-        f"`customMods[{display_title}]` simulates 3.30 Viscera/Runegraft lines [{sim_str}]; "
-        "verify `Head/Body/Arm/Leg` Viscera & Runegrafts (`pob data tattoo`) and pass `--keep customMods` if active in-game."
+        f"`customMods[{display_title}]` writes Viscera/Runegraft lines [{sim_str}] by hand. PoB models an equipped "
+        "Wickerman Viscera (`pob items`) and an allocated Runegraft (`pob tree`) itself, so a line that repeats one "
+        "counts twice; pass `--keep customMods` only if the build does not already carry it."
     )
     return label, note, sim_330_lines, other_lines
 
