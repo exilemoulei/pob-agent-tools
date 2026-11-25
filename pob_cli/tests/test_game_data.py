@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import time
@@ -956,3 +957,23 @@ table.insert(data.uniques.generated, table.concat(pearl, "\\n"))
     # Lore proverbs excluded and gibberish CJK returns 0 hits
     res_gib = query_local_data("translate", "不存在的测试词缀", runtime_dir=rt)
     assert res_gib["count"] == 0
+
+
+def test_tree_zh_names_come_from_a_bootstrapped_engines_merged_passives_file(tmp_path: Path) -> None:
+    from pob_cli.game_data import _load_tree_zh_maps
+
+    merged = {"entries": {"Amplify": "增幅", "10% increased Area of Effect": "效果区域扩大 10%"}}
+    managed = tmp_path / "zh-rCN"
+    managed.mkdir()
+    (managed / "passives.json").write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
+    names, stats = _load_tree_zh_maps(managed)
+    assert names["Amplify"] == "增幅"
+    assert stats["10% increased area of effect"] == "效果区域扩大 10%"
+
+    # The pack keeps its own tree_dn.json; a passives.json next to it is the superseded one.
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    (pack / "tree_dn.json").write_text(json.dumps({"entries": {"Amplify": "增幅"}}, ensure_ascii=False), encoding="utf-8")
+    (pack / "passives.json").write_text(json.dumps({"entries": {"Amplify": "old", "Other": "x"}}), encoding="utf-8")
+    names, _ = _load_tree_zh_maps(pack)
+    assert names == {"Amplify": "增幅"}

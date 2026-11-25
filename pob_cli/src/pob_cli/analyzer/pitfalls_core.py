@@ -23,6 +23,7 @@ from .pitfalls_sustain import (
     _check_zero_dps_archetypes,
     _is_tattoo_or_graft_label,
 )
+from .pitfalls_tree import audit_conquered_zero_stat_nodes
 from .pitfalls_triggers import _check_sword_of_ages_and_triggers
 from .summary import _extract_global_cdr_sources
 
@@ -257,6 +258,9 @@ def _detect_build_mechanics_and_pitfalls(
     warnings: list[str] | None = None,
     build_info: dict[str, Any] | None = None,
     stripped_flasks: list[str] | None = None,
+    worker: Any = None,
+    tree_state: dict[str, Any] | None = None,
+    nodes_db: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Detect high-impact PoE1 3.30 build mechanics, dead/anti-synergy links, triggers, & defensive bricks."""
     ctx = _build_pitfall_context(
@@ -287,6 +291,11 @@ def _detect_build_mechanics_and_pitfalls(
     _check_defensive_and_reservation_synergies(ctx, gaps, core_synergies)
     _check_seven_link_and_class_synergies(ctx, core_synergies, amulet_7th_link)
     _check_zero_dps_archetypes(ctx, gaps, core_synergies)
+    if worker is not None and isinstance(tree_state, dict):
+        tree_waste_gaps, tree_waste_info = audit_conquered_zero_stat_nodes(worker, tree_state, nodes_db)
+        gaps.extend(tree_waste_gaps)
+        if tree_waste_info is not None:
+            mechanics["conqueredZeroStatWaste"] = tree_waste_info
 
     if core_synergies:
         mechanics["coreSynergies"] = list(dict.fromkeys(core_synergies))

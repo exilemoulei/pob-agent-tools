@@ -11,6 +11,7 @@ from ..formatters import strip_pob_escapes
 from ..snapshot import _call_batch, _finite_float
 from .dewater import dewater_build_in_place
 from .summary import _active_item_lines
+from .tree_helpers import apply_node_override
 
 _TATTOO_LABEL_TOKENS = ("tattoo", "文身", "纹身", "紋身")  # zh-CN writes 文身, zh-TW 紋身
 
@@ -319,12 +320,11 @@ def best_effort_audit_tree_and_raw(
                 for raw_nid in t_state.get("allocatedNodes") or []:
                     nid = int(raw_nid)
                     sid = str(nid)
-                    nd = dict(nodes_db.get(sid) or {})
+                    raw_nd = nodes_db.get(sid) or {}
+                    nd = dict(raw_nd)
                     if sid in ov and isinstance(ov[sid], dict):
-                        nd["overrideWhy"] = ov[sid].get("why")
-                        for fld in ("name", "nameZh", "stats", "statsZh"):
-                            if ov[sid].get(fld):
-                                nd[fld] = ov[sid][fld]
+                        # A conquered node with no stats must not keep the lines it had before the jewel.
+                        apply_node_override(nd, ov[sid], raw_nd)
                     nd["id"] = nid
                     nm = str(nd.get("name") or sid)
                     st_lines = [str(x) for x in (nd.get("stats") or []) if str(x).strip()]

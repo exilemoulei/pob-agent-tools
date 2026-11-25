@@ -307,20 +307,28 @@ def emit_json(
                 new_kb = len(text.encode("utf-8")) / 1024.0
                 hint = (
                     f"[pob hint] Large JSON output ({orig_kb:.1f} KB > 16 KB) auto-compacted to single line ({new_kb:.1f} KB). "
-                    "Prefer default Markdown (omit --json) or pass --out <file> / --compact to keep context lean.\n"
+                    "Prefer default Markdown (omit --json) or pass --out <file> / --compact to keep context lean "
+                    "(--out <file> also avoids Windows PowerShell 5.1 pipeline UTF-8 BOM injection).\n"
                 )
             else:
                 hint = (
                     f"[pob hint] Large JSON output ({orig_kb:.1f} KB > 16 KB). "
-                    "Prefer default Markdown (omit --json) or pass --out <file> to keep context lean.\n"
+                    "Prefer default Markdown (omit --json) or pass --out <file> to keep context lean "
+                    "(--out <file> also avoids Windows PowerShell 5.1 pipeline UTF-8 BOM injection).\n"
                 )
             ensure_utf8(sys.stderr)
             sys.stderr.write(hint)
             sys.stderr.flush()
 
-    ensure_utf8(sys.stdout)
-    sys.stdout.write(text + "\n")
-    sys.stdout.flush()
+    buf = getattr(sys.stdout, "buffer", None)
+    if buf is not None and not type(sys.stdout).__module__.startswith("click."):
+        sys.stdout.flush()
+        buf.write((text + "\n").encode("utf-8"))
+        buf.flush()
+    else:
+        ensure_utf8(sys.stdout)
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
     return text
 
 

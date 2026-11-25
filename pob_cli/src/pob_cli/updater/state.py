@@ -147,10 +147,30 @@ def save_update_state(state: dict[str, Any], runtime_dir: Path | None = None) ->
     tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         tmp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp_path, path)
+        _replace_when_free(tmp_path, path)
     finally:
         tmp_path.unlink(missing_ok=True)
     return path
+
+
+_REPLACE_ATTEMPTS = 15
+
+
+def _replace_when_free(src: Path, dst: Path) -> None:
+    """`os.replace`, waiting out the moment Windows refuses it.
+
+    Windows denies the replace while another writer is replacing the same file or a reader has it
+    open. Both pass within milliseconds; a folder that really is not writable still fails, half a
+    second later.
+    """
+    for attempt in range(1, _REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS:
+                raise
+            time.sleep(0.005 * attempt)
 
 
 def _build_user_hint(

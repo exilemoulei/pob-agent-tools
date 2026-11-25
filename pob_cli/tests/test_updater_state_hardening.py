@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from pob_cli import updater
+from pob_cli.updater import state as state_mod
 from pob_cli.updater.state import detect_local_versions, load_update_state, save_update_state
 
 MANAGED_STATE = {
@@ -69,4 +74,32 @@ def test_concurrent_saves_never_collide_on_the_temp_file(tmp_path: Path) -> None
     assert errors == []
     final = load_update_state(rt)
     assert final["seq"] == 149 and len(final["pad"]) == 4000
+    assert sorted(p.name for p in rt.iterdir()) == [updater.UPDATE_STATE_FILENAME]
+
+
+def test_a_save_waits_out_a_replace_windows_refuses_for_a_moment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = tmp_path / "rt"
+    real_replace = os.replace
+    refusals = {"left": 3}
+
+    def _busy_then_free(src: Any, dst: Any) -> None:
+        # What Windows answers while another writer is replacing the same file.
+        if refusals["left"] > 0:
+            refusals["left"] -= 1
+            raise PermissionError(13, "Access is denied", str(dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(state_mod.os, "replace", _busy_then_free)
+    monkeypatch.setattr(state_mod.time, "sleep", lambda _s: None)
+    save_update_state({"seq": 1}, rt)
+    assert load_update_state(rt)["seq"] == 1 and refusals["left"] == 0
+
+    # A folder that never lets go still fails, and leaves no temp file behind.
+    refusals["left"] = 10_000
+    with pytest.raises(PermissionError):
+        save_update_state({"seq": 2}, rt)
+    monkeypatch.undo()
+    assert load_update_state(rt)["seq"] == 1
     assert sorted(p.name for p in rt.iterdir()) == [updater.UPDATE_STATE_FILENAME]

@@ -194,6 +194,14 @@ def _game_versions(poe1: Path) -> None:
         ("https://poeskilltree.com/?v=3.19.0#AAAA", "3_19"),
         ("https://poeplanner.com/AAAA", None),
         ("http://poeurl.com/dABz", None),
+        ("www.poeplanner.com/AAAA", None),  # pasted without a scheme
+        ("HTTPS://WWW.POESKILLTREE.COM/?v=3.19.0#AAAA", "3_19"),
+        # The site is read from the host: a name in the path, the query or a look-alike domain is not it.
+        ("https://www.pathofexile.com/passive-skill-tree/3.19.2/AAAA?ref=poeplanner.com/", "3_19"),
+        ("https://www.pathofexile.com/passive-skill-tree/3.19.2/poeurl.com/AAAA", "3_19"),
+        ("https://poeplanner.com.example.org/passive-skill-tree/3.19.2/AAAA", "3_19"),
+        ("https://notpoeskilltree.com/?v=3.19.0#AAAA", "3_30"),
+        ("http://[bad/passive-skill-tree/3.19.2/AAAA", "3_19"),  # unparsable host: no site
     ],
 )
 def test_tree_url_version_follows_pobs_import_dialog(poe1: Path, url: str, expected: str | None) -> None:
