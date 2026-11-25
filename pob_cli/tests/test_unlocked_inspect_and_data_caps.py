@@ -295,6 +295,7 @@ def test_sqlite_candidate_pool_exceeds_old_800_ceiling() -> None:
                     "",
                     '{"default":1000}',
                     "[]",
+                    '["default"]',
                     "[]",
                     stat_en,
                     "",
@@ -302,7 +303,7 @@ def test_sqlite_candidate_pool_exceeds_old_800_ceiling() -> None:
                     json.dumps(obj),
                 )
             )
-        conn.executemany("INSERT INTO mods VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", mod_rows)
+        conn.executemany("INSERT INTO mods VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", mod_rows)
         conn.execute("INSERT INTO mods_fts(mods_fts) VALUES('rebuild')")
 
         uniq_rows = []

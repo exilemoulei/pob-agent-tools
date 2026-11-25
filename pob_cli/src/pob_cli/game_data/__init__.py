@@ -118,6 +118,7 @@ from .queries_core import (
     _query_mods,
     _query_uniques,
     _unique_matching_mod_lines,
+    mod_rolls_on_base,
 )
 from .queries_translate import _query_translate
 from .slang import (
@@ -300,6 +301,7 @@ __all__ = [
     "ground_text_entities",
     "is_legacy_awakened_gem",
     "lookup_fact_cards_for_build",
+    "mod_rolls_on_base",
     "normalize_stat_lines",
     "normalize_tw_query",
     "query_gem_quality_breakpoints",

@@ -28,6 +28,22 @@ def _pkg() -> Any:
     return sys.modules["pob_cli.updater"]
 
 
+def _state_describes_engine(state: dict[str, Any], engine_dir: Path | None) -> bool:
+    """False when `state` was recorded for another engine than `engine_dir`.
+
+    The state file is per runtime dir, not per engine: a `POB_ROOT` engine without its own version
+    files must not take the managed engine's PobTools tag and data version, or the update check
+    reports it up to date and never installs the bridge or the Chinese data there.
+    """
+    recorded = state.get("engineDir")
+    if engine_dir is None or not recorded:
+        return True
+    try:
+        return Path(str(recorded)).resolve() == Path(engine_dir).resolve()
+    except OSError:
+        return str(recorded) == str(engine_dir)
+
+
 def detect_local_versions(engine_dir: Path | None, runtime_dir: Path | None = None) -> dict[str, str | None]:
     """Detect local PoB, PobTools-zh, and DataV2 versions from disk metadata + cached state."""
     pob_ver: str | None = None
@@ -70,7 +86,7 @@ def detect_local_versions(engine_dir: Path | None, runtime_dir: Path | None = No
                 pass
 
     prev = _pkg().load_update_state(runtime_dir)
-    if prev:
+    if prev and _state_describes_engine(prev, engine_dir):
         if not pob_ver and prev.get("localPobVersion"):
             pob_ver = str(prev["localPobVersion"])
         if not pobtools_ver and prev.get("pobToolsVersion"):
@@ -125,10 +141,35 @@ def save_update_state(state: dict[str, Any], runtime_dir: Path | None = None) ->
     """Atomically persist update_state.json to runtime_dir."""
     path = get_update_state_path(runtime_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp_path, path)
+    # A name of its own: the CLI and the daemon both save, and with one shared name the second
+    # `os.replace` finds its file already moved (or moves the other writer's half-written one).
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        _replace_when_free(tmp_path, path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
     return path
+
+
+_REPLACE_ATTEMPTS = 15
+
+
+def _replace_when_free(src: Path, dst: Path) -> None:
+    """`os.replace`, waiting out the moment Windows refuses it.
+
+    Windows denies the replace while another writer is replacing the same file or a reader has it
+    open. Both pass within milliseconds; a folder that really is not writable still fails, half a
+    second later.
+    """
+    for attempt in range(1, _REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS:
+                raise
+            time.sleep(0.005 * attempt)
 
 
 def _build_user_hint(

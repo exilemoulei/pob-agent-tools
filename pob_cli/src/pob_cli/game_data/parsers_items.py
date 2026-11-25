@@ -36,6 +36,8 @@ def _parse_bases(poe1_dir: Path, zh: _ZhDictionary) -> list[dict[str, Any]]:
                 continue
             tags_raw = b.get("tags") if isinstance(b.get("tags"), dict) else {}
             tags = sorted(str(k) for k, v in tags_raw.items() if v)
+            influence_raw = b.get("influenceTags") if isinstance(b.get("influenceTags"), dict) else {}
+            influence_tags = sorted({str(v) for v in influence_raw.values() if isinstance(v, str) and v})
             req_raw = b.get("req") if isinstance(b.get("req"), dict) else {}
             implicit_raw = b.get("implicit")
             implicits = [s.strip() for s in str(implicit_raw).splitlines() if s.strip()] if implicit_raw else []
@@ -55,6 +57,7 @@ def _parse_bases(poe1_dir: Path, zh: _ZhDictionary) -> list[dict[str, Any]]:
                     "socket_limit": b.get("socketLimit"),
                     "hidden": bool(b.get("hidden")),
                     "tags": tags,
+                    "influence_tags": influence_tags,
                     "req": {
                         "level": int(req_raw.get("level") or 0),
                         "str": int(req_raw.get("str") or 0),
@@ -370,9 +373,11 @@ def _parse_mods(poe1_dir: Path, zh: _ZhDictionary) -> tuple[list[dict[str, Any]]
             wv_list = _as_seq(entry.get("weightVal"))
             positive_weights: dict[str, int] = {}
             zero_weights: list[str] = []
+            weight_keys: list[str] = []  # PoB's order: the first key an item carries decides
             for k, v in zip(wk_list, wv_list, strict=False):
                 if not isinstance(k, str) or not isinstance(v, (int, float)):
                     continue
+                weight_keys.append(k)
                 iv = int(v)
                 if iv > 0:
                     positive_weights[k] = iv
@@ -416,6 +421,7 @@ def _parse_mods(poe1_dir: Path, zh: _ZhDictionary) -> tuple[list[dict[str, Any]]
                 "mod_tags": mod_tags,
                 "weights": positive_weights,
                 "zero_weights": zero_weights,
+                "weight_keys": weight_keys,
                 "applicable_types": applicable_types,
                 "bench_info": bench_info,
             }

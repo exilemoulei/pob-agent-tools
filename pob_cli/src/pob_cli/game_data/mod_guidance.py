@@ -41,6 +41,18 @@ def _quote_slot_arg(slot: str) -> str:
     return f'"{s}"' if any(ch.isspace() for ch in s) else s
 
 
+# Sources whose weightless mods are found on dropped or league-crafted items. Legacy corrupted
+# implicits, Eldritch implicits, Foulborn unique mods and jewel implicits have no roll weight
+# either, but are applied another way and are not what the drop-only guidance is about.
+DROP_ONLY_SOURCES = frozenset({"Explicit", "Delve", "Veiled"})
+
+
+def _is_drop_only_row(row: Any) -> bool:
+    if not isinstance(row, dict) or row.get("weights") or row.get("bench_info"):
+        return False
+    return bool(row.get("drop_origin")) or str(row.get("source") or "Explicit") in DROP_ONLY_SOURCES
+
+
 def _build_trade_stat_arg(
     query: str,
     results: list[dict[str, Any]],
@@ -55,10 +67,7 @@ def _build_trade_stat_arg(
         lines_en = list(c0.get("stats") or str(c0.get("stat") or "").split("; "))
         ref_stat = _pick_matching_stat_line(lines_en, list(c0.get("statsZh") or ()), q)
     elif results:
-        drop_row = next(
-            (r for r in results if isinstance(r, dict) and not r.get("weights") and not r.get("bench_info")),
-            results[0],
-        )
+        drop_row = next((r for r in results if _is_drop_only_row(r)), results[0])
         if isinstance(drop_row, dict):
             ref_stat = _pick_matching_stat_line(
                 list(drop_row.get("stats") or ()),
@@ -66,13 +75,19 @@ def _build_trade_stat_arg(
                 q,
             )
 
+    # `pob trade search --stat` asks for at least 1 unless told otherwise, which hides every roll
+    # below 1 (leech, regeneration): those get their own minimum.
     use_stat = ref_stat or q or "<mod>"
     if "(" in use_stat:
-        return re.sub(r"\((-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)\)", "#", use_stat)
+        range_re = r"\((-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)\)"
+        first = re.search(range_re, use_stat)
+        templated = re.sub(range_re, "#", use_stat)
+        low = min(abs(float(first.group(1))), abs(float(first.group(2)))) if first else 1.0
+        return f"{templated}>={low:g}" if low < 1 else templated
     nums = list(re.finditer(r"(?<![a-zA-Z])([+-]?)(\d+(?:\.\d+)?)", use_stat))
     if len(nums) == 1:
         sign, num_s = nums[0].group(1), nums[0].group(2)
-        if float(num_s) > 1:
+        if float(num_s) != 1:
             templated = use_stat[: nums[0].start()] + f"{sign}#" + use_stat[nums[0].end() :]
             return f"{templated}>={num_s}"
     return use_stat
@@ -122,9 +137,7 @@ def _attach_mod_drop_only_guidance(
         if len(cands) >= 4:
             break
 
-    has_drop_only_rows = any(
-        isinstance(r, dict) and not r.get("weights") and not r.get("bench_info") for r in results
-    )
+    has_drop_only_rows = any(_is_drop_only_row(r) for r in results)
     if cands:
         out["dropOnlyCandidates"] = cands
         out["dropOnlyReason"] = "excluded-by-slot-table"

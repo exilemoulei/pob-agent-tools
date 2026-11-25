@@ -99,7 +99,7 @@ def format_tree_markdown(
                     continue
                 sec_hdr = f"\n#### Radius `{r_name}` ({len(r_nodes)} nodes)"
                 if eq_r_label and _tier_exceeds_equipped_radius(r_name, r_nodes, sr):
-                    sec_hdr += f" — outside equipped {eq_r_label} radius (unconquered)"
+                    sec_hdr += f" — outside equipped {eq_r_label} radius (not affected by this jewel)"
                 lines.append(sec_hdr)
                 rows = [
                     [
@@ -175,10 +175,8 @@ def format_tree_markdown(
     ]
     conquered_zero_normals = [
         n
-        for n in (res.get("normalNodes") or [])
-        if isinstance(n, dict)
-        and n.get("overrideWhy") == "conquered"
-        and not (n.get("statsZh") or n.get("stats"))
+        for n in (res.get("conqueredSmallPassives") or [])
+        if isinstance(n, dict) and not (n.get("statsZh") or n.get("stats"))
     ]
     if conquered_zero_normals:
         by_name: dict[str, list[str]] = {}

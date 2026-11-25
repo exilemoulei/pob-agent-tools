@@ -179,6 +179,11 @@ def _insert_uniques_table(conn: sqlite3.Connection, uniques: list[dict[str, Any]
 def _insert_mods_table(conn: sqlite3.Connection, mods: list[dict[str, Any]]) -> None:
     mod_rows = []
     for m in mods:
+        weight_keys = m.get("weight_keys")
+        if weight_keys is None:
+            weight_keys = [*m["weights"], *m["zero_weights"]]
+        # A column only: `weights` and `zero_weights` already show the same keys in `--json`.
+        payload = {k: v for k, v in m.items() if k != "weight_keys"}
         en_stats = _fold_search_text("\n".join(m["stats"]))
         zh_stats = _fold_search_text("\n".join(x for x in m["stats_zh"] if x))
         search_en = _fold_search_text(" ".join([m["id"], m["affix"], m["group"]])) + " " + en_stats
@@ -198,14 +203,15 @@ def _insert_mods_table(conn: sqlite3.Connection, mods: list[dict[str, Any]]) -> 
                 zh_stats,
                 json.dumps(m["weights"], separators=(",", ":")),
                 json.dumps(m["zero_weights"], separators=(",", ":")),
+                json.dumps(weight_keys, separators=(",", ":")),
                 json.dumps(m["applicable_types"], separators=(",", ":")),
                 search_en,
                 search_zh,
                 fts_txt,
-                json.dumps(m, ensure_ascii=False, separators=(",", ":")),
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             )
         )
-    conn.executemany("INSERT INTO mods VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", mod_rows)
+    conn.executemany("INSERT INTO mods VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", mod_rows)
     conn.execute("INSERT INTO mods_fts(mods_fts) VALUES('rebuild')")
 
 

@@ -128,7 +128,7 @@ def _apply_add_group_in_place(
         explicit_levels = [_extract_explicit_gem_level(g) for g in gems]
         norm_specs = [_normalize_gem_spec(g, allow_illegal_level=allow_illegal_level) for g in gems]
         resolved_specs, spec_c = _resolve_and_validate_specs(
-            w, g_idx, norm_specs, explicit_levels, allow_illegal_level=allow_illegal_level
+            w, g_idx, norm_specs, explicit_levels, gems, allow_illegal_level=allow_illegal_level
         )
         cautions = _merge_cautions(cautions, spec_c)
         gem_results = _call_batch(w, [("add_gem", _build_add_gem_params(g_idx, sp)) for sp in resolved_specs])
@@ -241,7 +241,7 @@ def _apply_replace_group_in_place(
             )
             cautions = _merge_cautions(cautions, _legacy_warn_cautions(warns))
     resolved_specs, spec_c = _resolve_and_validate_specs(
-        w, g_idx, norm_specs, explicit_levels, allow_illegal_level=allow_illegal_level
+        w, g_idx, norm_specs, explicit_levels, raw_gems, allow_illegal_level=allow_illegal_level
     )
     cautions = _merge_cautions(cautions, spec_c)
 

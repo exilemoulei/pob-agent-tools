@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from .. import game_data as _game_data
@@ -107,6 +108,13 @@ def _extract_explicit_gem_level(entry: str | dict[str, Any]) -> int | None:
     if isinstance(entry, dict) and entry.get("level") is not None:
         return int(entry["level"])
     return None
+
+
+def _gem_spec_allows_illegal_level(entry: str | dict[str, Any], allow_illegal_level: bool) -> bool:
+    """The command-wide flag, or the same permission set on one gem of a `--gems` JSON list."""
+    if allow_illegal_level or not isinstance(entry, dict):
+        return bool(allow_illegal_level)
+    return bool(entry.get("allowIllegalLevel", entry.get("allow_illegal_level", False)))
 
 
 _VALID_GEM_SPEC_KEYS: frozenset[str] = frozenset(
@@ -234,9 +242,7 @@ def _normalize_gem_spec(
         )
         stage_count = _parse_positive_int(raw_sc, "stageCount")
         explicit_level = int(entry["level"]) if entry.get("level") is not None else None
-        eff_allow_illegal = allow_illegal_level or bool(
-            entry.get("allowIllegalLevel", entry.get("allow_illegal_level", False))
-        )
+        eff_allow_illegal = _gem_spec_allows_illegal_level(entry, allow_illegal_level)
         if name:
             eff_level, cautions = _validate_gem_level(name, explicit_level, allow_illegal_level=eff_allow_illegal)
         else:
@@ -338,6 +344,7 @@ def _resolve_and_validate_specs(
     g_idx: int,
     norm_specs: list[dict[str, Any]],
     explicit_levels: list[int | None],
+    raw_specs: Sequence[str | dict[str, Any]],
     *,
     allow_illegal_level: bool,
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -345,10 +352,12 @@ def _resolve_and_validate_specs(
     for sp in norm_specs:
         cautions = _merge_cautions(cautions, sp.get("cautions"))
     resolved_specs = _resolve_gem_specs_batch(w, g_idx, norm_specs)
-    for sp, exp_lv in zip(resolved_specs, explicit_levels, strict=False):
+    for sp, exp_lv, raw_spec in zip(resolved_specs, explicit_levels, raw_specs, strict=False):
         r_name = str(sp.get("name") or "").strip()
         if r_name:
-            eff_lv, lv_c = _validate_gem_level(r_name, exp_lv, allow_illegal_level=allow_illegal_level)
+            # Same permission as the first pass in `_normalize_gem_spec`, or this pass refuses what that one let through.
+            allow_lv = _gem_spec_allows_illegal_level(raw_spec, allow_illegal_level)
+            eff_lv, lv_c = _validate_gem_level(r_name, exp_lv, allow_illegal_level=allow_lv)
             if eff_lv is not None:
                 sp["level"] = eff_lv
             cautions = _merge_cautions(cautions, lv_c)

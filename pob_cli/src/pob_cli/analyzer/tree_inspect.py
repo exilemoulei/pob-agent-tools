@@ -382,7 +382,7 @@ def inspect_tree(
         notables: list[dict[str, Any]] = []
         masteries_list: list[dict[str, Any]] = []
         ascendancy_nodes: list[dict[str, Any]] = []
-        normal_nodes: list[dict[str, Any]] = []
+        conquered_smalls: list[dict[str, Any]] = []
 
         for nid in sorted(allocated_ids):
             meta = _get_node_meta(nid)
@@ -396,8 +396,12 @@ def inspect_tree(
                 notables.append(meta)
             elif ntype == "Mastery" or meta.get("overrideWhy") == "mastery":
                 masteries_list.append(meta)
-            elif (ntype or "Normal") == "Normal":
-                normal_nodes.append(meta)
+            elif (ntype or "Normal") == "Normal" and meta.get("overrideWhy") == "conquered":
+                # Only what the summary line needs: a whole record per small passive made this
+                # answer several times larger than everything else in it.
+                conquered_smalls.append(
+                    {k: meta[k] for k in ("id", "name", "nameZh", "stats", "statsZh", "overrideWhy") if k in meta}
+                )
 
         jewel_sockets = [
             {
@@ -418,6 +422,6 @@ def inspect_tree(
             "ascendancyNodes": ascendancy_nodes,
             "masteries": masteries_list,
             "notables": notables,
-            "normalNodes": normal_nodes,
+            "conqueredSmallPassives": conquered_smalls,
             "jewelSockets": jewel_sockets,
         }
