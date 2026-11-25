@@ -130,6 +130,39 @@ def test_tree_unreachable_allocate_raises_value_error() -> None:
         )
 
 
+class _TreeWorker:
+    """Nodes 1 <- 2 <- 3 in a line from the start; 99 is unreachable and its click is ignored, as PoB does."""
+
+    def __init__(self) -> None:
+        self.alloc = [1, 2]
+
+    def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "tree_click":
+            nid = int(params["id"])
+            if nid in self.alloc:
+                self.alloc = [n for n in self.alloc if n < nid]  # a deallocation takes what hangs off it
+            elif nid != 99:
+                self.alloc = [*self.alloc, nid]
+        elif method != "get_tree_state":
+            raise AssertionError(f"Unexpected RPC {method}: {params}")
+        return {"allocatedNodes": list(self.alloc), "points": {"used": len(self.alloc), "usedMax": 123}}
+
+
+def test_an_allocation_that_failed_is_an_error_even_when_the_node_is_also_deallocated() -> None:
+    with pytest.raises(ValueError, match=r"Passive node 99 could not be allocated"):
+        _apply_tree_changes_in_place(_TreeWorker(), resolved_alloc=[(99, None)], resolved_dealloc=[(99, None)])  # type: ignore[arg-type]
+
+
+def test_an_allocation_removed_by_a_deallocation_of_the_same_call_is_a_note_not_an_error() -> None:
+    worker, notes = _TreeWorker(), []
+    actions, state, _, _, _ = _apply_tree_changes_in_place(
+        worker, resolved_alloc=[(3, None)], resolved_dealloc=[(2, None)], noop_warnings_out=notes  # type: ignore[arg-type]
+    )
+    assert state["allocatedNodes"] == [1]
+    assert [a["action"] for a in actions] == ["allocated", "deallocated"]
+    assert notes == ["Node 3 was allocated and then removed again by a deallocation in this call."]
+
+
 # ---------------------------------------------------------------------------
 # 2. `pob calc --group` and `pob calc --skill` selectors + state restoration
 # ---------------------------------------------------------------------------
@@ -292,6 +325,26 @@ def test_calc_selector_changes_nothing_on_a_bridge_that_cannot_say_what_to_put_b
     with pytest.raises(ValueError, match="does not report the Calcs selection"):
         search_calcs_breakdown(worker, "Average Damage", skill="Fireball", no_breakdown=True)  # type: ignore[arg-type]
     assert worker.set_calls == [] and worker.cur_group == 2
+
+
+def test_calc_selector_reports_a_restore_that_failed() -> None:
+    from pob_cli.bridge_protocol import BridgeError
+
+    worker = _FakeCalcsWorker(initial_group=2, initial_skill=2)
+    real_call = worker.call
+
+    def _first_restore_fails(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        # Selecting sends skill_number=1 then mainActiveSkill=1; the third call is the first restore.
+        if method == "set_calcs_input" and len(worker.set_calls) == 2:
+            worker.set_calls.append(dict(params))
+            raise RuntimeError("bridge went away")
+        return real_call(method, params)
+
+    worker.call = _first_restore_fails  # type: ignore[method-assign]
+    with pytest.raises(BridgeError, match="could not be put back"):
+        search_calcs_breakdown(worker, "Average Damage", skill="Fireball", no_breakdown=True)  # type: ignore[arg-type]
+    # The restores after the failed one still ran: the tab shows its own group again.
+    assert worker.cur_group == 2
 
 
 def test_trade_auto_query_resolves_a_numbered_jewel_socket() -> None:
@@ -572,7 +625,8 @@ def test_real_engine_tree_change_and_calc_selectors() -> None:
 
         res_rm = search_calcs_breakdown(w, "Average Damage", skill="Rolling Magma", no_breakdown=True)
         assert res_rm["calcsSkill"]["socketGroup"] == 1
-        assert "Rolling Magma" in str(res_rm["calcsSkill"].get("skillLabel") or "") or res_rm["totalMatches"] >= 1
+        assert "Rolling Magma" in str(res_rm["calcsSkill"].get("skillLabel") or "")
+        assert res_rm["totalMatches"] >= 1
 
         c_after = w.call("get_calcs", {})
         assert c_after["selectors"]["mainSocketGroup"]["index"] == orig_grp
