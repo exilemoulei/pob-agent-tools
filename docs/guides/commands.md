@@ -63,7 +63,8 @@ pob compare [<ref_source>] [--keep <spec>]... [--no-auto-keep] [--target <slug>]
 pob borrow [--item-slot "Weapon 1,Amulet"] [--skill-group main] [--ref-target ref] [--apply] [--json]
 
 # Local 0ms Game Data (Daemon-Free, Variadic) & External Economy/PoEDB/Wiki (Cached, Variadic)
-pob data <gem|unique|mod|base|translate|tree|tick> ["<q1>" ...] [--slot S] [--ilvl N] [--mod "<stat>"] [--type T] [--asc A] [--cdr N] [--aps R] [--spells N] [--quality-breakpoints] [--search-quality Q] [--active-only] [--limit 25 (0 = all)] [--rebuild] [--json]
+pob data <gem|unique|mod|base|translate|tattoo|runegraft|tree|tick> ["<q1>" ...] [--slot S] [--ilvl N] [--mod "<stat>"] [--kind all|tattoo|runegraft] [--legacy] [--type T] [--asc A] [--cdr N] [--aps R] [--spells N] [--quality-breakpoints] [--search-quality Q] [--active-only] [--limit 25 (0 = all)] [--rebuild] [--json]
+# tattoo / runegraft: passive overrides from PoB's TattooPassives (runegraft lists runegrafts only; tattoo --kind narrows; --legacy adds retired tattoos; --slot is the passive it replaces, e.g. "Small Strength", Mastery, Keystone; --mod filters by stat). tree also takes a node id. mod lists Vestigial implicits (source Vestigial) with the donor unique; --slot follows PoB: only on a unique of the donor's item type (helmet, body armour, gloves, boots, shield)
 pob poedb "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us] [--proxy <url>] [--limit 150] [--json]
 pob price "<q1>" ["<q2>" ...] [--league L] [--category all|unique|gem|imbuedgem|...] [--variant S] [--limit 20] [--detailed] [--proxy <url>] [--json]
 pob meta [--league L] [--skill S] [--class C] [--top 15] [--proxy <url>] [--json]

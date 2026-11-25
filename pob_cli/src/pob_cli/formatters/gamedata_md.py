@@ -134,6 +134,15 @@ def _fmt_game_data_unique(results: list[dict[str, Any]]) -> list[str]:
                 st_en = "; ".join(fb.get("stats") or [])
                 st_zh = "; ".join(x for x in (fb.get("stats_zh") or []) if x)
                 lines.append(f"  - {st_en}" + (f" / {st_zh}" if st_zh else ""))
+        donor_en, donor_zh = r.get("vestigial_donor_mods") or [], r.get("vestigial_donor_mods_zh") or []
+        if donor_en:
+            pairs = [
+                f"{en} / {donor_zh[i]}" if (i < len(donor_zh) and donor_zh[i] and donor_zh[i] != en) else str(en)
+                for i, en in enumerate(donor_en)
+            ]
+            lines.append(f"- **Gives as Vestigial implicit**: {'; '.join(pairs)}")
+        if r.get("takes_vestigial"):
+            lines.append(f"- **Takes a Vestigial implicit** from another unique `{r.get('item_class')}`")
     return lines
 
 
@@ -152,6 +161,9 @@ def _fmt_game_data_mod(results: list[dict[str, Any]]) -> list[str]:
             w_disp = f"Bench[{types_s}]" + (f" ({cost_s})" if cost_s else "")
         elif weights:
             w_disp = ", ".join(f"{k}:{v}" for k, v in list(weights.items())[:5])
+        elif r.get("source") == "Vestigial":
+            donors, types_s = r.get("vestigialDonors") or [], ",".join(r.get("applicable_types") or [])
+            w_disp = f"unique {types_s}, from {donors[0]}" if (donors and types_s) else "not offered by PoB"
         else:
             origin = str(r.get("drop_origin") or "")
             app_types = r.get("applicable_types") or []
@@ -203,8 +215,28 @@ def _fmt_game_data_base(results: list[dict[str, Any]]) -> list[str]:
     return [render_table(["Base", "Class", "Req (Lv/S/D/I)", "Properties", "Implicits"], rows)]
 
 
+def _fmt_game_data_tattoo(results: list[dict[str, Any]]) -> list[str]:
+    rows = []
+    for r in results:
+        en, zh = str(r.get("name") or "-"), str(r.get("zh_name") or "")
+        kind = ("Runegraft" if r.get("kind") == "runegraft" else "Tattoo") + (" [Legacy]" if r.get("legacy") else "")
+        target, target_value = str(r.get("target_type") or "-"), str(r.get("target_value") or "")
+        s_en, s_zh = r.get("stats") or [], r.get("stats_zh") or []
+        stats = [f"{s} / {s_zh[i]}" if (i < len(s_zh) and s_zh[i] and s_zh[i] != s) else str(s) for i, s in enumerate(s_en)]
+        rows.append(
+            [
+                kind,
+                f"{zh} ({en})" if (zh and zh != en) else en,
+                f"{target} ({target_value})" if target_value else target,
+                "; ".join(stats) or "-",
+                r.get("limit_text") or "-",
+            ]
+        )
+    return [render_table(["Kind", "Name", "Replaces", "Stats", "Limit"], rows)]
+
+
 def format_game_data(res: dict[str, Any], kind: str | None = None, query: str | None = None) -> str:
-    """Format `pob data <gem|unique|mod|base|translate>` local game data results into Markdown."""
+    """Format `pob data <gem|unique|mod|base|translate|tattoo|runegraft>` local game data results into Markdown."""
     kind_norm = str(res.get("kind") or kind or "gem").lower()
     q_disp = str(query if query is not None else (res.get("query") or ""))
     results = res.get("results") or []
@@ -247,5 +279,7 @@ def format_game_data(res: dict[str, Any], kind: str | None = None, query: str | 
             lines.append(f"\n> {res['dropOnlyNote']}")
     elif kind_norm == "base":
         lines.extend(_fmt_game_data_base(results))
+    elif kind_norm in ("tattoo", "runegraft"):
+        lines.extend(_fmt_game_data_tattoo(results))
 
     return "\n".join(lines)

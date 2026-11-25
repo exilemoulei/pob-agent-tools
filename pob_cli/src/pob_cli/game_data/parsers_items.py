@@ -24,31 +24,28 @@ from .lua_parser import (
 from .parsers_special import _extract_special_lua_blocks
 from .zh_dict import _ZhDictionary
 
-_VESTIGIAL_ALL_SLOTS: tuple[str, ...] = (
-    "helmet",
-    "body_armour",
-    "gloves",
-    "boots",
-    "shield",
-    "quiver",
-)
-_VESTIGIAL_BODY_SUFFIX_RE = re.compile(r"Body(?:Str|Dex|Int)\d*[a-z]?$")
+# PoB (`AddImplicitPopup.lua`, `data.vestigialUniqueBaseTypes`): a Vestigial implicit goes only on a
+# unique of its donor's item type, and only these five types take one. A quiver never does.
+VESTIGIAL_ITEM_TYPES: dict[str, str] = {
+    "helmet": "Helmet",
+    "body armour": "Body Armour",
+    "gloves": "Gloves",
+    "boots": "Boots",
+    "shield": "Shield",
+}
 
 
-def _infer_vestigial_slot_types(mod_id: str) -> list[str]:
-    if "UniqueBody" in mod_id or _VESTIGIAL_BODY_SUFFIX_RE.search(mod_id):
-        return ["body_armour"]
-    if "UniqueHelmet" in mod_id or "UniqueIntHelmet" in mod_id or "UniqueStrDexHelmet" in mod_id:
-        return ["helmet"]
-    if "UniqueGloves" in mod_id:
-        return ["gloves"]
-    if "UniqueBoots" in mod_id:
-        return ["boots"]
-    if "UniqueShield" in mod_id:
-        return ["shield"]
-    if "UniqueQuiver" in mod_id:
-        return ["quiver"]
-    return list(_VESTIGIAL_ALL_SLOTS)
+def _assign_vestigial_slots(mods: list[dict[str, Any]], uniques: list[dict[str, Any]]) -> None:
+    """Give each Vestigial mod its donor's item type; a mod PoB cannot place gets no slot at all."""
+    type_by_title = {
+        str(u["name"]).lower(): VESTIGIAL_ITEM_TYPES.get(str(u.get("item_class") or "").lower()) for u in uniques
+    }
+    for m in mods:
+        if m.get("source") != "Vestigial":
+            continue
+        donors = m.get("vestigialDonors") or ()
+        item_type = type_by_title.get(str(donors[0]).lower()) if donors else None
+        m["applicable_types"] = [item_type] if item_type else []
 
 
 def _load_vestigial_mods(data_dir: Path, zh: _ZhDictionary) -> list[dict[str, Any]]:
@@ -115,7 +112,7 @@ def _load_vestigial_mods(data_dir: Path, zh: _ZhDictionary) -> list[dict[str, An
                 "mod_tags": mod_tags,
                 "weights": {},
                 "zero_weights": [],
-                "applicable_types": _infer_vestigial_slot_types(mid_s),
+                "applicable_types": [],  # set by _assign_vestigial_slots once the uniques are known
                 "bench_info": None,
                 "vestigialDonors": vest_donors_by_id.get(mid_s, []),
             }
@@ -363,6 +360,10 @@ def _parse_uniques(
                 "foulborn_mods": foulborn_mods,
                 "vestigial_donor_mods": donor_mods,
                 "vestigial_donor_mods_zh": donor_mods_zh,
+                # PoB offers the Vestigial source only to a core-pool unique (no `Source:` line) of
+                # these item types; Stasis Prison is its one named exception.
+                "takes_vestigial": str(item_class).lower() in VESTIGIAL_ITEM_TYPES
+                and (not source or name == "Stasis Prison"),
             }
         )
     return records

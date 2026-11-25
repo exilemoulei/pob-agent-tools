@@ -125,6 +125,8 @@ def cmd_data(
         raise click.UsageError("--mod is only supported for `pob data unique` and `pob data tattoo`.")
     if (tattoo_kind.lower() != "all" or include_legacy) and kind_low not in ("tattoo", "runegraft"):
         raise click.UsageError("--kind and --legacy are only supported for `pob data tattoo`.")
+    if kind_low == "runegraft" and tattoo_kind.lower() == "tattoo":
+        raise click.UsageError("`pob data runegraft` lists runegrafts only; use `pob data tattoo --kind tattoo`.")
 
     if quality_breakpoints or search_quality is not None:
         if kind_low != "gem":

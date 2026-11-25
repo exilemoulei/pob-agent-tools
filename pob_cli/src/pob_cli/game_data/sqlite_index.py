@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from .constants import _INDEX_BUILD_LOCK, _VALID_INDEX_CACHE, SCHEMA_VERSION
-from .parsers_items import _parse_bases, _parse_mods, _parse_uniques, _vestigial_donor_map_from_mods
+from .parsers_items import (
+    _assign_vestigial_slots,
+    _parse_bases,
+    _parse_mods,
+    _parse_uniques,
+    _vestigial_donor_map_from_mods,
+)
 from .paths import (
     _prune_old_indexes,
     _resolve_poe1_data_dirs,
@@ -382,6 +388,7 @@ def ensure_gamedata_index(
                 zh,
                 vestigial_by_donor=_vestigial_donor_map_from_mods(mods),
             )
+            _assign_vestigial_slots(mods, uniques)
             tattoos = _parse_tattoos(poe1_dir, zh)
 
             _write_gamedata_sqlite(

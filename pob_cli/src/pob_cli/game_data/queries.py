@@ -66,7 +66,7 @@ def _dispatch_query(
     if kind_norm == "mod":
         return _query_mods(conn, q_folded, slot, ilvl, limit, drop_only_sink=drop_only_sink)
     if kind_norm in ("tattoo", "runegraft"):
-        tk = "runegraft" if (kind_norm == "runegraft" and tattoo_kind == "all") else tattoo_kind
+        tk = "runegraft" if kind_norm == "runegraft" else tattoo_kind
         return query_tattoo_data(conn, q_folded, kind=tk, slot_filter=slot, mod_filter=mod_filter, include_legacy=include_legacy, limit=limit)
     return _query_translate(
         conn, q_folded, limit, zh_available, pob_dir=pob_dir, runtime_dir=runtime_dir, raw_query=raw_query

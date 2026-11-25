@@ -121,7 +121,7 @@ def _insert_tattoos_table(conn: sqlite3.Connection, tattoos: list[dict[str, Any]
     for t in tattoos:
         zh_name = t.get("zh_name")
         zh_variants = " ".join(_zh_tattoo_variants(zh_name or ""))
-        kind_kw = "runegraft 符文嵌板 符文之结" if t["kind"] == "runegraft" else "tattoo 纹身 文身"
+        kind_kw = "runegraft 符文嵌板 符文之结 符文嫁接" if t["kind"] == "runegraft" else "tattoo 纹身 文身"
         target_extra = _TARGET_SEARCH_EXTRAS.get(t["target_type"], "")
         s_txt = _fold_search_text(
             " ".join(
@@ -270,89 +270,3 @@ def query_tattoo_data(
     scored.sort(key=lambda item: item[0])
     out = [rec for _, rec in scored]
     return out[: int(limit)] if int(limit) > 0 else out
-
-
-_VESTIGIAL_CAPABLE_CLASSES: frozenset[str] = frozenset(
-    {"Body Armour", "Helmet", "Gloves", "Boots", "Shield", "Quiver"}
-)
-
-
-def _augment_unique_vestigial_md(rendered: str, res: dict[str, Any]) -> str:
-    results = res.get("results") or []
-    if not results or "\n#### " not in rendered:
-        return rendered
-    parts = rendered.split("\n#### ")
-    cards: list[str] = []
-    for idx, card in enumerate(parts[1:]):
-        u = results[idx] if idx < len(results) and isinstance(results[idx], dict) else {}
-        extra: list[str] = []
-        d_en = u.get("vestigial_donor_mods") or []
-        d_zh = u.get("vestigial_donor_mods_zh") or []
-        if d_en:
-            pairs = [
-                f"{en} / {d_zh[i]}" if (i < len(d_zh) and d_zh[i] and d_zh[i] != en) else str(en)
-                for i, en in enumerate(d_en)
-            ]
-            extra.append(f"- **Vestigial Donor Mods**: {'; '.join(pairs)}")
-        icls = str(u.get("item_class") or "").strip()
-        if icls in _VESTIGIAL_CAPABLE_CLASSES:
-            extra.append(
-                f"- **3.30 Vestigial Slot Note**: Any `{icls}` unique can legally carry a `{{vestigial}}` implicit "
-                "(or PoB `====` custom line) inherited from another same-slot donor unique "
-                "(e.g. `Cloak of Flame` inheriting `+200 to maximum Life` from `Kaom's Heart`); "
-                'verify via `pob data mod "<stat>"` or `pob trade search` before removing.'
-            )
-        cards.append(card.rstrip() + "\n" + "\n".join(extra) if extra else card)
-    return parts[0] + "\n#### " + "\n#### ".join(cards)
-
-
-def render_data_with_vestigial_and_tattoos(
-    res: dict[str, Any],
-    kind: str,
-    query: str,
-    format_game_data_fn: Any,
-    render_table_fn: Any,
-) -> str:
-    """Render `tattoo`/`runegraft` tables and enrich `unique`/`mod` Vestigial Markdown."""
-    kl = kind.strip().lower()
-    if kl in ("tattoo", "runegraft"):
-        lines: list[str] = []
-        for w in res.get("warnings") or []:
-            if isinstance(w, dict):
-                tag = "[POE1-PATCH-WARN]" if w.get("category") == "legacy_patch" else "[POE1-TRAP-WARN]"
-                canon = f" (canonical: {w['canonicalTerm']})" if w.get("canonicalTerm") else ""
-                lines.append(f"> {tag} `{w.get('trigger', '')}`{canon}: {w.get('warning', '')}")
-        k_lbl = str(res.get("kind") or "tattoo")
-        q_lbl = query or str(res.get("query") or "all")
-        lines.append(
-            f"### Local Game Data (`{k_lbl}`): `{q_lbl}` — `{res.get('count', 0)}` hits "
-            f"(PoB `{res.get('pobVersion', 'unknown')}` / Data `{res.get('dataVersion', 'unknown')}`)"
-        )
-        results = res.get("results") or []
-        if not results:
-            lines.append("_(no matching tattoos or runegrafts)_")
-            return "\n".join(lines)
-        rows: list[list[Any]] = []
-        for r in results:
-            en, zh = str(r.get("name") or "-"), str(r.get("zh_name") or "")
-            disp = f"{zh} ({en})" if (zh and zh != en) else en
-            rk = ("Runegraft" if r.get("kind") == "runegraft" else "Tattoo") + (" [Legacy]" if r.get("legacy") else "")
-            tt, tv = str(r.get("target_type") or "-"), str(r.get("target_value") or "")
-            s_en, s_zh = r.get("stats") or [], r.get("stats_zh") or []
-            sp = [f"{s} / {s_zh[i]}" if (i < len(s_zh) and s_zh[i] and s_zh[i] != s) else str(s) for i, s in enumerate(s_en)]
-            rows.append([rk, disp, f"{tt} ({tv})" if tv else tt, "; ".join(sp) or "-", r.get("limit_text") or "-"])
-        lines.append(render_table_fn(["Kind", "Name", "Target", "Stats", "Limit"], rows))
-        return "\n".join(lines)
-
-    rendered = str(format_game_data_fn(res, kind=kind, query=query))
-    if kl == "unique":
-        return _augment_unique_vestigial_md(rendered, res)
-    if kl == "mod":
-        bullets = [
-            f"- `{m.get('id')}` ({'; '.join(str(s) for s in (m.get('stats') or ()) if s)}) <- Donor: **{', '.join(str(d) for d in m['vestigialDonors'])}**"
-            for m in (res.get("results") or [])
-            if isinstance(m, dict) and m.get("source") == "Vestigial" and m.get("vestigialDonors")
-        ]
-        if bullets:
-            return rendered.rstrip() + "\n\n#### Vestigial Donor Attribution\n" + "\n".join(bullets)
-    return rendered

@@ -219,8 +219,9 @@ class _ZhDictionary:
             is_gem_file = fn in ("gems.json", "Gems_data.txt.json", "Items_Gems.txt.json", "Z-Skills.json") or is_season_patch
             is_unique_file = fn in ("uniques.json", "Uniques.txt.json", "Z-S28-Foulborn.json", "Z-Flask.json", "Z-Jewel.json") or is_season_patch
             is_base_file = fn in ("items.json", "Items_Accessories.txt.json", "Items_Armour.txt.json", "Items_Flasks.txt.json", "Items_Jewels.txt.json", "Items_Weapons.txt.json", "Z-Item.json", "Z-Flask.json", "Z-Jewel.json", "Z-Addition.json", "Z.json") or is_season_patch
+            # passives.json is a bootstrapped engine's merge of the pack's tree and tattoo files.
             is_passive_file = (
-                fn in ("tree_dn.json", "TattooPassives.json", "Z-Phrecia.json")
+                fn in ("tree_dn.json", "TattooPassives.json", "Z-Phrecia.json", "passives.json")
                 or fn.lower() in ("tatto.json", "tattoo.json")
                 or is_season_patch
             )

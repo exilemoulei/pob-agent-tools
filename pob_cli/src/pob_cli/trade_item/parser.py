@@ -171,12 +171,11 @@ def build_item_text(raw_item: dict[str, Any]) -> str:
     explicit_lines = _extract_mod_lines(item.get("explicitMods"))
     lines.extend(explicit_lines)
 
-    explicit_counts = Counter(explicit_lines) + Counter(implicit_block)
+    explicit_counts = Counter(explicit_lines)
     for field_name, tag in (
         ("fracturedMods", "fractured"),
         ("craftedMods", "crafted"),
         ("mutatedMods", "mutated"),
-        ("vestigialMods", "vestigial"),
         ("veiledMods", "veiled"),
     ):
         for mod_line in _extract_mod_lines(item.get(field_name), extra_tag=tag):
@@ -189,8 +188,6 @@ def build_item_text(raw_item: dict[str, Any]) -> str:
     for api_key, display in INFLUENCE_API_MAP:
         if influences.get(api_key) or item.get(api_key):
             lines.append(f"{display} Item")
-    if influences.get("vestigial") or item.get("vestigial"):
-        lines.append("Vestigial Item")
 
     if item.get("synthesised"):
         lines.append("Synthesised Item")

@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 from click.testing import CliRunner
+from engine_paths import find_engine_data, has_zh_data
 
 from pob_cli.cli_data import cmd_data
 from pob_cli.cli_data_render import _render_single_data_markdown
@@ -30,7 +31,6 @@ from pob_cli.trade_item import (
     build_item_text,
     parse_item_text,
 )
-from pob_cli.updater import get_runtime_dir
 
 # PoB-crafted rare gloves modeled after build YlpaJJQx2xtD (2 prefixes + 3 suffixes + Crafted: true header)
 _YLPA_CRAFTED_GLOVES = """Rarity: RARE
@@ -72,9 +72,9 @@ Vestigial Item"""
 def isolated_engine_env(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     """Build SQLite game & tree indexes once in an isolated tmp directory without touching shared runtime cache."""
     cache_dir = tmp_path_factory.mktemp("pob_l4_isolated_cache")
-    engine_dir = get_runtime_dir() / "engine"
-    if not (engine_dir / "PoE1" / "Data" / "TattooPassives.lua").is_file():
-        pytest.skip("PoE1 3.30 runtime engine data not present in current environment")
+    engine_dir = find_engine_data()
+    if engine_dir is None or not has_zh_data(engine_dir) or not (engine_dir / "PoE1" / "Data" / "Vestigial.lua").is_file():
+        pytest.skip("no engine with Vestigial.lua and Chinese data on this machine")
 
     import os
 
@@ -119,25 +119,26 @@ def test_parse_crafted_header_and_author_divider_and_vestigial_roundtrip() -> No
     assert vest_mods[0].raw == "+200 to maximum Life"
     assert vest_mods[0].tags == ("vestigial",)
 
-    # Round-trip via build_item_text -> parse_item_text
-    raw_trade_payload: dict[str, Any] = {
+    # A listing as GGG's API sends it since 3.29 (and as PoB's ImportTab reads it): the flag sits on
+    # the implicit, and the type line carries the "Vestigial" prefix.
+    listing: dict[str, Any] = {
         "rarity": "UNIQUE",
         "name": "Cloak of Flame",
+        "typeLine": "Vestigial Scholar's Robe",
         "baseType": "Scholar's Robe",
         "vestigial": True,
-        "vestigialMods": ["+200 to maximum Life"],
+        "implicitMods": [{"description": "+200 to maximum Life", "flags": {"vestigial": True}}],
         "explicitMods": [
             "+45% to Fire Resistance",
             "40% of Physical Damage taken as Fire Damage",
         ],
     }
-    built_txt = build_item_text(raw_trade_payload)
-    assert "{vestigial}+200 to maximum Life" in built_txt
-    assert "Vestigial Item" in built_txt
+    built_txt = build_item_text(listing)
+    assert "Implicits: 1\n{vestigial}+200 to maximum Life" in built_txt
+    # PoB has no "Vestigial Item" state line; it would keep one as an unsupported modifier.
+    assert "Vestigial Item" not in built_txt
 
-    reparsed = parse_item_text(built_txt)
-    assert "Vestigial" in reparsed.influences
-    reparsed_vest = [m for m in reparsed.mods if m.kind == "vestigial"]
+    reparsed_vest = [m for m in parse_item_text(built_txt).mods if m.kind == "vestigial"]
     assert len(reparsed_vest) == 1
     assert reparsed_vest[0].raw == "+200 to maximum Life"
 
@@ -186,7 +187,7 @@ def test_vestigial_mod_indexing_and_donor_unique_notes(
     kaom_mod = vest_hits[0]
     assert kaom_mod["source"] == "Vestigial"
     assert kaom_mod["vestigialDonors"] == ["Kaom's Heart"]
-    assert kaom_mod["applicable_types"] == ["body_armour"]
+    assert kaom_mod["applicable_types"] == ["Body Armour"]
 
     # Body-restricted Vestigial mod must not match Helmet slot
     helmet_res = query_local_data(
@@ -198,9 +199,18 @@ def test_vestigial_mod_indexing_and_donor_unique_notes(
     )
     assert all(r["id"] != "DivergentIncreasedLifeUniqueBodyStr1" for r in helmet_res["results"])
 
-    # Markdown rendering for Vestigial mod includes donor attribution
+    # PoB puts a Vestigial implicit only on a unique of the donor's item type: the slot comes from
+    # the donor, never from the mod id, and no quiver takes one.
+    for slot, donor_type in (("helmet", "Helmet"), ("gloves", "Gloves"), ("boots", "Boots"), ("shield", "Shield")):
+        hits = query_local_data("mod", "Divergent", slot=slot, pob_dir=engine_dir, runtime_dir=cache_dir, limit=0)
+        vest = [r for r in hits["results"] if r["source"] == "Vestigial"]
+        assert len(vest) > 50, slot
+        assert all(r["applicable_types"] == [donor_type] and r["vestigialDonors"] for r in vest), slot
+    quiver = query_local_data("mod", "Divergent", slot="quiver", pob_dir=engine_dir, runtime_dir=cache_dir, limit=0)
+    assert not [r for r in quiver["results"] if r["source"] == "Vestigial"]
+
     mod_md = _render_single_data_markdown(mod_res, "mod", "+200 to maximum Life")
-    assert "Kaom's Heart" in mod_md
+    assert "unique Body Armour, from Kaom's Heart" in mod_md
 
     # Donor uniques carry vestigial_donor_mods + Vestigial slot note in Markdown
     cloak_res = query_local_data("unique", "Cloak of Flame", pob_dir=engine_dir, runtime_dir=cache_dir)
@@ -209,9 +219,15 @@ def test_vestigial_mod_indexing_and_donor_unique_notes(
     assert any("Physical Damage taken as Fire Damage" in s for s in cloak_u["vestigial_donor_mods"])
 
     cloak_md = _render_single_data_markdown(cloak_res, "unique", "Cloak of Flame")
-    assert "Vestigial Donor Mods" in cloak_md
-    assert "3.30 Vestigial Slot Note" in cloak_md
-    assert "{vestigial}" in cloak_md
+    assert "Gives as Vestigial implicit" in cloak_md
+    assert "Takes a Vestigial implicit" in cloak_md and cloak_u["takes_vestigial"] is True
+
+    # PoB offers the Vestigial source to core-pool uniques of five item types only.
+    for name in ("Replica Kaom's Heart", "Drillneck", "Mageblood"):
+        res = query_local_data("unique", name, pob_dir=engine_dir, runtime_dir=cache_dir)
+        unique = next(r for r in res["results"] if r["name"] == name)
+        assert unique["takes_vestigial"] is False, name
+        assert "Takes a Vestigial implicit" not in _render_single_data_markdown(res, "unique", name)
 
     kaom_res = query_local_data("unique", "Kaom's Heart", pob_dir=engine_dir, runtime_dir=cache_dir)
     kaom_u = next(r for r in kaom_res["results"] if r["name"] == "Kaom's Heart")
@@ -247,7 +263,11 @@ def test_tattoo_and_runegraft_queries_bilingual_and_legacy(
     assert top_rg["kind"] == "runegraft"
     assert top_rg["override_type"] == "AlternateMastery"
     assert top_rg["target_type"] == "Mastery"
-    assert top_rg["zh_name"]
+    # The Simplified dictionary of a bootstrapped engine names no runegraft; they are still found
+    # by the words players use for the kind.
+    for kind_word in ("符文嫁接", "符文之结"):
+        by_word = query_local_data("tattoo", kind_word, pob_dir=engine_dir, runtime_dir=cache_dir, limit=0)
+        assert by_word["count"] == 32 and {r["kind"] for r in by_word["results"]} == {"runegraft"}, kind_word
     assert all("limited to" not in s.lower() for s in top_rg["stats"])
     assert top_rg["limit_text"] == "Limited to 1 Runegraft of the Bound"
 
@@ -288,6 +308,12 @@ def test_tattoo_and_runegraft_queries_bilingual_and_legacy(
     assert cli_res.exit_code == 0, cli_res.output
     assert "Runegraft of the Bound" in cli_res.output
     assert "Mastery" in cli_res.output
+
+    # `pob data runegraft` means runegrafts: it never answers with tattoos.
+    only_rg = query_local_data("runegraft", "", tattoo_kind="tattoo", pob_dir=engine_dir, runtime_dir=cache_dir, limit=0)
+    assert {r["kind"] for r in only_rg["results"]} == {"runegraft"}
+    clash = runner.invoke(cmd_data, ["runegraft", "--kind", "tattoo"])
+    assert clash.exit_code == 2 and "runegrafts only" in clash.output
 
 
 # ---------------------------------------------------------------------------
