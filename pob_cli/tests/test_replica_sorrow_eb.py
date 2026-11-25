@@ -10,7 +10,7 @@ import pytest
 
 from pob_cli import analyzer
 from pob_cli.analyzer.dewater_auto import infer_auto_keep_and_flask_notes
-from pob_cli.analyzer.eb_sustain import find_equipped_eb_flask_slots
+from pob_cli.analyzer.eb_sustain import collect_mana_sustain_issues, find_equipped_eb_flask_slots
 from pob_cli.formatters import format_diagnose_markdown
 
 
@@ -197,6 +197,9 @@ class _EbFlaskWorker:
         {"id": 1, "titleZh": "仿品·神圣哀悼"},
         {"id": 1, "titleZh": "贗品．神聖哀悼"},
         {"id": 1, "title": "Sulphur Flask", "raw": "Sulphur Flask\nEldritch Battery during Effect"},
+        # The zh-CN and zh-TW wordings of the line, on an item text that carries no title.
+        {"id": 1, "raw": "硫磺药剂\n生效期间获得异能魔力"},
+        {"id": 1, "raw": "硫磺藥劑\n效果持續時間內獲得異能魔力"},
     ],
 )
 def test_infer_flask_notes_recognizes_replica_sorrow_variants(item_meta: dict[str, Any]) -> None:
@@ -241,6 +244,23 @@ def test_active_replica_sorrow_dewater_emits_note_and_no_high_mana_false_positiv
     # Keeping Flask 2 keeps EB active and produces zero Sustain warnings
     aud_kept = analyzer.audit_build(w, keep=["Flask 2"], attribution=False)  # type: ignore[arg-type]
     assert [g for g in aud_kept["healthIssues"] if g["category"] == "Sustain"] == []
+
+
+def test_a_flask_that_is_on_is_never_called_off() -> None:
+    # A bridge that does not report Eldritch Battery in the stats: the flask is on, so the mana
+    # deficit is the plain one, not a note about a flask that is off.
+    items_res = {
+        "slots": [{"name": "Flask 2", "isFlask": True, "active": True, "selItemId": 1}],
+        "items": [{"id": 1, "title": "Replica Sorrow of the Divine"}],
+    }
+    stats = {"ManaCost": 95.0, "ManaUnreserved": 35.0, "EnergyShield": 1200.0, "Life": 3000.0}
+    issues = collect_mana_sustain_issues(stats, None, items_res=items_res)
+    assert [(g["severity"], g["message"]) for g in issues] == [
+        ("HIGH", "Skill Mana Cost (95) exceeds Unreserved Mana (35)")
+    ]
+    items_res["slots"][0]["active"] = False
+    (off,) = collect_mana_sustain_issues(stats, None, items_res=items_res)
+    assert off["severity"] == "LOW" and "Flask 2 (Replica Sorrow of the Divine) is off" in off["message"]
 
 
 def test_inactive_replica_sorrow_downgrades_mana_deficit_when_es_covers_cost() -> None:

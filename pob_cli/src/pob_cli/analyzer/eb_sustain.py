@@ -150,7 +150,7 @@ def collect_mana_sustain_issues(
                         "message": (
                             f"Skill Mana Cost ({mana_cost:.0f}) exceeds Unreserved Mana ({mana_unres:.0f}) while "
                             f"{eb_desc} is off; the flask grants Eldritch Battery during Effect "
-                            f"({pool_summary} >= {mana_cost:.0f}). Model it with `pob item flask {flask_no} on --apply`"
+                            f"({pool_summary} >= {mana_cost:.0f}). To audit with it on: `pob item flask {flask_no} on --apply`"
                         ),
                     }
                 )
