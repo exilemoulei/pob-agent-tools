@@ -193,7 +193,9 @@ def audit_conquered_zero_stat_nodes(
             f"Conquered 0-stat small passive waste ({names_str}): "
             f"{len(dead_end_ids)} dead-end node(s) [{dead_disp}] grant 0 stats and disconnect no real passives "
             f"(reclaim via `pob tree change --deallocate {dead_csv}`); "
-            f"plus {len(redundant_loop_ids)} redundant cycle/parallel node(s) [{loop_disp}] removable sequentially."
+            f"plus {len(redundant_loop_ids)} node(s) [{loop_disp}] on a loop: any one of them can go, "
+            "but not all together (several removed at once can cut the loop and disconnect real passives). "
+            "Deallocate one, then run the audit again."
         )
     elif dead_end_ids:
         dead_csv = ",".join(str(x) for x in dead_end_ids)
@@ -208,14 +210,16 @@ def audit_conquered_zero_stat_nodes(
         first_id = redundant_loop_ids[0]
         msg = (
             f"Conquered 0-stat small passive waste ({names_str}): "
-            f"{len(redundant_loop_ids)} redundant cycle/parallel node(s) [{loop_disp}] grant 0 stats on a loop — "
-            f"reclaim sequentially starting with `pob tree change --deallocate {first_id}`."
+            f"{len(redundant_loop_ids)} node(s) [{loop_disp}] grant 0 stats on a loop: any one of them can go, "
+            "but not all together (several removed at once can cut the loop and disconnect real passives). "
+            f"Start with `pob tree change --deallocate {first_id}`, then run the audit again."
         )
 
     finding = {"category": "TreeWaste", "severity": severity, "message": msg}
     waste_info = {
         "zeroStatIds": sorted_zero,
         "deadEndIds": dead_end_ids,
+        # Each is removable alone; the set is not removable as a whole.
         "redundantLoopIds": redundant_loop_ids,
     }
     return [finding], waste_info
