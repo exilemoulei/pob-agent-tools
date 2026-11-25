@@ -291,36 +291,6 @@ def _render_single_price_markdown(res: dict[str, Any], query: str) -> str:
     return "\n".join(lines)
 
 
-def _render_single_wiki_markdown(res: dict[str, Any], topic: str) -> str:
-    if res.get("error"):
-        return f"### PoE Wiki: `{topic}` — Error: {res['error']}"
-    parts = [f"### PoE Wiki: {res.get('title') or topic} ({res.get('url') or '-'})"]
-    orig_q = str(res.get("query") or topic).strip()
-    resolved_q = str(res.get("resolvedQuery") or "").strip()
-    if resolved_q and resolved_q.lower() != orig_q.lower():
-        parts.append(f"- **Resolved Query**: `{orig_q}` -> `{resolved_q}`")
-    if res.get("stale"):
-        parts.append("> [WARN] Serving stale cached PoE Wiki response due to network error.")
-
-    mech_secs = res.get("mechanicsSections") or []
-    if mech_secs:
-        summary_str = str(res.get("summary") or "").strip()
-        lead_only = summary_str.split("\n\n## ", 1)[0].strip() if summary_str else ""
-        if lead_only:
-            parts.append(lead_only)
-        mech_lines = ["#### Mechanics & Interactions"]
-        for sec in mech_secs:
-            if isinstance(sec, dict) and sec.get("text"):
-                heading = str(sec.get("heading") or "Mechanics").strip()
-                text = str(sec.get("text") or "").strip()
-                mech_lines.append(f"##### {heading}\n{text}")
-        if len(mech_lines) > 1:
-            parts.append("\n\n".join(mech_lines))
-    elif res.get("summary"):
-        parts.append(str(res["summary"]))
-    return "\n\n".join(parts)
-
-
 _POEDB_ENTITY_CATS = frozenset({
     "Skill Gems", "Support Gems", "Unique", "Passive", "Ascendancy", "Bloodline", "Keywords",
     "Body Armours", "Shields", "Helmets", "Gloves", "Boots", "Rings", "Amulets", "Belts",
@@ -340,10 +310,18 @@ def _is_long_nl_research_query(query: str) -> bool:
     if len(words) >= 6 and (
         ":" in q
         or "?" in q
-        or bool(re.search(r"\b(?:how|does|do|can|what|why|when|with|versus|vs|patch|changes?|values?|work|stack|trigger|hit|same)\b", q, re.I))
+        or bool(
+            re.search(
+                r"\b(?:how|does|do|can|what|why|when|with|versus|vs|patch|changes?|values?|work|stack|trigger|hit|same)\b",
+                q,
+                re.I,
+            )
+        )
     ):
         return True
-    return len(q) >= 24 and bool(re.search(r"[？?]|怎么|如何|能否|能不能|吃不吃|算不算|需要多少|有没有|为什么|配合|还是", q))
+    return len(q) >= 24 and bool(
+        re.search(r"[？?]|怎么|如何|能否|能不能|吃不吃|算不算|需要多少|有没有|为什么|配合|还是", q)
+    )
 
 
 def _scan_poedb_labels_in_text(text: str, *, limit: int = 4) -> list[str]:
@@ -370,8 +348,7 @@ def _scan_poedb_labels_in_text(text: str, *, limit: int = 4) -> list[str]:
         cn = str(ent.get("cnLabel") or "").strip()
         if not us or us.lower() in seen_us:
             continue
-        pos = -1
-        mlen = 0
+        pos, mlen = -1, 0
         if len(us) >= 4 and us.lower() in low:
             m = re.search(rf"(?<![A-Za-z0-9]){re.escape(us)}(?![A-Za-z0-9])", text, re.IGNORECASE)
             if m:
@@ -439,128 +416,18 @@ def _expand_long_research_queries(raw_queries: list[str]) -> tuple[list[str], li
     return expanded, auto_splits
 
 
-def run_dual_research(
-    queries: list[str],
-    *,
-    include_mods: bool = False,
-    mod_filter: str | None = None,
-    lang: str = "cn",
-    proxy: str | None = None,
-    limit_mods: int = 40,
-) -> dict[str, Any]:
-    """Concurrently query poedb.tw + poewiki.net per topic with partial-success resilience."""
-    import concurrent.futures
-
-    from . import external_data as ext
-    from . import poedb_client as pc
-    from .errors import CrossGameHallucinationError, LegacyPatchTrapError
-
-    raw_queries = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
-    if not raw_queries:
-        raise ValueError("Research queries cannot be empty.")
-
-    clean_queries, auto_splits = _expand_long_research_queries(raw_queries)
-
-    def _run_poedb(q: str) -> dict[str, Any]:
-        try:
-            extra_kw: dict[str, Any] = {"mod_filter": mod_filter} if (mod_filter and mod_filter.strip()) else {}
-            return pc.query_poedb(
-                q, include_mods=include_mods, lang=lang, proxy=proxy, limit_mods=limit_mods, **extra_kw
-            )
-        except (CrossGameHallucinationError, LegacyPatchTrapError):
-            raise
-        except Exception as exc:
-            return {"query": q, "error": str(exc)}
-
-    def _run_wiki(q: str) -> dict[str, Any]:
-        try:
-            return ext.query_wiki(q, proxy=proxy)
-        except (CrossGameHallucinationError, LegacyPatchTrapError):
-            raise
-        except Exception as exc:
-            return {"query": q, "error": str(exc)}
-
-    poedb_results: dict[int, dict[str, Any]] = {}
-    wiki_results: dict[int, dict[str, Any]] = {}
-    workers = min(4, max(1, len(clean_queries) * 2))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futs: dict[concurrent.futures.Future[dict[str, Any]], tuple[str, int]] = {}
-        for idx, q in enumerate(clean_queries):
-            futs[pool.submit(_run_poedb, q)] = ("poedb", idx)
-            futs[pool.submit(_run_wiki, q)] = ("wiki", idx)
-        for fut in concurrent.futures.as_completed(futs):
-            src, idx = futs[fut]
-            data = fut.result()
-            if src == "poedb":
-                poedb_results[idx] = data
-            else:
-                wiki_results[idx] = data
-
-    results: list[dict[str, Any]] = []
-    for idx, q in enumerate(clean_queries):
-        pdb = poedb_results[idx]
-        wk = wiki_results[idx]
-        if wk.get("error") and not pdb.get("error"):
-            pdb_slug = str(pdb.get("slug") or "").replace("_", " ").strip()
-            if pdb_slug and pdb_slug.lower() != q.lower():
-                wk = _run_wiki(pdb_slug)
-        ok_sources = [s for s, d in (("poedb", pdb), ("wiki", wk)) if not d.get("error")]
-        errors = {s: str(d["error"]) for s, d in (("poedb", pdb), ("wiki", wk)) if d.get("error")}
-        results.append(
-            {
-                "query": q,
-                "poedb": pdb,
-                "wiki": wk,
-                "okSources": ok_sources,
-                "errors": errors,
-            }
-        )
-
-    out: dict[str, Any] = {
-        "queries": clean_queries,
-        "count": len(results),
-        "includeMods": include_mods,
-        "lang": lang,
-        "results": results,
+_LAZY_RESEARCH_EXPORTS = frozenset(
+    {
+        "_render_research_markdown",
+        "_render_single_wiki_markdown",
+        "run_dual_research",
     }
-    if mod_filter and mod_filter.strip():
-        out["modFilter"] = mod_filter.strip()
-    if auto_splits:
-        out["autoSplits"] = auto_splits
-    if any(bool((r["poedb"]).get("stale")) or bool((r["wiki"]).get("stale")) for r in results):
-        out["stale"] = True
-    return out
+)
 
 
-def _render_research_markdown(res: dict[str, Any]) -> str:
-    items = res.get("results") or []
-    if not items:
-        return "### Dual-Source Research\n_(no results)_"
+def __getattr__(name: str) -> Any:
+    if name in _LAZY_RESEARCH_EXPORTS:
+        from . import cli_research
 
-    prefix_lines: list[str] = []
-    for sp in res.get("autoSplits") or ():
-        if isinstance(sp, dict) and sp.get("entities"):
-            ents = ", ".join(f"`{e}`" for e in sp["entities"])
-            prefix_lines.append(
-                f"> [AUTO-SPLIT] Detected long sentence query; split into PoE1 entity lookups: {ents} "
-                "(Tip: pass 1-3 short official entity names directly for fastest results)."
-            )
-
-    blocks: list[str] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        q = str(item.get("query") or "-")
-        parts = [f"## Dual-Source Research: `{q}`"]
-        ok_sources = item.get("okSources") or []
-        errors = item.get("errors") or {}
-        if errors and ok_sources:
-            err_s = "; ".join(f"{k}: {v}" for k, v in errors.items())
-            parts.append(f"> [PARTIAL] Succeeded: {', '.join(ok_sources)} | Errors: {err_s}")
-        pdb = item.get("poedb") if isinstance(item.get("poedb"), dict) else {"query": q, "error": "missing"}
-        wk = item.get("wiki") if isinstance(item.get("wiki"), dict) else {"query": q, "error": "missing"}
-        parts.append(_render_single_poedb_markdown(pdb))
-        parts.append(_render_single_wiki_markdown(wk, q))
-        blocks.append("\n\n".join(parts))
-    body = "\n\n---\n\n".join(blocks)
-    return ("\n".join(prefix_lines) + "\n\n" + body) if prefix_lines else body
+        return getattr(cli_research, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

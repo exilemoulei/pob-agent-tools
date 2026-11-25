@@ -7,6 +7,7 @@ from typing import Any
 import click
 
 from .cli_common import (
+    _echo_stderr_utf8,
     _emit_json,
     _emit_text,
     _output_options,
@@ -14,6 +15,15 @@ from .cli_common import (
     _target_option,
     invoke_daemon,
 )
+
+
+def _apply_loop_guard(res: dict[str, Any], body: str | None = None) -> str:
+    warn = str(res.get("loopGuardWarning") or "").strip() if isinstance(res, dict) else ""
+    if warn:
+        _echo_stderr_utf8(warn)
+    if body is None:
+        return ""
+    return f"> {warn}\n\n{body}" if warn else body
 
 
 @click.command("items")
@@ -45,6 +55,7 @@ def cmd_items(
         {"target": target, "slot": slot, "raw": bool(raw or all_items), "allRaw": bool(all_items)},
     )
     if as_json:
+        _apply_loop_guard(res)
         _emit_json(res, compact=compact, out_path=out_path)
         return
 
@@ -52,7 +63,7 @@ def cmd_items(
         item = res.get("item")
         slot_name = (res.get("slot") or {}).get("name", slot)
         if not item:
-            _emit_text(f"Slot `{slot_name}` is empty.", out_path=out_path)
+            _emit_text(_apply_loop_guard(res, f"Slot `{slot_name}` is empty."), out_path=out_path)
             return
         lines = [
             f"### Slot `{slot_name}`: {strip_pob_escapes(item.get('titleZh') or item.get('title') or item.get('name'))} (`{item.get('rarity')}`)",
@@ -64,7 +75,7 @@ def cmd_items(
                 lines.append(f"  {txt}")
         if raw and res.get("raw"):
             lines.append("\n```text\n" + res["raw"].strip() + "\n```")
-        _emit_text(_prepend_active_guardrail_warnings("\n".join(lines)), out_path=out_path)
+        _emit_text(_apply_loop_guard(res, _prepend_active_guardrail_warnings("\n".join(lines))), out_path=out_path)
         return
 
     if all_items:
@@ -87,7 +98,7 @@ def cmd_items(
             raw_txt = s.get("raw")
             if raw_txt:
                 lines.append("```text\n" + str(raw_txt).strip() + "\n```")
-        _emit_text(_prepend_active_guardrail_warnings("\n".join(lines)), out_path=out_path)
+        _emit_text(_apply_loop_guard(res, _prepend_active_guardrail_warnings("\n".join(lines))), out_path=out_path)
         return
 
     rows = []
@@ -106,7 +117,7 @@ def cmd_items(
                 state if it else "Empty",
             ]
         )
-    _emit_text(render_table(["Slot", "Item Name", "Base", "Rarity", "Status"], rows), out_path=out_path)
+    _emit_text(_apply_loop_guard(res, render_table(["Slot", "Item Name", "Base", "Rarity", "Status"], rows)), out_path=out_path)
 
 
 @click.command("skills")
@@ -120,6 +131,7 @@ def cmd_skills(group: str | None, target: str, as_json: bool, compact: bool, out
 
     res = invoke_daemon("skills", {"target": target, "group": group})
     if as_json:
+        _apply_loop_guard(res)
         _emit_json(res, compact=compact, out_path=out_path)
         return
 
@@ -142,7 +154,7 @@ def cmd_skills(group: str | None, target: str, as_json: bool, compact: bool, out
             f"### Skill Group #{grp.get('index')}: {strip_pob_escapes(grp.get('displayLabelZh') or grp.get('displayLabel'))} (Slot: `{grp.get('slot') or '-'}`)\n"
             + render_table(["#", "Gem", "Type", "Lv/Qual", "Enabled", "Tooltip DPS Impact"], rows)
         )
-        _emit_text(body, out_path=out_path)
+        _emit_text(_apply_loop_guard(res, body), out_path=out_path)
         return
 
     rows = []
@@ -161,7 +173,7 @@ def cmd_skills(group: str | None, target: str, as_json: bool, compact: bool, out
                 gems_summary,
             ]
         )
-    _emit_text(render_table(["Group", "Label", "Slot", "Enabled", "FullDPS", "Gems"], rows), out_path=out_path)
+    _emit_text(_apply_loop_guard(res, render_table(["Group", "Label", "Slot", "Enabled", "FullDPS", "Gems"], rows)), out_path=out_path)
 
 
 def _run_tree_inspect(
@@ -177,6 +189,7 @@ def _run_tree_inspect(
     as_json: bool,
     compact: bool,
     out_path: str | None,
+    limit: int = 100,
 ) -> None:
     """Summarize allocated passive tree nodes or search/filter tree nodes with paths, masteries, or jewel radius."""
     from .formatters import format_tree_markdown
@@ -195,6 +208,7 @@ def _run_tree_inspect(
         "show_path": show_path,
         "masteries": masteries,
         "socket_radius": socket_radius,
+        "limit": limit,
     }
     res = invoke_daemon("tree", params)
     if as_json:
@@ -208,7 +222,15 @@ def _run_tree_inspect(
 
 @click.command("calc")
 @click.argument("keywords", nargs=-1, required=True)
-@click.option("--limit", type=int, default=20, show_default=True, help="Maximum matched rows to return.")
+@click.option("--limit", type=click.IntRange(min=0), default=20, show_default=True, help="Maximum matched rows to return (0 = all).")
+@click.option(
+    "--max-breakdowns",
+    "max_breakdowns",
+    type=click.IntRange(min=0),
+    default=30,
+    show_default=True,
+    help="Maximum calcs_breakdown sub-tables to expand per keyword (0 = all).",
+)
 @click.option("--no-breakdown", "no_breakdown", is_flag=True, help="Skip calcs_breakdown sub-tables (fast numeric values only).")
 @_target_option(allow_slot_alias=True)
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
@@ -216,6 +238,7 @@ def _run_tree_inspect(
 def cmd_calc(
     keywords: tuple[str, ...],
     limit: int,
+    max_breakdowns: int,
     no_breakdown: bool,
     target: str,
     as_json: bool,
@@ -237,16 +260,17 @@ def cmd_calc(
             "keyword": kw_list[0],
             "keywords": kw_list,
             "limit": limit,
+            "max_breakdowns": max_breakdowns,
             "no_breakdown": no_breakdown,
         },
     )
     if as_json:
+        _apply_loop_guard(res)
         _emit_json(res, compact=compact, out_path=out_path)
         return
 
     matches = res.get("matches") or []
     kw_disp = ", ".join(kw_list)
-    row_limit = max(1, limit)
 
     def _header(total: int) -> list[str]:
         out = [f"### Calcs Breakdown for `{kw_disp}` ({total} matches)"]
@@ -305,7 +329,7 @@ def cmd_calc(
         sub_dicts = [sr for sr in sub_results if isinstance(sr, dict)]
         total_shown = sum(len(sr.get("matches") or []) for sr in sub_dicts)
         if total_shown == 0 and not matches:
-            _emit_text(f"No calculation rows matched `{kw_disp}`.", out_path=out_path)
+            _emit_text(_apply_loop_guard(res, f"No calculation rows matched `{kw_disp}`."), out_path=out_path)
             return
         lines = _header(res.get("totalMatches", total_shown))
         for sub in sub_dicts:
@@ -316,20 +340,20 @@ def cmd_calc(
             if not sub_matches:
                 lines.append("_(no matches)_")
                 continue
-            for m in sub_matches[:row_limit]:
+            for m in (sub_matches if limit <= 0 else sub_matches[:limit]):
                 _append_calc_match(lines, m)
-        _emit_text(_prepend_active_guardrail_warnings("\n".join(lines)), out_path=out_path)
+        _emit_text(_apply_loop_guard(res, _prepend_active_guardrail_warnings("\n".join(lines))), out_path=out_path)
         return
 
     if not matches:
-        _emit_text(f"No calculation rows matched `{kw_disp}`.", out_path=out_path)
+        _emit_text(_apply_loop_guard(res, f"No calculation rows matched `{kw_disp}`."), out_path=out_path)
         return
 
     lines = _header(res.get("totalMatches", len(matches)))
-    for m in matches[:row_limit]:
+    for m in (matches if limit <= 0 else matches[:limit]):
         _append_calc_match(lines, m)
 
-    _emit_text(_prepend_active_guardrail_warnings("\n".join(lines)), out_path=out_path)
+    _emit_text(_apply_loop_guard(res, _prepend_active_guardrail_warnings("\n".join(lines))), out_path=out_path)
 
 
 def register_inspect_part_commands(group: click.Group) -> None:

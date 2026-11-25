@@ -16,7 +16,85 @@ from .cli_common import (
     _target_option,
     invoke_daemon,
 )
-from .cli_inspect_parts import register_inspect_part_commands
+from .cli_inspect_parts import _apply_loop_guard, register_inspect_part_commands
+
+_DIAGNOSE_SECTIONS = ("all", "summary", "gaps", "items", "skills", "cards", "upgrades")
+_DIAGNOSE_JSON_KEYS: dict[str, tuple[str, ...]] = {
+    "summary": (
+        "amulet_7th_link",
+        "keystones",
+        "pantheon",
+        "ascendancyNodes",
+        "offence",
+        "minionOffence",
+        "defence",
+        "original",
+        "dewateredPinnacle",
+        "inflationStripped",
+        "topWaterSources",
+    ),
+    "gaps": ("healthGaps", "core_synergies", "buildMechanics", "agentProbe"),
+    "items": ("equippedItems",),
+    "skills": ("mainGroup", "amulet_7th_link", "skillGroups"),
+    "cards": ("factCards", "advisories", "askGrounding"),
+    "upgrades": ("topNodes", "topGems", "rankErrors"),
+}
+
+
+def _slice_diagnose_json(res: dict[str, Any], section: str) -> dict[str, Any]:
+    if section == "all" or not isinstance(res, dict):
+        return res
+    if res.get("mode") == "compare":
+        out_cmp = dict(res)
+        out_cmp["section"] = section
+        if isinstance(res.get("buildA"), dict):
+            out_cmp["buildA"] = _slice_diagnose_json(res["buildA"], section)
+        if isinstance(res.get("buildB"), dict):
+            out_cmp["buildB"] = _slice_diagnose_json(res["buildB"], section)
+        return out_cmp
+    out: dict[str, Any] = {"section": section}
+    for meta_k in ("env", "buildInfo", "mainGroup", "targetSlot", "rev", "sourceHash", "cached", "loopGuardWarning", "updateWarning", "restoreCheck"):
+        if meta_k in res:
+            out[meta_k] = res[meta_k]
+    for k in _DIAGNOSE_JSON_KEYS.get(section, ()):
+        if k in res:
+            out[k] = res[k]
+    return out
+
+
+def _slice_diagnose_markdown(full_md: str, section: str) -> str:
+    if section == "all":
+        return full_md
+    parts = full_md.split("\n#### ")
+    if len(parts) <= 1:
+        return full_md
+    preamble = parts[0]
+    if section == "summary":
+        header = preamble
+    else:
+        hdr_lines = [
+            ln
+            for ln in preamble.splitlines()
+            if ln.startswith(("[Env:", "### Build Diagnosis:", "> "))
+        ]
+        header = "\n".join(hdr_lines) if hdr_lines else preamble
+
+    matched: list[str] = []
+    for raw_sec in parts[1:]:
+        title = raw_sec.split("\n", 1)[0].strip()
+        keep_sec = (
+            (section == "summary" and title.startswith("1."))
+            or (section == "gaps" and title.startswith(("2.", "2b.", "2c. Build-Specific")))
+            or (section == "skills" and title.startswith("2c. All Skill Groups"))
+            or (section == "items" and title.startswith("2d."))
+            or (section == "cards" and title.startswith("3."))
+            or (section == "upgrades" and title.startswith("4."))
+        )
+        if keep_sec:
+            matched.append("#### " + raw_sec)
+    if not matched:
+        return f"{header}\n\n_(no {section} entries)_"
+    return header + "\n\n" + "\n\n".join(matched)
 
 
 @click.command("summary")
@@ -29,6 +107,7 @@ def cmd_summary(target: str, as_json: bool, compact: bool, out_path: str | None)
 
     res = invoke_daemon("summary", {"target": target})
     if as_json:
+        _apply_loop_guard(res)
         _emit_json(res, compact=compact, out_path=out_path)
         return
 
@@ -93,7 +172,7 @@ def cmd_summary(target: str, as_json: bool, compact: bool, out_path: str | None)
         for w in warnings:
             lines.append(f"- {w}")
 
-    _emit_text(_prepend_warning("\n".join(lines), res), out_path=out_path)
+    _emit_text(_apply_loop_guard(res, _prepend_warning("\n".join(lines), res)), out_path=out_path)
 
 
 @click.command("diagnose")
@@ -119,7 +198,20 @@ def cmd_summary(target: str, as_json: bool, compact: bool, out_path: str | None)
     help="Keep build-guaranteed config/flask/skill/customMods/party items during dewatering (repeatable or comma-separated).",
 )
 @click.option("--top", type=int, default=5, show_default=True, help="Top N passive nodes & candidate support gems.")
-@click.option("--no-rank", "no_rank", is_flag=True, help="Skip passive node & support gem ROI rankings (faster; default when --compare is set).")
+@click.option(
+    "--rank/--no-rank",
+    "rank",
+    default=None,
+    help="Run or skip passive node & support gem ROI rankings (skipped by default for <1s diagnosis; enabled by --rank, --section upgrades, or explicit --top).",
+)
+@click.option(
+    "--section",
+    "section",
+    type=click.Choice(list(_DIAGNOSE_SECTIONS), case_sensitive=False),
+    default="all",
+    show_default=True,
+    help="Render a specific diagnosis section (all, summary, gaps, items, skills, cards, upgrades).",
+)
 @_target_option(allow_slot_alias=True)
 @click.option(
     "--ref-target",
@@ -146,7 +238,8 @@ def cmd_diagnose(
     ask_text: str | None,
     keep: tuple[str, ...],
     top: int,
-    no_rank: bool,
+    rank: bool | None,
+    section: str,
     target: str,
     ref_target: str | None,
     char_name: str | None,
@@ -159,19 +252,27 @@ def cmd_diagnose(
     """One-shot comprehensive build diagnosis (and optional dual-build --compare & --ask question grounding)."""
     from click.core import ParameterSource
 
+    from .daemon.read_cache import compute_source_hash
     from .formatters import format_diagnose_markdown
 
-    eff_no_rank = bool(no_rank)
-    if compare_source and not no_rank:
-        top_src = ctx.get_parameter_source("top")
-        if top_src != ParameterSource.COMMANDLINE:
-            eff_no_rank = True
+    sec_norm = (section or "all").strip().lower()
+    top_explicit = ctx.get_parameter_source("top") == ParameterSource.COMMANDLINE
+    if rank is True:
+        eff_no_rank = False
+    elif rank is False:
+        eff_no_rank = True
+    elif sec_norm == "upgrades" or top_explicit:
+        eff_no_rank = False
+    else:
+        eff_no_rank = True
 
     params: dict[str, Any] = {
         "target": target,
         "top": top,
         "no_rank": eff_no_rank,
     }
+    if sec_norm != "all":
+        params["section"] = sec_norm
     if char_name and char_name.strip():
         params["char_name"] = char_name.strip()
     if league and league.strip():
@@ -188,6 +289,9 @@ def cmd_diagnose(
             params["xml_code"] = resolved_xml_code
         else:
             params["source"] = resolved_src
+        src_hash = compute_source_hash(params)
+        if src_hash:
+            params["source_hash"] = src_hash
     if compare_source:
         eff_ref = ref_target or ("ref" if target == "main" else f"{target}_ref")
         params["ref_target"] = eff_ref
@@ -196,22 +300,26 @@ def cmd_diagnose(
             params["compare_xml_code"] = cmp_xml_code
         else:
             params["compare_source"] = cmp_src
+        cmp_hash = compute_source_hash({"source": cmp_src, "xml_code": cmp_xml_code})
+        if cmp_hash:
+            params["compare_source_hash"] = cmp_hash
 
     res = invoke_daemon("diagnose", params, timeout=240.0 if compare_source else 180.0)
     if as_json:
-        _emit_json(res, compact=compact, out_path=out_path)
+        _apply_loop_guard(res)
+        _emit_json(_slice_diagnose_json(res, sec_norm), compact=compact, out_path=out_path)
         return
-    md = format_diagnose_markdown(res)
+    md = _slice_diagnose_markdown(format_diagnose_markdown(res), sec_norm)
     extra_notes = [str(n) for n in (res.get("importNotes") or []) if n]
     extra_warns = [str(w) for w in (res.get("translateWarnings") or []) if w]
-    if extra_notes or extra_warns:
+    if (extra_notes or extra_warns) and sec_norm in ("all", "summary"):
         tail = ["", "#### Import Notes"]
         tail.extend(f"- {n}" for n in extra_notes)
         tail.extend(f"- {w}" for w in extra_warns[:20])
         if len(extra_warns) > 20:
             tail.append(f"- ... ({len(extra_warns) - 20} more untranslated CN mods)")
         md = md + "\n" + "\n".join(tail)
-    _emit_text(md, out_path=out_path)
+    _emit_text(_apply_loop_guard(res, md), out_path=out_path)
 
 
 @click.command("ground")
@@ -280,6 +388,7 @@ def cmd_audit(
         params["keep"] = list(keep)
     res = invoke_daemon("audit", params)
     if as_json:
+        _apply_loop_guard(res)
         _emit_json(res, compact=compact, out_path=out_path)
         return
 
@@ -377,7 +486,7 @@ def cmd_audit(
         ],
     ]
     lines.append(render_table(["Metric", "Original Panel", "Dewatered Pinnacle", "Water Delta"], comp_rows))
-    _emit_text("\n".join(lines), out_path=out_path)
+    _emit_text(_apply_loop_guard(res, "\n".join(lines)), out_path=out_path)
 
 
 def register_inspect_commands(group: click.Group) -> None:

@@ -198,7 +198,7 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "Query local 0ms PoB Lua game/tree data & 0.033s tick calculator (`gem|unique|mod|base|translate|tree|tick`, daemon-free).",
     ),
     "poedb": (
-        ".cli_data",
+        ".cli_research",
         "cmd_poedb",
         "Query poedb.tw CN/US autocomplete index, properties, version history, and mod pool weights (cached).",
     ),
@@ -213,12 +213,12 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "Query poe.ninja league meta snapshot (total builds, ascendancy & main skill share).",
     ),
     "wiki": (
-        ".cli_data",
+        ".cli_research",
         "cmd_wiki",
         "Query poewiki.net MediaWiki API for mechanics, uniques, and keystones (24h local cache).",
     ),
     "research": (
-        ".cli_data",
+        ".cli_research",
         "cmd_research",
         "Concurrent dual-source research via poedb.tw + poewiki.net (partial-success resilient).",
     ),

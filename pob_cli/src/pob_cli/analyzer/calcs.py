@@ -274,7 +274,9 @@ def _build_calc_matches(
 ) -> list[dict[str, Any]]:
     out_matches: list[dict[str, Any]] = []
     kw_bd_count = 0
-    for score, _, item in scored[:limit]:
+    unlimited_bd = max_breakdowns <= 0
+    rows_iter = scored if limit <= 0 else scored[:limit]
+    for score, _, item in rows_iter:
         cells_out: list[dict[str, Any]] = []
         for cell in item["cells"]:
             ci = cell.get("ci")
@@ -287,7 +289,7 @@ def _build_calc_matches(
                 "value": _parse_calc_cell_value(raw_clean, text_clean),
                 "hasBreakdown": bool(cell.get("hasBreakdown")),
             }
-            if not no_breakdown and cell.get("hasBreakdown") and kw_bd_count < max_breakdowns:
+            if not no_breakdown and cell.get("hasBreakdown") and (unlimited_bd or kw_bd_count < max_breakdowns):
                 coord = (item["si"], item["ui"], item["ri"], ci)
                 if coord in bd_map:
                     c_entry["breakdown"] = bd_map[coord]
@@ -363,7 +365,7 @@ def search_calcs_breakdown(
     *,
     keywords: Iterable[str] | str | None = None,
     limit: int = 20,
-    max_breakdowns: int = 8,
+    max_breakdowns: int = 30,
     no_breakdown: bool = False,
 ) -> dict[str, Any]:
     """Bilingual (EN + ZH) search across `get_calcs` rows with variadic keywords and pipelined `calcs_breakdown`."""
@@ -409,11 +411,13 @@ def search_calcs_breakdown(
                 scored.sort(key=lambda pair: (-pair[0], pair[1]))
                 per_kw_scored.append((kw, scored))
 
-                if not no_breakdown and max_breakdowns > 0:
+                if not no_breakdown:
+                    unlimited_bd = max_breakdowns <= 0
                     kw_bd_count = 0
-                    for _, _, item in scored[:limit]:
+                    rows_iter = scored if limit <= 0 else scored[:limit]
+                    for _, _, item in rows_iter:
                         for cell in item["cells"]:
-                            if cell.get("hasBreakdown") and kw_bd_count < max_breakdowns:
+                            if cell.get("hasBreakdown") and (unlimited_bd or kw_bd_count < max_breakdowns):
                                 coord = (item["si"], item["ui"], item["ri"], cell.get("ci"))
                                 if coord not in bd_coord_seen:
                                     bd_coord_seen.add(coord)
@@ -488,3 +492,4 @@ def search_calcs_breakdown(
 
 
 inspect_calcs = search_calcs_breakdown
+search_calcs = search_calcs_breakdown

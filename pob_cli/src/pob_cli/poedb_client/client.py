@@ -323,7 +323,7 @@ def _query_poedb_with_entries(
     include_mods: bool = False,
     norm_lang: str = "cn",
     proxy: str | None = None,
-    limit_mods: int = 80,
+    limit_mods: int = 150,
     mod_filter: str | None = None,
     client: httpx.Client | _LazyClient | None = None,
     index_stale: bool = False,
@@ -388,11 +388,11 @@ def _query_poedb_with_entries(
             }
             for h in close_hits[:5]
         ],
-        "properties": props[:25],
+        "properties": props[:100] if limit_mods > 0 else props,
         "implicits": parser.implicits,
         "explicits": parser.explicits,
         "description": " | ".join(parser.descriptions) if parser.descriptions else None,
-        "versionHistory": parser.version_history[:25],
+        "versionHistory": parser.version_history[:100] if limit_mods > 0 else parser.version_history,
     }
 
     mv = _extract_mods_view_json(page_html)
@@ -451,7 +451,7 @@ def query_poedb(
     include_mods: bool = False,
     lang: str = "cn",
     proxy: str | None = None,
-    limit_mods: int = 80,
+    limit_mods: int = 150,
     mod_filter: str | None = None,
 ) -> dict[str, Any]:
     """Search PoEDB autocomplete index (CN+US) and parse page + optional mod pool into compact JSON."""
@@ -487,7 +487,7 @@ def query_poedb_multi(
     include_mods: bool = False,
     lang: str = "cn",
     proxy: str | None = None,
-    limit_mods: int = 80,
+    limit_mods: int = 150,
     mod_filter: str | None = None,
     max_workers: int = 4,
 ) -> dict[str, Any]:

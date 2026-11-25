@@ -62,6 +62,7 @@ LAYER_MAP: dict[str, int] = {
     "cli_self_update": 4,
     "cli_data_render": 4,
     "cli_data": 4,
+    "cli_research": 4,
     "cli_trade": 4,
     "cli_timeless": 4,
 }

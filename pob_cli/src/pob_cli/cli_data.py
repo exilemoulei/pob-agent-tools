@@ -1,4 +1,4 @@
-"""Offline game data, PoEDB, poe.ninja economy/meta, and PoE Wiki Click commands for `pob` CLI."""
+"""Offline game data and poe.ninja economy/meta Click commands for `pob` CLI."""
 
 from __future__ import annotations
 
@@ -9,15 +9,12 @@ import click
 from .cli_common import _call_with_supported_kwargs, _emit_json, _emit_text, _output_options
 from .cli_data_render import (
     _render_gem_quality_breakpoints_markdown,
-    _render_research_markdown,
     _render_single_data_markdown,
-    _render_single_poedb_markdown,
     _render_single_price_markdown,
-    _render_single_wiki_markdown,
     _render_tick_data_markdown,
     _render_tree_data_markdown,
-    run_dual_research,
 )
+from .cli_research import cmd_poedb, cmd_research, cmd_wiki
 
 
 @click.command("data")
@@ -31,7 +28,7 @@ from .cli_data_render import (
 @click.option("--cdr", "cdr_pct", type=float, default=0.0, show_default=True, help="[tick only] Total Cooldown Recovery Rate % (e.g. 14, 52).")
 @click.option("--aps", "aps_rate", type=float, default=None, help="[tick only] Trigger attack/action rate per second for CoC overspeed check.")
 @click.option("--spells", "triggered_spells", type=int, default=1, show_default=True, help="[tick only] Number of distinct triggered skills sharing the trigger.")
-@click.option("--limit", type=int, default=25, show_default=True, help="Maximum number of results per query.")
+@click.option("--limit", type=int, default=25, show_default=True, help="Maximum number of results per query (0 = unlimited).")
 @click.option("--quality-breakpoints", "quality_breakpoints", is_flag=True, help="[gem only] Scan 3.30 gems for 20%->40%+ quality breakpoints (integer steps & more multipliers).")
 @click.option("--search-quality", "search_quality", type=str, default=None, help="[gem only] Search gems by quality stat keyword (EN or ZH, e.g. 'projectile', '连锁', 'more').")
 @click.option("--active-only", "active_only", is_flag=True, help="[gem quality scan] Restrict to Active Skill Gems only (matching '+% to Quality of all Skill Gems').")
@@ -187,83 +184,6 @@ def cmd_data(
             sub_dict = sub if isinstance(sub, dict) else {}
             lbl = str(sub_dict.get("query") or (resp_queries[idx] if idx < len(resp_queries) else "-"))
             sections.append(_render_single_data_markdown(sub_dict, kind, lbl))
-    _emit_text("\n\n".join(sections), out_path=out_path)
-
-
-@click.command("poedb")
-@click.argument("queries", nargs=-1, required=True)
-@click.option("--mods", "include_mods", is_flag=True, help="Fetch item/base mod pool with DropChance weights & fossil tags.")
-@click.option("--filter", "mod_filter", type=str, default=None, help="Filter mod pool rows by keyword(s) (case-insensitive, '|' for OR).")
-@click.option("--lang", type=click.Choice(["cn", "us", "en"], case_sensitive=False), default="cn", show_default=True, help="PoEDB language.")
-@click.option("--proxy", help="Optional HTTP/SOCKS proxy URL.")
-@click.option("--limit", type=int, default=60, show_default=True, help="Maximum mod pool rows to return.")
-@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
-@_output_options
-def cmd_poedb(
-    queries: tuple[str, ...],
-    include_mods: bool,
-    mod_filter: str | None,
-    lang: str,
-    proxy: str | None,
-    limit: int,
-    as_json: bool,
-    compact: bool,
-    out_path: str | None,
-) -> None:
-    """Query poedb.tw CN/US autocomplete index, properties, version history, and mod pool weights (cached)."""
-    from . import poedb_client as pc
-
-    q_list = [q.strip() for q in queries if q and q.strip()]
-    if not q_list:
-        raise click.UsageError("Provide at least one non-empty query.")
-    if len(q_list) == 1:
-        extra_kw: dict[str, Any] = {"mod_filter": mod_filter} if mod_filter else {}
-        res = _call_with_supported_kwargs(
-            pc.query_poedb, q_list[0], include_mods=include_mods, lang=lang, proxy=proxy, limit_mods=limit, **extra_kw
-        )
-        if as_json:
-            _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
-            return
-        _emit_text(_render_single_poedb_markdown(res), out_path=out_path)
-        return
-
-    if hasattr(pc, "query_poedb_multi"):
-        extra_kw = {"mod_filter": mod_filter} if mod_filter else {}
-        multi_res = _call_with_supported_kwargs(
-            pc.query_poedb_multi, q_list, include_mods=include_mods, lang=lang, proxy=proxy, limit_mods=limit, **extra_kw
-        )
-    else:
-        grouped = {
-            q: _call_with_supported_kwargs(
-                pc.query_poedb, q, include_mods=include_mods, lang=lang, proxy=proxy, limit_mods=limit,
-                **({"mod_filter": mod_filter} if mod_filter else {}),
-            )
-            for q in q_list
-        }
-        multi_res = {"queries": q_list, "results": grouped}
-
-    if as_json:
-        _emit_json(multi_res, compact=compact, out_path=out_path, sanitize=False)
-        return
-
-    sections = []
-    res_map = multi_res.get("results") if isinstance(multi_res, dict) else multi_res
-    resp_queries = (
-        [str(x) for x in multi_res["queries"]]
-        if isinstance(multi_res, dict) and isinstance(multi_res.get("queries"), list)
-        else q_list
-    )
-    if isinstance(res_map, dict):
-        for q in resp_queries:
-            q_key = q.strip()
-            sub = res_map[q] if q in res_map else (res_map[q_key] if q_key in res_map else {"query": q_key, "error": "missing"})
-            sections.append(_render_single_poedb_markdown(sub or {"query": q_key, "error": "missing"}))
-    elif isinstance(res_map, list):
-        for idx, item in enumerate(res_map):
-            sub_dict = dict(item) if isinstance(item, dict) else {"error": "missing"}
-            if not sub_dict.get("query") and idx < len(resp_queries):
-                sub_dict["query"] = resp_queries[idx]
-            sections.append(_render_single_poedb_markdown(sub_dict))
     _emit_text("\n\n".join(sections), out_path=out_path)
 
 
@@ -425,95 +345,6 @@ def cmd_meta(
     lines.append(render_table(["Skill", "Share", "Est. Builds", "Top Classes"], sk_rows))
 
     _emit_text("\n".join(lines), out_path=out_path)
-
-
-@click.command("wiki")
-@click.argument("queries", nargs=-1, required=True)
-@click.option("--proxy", help="Optional HTTP/SOCKS proxy URL.")
-@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
-@_output_options
-def cmd_wiki(
-    queries: tuple[str, ...],
-    proxy: str | None,
-    as_json: bool,
-    compact: bool,
-    out_path: str | None,
-) -> None:
-    """Query poewiki.net MediaWiki API for mechanics, uniques, and keystones (24h local cache)."""
-    from . import external_data as ext
-
-    q_list = [q.strip() for q in queries if q and q.strip()]
-    if not q_list:
-        raise click.UsageError("Provide at least one non-empty query.")
-    if len(q_list) == 1:
-        res = _call_with_supported_kwargs(ext.query_wiki, q_list[0], proxy=proxy)
-        if as_json:
-            _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
-            return
-        _emit_text(_render_single_wiki_markdown(res, q_list[0]), out_path=out_path)
-        return
-
-    if hasattr(ext, "query_wiki_multi"):
-        multi_res = _call_with_supported_kwargs(ext.query_wiki_multi, q_list, proxy=proxy)
-    else:
-        grouped = {q: _call_with_supported_kwargs(ext.query_wiki, q, proxy=proxy) for q in q_list}
-        multi_res = {"queries": q_list, "results": grouped}
-
-    if as_json:
-        _emit_json(multi_res, compact=compact, out_path=out_path, sanitize=False)
-        return
-
-    sections = []
-    res_map = multi_res.get("results") if isinstance(multi_res, dict) else multi_res
-    resp_queries = (
-        [str(x) for x in multi_res["queries"]]
-        if isinstance(multi_res, dict) and isinstance(multi_res.get("queries"), list)
-        else q_list
-    )
-    if isinstance(res_map, dict):
-        for q in resp_queries:
-            q_key = q.strip()
-            sub = res_map[q] if q in res_map else (res_map[q_key] if q_key in res_map else {"error": "missing"})
-            sections.append(_render_single_wiki_markdown(sub or {"error": "missing"}, q_key))
-    elif isinstance(res_map, list):
-        for idx, sub in enumerate(res_map):
-            sub_dict = sub if isinstance(sub, dict) else {"error": "missing"}
-            lbl = str(sub_dict.get("query") or (resp_queries[idx] if idx < len(resp_queries) else "-"))
-            sections.append(_render_single_wiki_markdown(sub_dict, lbl))
-    _emit_text("\n\n".join(sections), out_path=out_path)
-
-
-@click.command("research")
-@click.argument("queries", nargs=-1, required=True)
-@click.option("--mods", "include_mods", is_flag=True, help="Also fetch PoEDB mod pool weights & fossil tags.")
-@click.option("--filter", "mod_filter", type=str, default=None, help="Filter PoEDB mod pool rows by keyword(s) (case-insensitive, '|' for OR).")
-@click.option("--lang", type=click.Choice(["cn", "us", "en"], case_sensitive=False), default="cn", show_default=True, help="PoEDB language.")
-@click.option("--proxy", help="Optional HTTP/SOCKS proxy URL.")
-@click.option("--limit", type=int, default=40, show_default=True, help="Maximum PoEDB mod pool rows.")
-@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
-@_output_options
-def cmd_research(
-    queries: tuple[str, ...],
-    include_mods: bool,
-    mod_filter: str | None,
-    lang: str,
-    proxy: str | None,
-    limit: int,
-    as_json: bool,
-    compact: bool,
-    out_path: str | None,
-) -> None:
-    """Concurrent dual-source research via poedb.tw + poewiki.net (partial-success resilient)."""
-    q_list = [q.strip() for q in queries if q and q.strip()]
-    if not q_list:
-        raise click.UsageError("Provide at least one non-empty query.")
-    res = run_dual_research(
-        q_list, include_mods=include_mods, mod_filter=mod_filter, lang=lang, proxy=proxy, limit_mods=limit
-    )
-    if as_json:
-        _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
-        return
-    _emit_text(_render_research_markdown(res), out_path=out_path)
 
 
 def register_data_commands(group: click.Group) -> None:

@@ -315,12 +315,14 @@ def _priority_tier(heading: str) -> int | None:
 
 
 def _extract_wiki_sections_and_summary(
-    raw_html: str, *, max_len: int = 3500, lead_cap: int = 900
+    raw_html: str, *, max_len: int = 12000, lead_cap: int | None = None
 ) -> tuple[str, list[dict[str, str]]]:
-    """Extract mechanics/interaction sections and assemble a prioritized <=3500-char summary."""
+    """Extract mechanics/interaction sections and assemble a prioritized summary (`max_len <= 0` = unlimited)."""
+    unlimited = max_len <= 0
     matches = list(_HEADING_RE.finditer(raw_html))
     if not matches:
-        return _strip_html(raw_html)[:max_len], []
+        plain = _strip_html(raw_html)
+        return (plain if unlimited else plain[:max_len]), []
 
     lead_text = _strip_html(raw_html[: matches[0].start()]).strip()
     priority_entries: list[tuple[int, int, str, str]] = []
@@ -340,25 +342,36 @@ def _extract_wiki_sections_and_summary(
             other_entries.append((heading, body_text))
 
     if not priority_entries:
-        return _strip_html(raw_html)[:max_len], []
+        plain = _strip_html(raw_html)
+        return (plain if unlimited else plain[:max_len]), []
 
     priority_entries.sort(key=lambda item: (item[0], item[1]))
-    mechanics_sections = [
-        {"heading": heading, "text": body_text[:1800]}
-        for _, _, heading, body_text in priority_entries[:6]
-    ]
+    if unlimited:
+        mechanics_sections = [
+            {"heading": heading, "text": body_text}
+            for _, _, heading, body_text in priority_entries
+        ]
+    else:
+        sec_cap = max(1800, (max_len * 1800) // 3500)
+        max_secs = max(6, (max_len * 6) // 3500)
+        mechanics_sections = [
+            {"heading": heading, "text": body_text[:sec_cap]}
+            for _, _, heading, body_text in priority_entries[:max_secs]
+        ]
 
+    eff_lead_cap = lead_cap if lead_cap is not None else (0 if unlimited else max(900, (max_len * 900) // 3500))
     blocks: list[str] = []
     if lead_text:
-        blocks.append(lead_text[:lead_cap])
+        blocks.append(lead_text if (unlimited and lead_cap is None) else lead_text[:eff_lead_cap])
     for sec in mechanics_sections:
         blocks.append(f"## {sec['heading']}\n{sec['text']}")
     for heading, body_text in other_entries:
-        if sum(len(b) + 2 for b in blocks) >= max_len:
+        if not unlimited and sum(len(b) + 2 for b in blocks) >= max_len:
             break
         blocks.append(f"## {heading}\n{body_text}")
 
-    return "\n\n".join(blocks)[:max_len], mechanics_sections
+    joined = "\n\n".join(blocks)
+    return (joined if unlimited else joined[:max_len]), mechanics_sections
 
 
 def _search_poewiki_titles(http_client: httpx.Client, api_url: str, term: str) -> tuple[list[str], list[str]]:
@@ -395,12 +408,19 @@ def _search_poewiki_titles(http_client: httpx.Client, api_url: str, term: str) -
     return titles, urls
 
 
+def _wiki_cache_path(q: str, max_chars: int) -> Any:
+    slug_hash = hashlib.sha1(q.lower().encode("utf-8")).hexdigest()[:12]
+    suffix = "" if max_chars == 12000 else f"_{max_chars}"
+    return _shared_cache_dir() / f"poewiki_{slug_hash}{suffix}.json"
+
+
 def query_wiki(
     topic: str,
     *,
     ttl_sec: int = 86400,
     proxy: str | None = None,
     client: httpx.Client | None = None,
+    max_chars: int = 12000,
 ) -> dict[str, Any]:
     """Query poewiki.net MediaWiki API for mechanics/uniques/keystones with 24h local disk cache."""
     from ..guardrails import GuardrailScope, check_input, validate_url
@@ -411,8 +431,7 @@ def query_wiki(
     validate_url(q, expected_game="poe1", cli_subcommand="wiki")
     check_input(q, scope=GuardrailScope.DATA_QUERY, expected_game="poe1")
 
-    slug_hash = hashlib.sha1(q.lower().encode("utf-8")).hexdigest()[:12]
-    cache_file = _shared_cache_dir() / f"poewiki_{slug_hash}.json"
+    cache_file = _wiki_cache_path(q, max_chars)
     now = time.time()
     if cache_file.exists():
         try:
@@ -456,7 +475,7 @@ def query_wiki(
         p_data = p_resp.json().get("parse", {})
         resolved_title = p_data.get("title") or page_title
         raw_html = p_data.get("text", {}).get("*", "")
-        summary_text, mechanics_sections = _extract_wiki_sections_and_summary(raw_html)
+        summary_text, mechanics_sections = _extract_wiki_sections_and_summary(raw_html, max_len=max_chars)
 
         out: dict[str, Any] = {
             "query": topic,
@@ -493,8 +512,10 @@ def query_wiki_multi(
     ttl_sec: int = 86400,
     proxy: str | None = None,
     max_workers: int = 4,
+    max_chars: int = 12000,
 ) -> dict[str, Any]:
     """Query multiple poewiki.net topics concurrently using ONE shared httpx.Client."""
+    from ..compat import call_compat
     from ..guardrails import GuardrailScope, check_input, validate_url
 
     clean_queries = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
@@ -508,8 +529,7 @@ def query_wiki_multi(
     cached_hits: dict[str, dict[str, Any]] = {}
     uncached: list[str] = []
     for q in clean_queries:
-        slug_hash = hashlib.sha1(q.lower().encode("utf-8")).hexdigest()[:12]
-        cache_file = _shared_cache_dir() / f"poewiki_{slug_hash}.json"
+        cache_file = _wiki_cache_path(q, max_chars)
         if cache_file.exists():
             try:
                 cached = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -527,8 +547,8 @@ def query_wiki_multi(
         with _make_httpx_client(timeout=DEFAULT_HTTP_TIMEOUT, proxy=proxy) as shared_client:
             def _run_one(topic: str) -> tuple[str, dict[str, Any]]:
                 try:
-                    return topic, wiki_fn(
-                        topic, ttl_sec=ttl_sec, proxy=proxy, client=shared_client
+                    return topic, call_compat(
+                        wiki_fn, topic, ttl_sec=ttl_sec, proxy=proxy, client=shared_client, max_chars=max_chars
                     )
                 except Exception as exc:
                     return topic, {"query": topic, "error": str(exc)}

@@ -185,7 +185,7 @@ def query_tree_data(
     db_path, tree_ver = _gd.ensure_treedata_index(
         pob_dir=pob_dir, runtime_dir=runtime_dir, force_rebuild=force_rebuild
     )
-    limit = max(1, int(limit))
+    limit = int(limit)
     type_low = type_clean.lower() if type_clean else ""
 
     conn = sqlite3.connect(_sqlite_ro_uri(db_path), uri=True)
@@ -209,7 +209,7 @@ def query_tree_data(
                     continue
                 seen_small.add(skey)
             results.append(nd)
-            if len(results) >= limit:
+            if limit > 0 and len(results) >= limit:
                 break
     finally:
         conn.close()

@@ -15,6 +15,14 @@ def _fts_phrase(token: str) -> str:
     return '"' + token.replace('"', '""') + '"'
 
 
+def _pool_limit_clause(limit: int) -> str:
+    return "" if limit <= 0 else f"LIMIT {max(2500, limit * 5)}"
+
+
+def _slice_limit(items: list[Any], limit: int) -> list[Any]:
+    return items if limit <= 0 else items[:limit]
+
+
 def _build_fts_match(query_lower: str) -> tuple[str | None, list[str]]:
     tokens = [t for t in query_lower.split() if t]
     long_tokens = [t for t in tokens if len(t) >= 3]
@@ -70,30 +78,34 @@ def _query_gems(conn: sqlite3.Connection, q_lower: str, limit: int) -> list[dict
     if q_lower:
         q_lower = _fold_search_text(normalize_tw_query(q_lower))
     if not q_lower:
-        rows = conn.execute("SELECT data_json FROM gems ORDER BY is_item_skill, name LIMIT ?", (limit,)).fetchall()
+        if limit <= 0:
+            rows = conn.execute("SELECT data_json FROM gems ORDER BY is_item_skill, name").fetchall()
+        else:
+            rows = conn.execute("SELECT data_json FROM gems ORDER BY is_item_skill, name LIMIT ?", (limit,)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
+    pool_lim = _pool_limit_clause(limit)
     fts_expr, tokens = _build_fts_match(q_lower)
     if fts_expr:
         rows = conn.execute(
-            """
+            f"""
             SELECT g.name_lower, g.display_name_lower, g.zh_lower, g.is_item_skill,
                    g.is_vaal, g.is_transfigured, g.search_text_lower, g.data_json
             FROM gems_fts f
             JOIN gems g ON g.rowid = f.rowid
             WHERE gems_fts MATCH ?
-            LIMIT 250
+            {pool_lim}
             """,
             (fts_expr,),
         ).fetchall()
     else:
         rows = conn.execute(
-            """
+            f"""
             SELECT name_lower, display_name_lower, zh_lower, is_item_skill,
                    is_vaal, is_transfigured, search_text_lower, data_json
             FROM gems
             WHERE instr(search_text_lower, ?) > 0
-            LIMIT 250
+            {pool_lim}
             """,
             (q_lower,),
         ).fetchall()
@@ -114,7 +126,7 @@ def _query_gems(conn: sqlite3.Connection, q_lower: str, limit: int) -> list[dict
         scored.append(((tier, int(is_item_skill), is_vaal + is_trans, len(name_l), name_l), data_json))
 
     scored.sort(key=lambda item: item[0])
-    return [json.loads(item[1]) for item in scored[:limit]]
+    return [json.loads(item[1]) for item in _slice_limit(scored, limit)]
 
 
 def _unique_matching_mod_lines(obj: dict[str, Any], mod_tokens: list[str], mod_phrase: str) -> tuple[int, list[str]]:
@@ -186,14 +198,14 @@ def _query_uniques(
     mod_lower = _fold_search_text(normalize_tw_query(mod_filter or "")).strip()
     mod_tokens = [t for t in mod_lower.split() if t] if mod_lower else []
 
+    pool_lim = _pool_limit_clause(limit)
     combined_q = " ".join(p for p in (q_lower, mod_lower) if p).strip()
     if not combined_q:
         rows = conn.execute(
-            "SELECT name_lower, zh_lower, foulborn_lower, zh_foulborn_lower, slots_lower, data_json FROM uniques LIMIT 300"
+            f"SELECT name_lower, zh_lower, foulborn_lower, zh_foulborn_lower, slots_lower, data_json FROM uniques {pool_lim}"
         ).fetchall()
     else:
         fts_expr, _ = _build_fts_match(combined_q)
-        row_limit = 600 if mod_lower else 300
         if fts_expr:
             rows = conn.execute(
                 f"""
@@ -201,7 +213,7 @@ def _query_uniques(
                 FROM uniques_fts f
                 JOIN uniques u ON u.rowid = f.rowid
                 WHERE uniques_fts MATCH ?
-                LIMIT {row_limit}
+                {pool_lim}
                 """,
                 (fts_expr,),
             ).fetchall()
@@ -212,7 +224,7 @@ def _query_uniques(
                 SELECT name_lower, zh_lower, foulborn_lower, zh_foulborn_lower, slots_lower, data_json
                 FROM uniques
                 WHERE instr(search_text_lower, ?) > 0
-                LIMIT {row_limit}
+                {pool_lim}
                 """,
                 (probe,),
             ).fetchall()
@@ -279,7 +291,7 @@ def _query_uniques(
         scored.append(((mod_tier, tier, len(name_l), name_l), payload))
 
     scored.sort(key=lambda item: item[0])
-    return [item[1] if isinstance(item[1], dict) else json.loads(item[1]) for item in scored[:limit]]
+    return [item[1] if isinstance(item[1], dict) else json.loads(item[1]) for item in _slice_limit(scored, limit)]
 
 
 def _query_bases(
@@ -287,10 +299,11 @@ def _query_bases(
 ) -> list[dict[str, Any]]:
     slot_spec = _normalize_slot_filter(slot) if slot else None
     where_ilvl = "AND b.req_level <= ?" if ilvl is not None else ""
+    pool_lim = _pool_limit_clause(limit)
     params: list[Any] = []
 
     if not q_lower:
-        sql = f"SELECT b.name_lower, b.zh_lower, b.hidden, b.slots_lower, b.data_json FROM bases b WHERE 1=1 {where_ilvl} LIMIT 300"
+        sql = f"SELECT b.name_lower, b.zh_lower, b.hidden, b.slots_lower, b.data_json FROM bases b WHERE 1=1 {where_ilvl} {pool_lim}"
         if ilvl is not None:
             params.append(ilvl)
         rows = conn.execute(sql, params).fetchall()
@@ -302,7 +315,7 @@ def _query_bases(
             FROM bases_fts f
             JOIN bases b ON b.rowid = f.rowid
             WHERE bases_fts MATCH ? {where_ilvl}
-            LIMIT 300
+            {pool_lim}
             """
             params = [fts_expr] + ([ilvl] if ilvl is not None else [])
             rows = conn.execute(sql, params).fetchall()
@@ -311,7 +324,7 @@ def _query_bases(
             SELECT b.name_lower, b.zh_lower, b.hidden, b.slots_lower, b.data_json
             FROM bases b
             WHERE instr(b.search_text_lower, ?) > 0 {where_ilvl}
-            LIMIT 300
+            {pool_lim}
             """
             params = [q_lower] + ([ilvl] if ilvl is not None else [])
             rows = conn.execute(sql, params).fetchall()
@@ -342,7 +355,7 @@ def _query_bases(
         scored.append(((tier, hidden, len(name_l), name_l), data_json))
 
     scored.sort(key=lambda item: item[0])
-    return [json.loads(item[1]) for item in scored[:limit]]
+    return [json.loads(item[1]) for item in _slice_limit(scored, limit)]
 
 
 def _query_mods(
@@ -350,6 +363,7 @@ def _query_mods(
 ) -> list[dict[str, Any]]:
     slot_spec = _normalize_slot_filter(slot) if slot else None
     where_ilvl = "AND m.level <= ?" if ilvl is not None else ""
+    pool_lim = _pool_limit_clause(limit)
 
     if not q_lower:
         sql = f"""
@@ -358,7 +372,7 @@ def _query_mods(
                m.types_json, m.data_json
         FROM mods m
         WHERE 1=1 {where_ilvl}
-        LIMIT 500
+        {pool_lim}
         """
         params: list[Any] = [ilvl] if ilvl is not None else []
         rows = conn.execute(sql, params).fetchall()
@@ -373,7 +387,7 @@ def _query_mods(
             FROM mods_fts f
             JOIN mods m ON m.rowid = f.rowid
             WHERE mods_fts MATCH ? {where_ilvl}
-            LIMIT 800
+            {pool_lim}
             """
             params = [fts_expr] + ([ilvl] if ilvl is not None else [])
             rows = conn.execute(sql, params).fetchall()
@@ -384,7 +398,7 @@ def _query_mods(
                    m.types_json, m.data_json
             FROM mods m
             WHERE (instr(m.search_en_lower, ?) > 0 OR instr(m.search_zh_lower, ?) > 0) {where_ilvl}
-            LIMIT 800
+            {pool_lim}
             """
             params = [q_lower, q_lower] + ([ilvl] if ilvl is not None else [])
             rows = conn.execute(sql, params).fetchall()
@@ -421,4 +435,4 @@ def _query_mods(
         scored.append(((tier, has_pos, -int(level), mod_id), data_json))
 
     scored.sort(key=lambda item: item[0])
-    return [json.loads(item[1]) for item in scored[:limit]]
+    return [json.loads(item[1]) for item in _slice_limit(scored, limit)]
