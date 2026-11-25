@@ -18,9 +18,114 @@ from .pitfalls_offence import (
     _check_resistance_inversion,
     _item_names_low,
 )
-from .pitfalls_sustain import _check_seven_link_and_class_synergies
+from .pitfalls_sustain import (
+    _check_seven_link_and_class_synergies,
+    _check_zero_dps_archetypes,
+    _is_tattoo_or_graft_label,
+)
 from .pitfalls_triggers import _check_sword_of_ages_and_triggers
 from .summary import _extract_global_cdr_sources
+
+_KNOWN_ASC_NAMES_LOWER: frozenset[str] = frozenset(
+    {
+        "perfect crime",
+        "完美犯罪",
+        "the living blade",
+        "活木之刃",
+        "toad's price",
+        "蟾蜍的代价",
+        "蟾蜍的代價",
+        "hinekora, death's fury",
+        "欣嫩叩拉，死神之怒",
+        "海妮可拉，死神之怒",
+        "ramako, sun's light",
+        "ramako, sun’s light",
+        "雷默科，太阳之光",
+        "雷默科，太陽之光",
+        "雷默科，烈阳之光",
+        "雷默科，烈陽之光",
+        "nature's adrenaline",
+        "自然肾上腺素",
+        "自然腎上腺素",
+        "master surgeon",
+        "外科大师",
+        "外科大師",
+        "luminary",
+        "光明使者",
+    }
+)
+
+_KNOWN_KS_NAMES_LOWER: frozenset[str] = frozenset(
+    {
+        "bloodsoaked blade",
+        "喋血之刃",
+        "chaos inoculation",
+        "异灵之体",
+        "異靈之體",
+        "eldritch battery",
+        "异能魔力",
+        "異能魔力",
+        "the agnostic",
+        "不可知论",
+        "不可知論",
+    }
+)
+
+
+def _extract_tree_and_alloc_names(
+    tree_summary: dict[str, Any] | None,
+    alloc_node_stats: list[tuple[str, list[str]]] | None,
+) -> tuple[set[str], set[int], set[str], set[int], set[str]]:
+    ks_lower: set[str] = set()
+    ks_ids: set[int] = set()
+    asc_names_lower: set[str] = set()
+    asc_ids: set[int] = set()
+    asc_classes_lower: set[str] = set()
+    has_tree_ks = isinstance(tree_summary, dict) and "keystones" in tree_summary
+    has_tree_asc = isinstance(tree_summary, dict) and "ascendancyNodes" in tree_summary
+    if isinstance(tree_summary, dict):
+        for ks in tree_summary.get("keystones") or []:
+            if isinstance(ks, dict):
+                nm = strip_pob_escapes(str(ks.get("name") or "")).strip().lower()
+                if nm and not _is_tattoo_or_graft_label(nm):
+                    ks_lower.add(nm)
+                nm_zh = strip_pob_escapes(str(ks.get("nameZh") or "")).strip().lower()
+                if nm_zh and not _is_tattoo_or_graft_label(nm_zh):
+                    ks_lower.add(nm_zh)
+                if ks.get("id") is not None:
+                    try:
+                        ks_ids.add(int(ks["id"]))
+                    except (TypeError, ValueError):
+                        pass
+            elif isinstance(ks, str) and ks.strip():
+                ks_s = strip_pob_escapes(ks).strip().lower()
+                if ks_s and not _is_tattoo_or_graft_label(ks_s):
+                    ks_lower.add(ks_s)
+        for an in tree_summary.get("ascendancyNodes") or []:
+            if isinstance(an, dict):
+                nm = strip_pob_escapes(str(an.get("name") or "")).strip().lower()
+                if nm and not _is_tattoo_or_graft_label(nm):
+                    asc_names_lower.add(nm)
+                nm_zh = strip_pob_escapes(str(an.get("nameZh") or "")).strip().lower()
+                if nm_zh and not _is_tattoo_or_graft_label(nm_zh):
+                    asc_names_lower.add(nm_zh)
+                if an.get("id") is not None:
+                    try:
+                        asc_ids.add(int(an["id"]))
+                    except (TypeError, ValueError):
+                        pass
+                asc_tag = strip_pob_escapes(str(an.get("asc") or an.get("ascendancyName") or "")).strip().lower()
+                if asc_tag:
+                    asc_classes_lower.add(asc_tag)
+    for n_lbl, _ in alloc_node_stats or []:
+        lbl_low = strip_pob_escapes(str(n_lbl or "")).strip().lower()
+        if not lbl_low or _is_tattoo_or_graft_label(lbl_low):
+            continue
+        if tree_summary is None or not has_tree_asc or lbl_low in _KNOWN_ASC_NAMES_LOWER:
+            asc_names_lower.add(lbl_low)
+        if tree_summary is None or not has_tree_ks or lbl_low in _KNOWN_KS_NAMES_LOWER:
+            ks_lower.add(lbl_low)
+    return ks_lower, ks_ids, asc_names_lower, asc_ids, asc_classes_lower
 
 
 def _build_pitfall_context(
@@ -61,49 +166,9 @@ def _build_pitfall_context(
 
     w1_item = active_items_by_slot.get("Weapon 1") or {}
     has_sword_of_ages = "the sword of ages" in _item_names_low(w1_item)
-
-    ks_lower: set[str] = set()
-    ks_ids: set[int] = set()
-    asc_names_lower: set[str] = set()
-    asc_ids: set[int] = set()
-    asc_classes_lower: set[str] = set()
-    if isinstance(tree_summary, dict):
-        for ks in tree_summary.get("keystones") or []:
-            if isinstance(ks, dict):
-                nm = strip_pob_escapes(str(ks.get("name") or "")).strip().lower()
-                if nm:
-                    ks_lower.add(nm)
-                nm_zh = strip_pob_escapes(str(ks.get("nameZh") or "")).strip().lower()
-                if nm_zh:
-                    ks_lower.add(nm_zh)
-                if ks.get("id") is not None:
-                    try:
-                        ks_ids.add(int(ks["id"]))
-                    except (TypeError, ValueError):
-                        pass
-            elif isinstance(ks, str) and ks.strip():
-                ks_lower.add(strip_pob_escapes(ks).strip().lower())
-        for an in tree_summary.get("ascendancyNodes") or []:
-            if isinstance(an, dict):
-                nm = strip_pob_escapes(str(an.get("name") or "")).strip().lower()
-                if nm:
-                    asc_names_lower.add(nm)
-                nm_zh = strip_pob_escapes(str(an.get("nameZh") or "")).strip().lower()
-                if nm_zh:
-                    asc_names_lower.add(nm_zh)
-                if an.get("id") is not None:
-                    try:
-                        asc_ids.add(int(an["id"]))
-                    except (TypeError, ValueError):
-                        pass
-                asc_tag = strip_pob_escapes(str(an.get("asc") or an.get("ascendancyName") or "")).strip().lower()
-                if asc_tag:
-                    asc_classes_lower.add(asc_tag)
-    for n_lbl, _ in alloc_node_stats or []:
-        lbl_low = strip_pob_escapes(str(n_lbl or "")).strip().lower()
-        if lbl_low:
-            asc_names_lower.add(lbl_low)
-            ks_lower.add(lbl_low)
+    ks_lower, ks_ids, asc_names_lower, asc_ids, asc_classes_lower = _extract_tree_and_alloc_names(
+        tree_summary, alloc_node_stats
+    )
 
     active_custom_lines: list[str] = []
     for blk in (cfg_res or {}).get("customMods") or []:
@@ -221,6 +286,7 @@ def _detect_build_mechanics_and_pitfalls(
     _check_dark_pact_echo_and_crit_acc(ctx, gaps)
     _check_defensive_and_reservation_synergies(ctx, gaps, core_synergies)
     _check_seven_link_and_class_synergies(ctx, core_synergies, amulet_7th_link)
+    _check_zero_dps_archetypes(ctx, gaps, core_synergies)
 
     if core_synergies:
         mechanics["coreSynergies"] = list(dict.fromkeys(core_synergies))

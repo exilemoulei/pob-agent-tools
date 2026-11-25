@@ -146,13 +146,17 @@ SAME_NAME_FALSE_FRIENDS_POE1: tuple[FalseFriendRule, ...] = (
         rule_id="FF_POE1_MAGEBLOOD",
         scopes=frozenset({S.DATA_QUERY, S.ITEM_RAW}),
         en_words=("mageblood",),
-        zh_phrases=("法师之血", "法血", "魔血"),
-        canonical_term="Mageblood / 法师之血",
+        zh_phrases=("法师之血", "法師之血", "法血", "魔血"),
+        canonical_term="Mageblood / 法师之血 (incl. 3.30 Foulborn Mageblood / 秽生 法师之血)",
         summary=(
-            "PoE1 `Mageblood` (`法师之血`, Heavy Belt): Leftmost **2-4 Magic Utility Flasks** constantly apply their Flask Effects "
-            "and cannot be used/removed (NOT PoE2's `Legacy of ...` Charm belt)."
+            "PoE1 `Mageblood` (`法师之血`, Heavy Belt): Standard `Mageblood` permanently applies **Leftmost 2-4 Magic Utility Flasks** "
+            "(skipping Life/Mana/Hybrid/Unique flasks in earlier slots; cannot be used/removed), while 3.30 `Foulborn Mageblood` "
+            "(`秽生 法师之血`) permanently applies **Rightmost 2-4 Magic Utility Flasks** (NOT PoE2's `Legacy of ...` Charm belt)."
         ),
-        poe1_behavior="Permanently activates leftmost 2-4 Magic Utility Flasks (scaled by Enkindling Orb increased effect).",
+        poe1_behavior=(
+            "Standard Mageblood permanently activates Leftmost 2-4 Magic Utility Flasks (skipping Life/Mana/Hybrid/Unique flasks in earlier slots; "
+            "cannot be used/removed; scaled by Enkindling Orb increased effect); 3.30 Foulborn Mageblood (`秽生 法师之血`) activates Rightmost 2-4 Magic Utility Flasks."
+        ),
         poe2_behavior="Utility Belt with selectable `Legacy of <Flask>` variants and Charm Slots.",
     ),
     FalseFriendRule(
