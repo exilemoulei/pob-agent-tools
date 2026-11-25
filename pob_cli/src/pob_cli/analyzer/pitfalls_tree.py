@@ -56,14 +56,17 @@ def _peel_allocated_dead_ends(
                         alloc_adj[nb].add(aid)
 
     peeled: set[int] = set()
+    # No edge known for a node (the tree data did not load): it cannot be called a dead end, and
+    # is left to the one-at-a-time list, where PoB's own depends answer is all that is claimed.
+    peelable = {nid for nid in removable_ids if alloc_adj.get(nid)}
     queue: deque[int] = deque(
         nid
-        for nid in sorted(removable_ids)
+        for nid in sorted(peelable)
         if nid not in start_nodes and len(alloc_adj.get(nid, ())) <= 1
     )
     while queue:
         cur = queue.popleft()
-        if cur in peeled or cur in start_nodes or cur not in removable_ids:
+        if cur in peeled or cur in start_nodes or cur not in peelable:
             continue
         if len(alloc_adj.get(cur, ())) > 1:
             continue
@@ -73,7 +76,7 @@ def _peel_allocated_dead_ends(
         for nb in neighbors:
             alloc_adj[nb].discard(cur)
             if (
-                nb in removable_ids
+                nb in peelable
                 and nb not in peeled
                 and nb not in start_nodes
                 and len(alloc_adj[nb]) <= 1

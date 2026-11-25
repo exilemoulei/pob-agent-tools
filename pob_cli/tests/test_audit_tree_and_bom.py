@@ -381,6 +381,24 @@ def test_parallel_loop_nodes_are_not_offered_for_removal_together() -> None:
     assert "`pob tree change --deallocate 40`" in message
 
 
+def test_without_tree_edges_nothing_is_called_a_dead_end() -> None:
+    # The cached tree data failed to load: no node has a known neighbour.
+    tree_state = {
+        "treeVersion": "3_25",
+        "allocatedNodes": [1, 40, 41, 50],
+        "overrides": {
+            "40": {"why": "conquered", "name": "Price of Glory", "stats": []},
+            "41": {"why": "conquered", "name": "Price of Glory", "stats": []},
+        },
+    }
+    worker = _MockTreeWorker(
+        tree_state=tree_state, nodes_db={}, hover_by_id={40: {"depends": [40]}, 41: {"depends": [41]}}
+    )
+    gaps, info = audit_conquered_zero_stat_nodes(worker, tree_state, {})
+    assert info is not None and info["deadEndIds"] == [] and info["redundantLoopIds"] == [40, 41]
+    assert "--deallocate 40,41" not in gaps[0]["message"] and "not all together" in gaps[0]["message"]
+
+
 def test_dewater_auto_keep_does_not_read_a_conquered_nodes_old_stats() -> None:
     from pob_cli.analyzer.dewater_auto import best_effort_audit_tree_and_raw
 
