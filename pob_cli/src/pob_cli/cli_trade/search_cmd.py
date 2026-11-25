@@ -216,8 +216,11 @@ def _resolve_current_and_category(
     resolved_category: str | None = None
     if not no_category:
         resolved_category = category or (category_for_slot(slot) if slot else None)
-        if resolved_category is None and slot and current is not None and current.base_type:
-            resolved_category = infer_weapon_category_from_base(current.base_type)
+        if slot and current is not None and current.base_type:
+            if resolved_category is None:
+                resolved_category = infer_weapon_category_from_base(current.base_type)
+            elif category is None and resolved_category == "jewel" and "cluster jewel" in current.base_type.lower():
+                resolved_category = "jewel.cluster"
 
     return current, current_error, update_warning, build_label, resolved_category
 

@@ -373,6 +373,8 @@ def _h_calc(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[
         limit=limit_val,
         max_breakdowns=max_bd_val,
         no_breakdown=bool(params.get("no_breakdown", params.get("noBreakdown", False))),
+        group=params.get("group"),
+        skill=params.get("skill"),
     )
 
 
@@ -436,9 +438,13 @@ def _h_trade_eval_items(_m: DaemonManager, params: dict[str, Any], w: BridgeWork
 def _h_trade_generate_query(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     if not get_worker_caps(w).get("tradeAutoQuery"):
         return {"error": "tradeAutoQuery capability unavailable on this engine worker"}
-    rpc_params: dict[str, Any] = {
-        "slotName": params.get("slotName") or params.get("slot_name") or params.get("slot") or "",
-    }
+    slot_name = str(params.get("slotName") or params.get("slot_name") or params.get("slot") or "").strip()
+    if slot_name.startswith("#"):
+        from ..analyzer.inspectors import resolve_slot_name
+
+        with w.lock:
+            slot_name, _, _ = resolve_slot_name(w, slot_name)
+    rpc_params: dict[str, Any] = {"slotName": slot_name}
     for key in ("stat", "includeEhp", "ehpWeight", "includeCorrupted", "league", "reuseModData", "rarity", "maxFilters"):
         if params.get(key) is not None:
             rpc_params[key] = params[key]

@@ -92,9 +92,11 @@ def _apply_tree_changes_in_place(
     *,
     initial_tree_state: dict[str, Any] | None = None,
     allow_cascade: bool = True,
+    noop_warnings_out: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[int], int, str | None]:
     """Apply tree allocations/deallocations reusing `tree_click`'s returned `get_tree_state` payload."""
     actions_taken: list[dict[str, Any]] = []
+    noop_warnings: list[str] = []
     cur_state = (
         initial_tree_state
         if (initial_tree_state and "allocatedNodes" in initial_tree_state)
@@ -104,6 +106,7 @@ def _apply_tree_changes_in_place(
     initial_alloc = {int(x) for x in cur_state.get("allocatedNodes", [])}
     initial_used = int((cur_state.get("points") or {}).get("used") or 0)
 
+    verified_alloc_ids: list[int] = []
     for nid, eff_id in resolved_alloc:
         alloc_set = {int(x) for x in cur_state.get("allocatedNodes", [])}
         if nid in alloc_set:
@@ -113,6 +116,7 @@ def _apply_tree_changes_in_place(
                 actions_taken.append({"action": "select_mastery", "id": nid, "effect": eff_id})
             else:
                 actions_taken.append({"action": "skip_already_allocated", "id": nid})
+                noop_warnings.append(f"Node {nid} is already allocated (skipped allocate).")
             continue
 
         click_params: dict[str, Any] = {"id": nid}
@@ -130,13 +134,18 @@ def _apply_tree_changes_in_place(
             )
         if res.get("needsConfirm"):
             raise ValueError(f"Node {nid} requires confirmation ({res.get('needsConfirm')}).")
-        cur_state = res if (isinstance(res, dict) and "allocatedNodes" in res) else w.call("get_tree_state", {})
+        if isinstance(res, dict) and "allocatedNodes" in res:
+            cur_state = res
+            verified_alloc_ids.append(nid)
+        else:
+            cur_state = w.call("get_tree_state", {})
         actions_taken.append({"action": "allocated", "id": nid, "effect": eff_id})
 
     for nid, _ in resolved_dealloc:
         alloc_set = {int(x) for x in cur_state.get("allocatedNodes", [])}
         if nid not in alloc_set:
             actions_taken.append({"action": "skip_already_unallocated", "id": nid})
+            noop_warnings.append(f"Node {nid} is not currently allocated (skipped deallocate).")
             continue
         res = w.call("tree_click", {"id": nid})
         if res.get("needsConfirm"):
@@ -146,6 +155,11 @@ def _apply_tree_changes_in_place(
 
     final_alloc = {int(x) for x in cur_state.get("allocatedNodes", [])}
     requested_dealloc_ids = {nid for nid, _ in resolved_dealloc}
+    for alloc_nid in verified_alloc_ids:
+        if alloc_nid not in final_alloc and alloc_nid not in requested_dealloc_ids:
+            raise ValueError(
+                f"Passive node {alloc_nid} could not be allocated (disconnected or unreachable from current tree)."
+            )
     orphaned_nodes = sorted((initial_alloc - final_alloc) - requested_dealloc_ids)
 
     final_points = cur_state.get("points") or {}
@@ -168,6 +182,8 @@ def _apply_tree_changes_in_place(
                 "Re-run with allow_cascade=True / --allow-cascade if intentional."
             )
 
+    if noop_warnings_out is not None:
+        noop_warnings_out.extend(noop_warnings)
     return actions_taken, cur_state, orphaned_nodes, points_delta, cascade_warning
 
 
@@ -211,12 +227,14 @@ def change_tree(
                 pass
 
         def _do_tree_changes(w: BridgeWorker) -> dict[str, Any]:
+            noop_warnings: list[str] = []
             actions_taken, final_state, orphaned_nodes, points_delta, cascade_warning = _apply_tree_changes_in_place(
                 w,
                 resolved_alloc,
                 resolved_dealloc,
                 initial_tree_state=tree_state,
                 allow_cascade=allow_cascade,
+                noop_warnings_out=noop_warnings,
             )
             detail: dict[str, Any] = {
                 "actions": actions_taken,
@@ -225,6 +243,8 @@ def change_tree(
                 "orphanedNodes": orphaned_nodes,
                 "singlePreview": single_preview,
             }
+            if noop_warnings:
+                detail["noopWarnings"] = noop_warnings
             if cascade_warning:
                 detail["cascadeWarning"] = cascade_warning
             if cautions:
@@ -235,6 +255,8 @@ def change_tree(
         detail = res.get("detail") or {}
         res["orphanedNodes"] = detail.get("orphanedNodes", [])
         res["pointsDelta"] = detail.get("pointsDelta", 0)
+        if detail.get("noopWarnings"):
+            res["noopWarnings"] = list(detail["noopWarnings"])
         if detail.get("cascadeWarning"):
             res["cascadeWarning"] = detail["cascadeWarning"]
         if detail.get("cautions"):

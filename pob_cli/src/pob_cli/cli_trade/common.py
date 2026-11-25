@@ -150,7 +150,18 @@ def _read_current_item(slot: str, target: str) -> tuple[Any, str | None, str | N
         return None, sanitize_text(exc, 300), None, None
     warn = payload.get("updateWarning") if isinstance(payload, dict) else None
     label = _build_label_from_info(payload.get("buildInfo") if isinstance(payload, dict) else None, target)
-    raw = payload.get("raw")
+    raw = payload.get("raw") if isinstance(payload, dict) else None
+    if not raw and isinstance(payload, dict) and isinstance(payload.get("equippedSlots"), list):
+        slot_low = slot.strip().lower()
+        sock_idx = int(slot_low[1:]) if slot_low.startswith("#") and slot_low[1:].isdigit() else None
+        for entry in payload["equippedSlots"]:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("slotName") or "").strip().lower() == slot_low or (
+                sock_idx is not None and entry.get("socketIndex") == sock_idx
+            ):
+                raw = entry.get("raw")
+                break
     if not raw:
         return None, None, warn, label
     try:
