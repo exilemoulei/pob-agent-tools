@@ -6,11 +6,19 @@ import math
 import re
 from typing import Any
 
-from .. import game_data as _game_data
 from ..analyzer import resolve_skill_group_index
 from ..bridge_client import BridgeWorker
 from ..formatters import _parse_numeric_or_none, strip_pob_escapes
 from ..snapshot import _call_batch
+from .gem_caveats import (
+    _check_support_hard_conflict,
+    _gem_archetype_bucket,
+    _gem_caveat,
+    _group_has_trigger_gem,
+    _is_legacy_awakened_gem_safe,
+    compute_sadism_per_ailment_pct,
+    compute_sadism_stats,
+)
 
 
 def _safe_dist(val: Any) -> int:
@@ -194,6 +202,7 @@ def rank_nodes(
     stat: str = "CombinedDPS",
     max_dist: int = 5,
     top: int = 15,
+    baseline_label: str | None = None,
 ) -> dict[str, Any]:
     """Rank unallocated passive tree nodes by ROI (`pathPower` per point and raw `power`)."""
     with worker.lock:
@@ -219,7 +228,7 @@ def rank_nodes(
         report = res.get("report", [])
         equipped_weapons = _detect_equipped_weapon_types(worker)
 
-        candidates: list[dict[str, Any]] = []
+        raw_candidates: list[dict[str, Any]] = []
         cluster_candidates: list[dict[str, Any]] = []
         filtered_masteries: list[str] = []
         for r in report:
@@ -239,7 +248,29 @@ def rank_nodes(
                 if wm_kind is not None and wm_kind not in equipped_weapons:
                     filtered_masteries.append(strip_pob_escapes(str(r.get("name") or r.get("nameZh") or wm_kind)))
                     continue
-            candidates.append(r)
+            if r.get("effectId") is not None and not r.get("allocSpec"):
+                r = {**r, "allocSpec": f"{r['id']}:{r['effectId']}"}
+            raw_candidates.append(r)
+
+        best_by_effect: dict[Any, dict[str, Any]] = {}
+        for r in raw_candidates:
+            eff_id = r.get("effectId")
+            if eff_id is None:
+                continue
+            prev = best_by_effect.get(eff_id)
+            if prev is None or (
+                _safe_float(r.get("pathPower")),
+                _safe_float(r.get("power")),
+                -_safe_dist(r.get("pathDist")),
+            ) > (
+                _safe_float(prev.get("pathPower")),
+                _safe_float(prev.get("power")),
+                -_safe_dist(prev.get("pathDist")),
+            ):
+                best_by_effect[eff_id] = r
+        candidates = [
+            r for r in raw_candidates if r.get("effectId") is None or best_by_effect.get(r.get("effectId")) is r
+        ]
 
         by_per_point = sorted(
             candidates,
@@ -265,6 +296,8 @@ def rank_nodes(
             "byPerPoint": by_per_point,
             "byTotalGain": by_single_node,
         }
+        if baseline_label:
+            out["baselineLabel"] = baseline_label
         if by_cluster:
             out["topCluster"] = by_cluster
         if stat_fallback is not None:
@@ -272,117 +305,6 @@ def rank_nodes(
         if filtered_masteries:
             out["filteredIncompatibleMasteries"] = filtered_masteries
         return out
-
-
-_EXCEPTIONAL_AWAKENED_KEEP: frozenset[str] = frozenset(
-    {
-        "awakened empower",
-        "awakened enhance",
-        "awakened enlighten",
-    }
-)
-
-
-def _is_legacy_awakened_gem_safe(name: str) -> bool:
-    fn = getattr(_game_data, "is_legacy_awakened_gem", None)
-    if callable(fn):
-        try:
-            return bool(fn(name))
-        except Exception:
-            pass
-    low = strip_pob_escapes(str(name or "")).strip().lower()
-    if low.endswith(" support"):
-        low = low[: -len(" support")].strip()
-    return low.startswith("awakened ") and low not in _EXCEPTIONAL_AWAKENED_KEEP
-
-
-_ARCHETYPE_SWAP_SUPPORT_BUCKETS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "trigger",
-        (
-            "cast when stunned",
-            "cast on critical strike",
-            "cast when damage taken",
-            "cast on death",
-            "cast while channelling",
-            "cast on melee kill",
-            "cast on ward break",
-            "spellslinger",
-            "arcanist brand",
-            "manaforged arrows",
-            "mark on hit",
-            "hextouch",
-            "battlemage's cry",
-            "automation",
-            "autoexertion",
-        ),
-    ),
-    ("totem", ("spell totem", "ballista totem", "earthbreaker", "multiple totems")),
-    (
-        "trap",
-        ("trap support", "cluster traps", "multiple traps", "charged traps", "advanced traps", "trap and mine damage"),
-    ),
-    (
-        "mine",
-        ("high-impact mine", "blastchain mine", "minefield", "swift assembly", "charged mines", "locus mine"),
-    ),
-)
-
-
-def _gem_archetype_bucket(name_en: str) -> str | None:
-    low = strip_pob_escapes(name_en or "").strip().lower()
-    if low.startswith("awakened "):
-        low = low[len("awakened ") :].strip()
-    if low == "trap":
-        return "trap"
-    for bucket, patterns in _ARCHETYPE_SWAP_SUPPORT_BUCKETS:
-        for pat in patterns:
-            if low == pat or low.startswith(pat + " ") or low == pat + " support":
-                return bucket
-    return None
-
-
-_SUPPORT_GEM_CAVEATS: tuple[tuple[str, str], ...] = (
-    ("immolate", "Requires Enemy Burning/Ignited"),
-    ("hypothermia", "Requires Enemy Chilled"),
-    ("trinity", "Requires 2+ alternating highest hit elements"),
-    ("elemental focus", "Cannot inflict Elemental Ailments (breaks Shock/Chill/Freeze/Ignite)"),
-    ("controlled destruction", "80% less Crit Chance"),
-    ("concentrated effect", "30% less Area of Effect (check overlap/clear)"),
-    ("brutality", "Deals NO Elemental or Chaos Damage"),
-    ("void manipulation", "Deals NO Elemental Damage"),
-    ("sacrifice", "Sacrifices 20% Current Life per cast (bricks CI / deadly on Low-Life)"),
-    (
-        "sadism",
-        "70% LESS Ailment Duration! Inflates PoB DPS rate while slashing total per-ignite damage (~-74%) and breaking uptime",
-    ),
-    ("awakened empower", "Exceptional (Max Lv4 / corrupt Lv5; mirror-tier endgame budget)"),
-    ("awakened enhance", "Exceptional (Max Lv4 / corrupt Lv5; endgame budget)"),
-    ("awakened enlighten", "Exceptional (Max Lv4 / corrupt Lv5; endgame budget)"),
-)
-
-
-def _gem_caveat(name_en: str, *, main_mana_cost: float | None = None) -> str | None:
-    raw_low = strip_pob_escapes(name_en or "").strip().lower()
-    if raw_low.endswith(" support"):
-        raw_low = raw_low[: -len(" support")].strip()
-    for pat, note in _SUPPORT_GEM_CAVEATS:
-        if raw_low == pat or raw_low.startswith(pat + " "):
-            return note
-    low = raw_low[len("awakened ") :].strip() if raw_low.startswith("awakened ") else raw_low
-    if low == "inspiration" and main_mana_cost is not None:
-        if main_mana_cost <= 0.0:
-            return "0 charges on 0-mana skill!"
-        if main_mana_cost >= 400.0:
-            return (
-                f"High ManaCost ({round(main_mana_cost)}) vs Lv20 800-mana reset threshold "
-                "— resets every 1-2 casts (real DPS far below PoB's assumed 5 charges!)"
-            )
-    if low != raw_low:
-        for pat, note in _SUPPORT_GEM_CAVEATS:
-            if low == pat or low.startswith(pat + " "):
-                return note
-    return None
 
 
 def rank_gems(
@@ -395,6 +317,7 @@ def rank_gems(
     top: int = 15,
     exclude_archetype_swaps: bool = False,
     include_legacy: bool = False,
+    baseline_label: str | None = None,
 ) -> dict[str, Any]:
     """Rank candidate gems for a skill group slot (or a new link) by DPS gain."""
     with worker.lock:
@@ -404,11 +327,15 @@ def rank_gems(
         if group is None:
             raise ValueError(f"Skill group #{g_idx} not found.")
         gems = group.get("gems", [])
+        group_has_trigger = _group_has_trigger_gem(gems)
 
         main_mana_cost: float | None = None
+        stats_map: dict[str, Any] = {}
         try:
             st_res = worker.call("get_stats", {})
-            raw_mc = (st_res.get("stats") or {}).get("ManaCost") if isinstance(st_res, dict) else None
+            if isinstance(st_res, dict) and isinstance(st_res.get("stats"), dict):
+                stats_map = st_res["stats"]
+            raw_mc = stats_map.get("ManaCost")
             if raw_mc is not None:
                 parsed_mc = _parse_numeric_or_none(raw_mc)
                 if parsed_mc is not None and math.isfinite(parsed_mc):
@@ -439,7 +366,7 @@ def rank_gems(
                     if tag in nm:
                         existing_archetypes.add(tag)
 
-        extra_fetch = (20 if not include_legacy else 0) + (15 if exclude_archetype_swaps else 0)
+        extra_fetch = (20 if not include_legacy else 0) + (15 if exclude_archetype_swaps else 0) + 10
         fetch_limit = top + extra_fetch
 
         prev_opts = worker.call("get_gem_options", {})
@@ -459,25 +386,54 @@ def rank_gems(
                 },
             )
             raw_ranked = search_res.get("gems", [])
+            cfg_res_lazy: dict[str, Any] | None = None
+            cfg_fetched = False
             filtered_swaps: list[str] = []
             filtered_legacy: list[str] = []
+            excluded_supports: list[dict[str, Any]] = []
             ranked: list[dict[str, Any]] = []
             for cand in raw_ranked:
                 cname = str(cand.get("name") or "")
                 if not include_legacy and _is_legacy_awakened_gem_safe(cname):
                     filtered_legacy.append(cname)
                     continue
+                if supportable_only:
+                    if "hypothermia" in cname.lower() and not cfg_fetched:
+                        cfg_fetched = True
+                        try:
+                            c_res = worker.call("list_config", {})
+                            cfg_res_lazy = c_res if isinstance(c_res, dict) else None
+                        except Exception:
+                            cfg_res_lazy = None
+                    conflict_reason = _check_support_hard_conflict(
+                        cname, stats_map, skills_res=skills_res, cfg_res=cfg_res_lazy
+                    )
+                    if conflict_reason:
+                        excluded_supports.append(
+                            {
+                                "name": cname,
+                                "nameZh": cand.get("nameZh"),
+                                "delta": cand.get("delta"),
+                                "pct": cand.get("pct"),
+                                "reason": conflict_reason,
+                            }
+                        )
+                        continue
                 if exclude_archetype_swaps:
                     cbucket = _gem_archetype_bucket(cname)
                     if cbucket is not None and cbucket not in existing_archetypes:
                         filtered_swaps.append(f"{cname} ({cbucket})")
                         continue
-                    caveat = _gem_caveat(cname, main_mana_cost=main_mana_cost)
+                    caveat = _gem_caveat(
+                        cname, main_mana_cost=main_mana_cost, group_has_trigger=group_has_trigger
+                    )
                     if caveat == "0 charges on 0-mana skill!":
                         filtered_swaps.append(f"{cname} (0-mana skill: 0 charges)")
                         continue
                 else:
-                    caveat = _gem_caveat(cname, main_mana_cost=main_mana_cost)
+                    caveat = _gem_caveat(
+                        cname, main_mana_cost=main_mana_cost, group_has_trigger=group_has_trigger
+                    )
                 cand_copy = dict(cand)
                 if caveat:
                     cand_copy["caveat"] = caveat
@@ -516,6 +472,25 @@ def rank_gems(
             "candidates": ranked,
             "filtered_legacy": filtered_legacy,
         }
+        if baseline_label:
+            out_res["baselineLabel"] = baseline_label
+        if excluded_supports:
+            out_res["excludedSupports"] = excluded_supports
         if filtered_swaps:
             out_res["filteredArchetypeSwaps"] = filtered_swaps
         return out_res
+
+__all__ = [
+    "_classify_item_weapon_type",
+    "_detect_equipped_weapon_types",
+    "_gem_archetype_bucket",
+    "_gem_caveat",
+    "_is_legacy_awakened_gem_safe",
+    "_node_weapon_mastery_kind",
+    "_safe_dist",
+    "_safe_float",
+    "compute_sadism_per_ailment_pct",
+    "compute_sadism_stats",
+    "rank_gems",
+    "rank_nodes",
+]

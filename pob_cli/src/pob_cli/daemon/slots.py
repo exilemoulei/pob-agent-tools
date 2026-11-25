@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..bridge_client import BridgeWorker
 from ..errors import DaemonRequestError
+from ..locale_cfg import get_active_lang
 from ..snapshot import SlotHistory, history_of
 from ..updater import (
     OK_STATES,
@@ -21,6 +22,7 @@ from ..updater import (
     load_update_state,
     resolve_engine_root,
 )
+from .read_cache import READ_CACHE_ACTIONS, SlotReadCache, compute_source_hash
 from .rpc_handlers import dispatch_dual_slot_action, dispatch_game_data, dispatch_slot_action
 from .runtime import (
     GAME_ID,
@@ -117,6 +119,7 @@ class DaemonManager:
         # A slot is its worker, its history and its lock; the history outlives the worker, so idle
         # recycling and hot reload start a new worker on the same committed build and revision.
         self._histories: dict[str, SlotHistory] = {}
+        self._read_cache = SlotReadCache()
         self._workers: dict[str, BridgeWorker] = {"main": self._new_worker("main")}
         self._slot_locks: dict[str, threading.RLock] = {"main": threading.RLock()}
         self.server: ThreadingHTTPServer | None = None
@@ -299,6 +302,7 @@ class DaemonManager:
         force: bool = False,
         offline: bool = False,
     ) -> dict[str, Any]:
+        self._read_cache.clear_all()
         return hot_reload_update(self, proxy=proxy, mirror=mirror, force=force, offline=offline)
 
     def _maybe_periodic_update_check(self) -> None:
@@ -507,6 +511,37 @@ class DaemonManager:
                             f"{', '.join(loaded_others)} are loaded. Pass `--target {loaded_others[0]}` "
                             "if you intended to inspect or mutate that build."
                         )
+
+                cache_lang = ""
+                can_check_cache = action in READ_CACHE_ACTIONS
+                if can_check_cache:
+                    eff_lang, _ = get_active_lang(self.runtime_dir)
+                    w_loc = getattr(worker, "locale", None)
+                    cache_lang = f"{eff_lang}:{w_loc}" if w_loc else eff_lang
+                    if action == "diagnose":
+                        has_load_arg = bool(
+                            params.get("source")
+                            or params.get("xml_code")
+                            or (params.get("realm") and str(params.get("realm")).lower() == "cn")
+                        )
+                        if has_load_arg:
+                            inc_hash = compute_source_hash(params)
+                            can_check_cache = (
+                                self._read_cache.matching_slot_load(
+                                    target,
+                                    history_of(worker).rev,
+                                    bool(getattr(worker, "last_good_code", None)),
+                                    inc_hash,
+                                )
+                                is not None
+                            )
+                    if can_check_cache:
+                        cached_hit = self._read_cache.lookup(
+                            target, history_of(worker).rev, cache_lang, action, params
+                        )
+                        if cached_hit is not None:
+                            return cached_hit
+
                 try:
                     res_slot = self._dispatch_slot(action, params, worker)
                 except DaemonRequestError as exc:
@@ -516,7 +551,11 @@ class DaemonManager:
                 if drift_warn and isinstance(res_slot, dict):
                     res_slot.setdefault("slotDriftWarning", drift_warn)
                 if action in _STATE_META_ACTIONS:
-                    return self._attach_state_meta(res_slot, worker)
+                    res_slot = self._attach_state_meta(res_slot, worker)
+                if action in READ_CACHE_ACTIONS and isinstance(res_slot, dict):
+                    self._read_cache.store(
+                        target, history_of(worker).rev, cache_lang, action, params, res_slot
+                    )
                 return res_slot
 
     @staticmethod

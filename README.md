@@ -89,7 +89,7 @@
 
 ## 给 AI Agent 的安装与配置指引（必读，人类用户可跳过）
 
-当用户要求你安装 `exilemoulei/pob4agents` 时，**以下 5 步必须全部完成**，不要只装完 CLI 就结束：
+当用户要求你安装 `exilemoulei/pob4agents` 时，**以下 4 步必须全部完成**，不要只装完 CLI 就结束：
 
 ### 1. 安装 `pob4agents`（命令 `pob`，无需 Python）
 
@@ -102,7 +102,7 @@
   curl -fsSL https://raw.githubusercontent.com/exilemoulei/pob4agents/main/install.sh | bash
   ```
 
-两个安装脚本都会自动校验发布的 Ed25519 签名与 SHA256。若直连 GitHub 失败，先询问用户本地代理地址并设置 `POB_PROXY`（如 `http://127.0.0.1:<端口>`）或 `POB_GITHUB_MIRROR` 后重试。后续升级直接运行 `pob self-update`（跨版本升级时请同步更新下方的 `skills/pob` 和 `hooks/`）。
+两个安装脚本都会自动校验发布的 Ed25519 签名与 SHA256。若直连 GitHub 失败，先询问用户本地代理地址并设置 `POB_PROXY`（如 `http://127.0.0.1:<端口>`）或 `POB_GITHUB_MIRROR` 后重试。后续升级直接运行 `pob self-update`（跨版本升级时请同步更新下方的 `skills/pob`）。
 
 ### 2. 初始化本地 PoB 引擎与语言
 
@@ -118,7 +118,7 @@ pob status
 
 ### 3. 挂载 Skill（必做，不可跳过）
 
-`install.ps1` / `install.sh` 只安装 `pob` 可执行文件，**不会**自动复制 Skill 和 Hook。请先拉取本仓库（例如 `git clone --depth 1 https://github.com/exilemoulei/pob4agents.git` 到临时目录），将整个 [`skills/pob`](skills/pob) 目录（含 `SKILL.md` 及 `references/`）完整复制到当前客户端的技能目录：
+`install.ps1` / `install.sh` 只安装 `pob` 可执行文件，**不会**自动复制 Skill。请先拉取本仓库（例如 `git clone --depth 1 https://github.com/exilemoulei/pob4agents.git` 到临时目录），将整个 [`skills/pob`](skills/pob) 目录（含 `SKILL.md` 及 `references/`）完整复制到当前客户端的技能目录：
 
 | 客户端 | 目标路径 |
 | :--- | :--- |
@@ -128,21 +128,9 @@ pob status
 
 后续所有《流放之路》1 构筑对话，必须先读取并遵守 [`skills/pob/SKILL.md`](skills/pob/SKILL.md)。
 
-### 4. 接入防幻觉护栏 Hook（必做，与 Skill 配套使用）
+### 4. 收尾验收与用户 Cookie 安全规则
 
-从仓库 [`hooks/`](hooks) 目录安装当前客户端对应的钩子，防止跳过 `pob` 瞎编数值、翻查敏感环境变量或混入 PoE2 / 旧版本规则：
-
-| 客户端 | 安装方式 |
-| :--- | :--- |
-| Antigravity | 将 [`hooks/hooks.json`](hooks/hooks.json) 复制或合并到 `.agents/hooks.json` |
-| Claude Code | 将 [`hooks/claude-hooks.json`](hooks/claude-hooks.json) 合并到 `.claude/settings.json` |
-| DeepSeek Harness (DSH) | 启用 `dsh-pob-assistant` 插件 |
-
-若当前客户端不支持上述 Hook 机制，明确告知用户，但必须保证第 3 步的 Skill 已安装到位。
-
-### 5. 收尾验收与用户 Cookie 安全规则
-
-- **完成验收**：确认 `pob status` 正常、`skills/pob` 已落盘、对应 Hook 已接入后，**提醒用户新开一个对话窗口**，让新装的 Skill 与 Hook 生效。
+- **完成验收**：确认 `pob status` 正常、`skills/pob` 已落盘后，**提醒用户新开一个对话窗口**，让新装的 Skill 生效。
 - **收到用户发来的 Cookie 时**：
   - 国际服交易 / 国际服私密角色 → 写入本机用户级环境变量 **`POESESSID`**（Windows PowerShell：`[Environment]::SetEnvironmentVariable("POESESSID", "<值>", "User")`；macOS/Linux 写入 shell 配置文件）。
   - 国服官网（`poe.game.qq.com`）角色导入 → 写入本机用户级环境变量 **`POE_CN_SESSID`**（或完整 `POE_CN_COOKIE`）。

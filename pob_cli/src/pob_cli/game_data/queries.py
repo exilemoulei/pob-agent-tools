@@ -52,8 +52,6 @@ def _dispatch_query(
     runtime_dir: Path | None = None,
     raw_query: str | None = None,
 ) -> list[dict[str, Any]]:
-    if limit == 0:
-        return []
     if kind_norm == "gem":
         return _query_gems(conn, q_folded, limit)
     if kind_norm == "unique":
@@ -234,7 +232,7 @@ def query_local_data(
         check_input(slot, scope=GuardrailScope.SLOT, expected_game="poe1")
 
     db_path = _gd.ensure_gamedata_index(pob_dir=pob_dir, runtime_dir=runtime_dir)
-    limit = max(0, int(limit))
+    limit = int(limit)
     q_lower = _fold_search_text(q_tw)
 
     resolved_alias: dict[str, str] | None = None
@@ -261,7 +259,7 @@ def query_local_data(
         needs_slang = (not results) or (
             kind_norm == "translate" and not any(r.get("match_type") == "exact" for r in results)
         )
-        if needs_slang and limit > 0 and q_tw:
+        if needs_slang and q_tw:
             slang_hit = resolve_player_slang(q_tw) or (resolve_player_slang(q_clean) if q_tw != q_clean else None)
             if slang_hit is not None:
                 canon_en, _ = slang_hit
@@ -303,7 +301,7 @@ def query_local_data(
             if not results and not mod_tw:
                 suggestions = _suggest_similar(conn, kind_norm, q_lower, limit=5, zh_available=zh_available)
                 hint = _build_zero_result_hint(kind_norm, q_clean, suggestions)
-        elif not results and mod_tw and limit > 0:
+        elif not results and mod_tw:
             slang_mod = resolve_player_slang(mod_tw)
             if slang_mod is not None:
                 canon_mod, _ = slang_mod
@@ -393,7 +391,7 @@ def query_multi(
         if ws:
             warnings_by_query[q_clean] = [w.to_dict() for w in ws]
 
-    limit = max(0, int(limit))
+    limit = int(limit)
     own_conn = False
     if isinstance(db, sqlite3.Connection):
         conn = db
@@ -428,7 +426,7 @@ def query_multi(
             needs_slang_m = (not res) or (
                 kind_norm == "translate" and not any(r.get("match_type") == "exact" for r in res)
             )
-            if needs_slang_m and limit > 0 and q_tw:
+            if needs_slang_m and q_tw:
                 slang_hit = resolve_player_slang(q_tw) or (resolve_player_slang(q_clean) if q_tw != q_clean else None)
                 if slang_hit is not None:
                     canon_en, _ = slang_hit

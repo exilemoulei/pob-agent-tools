@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 from ..bridge_client import BridgeError, BridgeWorker
 from ..bridge_protocol import get_worker_caps
 from ..errors import CrossGameHallucinationError, DaemonRequestError
+from ..snapshot import history_of
+from .read_cache import compute_source_hash
 from .rpc_mutate import MUTATE_ACTION_HANDLERS, norm_keep
 from .runtime import normalize_slot_name
 
@@ -92,16 +94,48 @@ def dispatch_dual_slot_action(
         ref_slot_name = normalize_slot_name(
             params.get("ref_target") or getattr(rw, "slot_name", None) or default_ref_name
         )
+        read_cache = getattr(manager, "_read_cache", None)
+        main_load_params = {
+            "source": params.get("source"),
+            "xml_code": params.get("xml_code"),
+            "char_name": params.get("char_name"),
+            "league": params.get("league"),
+            "realm": params.get("realm"),
+            "source_hash": params.get("source_hash"),
+        }
+        ref_load_params = {
+            "source": params.get("compare_source"),
+            "xml_code": params.get("compare_xml_code"),
+            "source_hash": params.get("compare_source_hash"),
+        }
+        main_hash = compute_source_hash(main_load_params)
+        ref_hash = compute_source_hash(ref_load_params)
+        skip_main = bool(
+            read_cache is not None
+            and main_hash
+            and read_cache.matching_slot_load(
+                main_slot_name, history_of(mw).rev, bool(getattr(mw, "last_good_code", None)), main_hash
+            )
+            is not None
+        )
+        skip_ref = bool(
+            read_cache is not None
+            and ref_hash
+            and read_cache.matching_slot_load(
+                ref_slot_name, history_of(rw).rev, bool(getattr(rw, "last_good_code", None)), ref_hash
+            )
+            is not None
+        )
         diag_cmp = diagnose_compare_builds(
             mw,
             rw,
-            source=params.get("source"),
-            xml_code=params.get("xml_code"),
-            compare_source=params.get("compare_source"),
-            compare_xml_code=params.get("compare_xml_code"),
+            source=None if skip_main else params.get("source"),
+            xml_code=None if skip_main else params.get("xml_code"),
+            compare_source=None if skip_ref else params.get("compare_source"),
+            compare_xml_code=None if skip_ref else params.get("compare_xml_code"),
             char_name=params.get("char_name"),
             league=params.get("league"),
-            realm=params.get("realm"),
+            realm=None if skip_main else params.get("realm"),
             keep=norm_keep(params),
             top=top_val,
             no_rank=bool(params.get("no_rank", params.get("noRank", True))),
@@ -111,6 +145,11 @@ def dispatch_dual_slot_action(
             target=main_slot_name,
             ref_target=ref_slot_name,
         )
+        if read_cache is not None:
+            if main_hash and not skip_main:
+                read_cache.record_slot_load(main_slot_name, history_of(mw).rev, main_hash)
+            if ref_hash and not skip_ref:
+                read_cache.record_slot_load(ref_slot_name, history_of(rw).rev, ref_hash)
         return manager._attach_warning_if_degraded(diag_cmp)
 
     raise ValueError(f"Unknown dual-slot daemon action '{action}'.")
@@ -147,6 +186,13 @@ def _h_load(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[s
                 raise DaemonRequestError(f"{exc}{guidance}") from exc
             raise RuntimeError(f"{exc}{guidance}") from exc
         raise
+    src_hash = compute_source_hash(params)
+    slot_nm = normalize_slot_name(params.get("target") or getattr(w, "slot_name", None))
+    read_cache = getattr(m, "_read_cache", None)
+    if read_cache is not None:
+        read_cache.record_slot_load(slot_nm, history_of(w).rev, src_hash, load_res)
+    if src_hash and isinstance(load_res, dict):
+        load_res["sourceHash"] = src_hash
     return m._attach_warning_if_degraded(load_res)
 
 
@@ -191,18 +237,34 @@ def _h_diagnose(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> di
     from ..analyzer import diagnose_build
     from ..snapshot import load_build
 
+    slot_nm = normalize_slot_name(params.get("target") or getattr(w, "slot_name", None))
     src = params.get("source")
     xml_code = params.get("xml_code")
+    has_load_arg = bool(src or xml_code or (params.get("realm") and str(params.get("realm")).lower() == "cn"))
+    src_hash = compute_source_hash(params) if has_load_arg else None
+    read_cache = getattr(m, "_read_cache", None)
     load_meta: dict[str, Any] = {}
-    if src or xml_code or (params.get("realm") and str(params.get("realm")).lower() == "cn"):
-        load_meta = load_build(
-            w,
-            source=src,
-            xml_code=xml_code,
-            char_name=params.get("char_name"),
-            league=params.get("league"),
-            realm=params.get("realm"),
+    if has_load_arg:
+        matched_meta = (
+            read_cache.matching_slot_load(
+                slot_nm, history_of(w).rev, bool(getattr(w, "last_good_code", None)), src_hash
+            )
+            if read_cache is not None
+            else None
         )
+        if matched_meta is not None:
+            load_meta = matched_meta
+        else:
+            load_meta = load_build(
+                w,
+                source=src,
+                xml_code=xml_code,
+                char_name=params.get("char_name"),
+                league=params.get("league"),
+                realm=params.get("realm"),
+            )
+            if read_cache is not None:
+                read_cache.record_slot_load(slot_nm, history_of(w).rev, src_hash, load_meta)
     top_val = int(params["top"]) if params.get("top") is not None else 5
     diag_res = diagnose_build(
         w,
@@ -212,9 +274,11 @@ def _h_diagnose(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> di
         ask=params.get("ask"),
         pob_dir=m.pob_dir,
         runtime_dir=m.runtime_dir,
-        target=normalize_slot_name(params.get("target") or getattr(w, "slot_name", None)),
+        target=slot_nm,
     )
     if isinstance(diag_res, dict):
+        if src_hash:
+            diag_res["sourceHash"] = src_hash
         if load_meta.get("importNotes"):
             diag_res["importNotes"] = load_meta["importNotes"]
         if load_meta.get("translateWarnings"):
@@ -246,6 +310,7 @@ def _h_skills(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dic
 def _h_tree(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from ..analyzer import inspect_tree
 
+    limit_raw = params.get("limit")
     return inspect_tree(
         w,
         search=params.get("search"),
@@ -262,6 +327,7 @@ def _h_tree(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[
         socket_radius=(
             params.get("socket_radius") if params.get("socket_radius") is not None else params.get("socketRadius")
         ),
+        limit=int(limit_raw) if limit_raw is not None else 100,
     )
 
 
@@ -286,11 +352,14 @@ def _h_calc(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[
     if keyword is None and isinstance(keywords, list) and keywords:
         keyword = str(keywords[0])
     limit_val = int(params["limit"]) if params.get("limit") is not None else 20
+    max_bd_raw = params.get("max_breakdowns", params.get("maxBreakdowns"))
+    max_bd_val = int(max_bd_raw) if max_bd_raw is not None else 30
     return search_calcs_breakdown(
         w,
         keyword=str(keyword or ""),
         keywords=keywords,
         limit=limit_val,
+        max_breakdowns=max_bd_val,
         no_breakdown=bool(params.get("no_breakdown", params.get("noBreakdown", False))),
     )
 
@@ -363,10 +432,12 @@ def _h_timeless_list(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> d
 def _h_trade_eval_items(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from .. import trade_eval
 
+    raw_pk = params.get("prefilter_k") if params.get("prefilter_k") is not None else params.get("prefilterK")
     return trade_eval.eval_trade_items(
         w,
         slot_name=params.get("slot") or params.get("slotName"),
         items=list(params.get("items") or []),
+        prefilter_k=int(raw_pk) if raw_pk is not None else None,
     )
 
 

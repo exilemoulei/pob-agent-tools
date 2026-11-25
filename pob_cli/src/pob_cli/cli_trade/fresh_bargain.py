@@ -51,7 +51,8 @@ def _fetch_fresh(
     """
     fresh: list[dict[str, Any]] = []
     fetched = 0
-    for start in range(0, min(len(ids), 5 * MAX_FETCH_IDS), MAX_FETCH_IDS):
+    scan_cap = max(5 * MAX_FETCH_IDS, min(MAX_FETCH_MANY, want))
+    for start in range(0, min(len(ids), scan_cap), MAX_FETCH_IDS):
         if len(fresh) >= want:
             break
         chunk = client.fetch(ids[start : start + MAX_FETCH_IDS], query_id)

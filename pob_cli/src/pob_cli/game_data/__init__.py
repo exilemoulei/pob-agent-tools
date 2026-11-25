@@ -40,6 +40,7 @@ from .constants import (
     ZH_FILE_CATEGORY_HINT,
     ZH_SKIP_TRANSLATION_FILES,
 )
+from .fact_cards import normalize_stat_lines
 from .grounding import (
     _GROUND_ENTITY_INDEX_CACHE,
     _build_zero_result_hint,
@@ -299,6 +300,7 @@ __all__ = [
     "ground_text_entities",
     "is_legacy_awakened_gem",
     "lookup_fact_cards_for_build",
+    "normalize_stat_lines",
     "normalize_tw_query",
     "query_gem_quality_breakpoints",
     "query_local_data",

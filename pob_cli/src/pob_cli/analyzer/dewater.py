@@ -55,9 +55,17 @@ def _unmatched_keep(keep_set: set[str], known: dict[str, str]) -> list[str]:
 def dewater_build_in_place(
     worker: BridgeWorker,
     keep: Iterable[str] | str | None = None,
+    *,
+    auto_keep_reasons: dict[str, str] | None = None,
+    flask_notes: dict[str, str] | None = None,
 ) -> dict[str, list[str]]:
     """Strip PoB inflation ('water') in place and set enemyIsBoss='Pinnacle'."""
-    stripped, _records = dewater_build_with_records(worker, keep=keep)
+    stripped, _records = dewater_build_with_records(
+        worker,
+        keep=keep,
+        auto_keep_reasons=auto_keep_reasons,
+        flask_notes=flask_notes,
+    )
     return stripped
 
 
@@ -66,6 +74,8 @@ def dewater_build_with_records(
     keep: Iterable[str] | str | None = None,
     *,
     has_bloodsoaked_blade: bool | None = None,
+    auto_keep_reasons: dict[str, str] | None = None,
+    flask_notes: dict[str, str] | None = None,
 ) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
     """De-water in place (2 pipelined RPC batches) and return reversible per-item records."""
     keep_set = _normalize_keep(keep)
@@ -75,6 +85,7 @@ def dewater_build_with_records(
         "skills": [],
         "party": [],
         "kept": [],
+        "autoKept": [],
         "keepRejected": [],
     }
     records: list[dict[str, Any]] = []
@@ -91,7 +102,15 @@ def dewater_build_with_records(
     )
 
     mutations: list[tuple[str, dict[str, Any]]] = []
-    _dewater_config_and_custom_mods(cfg_res, keep_set, known, stripped, mutations, records)
+    _dewater_config_and_custom_mods(
+        cfg_res,
+        keep_set,
+        known,
+        stripped,
+        mutations,
+        records,
+        auto_keep_reasons=auto_keep_reasons,
+    )
     _dewater_flasks(
         worker,
         items_res,
@@ -101,6 +120,7 @@ def dewater_build_with_records(
         mutations,
         records,
         has_bloodsoaked_blade=has_bloodsoaked_blade,
+        flask_notes=flask_notes,
     )
     _dewater_skills(skills_res, keep_set, known, stripped, mutations, records)
 

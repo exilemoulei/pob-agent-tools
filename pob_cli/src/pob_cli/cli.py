@@ -143,8 +143,8 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "Inspect, evaluate, edit, or mutate equipped items, flasks, and anoints.",
     ),
     "skill": (
-        ".cli_mutate",
-        "grp_skill",
+        ".cli_mutate_skills",
+        "skill",
         "Modify, add, or replace skill groups and support/active gems.",
     ),
     "tree": (
@@ -208,7 +208,7 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "Query local 0ms PoB Lua game/tree data & 0.033s tick calculator (`gem|unique|mod|base|translate|tree|tick`, daemon-free).",
     ),
     "poedb": (
-        ".cli_data",
+        ".cli_research",
         "cmd_poedb",
         "Query poedb.tw CN/US autocomplete index, properties, version history, and mod pool weights (cached).",
     ),
@@ -223,12 +223,12 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "Query poe.ninja league meta snapshot (total builds, ascendancy & main skill share).",
     ),
     "wiki": (
-        ".cli_data",
+        ".cli_research",
         "cmd_wiki",
         "Query poewiki.net MediaWiki API for mechanics, uniques, and keystones (24h local cache).",
     ),
     "research": (
-        ".cli_data",
+        ".cli_research",
         "cmd_research",
         "Concurrent dual-source research via poedb.tw + poewiki.net (partial-success resilient).",
     ),
@@ -252,10 +252,10 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "timeless_group",
         "Find optimal timeless jewel seeds verified by headless PoB.",
     ),
-    "hook": (
-        ".cli_hook",
-        "hook_group",
-        "Deterministic lifecycle hooks (pre-prompt, pre-tool, verify-stop) for agent harnesses.",
+    "help": (
+        ".cli_help",
+        "cmd_help",
+        "Show compact 1-screen CLI cheat-sheet (`--brief`) or help for a subcommand.",
     ),
 }
 

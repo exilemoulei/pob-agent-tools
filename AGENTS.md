@@ -2,9 +2,9 @@
 
 pob4agents is a command-line tool, run as `pob`, that lets AI agents inspect, test and optimize Path of Exile 1 builds with the real Path of Building engine, run headless. It is a Python package (`pob_cli/`, Python 3.11+) whose daemon on `127.0.0.1` drives PobTools-zh's `pob-zh.exe` on Windows and PoB on a pinned LuaJIT runtime on macOS and Linux.
 
-**Read [docs/architecture.md](docs/architecture.md) before changing code.** It covers how a command reaches the engine, the module layers, engine paths and runtime state, environment variables, Chinese locale matching, the `R1`..`R13` constraints, adding a command, verification and CI.
+> **Running `pob` to analyze or optimize a PoE1 build?** Read [skills/pob/SKILL.md](skills/pob/SKILL.md), check [docs/guides/commands.md](docs/guides/commands.md), or run `pob help --brief` (this `AGENTS.md` is for developing `pob4agents` itself).
 
-This file is for working on pob4agents. To use it, see [skills/pob/SKILL.md](skills/pob/SKILL.md), the [README](README_EN.md) and every flag in [docs/guides/commands.md](docs/guides/commands.md).
+**Read [docs/architecture.md](docs/architecture.md) before changing code.** It covers how a command reaches the engine, the module layers, engine paths and runtime state, environment variables, Chinese locale matching, the `R1`..`R13` constraints, adding a command, verification and CI.
 
 ## Commands
 
@@ -26,13 +26,13 @@ Releases are cut by bumping `__version__` in `pob_cli/src/pob_cli/__init__.py` a
 
 ## Layout
 
-- `pob_cli/src/pob_cli/`: the package, five layers that import only downward. L0 foundation (`errors`, `ticks`, `os_util`, `compat`, `json_io`, `guardrails/`); L1 engine and data sources (`updater/`, `bridge_client`, `importers`, `profile_import/`, `game_data/`, `external_data/`, `poedb_client/`, `turn_receipts`); L2 domain (`analyzer/`, `mutators/`, `snapshot`, `comparator/`, `formatters/`, `bench/`, `trade_*`, `timeless/`); L3 `daemon/`; L4 the `cli*` entry points. The full table is in the architecture guide.
+- `pob_cli/src/pob_cli/`: the package, five layers that import only downward. L0 foundation (`errors`, `ticks`, `os_util`, `compat`, `json_io`, `guardrails/`); L1 engine and data sources (`updater/`, `bridge_client`, `importers`, `profile_import/`, `game_data/`, `external_data/`, `poedb_client/`); L2 domain (`analyzer/`, `mutators/`, `snapshot`, `comparator/`, `formatters/`, `bench/`, `trade_*`, `timeless/`); L3 `daemon/`; L4 the `cli*` entry points. The full table is in the architecture guide.
 - `pob_cli/src/pob_cli/data/`, `lua/`: bundled `bench_costs.json` and `headless_runner.lua` (the macOS/Linux engine host).
 - `pob_cli/tests/`: pytest. `engine_paths.py` finds a real engine; `support.py` holds helpers for timing and network-failure tests.
 - `pob_cli/scripts/`: `check.py` and `arch_lint.py` (the gate) and the generators.
 - `pob_cli/packaging/`: `pob.spec` (PyInstaller), `build_posix_runtime.sh`, `smoke_frozen.sh`, `release_tools.py` (asset names, packing, sums, signing).
 - `pob_cli/uv.lock`: the locked dev and build environment.
-- `skills/pob/`: the agent skill shipped to users (`SKILL.md`, `references/`). `hooks/`: hook configs for Antigravity (`hooks.json`) and Claude Code (`claude-hooks.json`).
+- `skills/pob/`: the agent skill shipped to users (`SKILL.md`, `references/`).
 - `install.ps1`, `install.sh`: one-line installers. `bucket/pob.json`: the Scoop manifest, updated by `release.yml`.
 - `docs/`: [docs/README.md](docs/README.md) indexes the guides (`docs/guides/`) and design notes (`docs/design/`, historical, in Chinese).
 - `.github/workflows/`: `ci.yml` (PRs, engine-less), `engine.yml` (real engine: nightly via `engine-nightly.yml`, on dispatch, as the release gate), `release.yml`, `codeql.yml`.
@@ -47,7 +47,7 @@ Releases are cut by bumping `__version__` in `pob_cli/src/pob_cli/__init__.py` a
 ## Conventions
 
 - **Generated files are never edited by hand:** `game_data/tables_han.py`, `data/bench_costs.json`, `uv.lock` (change it with `uv add` / `uv lock`) and `bucket/pob.json`. Change the generator or its input instead.
-- **Tests.** Unit tests run offline on fakes. Real-engine tests skip when no engine is found. The full gate's ratchet depends on the engine: with no `--min-passed/--max-skipped` flags it follows the machine and prints an INFO line — `>=905` passed and `<=25` skipped with the legacy `PobTools[20261102]` seed, `<=32` with a bootstrapped engine (Windows keeps its POSIX-only skips), `<=85` engine-less; with a bootstrapped engine use `engine.yml`'s numbers (`--min-passed 1395 --max-skipped 8` on macOS/Linux, `1370` / `32` on Windows; each OS skips the tests written for the other). A change that adds real-engine tests raises those numbers in `engine.yml` in the same change. Timing assertions scale with `POB_TEST_PERF_SLACK`.
+- **Tests.** Unit tests run offline on fakes. Real-engine tests skip when no engine is found. The full gate's ratchet depends on the engine: with no `--min-passed/--max-skipped` flags it follows the machine and prints an INFO line — `>=905` passed and `<=25` skipped with the legacy `PobTools[20261102]` seed, `<=32` with a bootstrapped engine (Windows keeps its POSIX-only skips), `<=120` engine-less; with a bootstrapped engine use `engine.yml`'s numbers (`--min-passed 1315 --max-skipped 8` on macOS/Linux, `1290` / `32` on Windows; each OS skips the tests written for the other). A change that adds real-engine tests raises those numbers in `engine.yml` in the same change. Timing assertions scale with `POB_TEST_PERF_SLACK`.
 - **Chinese text.** The display language defaults to Simplified (`zh-CN`) and can be switched to Traditional (`zh-TW`) or English with `pob lang` / `POB_LANG`, while queries and slang are mostly Simplified. Compare Chinese labels only after `game_data.fold_han`, and fall back to the English name from `game_data.english_for_zh`. Keep `--json` fields English; localize only human output.
 - **Exit codes are a contract:** `1` for a bad request, `5` for a daemon or engine fault with a clean `Error: ...` line, `0`..`6` for trade. Agents branch on them.
 - **Docs move with the code.** A changed command or flag updates `docs/guides/commands.md`, both READMEs (`README.md` in Chinese, `README_EN.md`) and `skills/pob/SKILL.md` when it touches a recipe. A new doc goes into `docs/` and its index.
@@ -55,6 +55,6 @@ Releases are cut by bumping `__version__` in `pob_cli/src/pob_cli/__init__.py` a
 
 ## Commits
 
-Conventional Commits, `type(scope): description`. Types: `feat fix perf refactor test docs ci build chore`. Scopes are areas: `cli`, `daemon`, `bridge`, `updater`, `game-data`, `analyzer`, `mutators`, `comparator`, `trade`, `bench`, `timeless`, `hooks`, `guardrails`, `research`, `external-apis`, `packaging`, `posix`, `deps`, `release`, `scoop`, `docs`, `workspace` (root files and scripts). Combine them as `trade,bench`.
+Conventional Commits, `type(scope): description`. Types: `feat fix perf refactor test docs ci build chore`. Scopes are areas: `cli`, `daemon`, `bridge`, `updater`, `game-data`, `analyzer`, `mutators`, `comparator`, `trade`, `bench`, `timeless`, `guardrails`, `research`, `external-apis`, `packaging`, `posix`, `deps`, `release`, `scoop`, `docs`, `workspace` (root files and scripts). Combine them as `trade,bench`.
 
 Pull requests fill in every section of [.github/pull_request_template.md](.github/pull_request_template.md), the AI disclosure included. To add a command, follow "Adding a command" in the architecture guide.

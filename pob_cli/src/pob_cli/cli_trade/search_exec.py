@@ -161,6 +161,7 @@ def _verify_candidates_with_pob(
     slot: str | None,
     target: str,
     verification_limit: int,
+    prefilter_k: int | None = None,
 ) -> bool:
     import pob_cli.cli_trade as _ct
 
@@ -180,6 +181,7 @@ def _verify_candidates_with_pob(
             slot=pob_slot,
             target=target,
             limit=verification_limit,
+            prefilter_k=prefilter_k,
             daemon_call=_ct._daemon_call_safe,
         )
     except CrossGameHallucinationError:
@@ -192,7 +194,8 @@ def _verify_candidates_with_pob(
             return False
     except Exception as exc:
         err_text = sanitize_text(exc, 300)
-        for c in candidates[:verification_limit]:
+        err_slice = candidates if prefilter_k is not None else candidates[:verification_limit]
+        for c in err_slice:
             if c.pob is None and not c.pob_error:
                 c.pob_error = err_text
         if pob_mode == "on":
@@ -200,7 +203,10 @@ def _verify_candidates_with_pob(
             ctx.exit(6)
             return False
 
-    checked = candidates[:verification_limit]
+    if prefilter_k is not None:
+        checked = [c for c in candidates if c.pob is not None or c.pob_error is not None] or candidates[:verification_limit]
+    else:
+        checked = candidates[:verification_limit]
     if pob_mode == "on" and checked:
         failed = [c for c in checked if c.pob is None]
         if failed:

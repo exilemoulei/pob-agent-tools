@@ -356,6 +356,7 @@ def _inspect_tree_filtered(
     show_path: bool,
     masteries: bool,
     socket_radius: str | int | None,
+    limit: int,
     tree_version: str | None,
     tree_state: dict[str, Any],
     items_res: dict[str, Any],
@@ -411,14 +412,16 @@ def _inspect_tree_filtered(
             )
         )
 
-    if max_cost is not None:
+    if limit <= 0:
+        hover_limit = len(matches)
+    elif max_cost is not None:
         cost_cap = int(max_cost)
         within_hop = sum(
             1 for m in matches if m.get("allocated") or bfs_dist.get(int(m["id"]), 999999) <= cost_cap
         )
-        hover_limit = min(max(60, within_hop), 250)
+        hover_limit = max(limit * 2, 100, within_hop)
     else:
-        hover_limit = 50 if (masteries or socket_radius is not None) else 25
+        hover_limit = max(limit * 2, 100)
     hover_targets = matches[:hover_limit]
     if hover_targets:
         hover_calls = [("node_hover", {"id": m["id"]}) for m in hover_targets]
@@ -444,20 +447,20 @@ def _inspect_tree_filtered(
                 )
             )
 
-    result_limit = 100 if (masteries or socket_radius is not None) else 50
+    shown = matches if limit <= 0 else matches[:limit]
     out: dict[str, Any] = {
         "search": search if search is not None else (", ".join(query_list) if query_list else None),
         "queries": query_list,
         "masteries": bool(masteries),
         "showPath": bool(show_path),
         "totalMatches": len(matches),
-        "matches": matches[:result_limit],
+        "matches": shown,
     }
     if socket_radius_info is not None:
         radii_groups: dict[str, list[dict[str, Any]]] = {
             lbl: [] for lbl in socket_radius_info["radii"].keys()
         }
-        for m in matches[:result_limit]:
+        for m in shown:
             tier = m.get("radiusTier")
             if tier in radii_groups:
                 radii_groups[tier].append(m)
@@ -479,6 +482,7 @@ def inspect_tree(
     show_path: bool = False,
     masteries: bool = False,
     socket_radius: str | int | None = None,
+    limit: int = 100,
 ) -> dict[str, Any]:
     """Summarize allocated passive tree nodes or search/filter nodes with pipelined `node_hover` RPCs."""
     query_list = _normalize_query_list(search, queries)
@@ -544,6 +548,7 @@ def inspect_tree(
                 show_path=show_path,
                 masteries=masteries,
                 socket_radius=socket_radius,
+                limit=int(limit),
                 tree_version=tree_version,
                 tree_state=tree_state,
                 items_res=items_res,

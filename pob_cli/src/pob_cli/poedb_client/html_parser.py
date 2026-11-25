@@ -429,7 +429,7 @@ def _mod_matches_filter(mod: dict[str, Any], mod_filter: str) -> bool:
 def _extract_mods_from_modsview(
     mv: dict[str, Any],
     *,
-    limit_mods: int = 80,
+    limit_mods: int = 150,
     mod_filter: str | None = None,
 ) -> tuple[list[dict[str, Any]], int, dict[str, int]]:
     """Extract normalized mod entries + summary counts from a PoEDB `ModsView` payload."""

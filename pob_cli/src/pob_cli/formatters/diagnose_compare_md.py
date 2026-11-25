@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..game_data.fact_cards import normalize_stat_lines
 from .build_md import format_compare_markdown
 from .primitives import (
     _parse_numeric_or_none,
@@ -19,14 +20,67 @@ def _fmt_ask_grounding_line(res: dict[str, Any]) -> str | None:
     if not (isinstance(ask_g, dict) and ask_g.get("query")):
         return None
     slang_list = ask_g.get("resolvedSlang") or []
+    added_ent = ask_g.get("addedEntities") or []
+    if not slang_list and not added_ent:
+        return None
     slang_note = (
         " | Slang: " + ", ".join(f"{s['slang']}={s['canonical']}" for s in slang_list[:6])
         if slang_list
         else ""
     )
-    added_ent = ask_g.get("addedEntities") or []
     ent_note = f" | Grounded: {', '.join(added_ent[:6])}" if added_ent else ""
     return f"> **[Question Grounding]** `{str(ask_g['query'])[:120]}`{slang_note}{ent_note}"
+
+
+def _filter_duplicate_md_advisories(res: dict[str, Any], advisories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    core_syn = (
+        res.get("core_synergies")
+        or res.get("coreSynergies")
+        or (res.get("buildMechanics") or {}).get("coreSynergies")
+        or []
+    )
+    syn_blob = " ".join(str(x) for x in core_syn).lower()
+    gap_blob = " ".join(
+        str(g.get("message") or "") for g in (res.get("healthGaps") or []) if isinstance(g, dict)
+    ).lower()
+    bm = res.get("buildMechanics") or {}
+    has_soa = isinstance(bm.get("swordOfAges"), dict)
+    has_cwc = any(
+        isinstance(t, dict) and t.get("kind") == "fixed_interval_channelling"
+        for t in (bm.get("triggers") or [])
+    )
+
+    out: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for adv in advisories:
+        if not isinstance(adv, dict):
+            continue
+        rid = str(adv.get("ruleId") or "").strip().upper()
+        trig = str(adv.get("trigger") or "").strip().lower()
+        k = rid or f"{adv.get('tag')}:{trig}"
+        if k in seen_keys:
+            continue
+        if (rid == "PATCH_330_AGNOSTIC_CWS_SYNERGY" or "the agnostic" in trig or "valyrium" in trig) and (
+            "[do not unspec]" in syn_blob or "the agnostic" in syn_blob
+        ):
+            continue
+        if (rid == "PATCH_330_RAMAKO_FIXED_DOT_RES" or "ramako" in trig or "雷默科" in trig) and "ramako" in syn_blob:
+            continue
+        if (rid == "PATCH_330_DORYANI_PROTOTYPE_NEG_RES" or "doryani's prototype" in trig) and (
+            "doryani's prototype" in syn_blob or "doryani's prototype" in gap_blob
+        ):
+            continue
+        if rid == "PATCH_330_SWORD_OF_AGES_TEMPORAL_MIRAGE" and has_soa:
+            continue
+        if rid == "PATCH_330_CWC_NOT_COOLDOWN" and has_cwc:
+            continue
+        if rid == "PATCH_330_LOW_LIFE_ESH_VISAGE" and "esh's visage" in gap_blob:
+            continue
+        if ("frost bomb" in trig or "寒霜爆" in trig or "FROST_BOMB" in rid) and "frost bomb" in syn_blob:
+            continue
+        seen_keys.add(k)
+        out.append(adv)
+    return out
 
 
 def _fmt_diagnose_fact_cards_and_upgrades(res: dict[str, Any], *, compact: bool) -> list[str]:
@@ -35,7 +89,7 @@ def _fmt_diagnose_fact_cards_and_upgrades(res: dict[str, Any], *, compact: bool)
     fc = res.get("factCards") or {}
     gem_cards = fc.get("gems") or []
     uniq_cards = fc.get("uniques") or []
-    advisories = res.get("advisories") or []
+    advisories = _filter_duplicate_md_advisories(res, list(res.get("advisories") or []))
     if gem_cards or uniq_cards or advisories:
         lines.append(f"\n#### 3. Live PoE1 {env.get('patch') or '3.30'} Fact Cards & Patch Advisories")
         for adv in advisories:
@@ -72,7 +126,7 @@ def _fmt_diagnose_fact_cards_and_upgrades(res: dict[str, Any], *, compact: bool)
             lines.append(f"- **[Gem] {gc.get('name')}{zh_p}**: " + " | ".join(bits))
         for uc in uniq_cards[: (5 if compact else 10)]:
             zh_p = f" ({uc['zhName']})" if uc.get("zhName") else ""
-            mods_preview = "; ".join((uc.get("explicits") or [])[:4])
+            mods_preview = "; ".join(normalize_stat_lines(uc.get("explicits") or [])[: (5 if compact else 8)])
             lines.append(f"- **[Unique] {uc.get('name')}{zh_p}** (`{uc.get('baseType') or '-'}`): {mods_preview}")
 
     top_nodes = res.get("topNodes")
@@ -83,34 +137,55 @@ def _fmt_diagnose_fact_cards_and_upgrades(res: dict[str, Any], *, compact: bool)
             n_rows = [
                 [
                     idx,
-                    n.get("id"),
-                    strip_pob_escapes(n.get("nameZh") or n.get("name") or "-"),
+                    n.get("allocSpec")
+                    or (f"{n.get('id')}:{n.get('effectId')}" if n.get("effectId") is not None else n.get("id")),
+                    " ".join(
+                        part.strip()
+                        for part in strip_pob_escapes(n.get("nameZh") or n.get("name") or "-").splitlines()
+                        if part.strip()
+                    ),
                     n.get("pathDist"),
                     strip_pob_escapes(n.get("pathPowerStr") or fmt_num(n.get("pathPower"), 2)),
                     strip_pob_escapes(n.get("powerStr") or fmt_num(n.get("power"), 2)),
                 ]
                 for idx, n in enumerate(top_nodes.get("byPerPoint") or [], start=1)
             ]
-            lines.append(f"\n**Top Passive Nodes (`{top_nodes.get('stat')}`, max dist {top_nodes.get('maxDist')})**:")
+            n_base = f" @ {top_nodes['baselineLabel']}" if top_nodes.get("baselineLabel") else ""
+            lines.append(
+                f"\n**Top Passive Nodes (`{top_nodes.get('stat')}`{n_base}, max dist {top_nodes.get('maxDist')})**:"
+            )
             lines.append(render_table(["#", "Node ID", "Name", "Dist", "Gain/Pt", "Total Gain"], n_rows))
-        if isinstance(top_gems, dict) and (top_gems.get("candidates") or []):
+        if isinstance(top_gems, dict) and (
+            (top_gems.get("candidates") or []) or (top_gems.get("excludedSupports") or [])
+        ):
             cands = top_gems.get("candidates") or []
-            has_caveats = any(gm.get("caveat") for gm in cands)
-            g_rows = []
-            for idx, gm in enumerate(cands, start=1):
-                row_g: list[Any] = [
-                    idx,
-                    strip_pob_escapes(gm.get("nameZh") or gm.get("name") or "-"),
-                    strip_pob_escapes(gm.get("name") or "-"),
-                    fmt_num(gm.get("delta")),
-                    f"{float(gm['pct']):+.1f}%" if gm.get("pct") is not None else "-",
-                ]
-                if has_caveats:
-                    row_g.append(str(gm.get("caveat") or "-"))
-                g_rows.append(row_g)
-            headers_g = ["#", "Gem (ZH)", "Gem (EN)", "Delta", "Gain %"] + (["Caveat"] if has_caveats else [])
-            lines.append(f"\n**Top Candidate Support Gems (`{top_gems.get('dpsField')}`, {top_gems.get('mode')})**:")
-            lines.append(render_table(headers_g, g_rows))
+            g_base = f" @ {top_gems['baselineLabel']}" if top_gems.get("baselineLabel") else ""
+            lines.append(
+                f"\n**Top Candidate Support Gems (`{top_gems.get('dpsField')}`{g_base}, {top_gems.get('mode')})**:"
+            )
+            if cands:
+                has_caveats = any(gm.get("caveat") for gm in cands)
+                g_rows = []
+                for idx, gm in enumerate(cands, start=1):
+                    row_g: list[Any] = [
+                        idx,
+                        strip_pob_escapes(gm.get("nameZh") or gm.get("name") or "-"),
+                        strip_pob_escapes(gm.get("name") or "-"),
+                        fmt_num(gm.get("delta")),
+                        f"{float(gm['pct']):+.1f}%" if gm.get("pct") is not None else "-",
+                    ]
+                    if has_caveats:
+                        row_g.append(str(gm.get("caveat") or "-"))
+                    g_rows.append(row_g)
+                headers_g = ["#", "Gem (ZH)", "Gem (EN)", "Delta", "Gain %"] + (["Caveat"] if has_caveats else [])
+                lines.append(render_table(headers_g, g_rows))
+            excluded = top_gems.get("excludedSupports") or []
+            if excluded:
+                excl_str = "; ".join(
+                    f"{strip_pob_escapes(str(ex.get('name') or '-'))} ({ex.get('reason') or 'conflict'})"
+                    for ex in excluded[:6]
+                )
+                lines.append(f"_Excluded conflicting supports: {excl_str}_")
             skipped = top_gems.get("filteredArchetypeSwaps") or []
             if skipped:
                 lines.append(f"_Filtered archetype-changing / invalid supports: {', '.join(skipped[:6])}_")

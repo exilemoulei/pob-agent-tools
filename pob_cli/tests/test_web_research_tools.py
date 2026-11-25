@@ -229,7 +229,10 @@ def test_extract_wiki_sections_prioritizes_mechanics_over_gem_table() -> None:
         "<h3><span class='mw-headline'>Trigger</span></h3><p>Triggered spells still obey return order.</p>"
     )
 
-    summary, sections = _extract_wiki_sections_and_summary(raw_html)
+    summary_default, _ = _extract_wiki_sections_and_summary(raw_html)
+    assert len(summary_default) <= 12000
+
+    summary, sections = _extract_wiki_sections_and_summary(raw_html, max_len=3500)
     assert len(summary) <= 3500
     headings = [s["heading"] for s in sections]
     assert headings[0] == "Skill functions and interactions"

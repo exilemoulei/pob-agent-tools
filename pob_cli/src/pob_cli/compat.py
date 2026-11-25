@@ -1,7 +1,7 @@
 """Signature-compatible call helper and UTF-8 stream setup (L0 pure module).
 
 Single canonical implementations shared by cli_common (L4), mutators.common (L2),
-daemon.runtime (L3), formatters (L2), guardrails (L0), and cli_hook (L4).
+daemon.runtime (L3), formatters (L2), and guardrails (L0).
 """
 
 from __future__ import annotations

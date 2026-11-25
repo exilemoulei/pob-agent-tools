@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .constants import _CJK_PARTICLE_RE, _CJK_RE
-from .queries_core import _build_fts_match, _fts_phrase
+from .queries_core import _build_fts_match, _fts_phrase, _pool_limit_clause, _slice_limit
 from .tw_norm import _fold_search_text, normalize_tw_query
 from .zh_match import resolve_zh_entity_across_locales
 
@@ -16,15 +16,16 @@ from .zh_match import resolve_zh_entity_across_locales
 def _query_translate_no_zh(conn: sqlite3.Connection, q_lower: str, limit: int) -> list[dict[str, Any]]:
     """Graceful fallback when Data/poe1/zh-rCN and Data/poe1/zh-rTW are absent."""
     results: list[dict[str, Any]] = []
+    pool_lim = _pool_limit_clause(limit)
     for tbl, cat in (("gems", "gem"), ("uniques", "unique"), ("bases", "base")):
         for name, name_l in conn.execute(
-            f"SELECT name, name_lower FROM {tbl} WHERE instr(name_lower, ?) > 0 ORDER BY length(name) LIMIT ?",
-            (q_lower, limit),
+            f"SELECT name, name_lower FROM {tbl} WHERE instr(name_lower, ?) > 0 ORDER BY length(name) {pool_lim}",
+            (q_lower,),
         ).fetchall():
             match_type = "exact" if name_l == q_lower else ("prefix" if name_l.startswith(q_lower) else "substring")
             results.append({"en": name, "zh": None, "category": cat, "match_type": match_type})
     results.sort(key=lambda r: (0 if r["match_type"] == "exact" else (1 if r["match_type"] == "prefix" else 2), len(r["en"])))
-    return results[:limit]
+    return _slice_limit(results, limit)
 
 
 def _query_translate_candidates(
@@ -61,41 +62,42 @@ def _query_translate_candidates(
             seen_ids.add(row[0])
             candidates.append(row)
 
-    if len(candidates) < limit:
+    if limit <= 0 or len(candidates) < limit:
+        pool_lim = _pool_limit_clause(limit)
         has_non_ascii = any(ord(ch) > 127 for ch in q_lower)
         fts_expr, tokens = _build_fts_match(q_lower)
         sub_rows: list[Any] = []
         if has_non_ascii and fts_expr:
             sub_rows = conn.execute(
-                """
+                f"""
                 SELECT t.id, t.en, t.en_lower, t.zh, t.zh_lower, t.category, t.cat_rank
                 FROM translations_zh_fts f
                 JOIN translations t ON t.id = f.rowid
                 WHERE translations_zh_fts MATCH ?
-                LIMIT 250
+                {pool_lim}
                 """,
                 (fts_expr,),
             ).fetchall()
         elif not has_non_ascii and tokens:
             en_match = " AND ".join(_fts_phrase(t) for t in tokens)
             sub_rows = conn.execute(
-                """
+                f"""
                 SELECT t.id, t.en, t.en_lower, t.zh, t.zh_lower, t.category, t.cat_rank
                 FROM translations_en_fts f
                 JOIN translations t ON t.id = f.rowid
                 WHERE translations_en_fts MATCH ?
-                LIMIT 250
+                {pool_lim}
                 """,
                 (en_match,),
             ).fetchall()
 
         if not sub_rows:
             sub_rows = conn.execute(
-                """
+                f"""
                 SELECT id, en, en_lower, zh, zh_lower, category, cat_rank
                 FROM translations
                 WHERE instr(en_lower, ?) > 0 OR instr(zh_lower, ?) > 0
-                LIMIT 250
+                {pool_lim}
                 """,
                 (q_lower, q_lower),
             ).fetchall()
@@ -360,6 +362,6 @@ def _query_translate(
         if key not in seen_out:
             seen_out.add(key)
             dedup_out.append(item)
-            if len(dedup_out) >= limit:
+            if limit > 0 and len(dedup_out) >= limit:
                 break
     return dedup_out

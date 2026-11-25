@@ -65,6 +65,7 @@ from .dewater import (
     dewater_build_with_records,
     verify_restored,
 )
+from .dewater_auto import infer_auto_keep_and_flask_notes
 from .dewater_steps import (
     _is_vaal_skill_entry,
     _is_vaal_text,
@@ -195,6 +196,7 @@ __all__ = [
     "diagnose_compare_builds",
     "extract_summary",
     "get_summary",
+    "infer_auto_keep_and_flask_notes",
     "inspect_calcs",
     "inspect_config",
     "inspect_items",

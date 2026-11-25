@@ -226,7 +226,14 @@ def test_auto_query_max_age_fallback_and_bargain_reuse_generated_query(
     assert market["sort"] == {"price": "asc"}
 
 
-def test_surrogate_k_flag_is_gone(searches: list[dict[str, Any]]) -> None:
-    res = CliRunner().invoke(main, ["trade", "search", "--slot", "gloves", "--surrogate-k", "60", "--dump-query"])
-    assert res.exit_code == 2
-    assert "No such option" in res.output
+def test_surrogate_k_flag_accepted_and_validates_non_negative(searches: list[dict[str, Any]]) -> None:
+    res = CliRunner().invoke(
+        main,
+        ["trade", "search", "--slot", "gloves", "--stat", "maximum Life=80", "--surrogate-k", "60", "--dump-query"],
+    )
+    assert res.exit_code == 0, res.output
+    bad = CliRunner().invoke(
+        main,
+        ["trade", "search", "--slot", "gloves", "--stat", "maximum Life=80", "--surrogate-k", "-1", "--dump-query"],
+    )
+    assert bad.exit_code == 2

@@ -482,3 +482,74 @@ def check_poe2_class_or_ascendancy(
             equivalent_command=equiv,
             rule_id="POE2_CLASS_IN_POB1",
         )
+
+
+_PAREN_EN_ENTITY_RE = re.compile(
+    r"[（(]\s*([A-Z][A-Za-z0-9'\-]*(?:\s+(?:of|the|on|while|with|and|[A-Z][A-Za-z0-9'\-]*)){0,4})\s*[)）]"
+)
+_QUOTED_TERM_RE = re.compile(r"[「『《\"']([^「『《》」』\"'\n]{2,32})[」』》\"']")
+_TITLE_EN_ENTITY_RE = re.compile(
+    r"\b([A-Z][a-zA-Z'\-]+(?:\s+(?:of|the|on|while|with|and|[A-Z][a-zA-Z'\-]+)){1,4})\b"
+)
+_QUERY_STOPWORDS = frozenset(
+    {
+        "poe", "poe1", "poe2", "pob", "dps", "ehp", "cdr", "aps", "ilvl", "boss",
+        "pinnacle", "pinnacle dps", "ring", "gloves", "helmet", "boots", "belt",
+        "poedb", "poewiki", "how does", "does", "pob xml", "path of exile",
+    }
+)
+_ZH_QUERY_SPLIT_RE = re.compile(
+    r"(?:[^\u4e00-\u9fff]+|怎么运作|运作机制|机制原理|触发(?:条件|顺序|先后顺序|机制)|"
+    r"能不能|能否|可不可以|可以|应该|吃不吃|算不算|叠不叠加|有没有|会不会|是不是|"
+    r"各自需要多少|需要多少|多少|高不高|好不好|准不准|对不对|行不行|是什么|什么|哪些|为什么|"
+    r"配合|同时|另外|如果|请问|帮我|查一下|看看|一下|以及|或者|还是|到底|实际|实战|持续|"
+    r"百分比|固定|物品等级|权重|二次击中|击中|单体|同类|叠加|冷却|上限|伤害|基础|数值|底材|"
+    r"的|在|上|里|中|了|吗|呢|吧|啊|呀|把|给|对|从|到|比|按|让|被|和|与|及|或|连|带|用|玩|是|有|不|没|别|再|还|也|都|就)"
+)
+_ZH_QUERY_STOPWORDS = frozenset(
+    {
+        "构筑", "流派", "技能", "问题", "装备", "词缀", "人物", "怪物", "辅助", "宝石",
+        "魔力", "抗性", "护盾", "生命", "面板", "机制", "顺序", "效果", "提升", "来源", "方法",
+    }
+)
+
+
+def extract_research_entities(text: str, limit: int = 3) -> list[str]:
+    """Extract clean short PoE1 entity names (EN/CN) from a long natural-language research query."""
+    if not text or not text.strip():
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _push(raw: str) -> None:
+        if len(out) >= limit:
+            return
+        cand = re.sub(r"\s+", " ", raw.strip(" \t\r\n.,;:!?()（）「」『』《》\"'"))
+        if len(cand) < 2 or len(cand) > 40:
+            return
+        low = cand.lower()
+        if low in _QUERY_STOPWORDS or low in seen or low.startswith(("http://", "https://", "@")):
+            return
+        seen.add(low)
+        out.append(cand)
+
+    for m in _PAREN_EN_ENTITY_RE.finditer(text):
+        _push(m.group(1))
+    for m in _TITLE_EN_ENTITY_RE.finditer(text):
+        _push(m.group(1))
+    for m in _QUOTED_TERM_RE.finditer(text):
+        inner = m.group(1)
+        inner_en = _PAREN_EN_ENTITY_RE.search(inner)
+        if inner_en:
+            _push(inner_en.group(1))
+        else:
+            for part in re.split(r"[/、,，]", inner):
+                cleaned = re.sub(r"[（(][^()（）]{1,40}[)）]", "", part).strip()
+                _push(cleaned)
+    if not out:
+        for seg in _ZH_QUERY_SPLIT_RE.split(text):
+            cand = seg.strip()
+            if 2 <= len(cand) <= 12 and cand not in _ZH_QUERY_STOPWORDS:
+                if not any(cand in existing for existing in out):
+                    _push(cand)
+    return out

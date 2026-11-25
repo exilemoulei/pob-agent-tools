@@ -1016,7 +1016,6 @@ def test_gem_quality_breakpoints_and_330_slang_grounding() -> None:
 def test_traditional_slot_names_resolve_like_simplified_ones() -> None:
     """The slot aliases are Simplified and the engine's labels Traditional: either script must match both."""
     from pob_cli.mutators.common import _resolve_slot_from_items
-    from pob_cli.turn_receipts import classify_cli_args
 
     items = {
         "slots": [
@@ -1036,4 +1035,3 @@ def test_traditional_slot_names_resolve_like_simplified_ones() -> None:
     ):
         assert analyzer.resolve_slot_name(None, query, items_res=items) == expected  # type: ignore[arg-type]
         assert _resolve_slot_from_items(items, query) == expected
-    assert classify_cli_args(["item", "inspect", "--slot", "頭盔"])["inspectedSlots"] == ["Helmet"]

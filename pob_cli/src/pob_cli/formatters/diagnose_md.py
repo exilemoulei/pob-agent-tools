@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from ..game_data.fact_cards import normalize_stat_lines
 from .diagnose_compare_md import (
     _fmt_ask_grounding_line,
     _fmt_diagnose_fact_cards_and_upgrades,
@@ -93,8 +94,8 @@ def _fmt_diagnose_header(res: dict[str, Any], *, compact: bool) -> list[str]:
             an_en = strip_pob_escapes(str(an.get("name") or "")).strip()
             lbl = f"{an_zh} ({an_en})" if (an_zh and an_en and an_zh != an_en) else (an_zh or an_en or str(an.get("id")))
             asc_tag = f" [{an['asc']}]" if an.get("asc") else ""
-            st_list = an.get("stats") or an.get("statsZh") or []
-            st_txt = "; ".join(str(s) for s in st_list[:4])
+            st_list = normalize_stat_lines(an.get("stats") or an.get("statsZh") or [])
+            st_txt = "; ".join(st_list[:4])
             lines.append(f"  - `{an.get('id')}` **{lbl}**{asc_tag}: {st_txt}")
     return lines
 
@@ -151,6 +152,9 @@ def _fmt_diagnose_baseline(res: dict[str, Any], *, compact: bool) -> list[str]:
         lines.append(render_table(["Dim", "Item", f"Δ{p_key}", "ΔTotalEHP"], w_rows))
 
     stripped = res.get("inflationStripped") or {}
+    auto_kept = stripped.get("autoKept") or []
+    if auto_kept:
+        lines.append("\n**Auto-Kept (Build-Guaranteed)**: " + "; ".join(str(x) for x in auto_kept))
     kept = stripped.get("kept") or []
     if kept:
         lines.append("\n**Kept (--keep)**: " + "; ".join(kept))
@@ -182,9 +186,11 @@ def _fmt_diagnose_gaps_and_mechanics(res: dict[str, Any], *, compact: bool) -> l
     )
     if core_syn:
         lines.append("\n#### 2b. Core Build Synergies & Do-Not-Brick Advisories")
+        seen_syn: set[str] = set()
         for syn in core_syn:
-            syn_txt = strip_pob_escapes(str(syn)).strip()
-            if syn_txt:
+            syn_txt = " ".join(part.strip() for part in strip_pob_escapes(str(syn)).splitlines() if part.strip())
+            if syn_txt and syn_txt not in seen_syn:
+                seen_syn.add(syn_txt)
                 lines.append(f"- {syn_txt}")
 
     bm = res.get("buildMechanics") or {}

@@ -29,7 +29,7 @@ def grp_item() -> None:
 @click.option("--raw", "raw_text", help="Pasted PoE/PoB item text.")
 @click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False), help="File containing item text.")
 @click.option("--want", "wants", multiple=True, help="Bench target, e.g. 'Cold Resistance' (repeatable).")
-@click.option("--limit", type=click.IntRange(min=1, max=20), default=8, show_default=True)
+@click.option("--limit", type=click.IntRange(min=1), default=8, show_default=True)
 @_target_option(allow_slot_alias=False)
 @click.option("--json", "as_json", is_flag=True, help="Output structured JSON.")
 @_output_options

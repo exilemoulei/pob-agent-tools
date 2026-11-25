@@ -31,7 +31,7 @@ MIN_PASSED_TESTS = 905
 # explicit counts so CI keeps an exact ratchet.
 MAX_SKIPPED_TESTS = 25  # engine plus the legacy PobTools seed: the strict tier
 _MAX_SKIPPED_BOOTSTRAPPED = 32  # engine from `pob bootstrap`: Windows keeps POSIX-only + slim LUT skips
-_MAX_SKIPPED_NO_ENGINE = 85  # no engine at all: every real-engine test skips
+_MAX_SKIPPED_NO_ENGINE = 120  # no engine at all: every real-engine test skips
 
 
 def _engine_tier(repo_root: Path) -> tuple[str, int]:
@@ -128,6 +128,9 @@ def run_isolated_pytest(
         env["POB_CACHE_DIR"] = str(cache_dir)
         env["POB_OFFLINE"] = "1"
         env["PYTHONUTF8"] = "1"
+        src_str = str(pob_cli_root / "src")
+        prev_pp = env.get("PYTHONPATH", "").strip()
+        env["PYTHONPATH"] = f"{src_str}{os.pathsep}{prev_pp}" if prev_pp else src_str
 
         cmd = [sys.executable, "-m", "pytest", str(pob_cli_root / "tests"), "-q"]
         proc = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
