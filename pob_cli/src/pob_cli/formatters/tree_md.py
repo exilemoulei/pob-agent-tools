@@ -46,6 +46,31 @@ def _format_mastery_effects_lines(node: dict[str, Any]) -> list[str]:
     return out
 
 
+def _format_node_stats(node: dict[str, Any], *, max_len: int | None = None) -> str:
+    stats_list = node.get("statsZh") or node.get("stats") or []
+    if not stats_list and node.get("overrideWhy") == "conquered":
+        return "_(0 stats — conquered)_"
+    text = "; ".join(str(s) for s in stats_list[:2])
+    return text[:max_len] if max_len is not None else text
+
+
+def _tier_exceeds_equipped_radius(
+    r_name: str,
+    r_nodes: list[dict[str, Any]],
+    sr: dict[str, Any],
+) -> bool:
+    eq_max_r = sr.get("equippedMaxRadius")
+    if not isinstance(eq_max_r, (int, float)) or isinstance(eq_max_r, bool):
+        return False
+    thresholds = sr.get("radiusThresholds")
+    if isinstance(thresholds, dict) and r_name in thresholds:
+        try:
+            return float(thresholds[r_name]) > float(eq_max_r)
+        except (TypeError, ValueError):
+            pass
+    return any(n.get("withinEquippedRadius") is False for n in r_nodes if isinstance(n, dict))
+
+
 def format_tree_markdown(
     res: dict[str, Any],
     *,
@@ -59,20 +84,30 @@ def format_tree_markdown(
     if isinstance(sr, dict) and (sr.get("nodes") is not None or sr.get("radii") is not None or res.get("nearbyNodes") is not None):
         sock_id = sr.get("id") or sr.get("nodeId") or "-"
         sock_name = strip_pob_escapes(sr.get("nameZh") or sr.get("name") or f"Socket {sock_id}")
-        lines = [f"### Jewel Socket Radius: `{sock_id}` ({sock_name})"]
+        hdr = f"### Jewel Socket Radius: `{sock_id}` ({sock_name})"
+        eq_jewel = strip_pob_escapes(sr.get("equippedJewel") or "").strip()
+        eq_r_label = strip_pob_escapes(sr.get("equippedRadiusLabel") or "").strip()
+        if eq_jewel and eq_r_label:
+            hdr += f" — Equipped: {eq_jewel} (Active Radius: {eq_r_label})"
+        elif eq_jewel:
+            hdr += f" — Equipped: {eq_jewel}"
+        lines = [hdr]
         radii_map = sr.get("radii")
         if isinstance(radii_map, dict):
             for r_name, r_nodes in radii_map.items():
                 if not r_nodes:
                     continue
-                lines.append(f"\n#### Radius `{r_name}` ({len(r_nodes)} nodes)")
+                sec_hdr = f"\n#### Radius `{r_name}` ({len(r_nodes)} nodes)"
+                if eq_r_label and _tier_exceeds_equipped_radius(r_name, r_nodes, sr):
+                    sec_hdr += f" — outside equipped {eq_r_label} radius (unconquered)"
+                lines.append(sec_hdr)
                 rows = [
                     [
                         n.get("id"),
                         strip_pob_escapes(n.get("nameZh") or n.get("name")),
                         n.get("type") or "Normal",
                         "Yes" if n.get("allocated") else "No",
-                        "; ".join(str(s) for s in (n.get("statsZh") or n.get("stats") or [])[:2])[:80],
+                        _format_node_stats(n, max_len=80),
                     ]
                     for n in r_nodes
                 ]
@@ -86,11 +121,13 @@ def format_tree_markdown(
                     n.get("type") or "Normal",
                     "Yes" if n.get("allocated") else "No",
                     n.get("radius") or n.get("ring") or (fmt_num(n.get("distance"), 1) if n.get("distance") is not None else "-"),
-                    "; ".join(str(s) for s in (n.get("statsZh") or n.get("stats") or [])[:2])[:80],
+                    _format_node_stats(n, max_len=80),
                 ]
                 for n in nearby
             ]
             lines.append(render_table(["Node ID", "Name", "Type", "Allocated", "Radius", "Stats"], rows))
+        if res.get("allocationMismatchHint"):
+            lines.append(f"\n> **Hint**: {strip_pob_escapes(str(res['allocationMismatchHint']))}")
         return "\n".join(lines)
 
     # Search / filtered matches view
@@ -106,7 +143,6 @@ def format_tree_markdown(
         rows = []
         mastery_nodes: list[dict[str, Any]] = []
         for m in matches:
-            stats_s = "; ".join(str(s) for s in (m.get("statsZh") or m.get("stats") or [])[:2])
             row: list[Any] = [
                 m.get("id"),
                 strip_pob_escapes(m.get("nameZh") or m.get("name")),
@@ -116,7 +152,7 @@ def format_tree_markdown(
             ]
             if has_path:
                 row.append(_format_path(m.get("path")))
-            row.append(stats_s[:80])
+            row.append(_format_node_stats(m, max_len=80))
             rows.append(row)
             if (masteries or m.get("masteryEffects")) and (m.get("masteryEffects") or m.get("effects")):
                 mastery_nodes.append(m)
@@ -126,6 +162,8 @@ def format_tree_markdown(
             f"### Passive Tree Search: `{label}` ({res.get('totalMatches', len(matches))} matches)",
             render_table(headers, rows),
         ]
+        if res.get("allocationMismatchHint"):
+            lines.append(f"\n> **Hint**: {strip_pob_escapes(str(res['allocationMismatchHint']))}")
         for mn in mastery_nodes:
             lines.extend(_format_mastery_effects_lines(mn))
         return "\n".join(lines)
@@ -135,6 +173,22 @@ def format_tree_markdown(
     lines = [
         f"### Passive Tree Summary: `{pts.get('used', 0)}/{pts.get('usedMax', 0)}` points | Ascendancy `{pts.get('ascUsed', 0)}/{pts.get('ascMax', 0)}`",
     ]
+    conquered_zero_normals = [
+        n
+        for n in (res.get("normalNodes") or [])
+        if isinstance(n, dict)
+        and n.get("overrideWhy") == "conquered"
+        and not (n.get("statsZh") or n.get("stats"))
+    ]
+    if conquered_zero_normals:
+        by_name: dict[str, list[str]] = {}
+        for n in conquered_zero_normals:
+            nm = strip_pob_escapes(n.get("nameZh") or n.get("name") or "Price of Glory").strip() or "Price of Glory"
+            by_name.setdefault(nm, []).append(str(n.get("id")))
+        parts = [f"{nm}: {', '.join(ids)}" for nm, ids in by_name.items()]
+        lines.append(
+            f"- **Conquered 0-Stat Small Passives**: {len(conquered_zero_normals)} allocated ({'; '.join(parts)})"
+        )
     for title, key in (
         ("Keystones", "keystones"),
         ("Ascendancy Nodes", "ascendancyNodes"),
@@ -147,7 +201,7 @@ def format_tree_markdown(
             [
                 n["id"],
                 strip_pob_escapes(n.get("nameZh") or n.get("name")),
-                "; ".join(str(s) for s in (n.get("statsZh") or n.get("stats") or [])[:2]),
+                _format_node_stats(n),
             ]
             for n in items
         ]

@@ -29,6 +29,7 @@ from .inspectors import inspect_items
 from .pitfalls_core import _detect_build_mechanics_and_pitfalls
 from .pitfalls_triggers import deduplicate_trigger_gaps
 from .summary import _is_tincture_item, extract_summary
+from .tree_helpers import apply_node_override
 from .tree_inspect import inspect_tree
 
 
@@ -97,14 +98,12 @@ def _collect_diagnose_tree_and_skills(
             }
             for raw_nid in tree_state_diag.get("allocatedNodes") or []:
                 sid = str(int(raw_nid))
-                nd = dict(nodes_db_diag.get(sid) or {})
+                raw_nd = nodes_db_diag.get(sid) or {}
+                nd = dict(raw_nd)
                 if sid in dyn_diag:
                     nd.update(dyn_diag[sid])
                 if sid in ov_diag and isinstance(ov_diag[sid], dict):
-                    if ov_diag[sid].get("stats"):
-                        nd["stats"] = ov_diag[sid]["stats"]
-                    if ov_diag[sid].get("name"):
-                        nd["name"] = ov_diag[sid]["name"]
+                    apply_node_override(nd, ov_diag[sid], raw_nd)
                 st_lines = normalize_stat_lines(nd.get("stats") or [])
                 if st_lines:
                     lbl = strip_pob_escapes(str(nd.get("name") or sid))
@@ -195,6 +194,7 @@ def _assemble_diagnose_mechanics(
     items_info: dict[str, Any],
     alloc_node_stats: list[tuple[str, list[str]]],
     gaps: list[dict[str, str]],
+    tree_state_diag: Any = None,
 ) -> tuple[dict[str, Any], list[str], list[str], dict[str, Any]]:
     stats_full: dict[str, Any] = {}
     stats_full.update(summary.get("offence") or {})
@@ -205,6 +205,13 @@ def _assemble_diagnose_mechanics(
             stats_full.update(raw_stats_res["stats"])
     except Exception:
         pass
+
+    nodes_db_diag: dict[str, Any] | None = None
+    if isinstance(tree_state_diag, dict) and not tree_state_diag.get("_error"):
+        try:
+            nodes_db_diag = worker.get_cached_tree_data(tree_state_diag.get("treeVersion")).get("nodes", {})
+        except Exception:
+            nodes_db_diag = None
 
     agent_probe = audit.get("agentProbe")
     if not isinstance(agent_probe, dict):
@@ -225,6 +232,9 @@ def _assemble_diagnose_mechanics(
         warnings=list(summary.get("warnings") or []),
         build_info=info,
         stripped_flasks=stripped_flasks,
+        worker=worker,
+        tree_state=tree_state_diag if isinstance(tree_state_diag, dict) else None,
+        nodes_db=nodes_db_diag,
     )
     dead_sup_gaps, dead_sup_records = _detect_dead_main_supports(worker, mg, stats_full)
     if dead_sup_records:
@@ -379,6 +389,7 @@ def diagnose_build(
         items_info=items_info,
         alloc_node_stats=alloc_node_stats,
         gaps=gaps,
+        tree_state_diag=tree_state_diag,
     )
 
     keystone_names = [
