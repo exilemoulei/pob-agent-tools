@@ -42,6 +42,7 @@ from .other_cmds import (
 )
 from .plan_cmd import cmd_trade_plan
 from .search_cmd import cmd_trade_search
+from .upgrade_cmd import cmd_trade_upgrade
 
 __all__ = [
     "SLOT_HINT",
@@ -75,6 +76,7 @@ __all__ = [
     "cmd_trade_plan",
     "cmd_trade_search",
     "cmd_trade_stats",
+    "cmd_trade_upgrade",
     "fetch_currency_chaos_rates",
     "load_trade_stats",
     "resolve_current_trade_league",

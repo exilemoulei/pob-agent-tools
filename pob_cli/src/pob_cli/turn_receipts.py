@@ -58,6 +58,7 @@ _COMPUTE_PAIR_CMDS = frozenset(
         ("skill", "replace-group"),
         ("tree", "change"),
         ("tree", "set-class"),
+        ("trade", "upgrade"),
         ("config", "set"),
         ("timeless", "search"),
     }
