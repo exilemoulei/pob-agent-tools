@@ -9,11 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..analyzer import verify_restored
 from ..bridge_client import BridgeWorker
 from ..mutators import _apply_tree_changes_in_place, _compact_sweep_summary
 from ..scoring import Floor, floor_failures, pct_change, stat_keys, stat_value, weighted_score
-from ..snapshot import capture_digest
+from ..snapshot import BuildTransaction, capture_digest
 from .rank_refund import DEFAULT_REFUND_SCORE, rank_refunds
 from .rank_scored import rank_nodes_scored
 
@@ -38,6 +37,7 @@ def _score_vs(before: dict[str, Any], after: dict[str, Any], score: dict[str, fl
 
 def _try_round(
     w: BridgeWorker,
+    tx: BuildTransaction,
     refund: dict[str, Any],
     *,
     banned: set[int],
@@ -50,7 +50,28 @@ def _try_round(
     """Deallocate `refund`, then try the best adds; leaves the swap applied only when it is returned."""
     rid = int(refund["id"])
     _apply_tree_changes_in_place(w, [], [(rid, None)], allow_cascade=False)
-    mid_code = w.call("export_code", {})["code"]
+    mid = tx.checkpoint()
+    try:
+        return _try_adds(w, tx, mid, refund, banned=banned, used_before=used_before, before_sum=before_sum,
+                         score=score, floors=floors, max_dist=max_dist)
+    finally:
+        tx.drop(mid)
+
+
+def _try_adds(
+    w: BridgeWorker,
+    tx: BuildTransaction,
+    mid: Any,
+    refund: dict[str, Any],
+    *,
+    banned: set[int],
+    used_before: int,
+    before_sum: dict[str, Any],
+    score: dict[str, float],
+    floors: list[Floor],
+    max_dist: int,
+) -> dict[str, Any] | None:
+    rid = int(refund["id"])
     adds = rank_nodes_scored(w, score=score, floors=floors, max_dist=max_dist, top=_ADD_TRIES_PER_REFUND * 3)["byPerPoint"]
     tried = 0
     for add in adds:
@@ -64,12 +85,13 @@ def _try_round(
             _apply_tree_changes_in_place(w, [(aid, None)], [], allow_cascade=False)
             _, used_after = _state(w)
             if used_after <= used_before:
-                gain, fails = _score_vs(before_sum, _compact_sweep_summary(capture_digest(w)), score, floors)
+                after_sum = _compact_sweep_summary(capture_digest(w))
+                gain, fails = _score_vs(before_sum, after_sum, score, floors)
                 if gain is not None and gain > 0 and not fails:
-                    return {"refund": refund, "add": add, "gain": gain, "pointsDelta": used_after - used_before}
+                    return {"refund": refund, "add": add, "gain": gain, "pointsDelta": used_after - used_before, "after": after_sum}
         except ValueError:
             pass  # needsConfirm / cascade-blocked: try the next candidate
-        w.call("import_code", {"code": mid_code, "mode": "replace"})
+        tx.restore(mid)
     return None
 
 
@@ -84,40 +106,37 @@ def plan_respec(
     """Greedy respec plan; never leaves the build changed (0-residue restore + verify)."""
     score, floors = score or dict(DEFAULT_REFUND_SCORE), floors or []
     accepted: list[dict[str, Any]] = []
-    with worker.lock:
-        orig_code = worker.call("export_code", {})["code"]
+    with BuildTransaction(worker) as tx:
         orig_digest = capture_digest(worker)
         orig_sum = _compact_sweep_summary(orig_digest)
         queue = list(rank_refunds(worker, score=score, floors=floors, top=max(10, rounds * _REFUND_TRIES_PER_ROUND))["cheapest"])
         banned: set[int] = set()
+        # An accepted round's summary is the next round's baseline, so no round re-reads the build.
         final_sum = orig_sum
-        try:
-            for _ in range(max(0, rounds)):
-                before_code = worker.call("export_code", {})["code"]
-                before_sum = _compact_sweep_summary(capture_digest(worker))
-                alloc, used_before = _state(worker)
-                result = None
-                tries = 0
-                while queue and result is None and tries < _REFUND_TRIES_PER_ROUND:
-                    refund = queue.pop(0)
-                    if int(refund["id"]) not in alloc:
-                        continue
-                    tries += 1
-                    try:
-                        result = _try_round(worker, refund, banned=banned, used_before=used_before, before_sum=before_sum,
-                                            score=score, floors=floors, max_dist=max_dist)
-                    except ValueError:
-                        result = None
-                    if result is None:
-                        worker.call("import_code", {"code": before_code, "mode": "replace"})
+        for _ in range(max(0, rounds)):
+            round_cp = tx.checkpoint()
+            alloc, used_before = _state(worker)
+            result = None
+            tries = 0
+            while queue and result is None and tries < _REFUND_TRIES_PER_ROUND:
+                refund = queue.pop(0)
+                if int(refund["id"]) not in alloc:
+                    continue
+                tries += 1
+                try:
+                    result = _try_round(worker, tx, refund, banned=banned, used_before=used_before, before_sum=final_sum,
+                                        score=score, floors=floors, max_dist=max_dist)
+                except ValueError:
+                    result = None
                 if result is None:
-                    break
-                banned.add(int(result["refund"]["id"]))
-                accepted.append(result)
-            final_sum = _compact_sweep_summary(capture_digest(worker))
-        finally:
-            worker.call("import_code", {"code": orig_code, "mode": "replace"})
-        restore_check = verify_restored(worker, orig_code, orig_digest)
+                    tx.restore(round_cp)
+            tx.drop(round_cp)
+            if result is None:
+                break
+            banned.add(int(result["refund"]["id"]))
+            accepted.append(result)
+            final_sum = result["after"]
+        restore_check = tx.rollback_verified(orig_digest)
 
     total, fails = _score_vs(orig_sum, final_sum, score, floors)
     ops: list[dict[str, Any]] = []

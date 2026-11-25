@@ -62,9 +62,8 @@ def build(monkeypatch: Any) -> _Build:
     monkeypatch.setattr(respec, "_apply_tree_changes_in_place", _apply)
     monkeypatch.setattr(respec, "rank_refunds", _refunds)
     monkeypatch.setattr(respec, "rank_nodes_scored", _adds)
-    monkeypatch.setattr(respec, "capture_digest", lambda w: w.summary())
-    monkeypatch.setattr(respec, "_compact_sweep_summary", lambda d: d)
-    monkeypatch.setattr(respec, "verify_restored", lambda w, code, _d: {"verified": w.call("export_code")["code"] == code})
+    monkeypatch.setattr(respec, "capture_digest", lambda w: {"stats": w.summary()})
+    monkeypatch.setattr(respec, "_compact_sweep_summary", lambda d: d["stats"])
     return b
 
 
@@ -78,7 +77,38 @@ def test_plan_respec_swaps_and_restores(build: _Build) -> None:
     ]
     assert res["totalGain"] == pytest.approx(300 / 1100 * 100)
     assert build.alloc == {1, 2, 3}  # build left unchanged
-    assert res["restoreCheck"] == {"verified": True}
+    assert res["restoreCheck"]["verified"] is True
+    assert build.imports[-1] == "1,2,3"  # BuildTransaction rolled back to the entry build
+
+
+class _CowBuild(_Build):
+    def __init__(self) -> None:
+        super().__init__()
+        self.caps = {"cowSnapshot": True}
+        self.snaps: dict[str, set[int]] = {}
+
+    def call(self, method: str, params: dict[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
+        if method == "cow_snapshot":
+            sid = f"s{len(self.snaps)}"
+            self.snaps[sid] = set(self.alloc)
+            return {"snapId": sid}
+        if method == "cow_restore":
+            self.alloc = set(self.snaps[params["snapId"]])
+            return {}
+        if method == "cow_drop":
+            return {}
+        if method == "get_stats":
+            return {"stats": self.summary()}
+        return super().call(method, params, **kw)
+
+
+def test_plan_respec_rolls_back_through_cow_without_imports(build: _Build) -> None:
+    cow = _CowBuild()
+    res = respec.plan_respec(cow, score={"primaryDps": 1.0}, rounds=5)  # type: ignore[arg-type]
+    assert [(r["refund"]["id"], r["add"]["id"]) for r in res["rounds"]] == [(1, 10)]
+    assert cow.alloc == {1, 2, 3}
+    assert cow.imports == []  # every rejected try and the final rollback used cow_restore
+    assert res["restoreCheck"]["verified"] is True
 
 
 def test_plan_respec_respects_floor(build: _Build) -> None:

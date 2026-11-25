@@ -63,7 +63,6 @@ def group(monkeypatch: Any) -> _Group:
     monkeypatch.setattr(gem_links, "_BatchCache", lambda w: None)
     monkeypatch.setattr(gem_links, "resolve_skill_group_index", lambda _s, _sel: 1)
     monkeypatch.setattr(gem_links, "capture_digest", lambda w: {})
-    monkeypatch.setattr(gem_links, "verify_restored", lambda w, code, _d: {"verified": json.dumps(w.gems) == code})
     return g
 
 
@@ -77,7 +76,7 @@ def test_optimize_links_skips_liar_and_restores(group: _Group) -> None:
         {"op": "skill", "group": "1", "gem": 3, "newGem": "Big"},
     ]
     assert group.gems == ["Skill", "A", "B"]
-    assert res["restoreCheck"] == {"verified": True}
+    assert res["restoreCheck"]["verified"] is True
 
 
 def test_cmd_rank_gems_optimize(monkeypatch: Any) -> None:

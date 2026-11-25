@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..analyzer import resolve_skill_group_index, verify_restored
+from ..analyzer import resolve_skill_group_index
 from ..bridge_client import BridgeWorker
 from ..formatters import _parse_numeric_or_none, strip_pob_escapes
 from ..mutators import _BatchCache, _execute_batch_ops
-from ..snapshot import capture_digest
+from ..snapshot import BuildTransaction, capture_digest
 from .ranking import rank_gems
 
 _ZERO_CHARGE_CAVEAT = "0 charges on 0-mana skill!"
@@ -33,7 +33,7 @@ def _support_slots(worker: BridgeWorker, g_idx: int) -> list[dict[str, Any]]:
     return [gm for gm in group.get("gems", []) if gm.get("support") and not gm.get("fromItem") and not gm.get("fromNode")]
 
 
-def _best_swap(worker: BridgeWorker, g_idx: int, slot: dict[str, Any], *, field: str, include_legacy: bool) -> dict[str, Any] | None:
+def _best_swap(worker: BridgeWorker, tx: BuildTransaction, g_idx: int, slot: dict[str, Any], *, field: str, include_legacy: bool) -> dict[str, Any] | None:
     """Apply the first ranked candidate for `slot` that PoB confirms raises `field`; None leaves the slot as is."""
     idx = int(slot["index"])
     current = strip_pob_escapes(str(slot.get("name") or slot.get("nameSpec") or ""))
@@ -48,16 +48,21 @@ def _best_swap(worker: BridgeWorker, g_idx: int, slot: dict[str, Any], *, field:
     prev = _field_value(worker, field)
     if prev is None:
         return None
-    slot_code = worker.call("export_code", {})["code"]
-    for cand in cands[:_TRIES_PER_SLOT]:
-        op = {"op": "skill", "group": str(g_idx), "gem": idx, "newGem": str(cand["name"])}
-        _execute_batch_ops(worker, [op], _BatchCache(worker))
-        now = _field_value(worker, field)
-        if now is not None and now > prev:
-            return {"slot": idx, "from": current, "to": str(cand["name"]), "dpsBefore": prev, "dpsAfter": now, "op": op}
-        # The engine's ranking and the applied gem disagree: undo and try the next candidate.
-        worker.call("import_code", {"code": slot_code, "mode": "replace"})
-    return None
+    if not cands:
+        return None
+    slot_cp = tx.checkpoint()
+    try:
+        for cand in cands[:_TRIES_PER_SLOT]:
+            op = {"op": "skill", "group": str(g_idx), "gem": idx, "newGem": str(cand["name"])}
+            _execute_batch_ops(worker, [op], _BatchCache(worker))
+            now = _field_value(worker, field)
+            if now is not None and now > prev:
+                return {"slot": idx, "from": current, "to": str(cand["name"]), "dpsBefore": prev, "dpsAfter": now, "op": op}
+            # The engine's ranking and the applied gem disagree: undo and try the next candidate.
+            tx.restore(slot_cp)
+        return None
+    finally:
+        tx.drop(slot_cp)
 
 
 def optimize_links(
@@ -70,26 +75,21 @@ def optimize_links(
 ) -> dict[str, Any]:
     """Greedy support-set optimisation for one skill group; never leaves the build changed."""
     swaps: list[dict[str, Any]] = []
-    with worker.lock:
+    with BuildTransaction(worker) as tx:
         g_idx = resolve_skill_group_index(worker.call("list_skills", {}), group_selector)
-        orig_code = worker.call("export_code", {})["code"]
         orig_digest = capture_digest(worker)
         before = _field_value(worker, field)
-        after = before
-        try:
-            for _ in range(max(1, passes)):
-                changed = False
-                for slot in _support_slots(worker, g_idx):
-                    swap = _best_swap(worker, g_idx, slot, field=field, include_legacy=include_legacy)
-                    if swap is not None:
-                        swaps.append(swap)
-                        changed = True
-                if not changed:
-                    break
-            after = _field_value(worker, field)
-        finally:
-            worker.call("import_code", {"code": orig_code, "mode": "replace"})
-        restore_check = verify_restored(worker, orig_code, orig_digest)
+        for _ in range(max(1, passes)):
+            changed = False
+            for slot in _support_slots(worker, g_idx):
+                swap = _best_swap(worker, tx, g_idx, slot, field=field, include_legacy=include_legacy)
+                if swap is not None:
+                    swaps.append(swap)
+                    changed = True
+            if not changed:
+                break
+        after = swaps[-1]["dpsAfter"] if swaps else before
+        restore_check = tx.rollback_verified(orig_digest)
 
     pct = ((after - before) / abs(before) * 100.0) if (before and after is not None) else None
     return {
