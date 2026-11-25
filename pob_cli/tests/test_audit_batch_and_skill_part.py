@@ -16,7 +16,7 @@ from pob_cli.mutators.batch_ops import _BATCH_OP_HANDLERS, _execute_batch_ops
 from pob_cli.mutators.batch_validate import _OP_VALID_KEYS, validate_batch_op
 from pob_cli.mutators.common import _BatchCache
 from pob_cli.mutators.skills import _try_call_ext
-from pob_cli.mutators.skills_resolve import _normalize_gem_spec
+from pob_cli.mutators.skills_resolve import _gem_name_cautions, _normalize_gem_spec
 from pob_cli.updater import is_valid_engine_dir
 
 
@@ -296,6 +296,7 @@ def test_a_remark_on_an_op_and_a_gem_as_pob_reports_it_are_accepted() -> None:
         "level": 20, "quality": 20, "enabled": True, "enableGlobal1": True, "enableGlobal2": False, "count": 1,
         "errMsg": None, "color": 2, "support": True, "hasGlobalEffect": False, "naturalMaxLevel": 20,
         "reqLevel": 70, "matchesSocket": True, "fromItem": False, "fromNode": False,
+        "tooltipDps": None,  # `pob skills --group N --json` adds this one
     }  # fmt: skip
     spec = _normalize_gem_spec(reported)
     assert (spec["name"], spec["level"], spec["quality"]) == ("Added Cold Damage", 20, 20)
@@ -305,6 +306,22 @@ def test_a_remark_on_an_op_and_a_gem_as_pob_reports_it_are_accepted() -> None:
     for stray in ("qualityId", "variant", "lvl"):
         with pytest.raises(ValueError, match="Unknown key"):
             _normalize_gem_spec({"name": "Arc", stray: 1})
+
+
+def test_a_gems_own_allow_legacy_lets_that_gem_through_and_no_other() -> None:
+    w = _FakeSkillExtWorker()
+    cache = _BatchCache(w)  # type: ignore[arg-type]
+    for op in ("add_group", "replace_group"):
+        base: dict[str, Any] = {"op": op, **({"group": 1} if op == "replace_group" else {})}
+        with pytest.raises(Exception, match="POE1-PATCH-BLOCK"):
+            _execute_batch_ops(w, [{**base, "gems": [{"name": "Anomalous Arc"}]}], cache)  # type: ignore[arg-type]
+        with pytest.raises(Exception, match="POE1-PATCH-BLOCK"):
+            _execute_batch_ops(  # type: ignore[arg-type]
+                w, [{**base, "gems": [{"name": "Anomalous Arc", "allowLegacy": True}, "Divergent Arc"]}], cache
+            )
+    assert _gem_name_cautions([{"name": "Anomalous Arc"}], True)  # allowed: a warning, not a block
+    assert _gem_name_cautions([{"name": "Anomalous Arc", "allowLegacy": True}, "Arc"], False)
+    assert _gem_name_cautions(["Arc"], False) == []
 
 
 def test_global_effect_flags_named_in_a_gem_spec_are_applied_not_overwritten() -> None:

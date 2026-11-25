@@ -20,6 +20,8 @@ from .skills_resolve import (
     _apply_vaal_defaults_batch,
     _build_add_gem_params,
     _extract_explicit_gem_level,
+    _gem_name_cautions,
+    _legacy_warn_cautions,
     _normalize_gem_spec,
     _parse_positive_int,
     _resolve_and_validate_specs,
@@ -31,11 +33,6 @@ from .skills_state import (
     _build_replaced_group_state_params,
     _build_specs_gem_states,
 )
-
-
-def _legacy_warn_cautions(warns: list[Any]) -> list[str]:
-    return [f"[POE1-PATCH-WARN] {w.summary}" for w in warns if getattr(w, "category", "") == "legacy_patch"]
-
 
 _UNKNOWN_RPC_TOKENS = ("unknown", "unsupported", "unexpected", "unrecognized", "not implemented", "unhandled")
 _FATAL_RPC_TOKENS = ("lua_error", "crashed", "not running", "pipe", "timed out")
@@ -112,18 +109,7 @@ def _apply_add_group_in_place(
         check_input(str(slot), scope=GuardrailScope.SLOT, expected_game="poe1")
         items_res = cache.get_items() if cache is not None else w.call("list_items", {})
         resolved_slot = _resolve_slot_from_items(items_res, str(slot))
-    cautions: list[str] = []
-    for g_entry in gems or []:
-        g_name = (
-            g_entry
-            if isinstance(g_entry, str)
-            else str(g_entry.get("name") or g_entry.get("nameSpec") or g_entry.get("gem") or "")
-        )
-        if g_name:
-            warns = check_input(
-                g_name, scope=GuardrailScope.GEM_NAME, expected_game="poe1", block_legacy_gems=not allow_legacy
-            )
-            cautions = _merge_cautions(cautions, _legacy_warn_cautions(warns))
+    cautions = _gem_name_cautions(list(gems or []), allow_legacy)
 
     add_params: dict[str, Any] = {}
     if label is not None:
@@ -250,13 +236,7 @@ def _apply_replace_group_in_place(
     raw_gems = list(gems or [])
     explicit_levels = [_extract_explicit_gem_level(g) for g in raw_gems]
     norm_specs = [_normalize_gem_spec(g, allow_illegal_level=allow_illegal_level) for g in raw_gems]
-    cautions: list[str] = []
-    for sp in norm_specs:
-        if sp.get("name"):
-            warns = check_input(
-                str(sp["name"]), scope=GuardrailScope.GEM_NAME, expected_game="poe1", block_legacy_gems=not allow_legacy
-            )
-            cautions = _merge_cautions(cautions, _legacy_warn_cautions(warns))
+    cautions = _gem_name_cautions(raw_gems, allow_legacy, names=[sp.get("name") for sp in norm_specs])
     resolved_specs, spec_c = _resolve_and_validate_specs(
         w, g_idx, norm_specs, explicit_levels, raw_gems, allow_illegal_level=allow_illegal_level
     )
