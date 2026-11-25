@@ -111,8 +111,16 @@ def _resolve_tree_subcommand_opts(
 
 
 @grp_tree.command("change")
-@click.option("--allocate", help="Comma-separated node IDs, names, or Mastery `<nodeId>:<effectId>` to allocate.")
-@click.option("--deallocate", help="Comma-separated node IDs or names to deallocate.")
+@click.option(
+    "--allocate",
+    multiple=True,
+    help="Node IDs, names, or Mastery `<nodeId>:<effectId>` to allocate (repeatable or comma-separated).",
+)
+@click.option(
+    "--deallocate",
+    multiple=True,
+    help="Node IDs or names to deallocate (repeatable or comma-separated).",
+)
 @click.option(
     "--allow-cascade/--no-allow-cascade",
     "allow_cascade",
@@ -127,8 +135,8 @@ def _resolve_tree_subcommand_opts(
 @click.pass_context
 def cmd_tree_change(
     ctx: click.Context,
-    allocate: str | None,
-    deallocate: str | None,
+    allocate: tuple[str, ...] | str | None,
+    deallocate: tuple[str, ...] | str | None,
     allow_cascade: bool,
     apply: bool,
     target: str,
@@ -140,8 +148,10 @@ def cmd_tree_change(
     target, as_json, compact, out_path = _resolve_tree_subcommand_opts(
         ctx, target=target, as_json=as_json, compact=compact, out_path=out_path
     )
-    alloc_list = [x.strip() for x in allocate.split(",") if x.strip()] if allocate else []
-    dealloc_list = [x.strip() for x in deallocate.split(",") if x.strip()] if deallocate else []
+    alloc_chunks = (allocate,) if isinstance(allocate, str) else (allocate or ())
+    dealloc_chunks = (deallocate,) if isinstance(deallocate, str) else (deallocate or ())
+    alloc_list = [x.strip() for chunk in alloc_chunks for x in chunk.split(",") if x.strip()]
+    dealloc_list = [x.strip() for chunk in dealloc_chunks for x in chunk.split(",") if x.strip()]
     res = invoke_daemon(
         "tree_change",
         {

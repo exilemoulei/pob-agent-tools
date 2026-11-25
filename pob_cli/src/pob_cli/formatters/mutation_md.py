@@ -102,7 +102,15 @@ def format_mutation_report(title: str, res: dict[str, Any], *, target: str | Non
     else:
         lines.append("\n_(No stat changes detected)_")
 
-    cascade_warn = res.get("cascadeWarning") or (res.get("detail") or {}).get("cascadeWarning")
+    detail = res.get("detail") if isinstance(res.get("detail"), dict) else {}
+    raw_noop = detail.get("noopWarnings") or res.get("noopWarnings") or []
+    if isinstance(raw_noop, (list, tuple)):
+        noop_lines = [f"> [WARN] {strip_pob_escapes(str(w or '')).strip()}" for w in raw_noop if str(w or "").strip()]
+        if noop_lines:
+            lines.append("")
+            lines.extend(noop_lines)
+
+    cascade_warn = res.get("cascadeWarning") or detail.get("cascadeWarning")
     if cascade_warn:
         lines.append(f"\n> [WARN] {cascade_warn}")
 

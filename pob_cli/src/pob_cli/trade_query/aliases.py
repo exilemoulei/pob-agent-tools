@@ -487,14 +487,35 @@ _BRACE_NUM_RE = re.compile(r"\{\d+\}")
 # ---------------------------------------------------------------------------
 
 
-def _normalize_slot(slot: str | None) -> str:
-    if not slot:
-        return ""
+_DYN_JEWEL_RE = re.compile(r"^(?:jewel[\s_\-]*(\d+)(?:\s*\(#\d+\))?|#(\d+))$", re.IGNORECASE)
+_ABYSS_SOCKET_RE = re.compile(r"^(?:(.+?)[\s_\-]+)?abyssal[\s_\-]+socket[\s_\-]+(\d+)(?:\s*\(#\d+\))?$", re.IGNORECASE)
+
+
+def _normalize_base_slot(slot: str) -> str:
     from ..game_data import fold_han  # the Chinese slot aliases are Simplified (头盔, not 頭盔)
 
     cleaned = re.sub(r"[\s\-]+", "_", fold_han(slot.strip().lower())).strip("_")
     cleaned = re.sub(r"_+", "_", cleaned)
     return _SLOT_COMPACT_ALIASES.get(cleaned, cleaned)
+
+
+def _parse_dynamic_jewel_slot(slot: str | None) -> tuple[str, str] | None:
+    raw = (slot or "").strip()
+    if m := _DYN_JEWEL_RE.match(raw):
+        return ("jewel", f"Jewel {m.group(1)}" if m.group(1) else f"#{m.group(2)}")
+    if m := _ABYSS_SOCKET_RE.match(raw):
+        if not m.group(1):
+            return ("abyss_jewel", f"Abyssal Socket {m.group(2)}")
+        parent = POB_SLOT_BY_SLOT.get(_normalize_base_slot(m.group(1)))
+        if parent and not parent.startswith(("Jewel", "Flask")):
+            return ("abyss_jewel", f"{parent} Abyssal Socket {m.group(2)}")
+    return None
+
+
+def _normalize_slot(slot: str | None) -> str:
+    if not slot:
+        return ""
+    return dyn[0] if (dyn := _parse_dynamic_jewel_slot(slot)) else _normalize_base_slot(slot)
 
 
 def category_for_slot(slot: str) -> str | None:
@@ -504,7 +525,9 @@ def category_for_slot(slot: str) -> str | None:
 
 def pob_slot_for_slot(slot: str) -> str | None:
     """Map a slot or weapon subtype name to its PoB equipment slot name."""
-    return POB_SLOT_BY_SLOT.get(_normalize_slot(slot))
+    if dyn := _parse_dynamic_jewel_slot(slot):
+        return dyn[1]
+    return POB_SLOT_BY_SLOT.get(_normalize_base_slot(slot)) if slot else None
 
 
 def infer_weapon_category_from_base(base_type: str, pob_root: Path | None = None) -> str | None:
