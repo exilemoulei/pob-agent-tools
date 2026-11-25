@@ -8,6 +8,7 @@ from typing import Any
 from .. import game_data as _game_data
 from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
+from ..guardrails import GuardrailScope, check_input
 from .common import _call_batch, _fold_search_text, _is_batch_error, _merge_cautions, _validate_gem_level
 
 
@@ -117,6 +118,32 @@ def _gem_spec_allows_illegal_level(entry: str | dict[str, Any], allow_illegal_le
     return bool(entry.get("allowIllegalLevel", entry.get("allow_illegal_level", False)))
 
 
+def _legacy_warn_cautions(warns: list[Any]) -> list[str]:
+    return [f"[POE1-PATCH-WARN] {w.summary}" for w in warns if getattr(w, "category", "") == "legacy_patch"]
+
+
+def _gem_name_cautions(
+    raw_gems: Sequence[str | dict[str, Any]], allow_legacy: bool, *, names: Sequence[Any] | None = None
+) -> list[str]:
+    """Guardrail check of every gem name in a `--gems` list; a legacy gem needs the flag or its own `allowLegacy`."""
+    cautions: list[str] = []
+    for pos, entry in enumerate(raw_gems):
+        if names is not None:
+            name = str(names[pos] or "")
+        elif isinstance(entry, str):
+            name = entry
+        else:
+            name = str(entry.get("name") or entry.get("nameSpec") or entry.get("gem") or "")
+        if not name:
+            continue
+        own = isinstance(entry, dict) and bool(entry.get("allowLegacy", entry.get("allow_legacy", False)))
+        warns = check_input(
+            name, scope=GuardrailScope.GEM_NAME, expected_game="poe1", block_legacy_gems=not (allow_legacy or own)
+        )
+        cautions = _merge_cautions(cautions, _legacy_warn_cautions(warns))
+    return cautions
+
+
 _VALID_GEM_SPEC_KEYS: frozenset[str] = frozenset(
     {
         "name",
@@ -158,6 +185,7 @@ _REPORTED_GEM_KEYS: frozenset[str] = frozenset(
         "matchesSocket",
         "fromItem",
         "fromNode",
+        "tooltipDps",  # added by `pob skills --group N --json`
     }
 )
 
