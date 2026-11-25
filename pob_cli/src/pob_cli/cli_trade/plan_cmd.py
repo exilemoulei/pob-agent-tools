@@ -61,6 +61,11 @@ def cmd_trade_plan(
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)
         return
+    _emit_text(format_plan_markdown(res, budget=budget), out_path=out_path)
+
+
+def format_plan_markdown(res: dict[str, Any], *, budget: float) -> str:
+    """Picks and best-value-per-chaos tables for a `plan_budget` result."""
     terms = " + ".join(f"{w:g}×{k}%" for k, w in res["score"].items())
     pick_rows = [[p["slot"], p["name"], f"{p['chaos']:g}", _fmt_pct(p["dpsPct"]), _fmt_pct(p["ehpPct"]), f"{p['score']:+.2f}"] for p in res["picks"]]
     value_rows = [
@@ -77,4 +82,4 @@ def cmd_trade_plan(
         render_table(["#", "Slot", "Item", "Chaos", "Score/Chaos"], value_rows) if value_rows else "- No verified gains.",
         "> Each delta was PoB-verified alone against the current build; combined gains across slots are an estimate.",
     ]
-    _emit_text("\n".join(lines), out_path=out_path)
+    return "\n".join(lines)

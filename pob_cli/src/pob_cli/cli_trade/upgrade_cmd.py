@@ -19,6 +19,7 @@ from ..trade_eval.budget import DEFAULT_PLAN_SCORE, PLAN_STATS, plan_budget
 from ..trade_eval.upgrade import UPGRADE_SLOTS, rank_weak_slots, unequip_loss
 from .common import _TARGET_SLOT_TYPE, _default_target_slot
 from .other_cmds import trade_group
+from .plan_cmd import format_plan_markdown
 from .search_cmd import cmd_trade_search
 
 _SUMMARY_STAT = {"dps": "primaryDps", "ehp": "totalEhp"}
@@ -84,6 +85,24 @@ def _free_moves(target: str, score: dict[str, float]) -> dict[str, Any]:
     return out
 
 
+def format_upgrade_markdown(res: dict[str, Any], *, target: str) -> str:
+    """Plan tables, searched/skipped slots, then the free (0-chaos) moves."""
+    from ..cli_optimize import _format_link_plan
+    from ..cli_rank_nodes import format_respec_markdown
+
+    lines = [
+        format_plan_markdown(res["plan"], budget=res["budget"]),
+        "- Slots searched: " + (", ".join(f"{s['slot']} ({s['reason']})" for s in res["slots"]) or "-"),
+    ]
+    if res["skippedSlots"]:
+        lines.append("- Skipped: " + ", ".join(f"{s['slot']} ({s['error']})" for s in res["skippedSlots"]))
+    lines += ["", "### Free moves"]
+    for key, render in (("respec", lambda r: format_respec_markdown(r, target=target)), ("gems", _format_link_plan)):
+        move = res["free"][key]
+        lines.append(f"- {key}: {move['error']}" if "error" in move else render(move))
+    return "\n".join(lines)
+
+
 @trade_group.command("upgrade")
 @click.option("--budget", type=float, required=True, help="Total chaos to spend across all slots.")
 @click.option("--slot", "slots", multiple=True, help=f"Slot to search (repeatable; default: the weakest). One of {', '.join(UPGRADE_SLOTS.values())}.")
@@ -139,4 +158,4 @@ def cmd_trade_upgrade(
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)
         return
-    _emit_text(json.dumps(res, ensure_ascii=False, indent=2), out_path=out_path)  # Markdown lands in the next change
+    _emit_text(format_upgrade_markdown(res, target=target), out_path=out_path)

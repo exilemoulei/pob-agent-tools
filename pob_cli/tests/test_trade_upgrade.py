@@ -151,3 +151,18 @@ def test_search_slot_turns_nonzero_exit_into_error(monkeypatch: Any) -> None:
     monkeypatch.setattr(upgrade_cmd.cmd_trade_search, "callback", _fake_callback)
     with click.Context(upgrade_cmd.cmd_trade_upgrade) as ctx, pytest.raises(RuntimeError, match="exited 4"):
         upgrade_cmd._search_slot(ctx, "amulet", per_slot=3, league=None, proxy=None, target="main")
+
+
+def test_upgrade_markdown_sections(monkeypatch: Any) -> None:
+    _patch(monkeypatch, search={"amulet": _AMU, "helmet": RuntimeError("rate limited")})
+    text = _run(["trade", "upgrade", "--budget", "100", "--top-slots", "2"]).output
+    assert "### Upgrade Plan" in text and "- Skipped: helmet (rate limited)" in text
+    assert "- Slots searched: Amulet (lowest contribution), Helmet (lowest contribution)" in text
+    assert "an estimate" in text and "### Free moves" in text and "### Respec Plan" in text
+    assert "### Support Link Optimisation" in text
+
+
+def test_upgrade_markdown_free_move_error(monkeypatch: Any) -> None:
+    _patch(monkeypatch, search={"amulet": _AMU}, respec_error="engine busy")
+    text = _run(["trade", "upgrade", "--budget", "50", "--slot", "amulet"]).output
+    assert "- respec: engine busy" in text and "### Support Link Optimisation" in text
