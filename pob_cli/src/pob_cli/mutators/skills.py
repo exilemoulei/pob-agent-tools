@@ -19,15 +19,17 @@ from .skills_resolve import (
     _add_gem_with_default_skill_flags,
     _apply_vaal_defaults_batch,
     _build_add_gem_params,
-    _build_explicit_gem_state,
-    _build_replaced_group_state_params,
-    _build_specs_gem_states,
     _extract_explicit_gem_level,
     _normalize_gem_spec,
     _parse_positive_int,
     _resolve_and_validate_specs,
     _resolve_gem_candidate,
     _resolve_gem_in_group,
+)
+from .skills_state import (
+    _build_explicit_gem_state,
+    _build_replaced_group_state_params,
+    _build_specs_gem_states,
 )
 
 
@@ -57,6 +59,21 @@ def _try_call_ext(w: BridgeWorker, method: str, params: dict[str, Any]) -> dict[
         raise
     if not isinstance(res, dict) or res.get("_error"):
         return None
+    return res
+
+
+def _apply_requested_gem_states(w: BridgeWorker, params: dict[str, Any], *, asked: bool) -> dict[str, Any] | None:
+    """`apply_group_gem_states`; when the caller named a skill part or stage count, a host without it is an error.
+
+    A legacy `pob-zh.exe` pack does not load `skill_calcs_ext.lua`. Carrying a replaced gem's
+    state over is best effort there, but a value the caller asked for must not be dropped in silence.
+    """
+    res = _try_call_ext(w, "apply_group_gem_states", params)
+    if res is None and asked:
+        raise ValueError(
+            "This engine cannot set a gem's skill part or stage count (its host does not load "
+            "skill_calcs_ext.lua). Leave skillPart / stageCount out, or use a bootstrapped engine."
+        )
     return res
 
 
@@ -135,7 +152,7 @@ def _apply_add_group_in_place(
         added_gems = _apply_vaal_defaults_batch(w, g_idx, resolved_specs, gem_results)
         spec_states = _build_specs_gem_states(resolved_specs, added_gems)
         if spec_states:
-            _try_call_ext(w, "apply_group_gem_states", {"group": g_idx, "gemStates": spec_states})
+            _apply_requested_gem_states(w, {"group": g_idx, "gemStates": spec_states}, asked=True)
 
     if make_main:
         w.call("set_build_field", {"field": "mainSocketGroup", "value": g_idx})
@@ -280,7 +297,8 @@ def _apply_replace_group_in_place(
         added_gems = _apply_vaal_defaults_batch(w, g_idx, resolved_specs, gem_results)
         state_params = _build_replaced_group_state_params(g_idx, prior_state, resolved_specs, added_gems)
         if state_params is not None:
-            _try_call_ext(w, "apply_group_gem_states", state_params)
+            asked = any(sp.get("skill_part") is not None or sp.get("stage_count") is not None for sp in resolved_specs)
+            _apply_requested_gem_states(w, state_params, asked=asked)
 
     if cache is not None:
         cache.invalidate("skills")
@@ -385,7 +403,7 @@ def _apply_set_gem_in_place(
     gem_result = w.call("set_gem", gem_params) if (len(gem_params) > 2 or (sp_val is None and sc_val is None)) else None
     state_entry = _build_explicit_gem_state(gem_idx, skill_part=sp_val, stage_count=sc_val)
     if state_entry is not None:
-        ext_res = _try_call_ext(w, "apply_group_gem_states", {"group": g_idx, "gemStates": [state_entry]})
+        ext_res = _apply_requested_gem_states(w, {"group": g_idx, "gemStates": [state_entry]}, asked=True)
         if gem_result is None:
             gem_result = ext_res
     return gem_result, cautions
@@ -514,7 +532,7 @@ def _apply_add_gem_in_place(
         stage_count=sc_val,
     )
     if state_entry is not None:
-        _try_call_ext(w, "apply_group_gem_states", {"group": g_idx, "gemStates": [state_entry]})
+        _apply_requested_gem_states(w, {"group": g_idx, "gemStates": [state_entry]}, asked=True)
 
     detail: dict[str, Any] = {
         "groupIndex": g_idx,

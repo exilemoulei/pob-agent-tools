@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-_COMMON_OP_KEYS: frozenset[str] = frozenset({"op", "type", "action", "comment", "note"})
+# The op itself plus the names people give a remark; a key starting with `_` is a remark too.
+_COMMON_OP_KEYS: frozenset[str] = frozenset(
+    {"op", "type", "action", "comment", "note", "why", "desc", "description", "reason"}
+)
 _SKILL_SUB_ACTIONS: frozenset[str] = frozenset({"set", "add", "remove", "rm"})
 
 _CONFIG_KEYS: frozenset[str] = frozenset(
@@ -266,10 +269,14 @@ def validate_batch_op(idx: int, kind: str, op: dict[str, Any]) -> None:
     if valid is None:
         return
 
-    unknown = sorted(k for k in op if k not in valid and k not in _COMMON_OP_KEYS)
+    unknown = sorted(k for k in op if k not in valid and k not in _COMMON_OP_KEYS and not str(k).startswith("_"))
     if unknown:
         if kind in ("config", "config_set"):
             wrap_obj = {k: op[k] for k in unknown}
+            named = next((op[k] for k in ("var", "name", "key", "field") if isinstance(op.get(k), str)), None)
+            if named and "value" in op:
+                # `{"var": "enemyIsBoss", "value": "Pinnacle"}` names one variable; it is not two of them.
+                wrap_obj = {named: op["value"]}
             try:
                 wrap_json = json.dumps(wrap_obj)
             except TypeError:
