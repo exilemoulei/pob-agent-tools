@@ -415,6 +415,14 @@ do
 		register_handlers(ap.rpc_handlers)
 		if ap.rpc_handlers.agent_probe_build then CAPS.agentProbes = true end
 	end
+
+	local sce = load_ext("skill_calcs_ext.lua")
+	if type(sce) == "table" and type(sce.rpc_handlers) == "table" then
+		register_handlers(sce.rpc_handlers)
+		if sce.rpc_handlers.get_group_gem_states and sce.rpc_handlers.apply_group_gem_states then
+			CAPS.skillCalcsExt = true
+		end
+	end
 end
 
 -- Blocking NDJSON stdin/stdout RPC loop
