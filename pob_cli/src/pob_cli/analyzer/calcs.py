@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+import sys
 from collections.abc import Iterable
 from typing import Any
 
@@ -369,7 +370,7 @@ def search_calcs_breakdown(
             }
         finally:
             try:
-                restore_calcs_target(worker, restore_calls)
+                restore_calcs_target(worker, restore_calls, quiet=sys.exc_info()[0] is not None)
             finally:
                 if toggled_translate and orig_translate is not None:
                     try:
