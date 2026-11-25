@@ -131,7 +131,10 @@ def test_tree_unreachable_allocate_raises_value_error() -> None:
 
 
 class _TreeWorker:
-    """Nodes 1 <- 2 <- 3 in a line from the start; 99 is unreachable and its click is ignored, as PoB does."""
+    """Nodes 1 <- 2 <- 3 in a line from the start; 99 is unreachable and its click is ignored, as PoB does.
+
+    50 and 60 belong to two ascendancies: allocating one drops the other.
+    """
 
     def __init__(self) -> None:
         self.alloc = [1, 2]
@@ -139,7 +142,9 @@ class _TreeWorker:
     def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "tree_click":
             nid = int(params["id"])
-            if nid in self.alloc:
+            if nid in (50, 60):
+                self.alloc = [n for n in self.alloc if n not in (50, 60)] + [nid]
+            elif nid in self.alloc:
                 self.alloc = [n for n in self.alloc if n < nid]  # a deallocation takes what hangs off it
             elif nid != 99:
                 self.alloc = [*self.alloc, nid]
@@ -151,6 +156,28 @@ class _TreeWorker:
 def test_an_allocation_that_failed_is_an_error_even_when_the_node_is_also_deallocated() -> None:
     with pytest.raises(ValueError, match=r"Passive node 99 could not be allocated"):
         _apply_tree_changes_in_place(_TreeWorker(), resolved_alloc=[(99, None)], resolved_dealloc=[(99, None)])  # type: ignore[arg-type]
+
+
+def test_an_allocation_removed_by_a_later_allocation_is_an_error() -> None:
+    with pytest.raises(ValueError, match=r"\[50\] were allocated and then removed by a later allocation"):
+        _apply_tree_changes_in_place(_TreeWorker(), resolved_alloc=[(50, None), (60, None)], resolved_dealloc=[])  # type: ignore[arg-type]
+
+
+def test_a_failing_calc_reports_its_own_error_not_the_restore_that_failed_after_it() -> None:
+    worker = _FakeCalcsWorker(initial_group=2, initial_skill=2)
+    real_call = worker.call
+
+    def _breaks_after_selecting(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "get_calcs" and len(worker.set_calls) >= 2:
+            raise RuntimeError("engine fell over")
+        if method == "set_calcs_input" and len(worker.set_calls) >= 2:
+            worker.set_calls.append(dict(params))
+            raise RuntimeError("restore failed too")
+        return real_call(method, params)
+
+    worker.call = _breaks_after_selecting  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="engine fell over"):
+        search_calcs_breakdown(worker, "Average Damage", skill="Fireball", no_breakdown=True)  # type: ignore[arg-type]
 
 
 def test_an_allocation_removed_by_a_deallocation_of_the_same_call_is_a_note_not_an_error() -> None:

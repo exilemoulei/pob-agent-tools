@@ -147,6 +147,16 @@ def _apply_tree_changes_in_place(
             cur_state = w.call("get_tree_state", {})
         actions_taken.append({"action": "allocated", "id": nid, "effect": eff_id})
 
+    # A later allocation can take an earlier one away (a node of another ascendancy switches the
+    # class's ascendancy); that request cannot be met, unlike one a requested deallocation undoes.
+    after_alloc = {int(x) for x in cur_state.get("allocatedNodes", [])}
+    lost = [n for n in verified_alloc_ids if n not in after_alloc]
+    if lost:
+        raise ValueError(
+            f"Passive node(s) {lost} were allocated and then removed by a later allocation in this call "
+            "(nodes of two ascendancies cannot be held together)."
+        )
+
     for nid, _ in resolved_dealloc:
         alloc_set = {int(x) for x in cur_state.get("allocatedNodes", [])}
         if nid not in alloc_set:

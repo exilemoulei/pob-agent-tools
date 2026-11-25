@@ -135,20 +135,14 @@ def _op_skill(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int)
     if len(grp_updates) > 1:
         w.call("set_group", grp_updates)
 
-    raw_sp = op.get("skillPart") if "skillPart" in op else op.get("skill_part")
-    skill_part = _parse_positive_int(raw_sp, "skillPart")
-    raw_sc = (
-        op.get("stageCount")
-        if "stageCount" in op
-        else (op.get("stage_count") if "stage_count" in op else op.get("skillStageCount"))
-    )
-    stage_count = _parse_positive_int(raw_sc, "stageCount")
+    skill_part = _parse_positive_int(_first_set(op, "skillPart", "skill_part"), "skillPart")
+    stage_count = _parse_positive_int(_first_set(op, "stageCount", "stage_count", "skillStageCount"), "stageCount")
 
     skill_cautions: list[str] = []
     allow_legacy = bool(op.get("allowLegacy", op.get("allow_legacy", False)))
     allow_illegal_level = bool(op.get("allowIllegalLevel", op.get("allow_illegal_level", False)))
     add_gem_name = op.get("addGem") or op.get("add_gem")
-    remove_gem_sel = op.get("removeGem") if "removeGem" in op else op.get("remove_gem")
+    remove_gem_sel = _first_set(op, "removeGem", "remove_gem")
     if add_gem_name:
         add_res = _apply_add_gem_in_place(
             w,

@@ -96,13 +96,16 @@ def select_calcs_target(w: BridgeWorker, group: str | int | None, skill: str | i
     return w.call("get_calcs", {})
 
 
-def restore_calcs_target(w: BridgeWorker, restores: list[dict[str, Any]]) -> None:
-    """Run every queued restore; a failed one is reported, because the command is read-only."""
+def restore_calcs_target(w: BridgeWorker, restores: list[dict[str, Any]], *, quiet: bool = False) -> None:
+    """Run every queued restore; a failed one is reported, because the command is read-only.
+
+    `quiet` is for a caller that is already failing: its own error says more than the restore's.
+    """
     first: Exception | None = None
     for rc in restores:
         try:
             w.call("set_calcs_input", rc)
         except Exception as exc:
             first = first or exc
-    if first is not None:
+    if first is not None and not quiet:
         raise BridgeError(f"The Calcs tab could not be put back as it was after --group/--skill: {first}") from first
