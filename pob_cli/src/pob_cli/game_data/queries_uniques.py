@@ -72,7 +72,6 @@ def _rank_zh_replica_row(
     zh_l: str,
     fb_l: str,
     zh_fb_l: str,
-    hay_extra: str = "",
 ) -> int | None:
     if not rep_stem:
         return 1
@@ -92,9 +91,27 @@ def _rank_zh_replica_row(
         return 2
     if len(rep_tokens) > 1 and any(all(t in c for t in rep_tokens) for c in cands):
         return 2
-    if hay_extra and rep_tokens and all(t in hay_extra for t in rep_tokens):
-        return 3
     return None
+
+
+def _replica_words_name_a_type(
+    rep_tokens: list[str], name_l: str, zh_l: str, slots_l: str, obj: dict[str, Any]
+) -> bool:
+    """True when the words after the Replica mark name the row's base type or class ("replica belt").
+
+    A word counts as a whole English word of the base type, class or slot, or as the Chinese base
+    type or its tail (`腰带` of `皮革腰带`); a piece from the middle of one (`灵护` of `海灵护身符`) is
+    a name that no Replica has, not a type.
+    """
+    en_words = set(_fold_search_text(f"{obj.get('base_type') or ''} {obj.get('item_class') or ''} {slots_l}").split())
+    zh_base = _fold_search_text(str(obj.get("base_type_zh") or ""))
+
+    def is_type(tok: str) -> bool:
+        return tok in en_words or bool(zh_base and not tok.isascii() and zh_base.endswith(tok))
+
+    return bool(rep_tokens) and any(is_type(t) for t in rep_tokens) and all(
+        is_type(t) or t in name_l or t in zh_l for t in rep_tokens
+    )
 
 
 def _query_uniques(
@@ -123,7 +140,7 @@ def _query_uniques(
     if is_zh_rep:
         rows = conn.execute(
             """
-            SELECT name_lower, zh_lower, foulborn_lower, zh_foulborn_lower, slots_lower, data_json, search_text_lower
+            SELECT name_lower, zh_lower, foulborn_lower, zh_foulborn_lower, slots_lower, data_json
             FROM uniques
             WHERE name_lower LIKE 'replica %'
                OR (zh_lower IS NOT NULL AND (instr(zh_lower, '仿品') > 0 OR instr(zh_lower, '赝品') > 0))
@@ -164,8 +181,7 @@ def _query_uniques(
 
     q_tokens = [t for t in q_lower.split() if t] if (q_lower and not is_zh_rep) else []
     scored: list[tuple[tuple[int, int, int, str], dict[str, Any] | str]] = []
-    for row in rows:
-        name_l, zh_l, fb_l, zh_fb_l, slots_l, data_json = row[:6]
+    for name_l, zh_l, fb_l, zh_fb_l, slots_l, data_json in rows:
         zh_l = zh_l or ""
         fb_l = fb_l or ""
         zh_fb_l = zh_fb_l or ""
@@ -208,11 +224,11 @@ def _query_uniques(
             payload = obj
 
         if is_zh_rep:
-            # The rest of the query may name a base type, a class or a mod, as a plain search would
-            # match it: the row's whole search text stands in when the name does not carry it.
-            rep_tier = _rank_zh_replica_row(
-                rep_stem, rep_tokens, q_lower, name_l, zh_l, fb_l, zh_fb_l, hay_extra=f"{hay_extra} {row[6]}"
-            )
+            rep_tier = _rank_zh_replica_row(rep_stem, rep_tokens, q_lower, name_l, zh_l, fb_l, zh_fb_l)
+            if rep_tier is None and _replica_words_name_a_type(
+                rep_tokens, name_l, zh_l, slots_l, payload if isinstance(payload, dict) else json.loads(data_json)
+            ):
+                rep_tier = 3
             if rep_tier is None:
                 continue
             tier = rep_tier

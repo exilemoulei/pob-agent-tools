@@ -285,16 +285,24 @@ def lookup_fact_cards_for_build(
         conn.close()
 
 
-_REPLICA_BEFORE_RE = re.compile(r"(?:仿品|赝品)[\s·・.．\-:：】\]）)]*$")
-_REPLICA_AFTER_RE = re.compile(r"^[\s·・.．\-:：]*[【\[（(]?\s*(?:仿品|赝品)")
+# A Replica mark belongs to the name it touches: `仿品·猎首`, `【仿品】猎首`, `猎首【仿品】`, `猎首仿品`.
+# One that closes the name before (`X【仿品】 猎首`) or opens the name after (`猎首 仿品Y`) is not this
+# name's mark.
+_REPLICA_BEFORE_RE = re.compile(
+    r"(?:(?:仿品|赝品)[\s·・.．\-:：]*|(?:^|[^\w】\]）)])[【\[（(]\s*(?:仿品|赝品)\s*[】\]）)])$"
+)
+_REPLICA_AFTER_RE = re.compile(
+    r"^[\s·・.．\-:：]*(?:[【\[（(]\s*(?:仿品|赝品)\s*[】\]）)]|(?:仿品|赝品)(?=$|[，,。;；!！?？、)）]))"
+)
 
 
-def _resolve_slang(folded_tw: str) -> list[dict[str, str]]:
+def _resolve_slang(folded_tw: str) -> list[dict[str, Any]]:
     """Slang found in the text, longest first; a word inside a longer hit is not a hit of its own.
 
-    A unique's slang next to a Replica mark (`仿品·猎首`, `猎首【仿品】`) names the Replica, not the item.
+    A unique's slang that carries a Replica mark is flagged `_replica`; `_settle_replica_slang`
+    turns it into the Replica when the data has one.
     """
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     covered: list[tuple[int, int]] = []
     for slang in _SLANG_SORTED_KEYS:
         canon_en, kind_hint = PLAYER_SLANG_MAP[slang]
@@ -314,7 +322,23 @@ def _resolve_slang(folded_tw: str) -> list[dict[str, str]]:
         if plain:
             out.append({"slang": slang, "canonical": canon_en, "kind": kind_hint})
         if marked:
-            out.append({"slang": slang, "canonical": f"Replica {canon_en}", "kind": kind_hint})
+            out.append({"slang": slang, "canonical": canon_en, "kind": kind_hint, "_replica": True})
+    return out
+
+
+def _settle_replica_slang(resolved: list[dict[str, Any]], conn: sqlite3.Connection | None) -> list[dict[str, str]]:
+    """Name the Replica for a marked slang hit only when the data has that Replica; else the item itself."""
+    out: list[dict[str, str]] = []
+    for item in resolved:
+        canon = str(item["canonical"])
+        if item.get("_replica") and conn is not None:
+            row = conn.execute(
+                "SELECT 1 FROM uniques WHERE name_lower = ? LIMIT 1", (_fold_search_text(f"Replica {canon}"),)
+            ).fetchone()
+            canon = f"Replica {canon}" if row else canon
+        entry = {"slang": str(item["slang"]), "canonical": canon, "kind": str(item["kind"])}
+        if entry not in out:
+            out.append(entry)
     return out
 
 
@@ -357,6 +381,7 @@ def ground_text_entities(
             pob_ver = meta.get("pob_version", "unknown")
             data_ver = meta.get("data_version", "unknown")
 
+            resolved_slang = _settle_replica_slang(resolved_slang, conn)
             if raw and limit > 0:
                 for slang_item in resolved_slang:
                     if len(entities) >= limit:
@@ -396,19 +421,23 @@ def ground_text_entities(
 
                     matched_refs: list[tuple[str, int, str]] = []
                     if has_cjk and text_zh_compact:
-                        covered_zh: list[str] = []
+                        # A name counts where it stands outside every longer name already matched,
+                        # whether or not the slang pass named that longer one first.
+                        covered_zh: list[tuple[int, int]] = []
                         for zh_c, kind, rid, name in idx["zh"]:
                             if len(entities) + len(matched_refs) >= limit:
                                 break
-                            if zh_c in text_zh_compact:
-                                if any(zh_c in prev for prev in covered_zh):
-                                    continue
-                                # Covers its substrings even when the slang pass already named it.
-                                covered_zh.append(zh_c)
-                                ekey = (kind, name)
-                                if ekey not in seen_keys:
-                                    seen_keys.add(ekey)
-                                    matched_refs.append((kind, rid, f"zh:{zh_c}"))
+                            pos, free = text_zh_compact.find(zh_c), False
+                            while pos >= 0:
+                                end = pos + len(zh_c)
+                                if not any(a <= pos and end <= b for a, b in covered_zh):
+                                    covered_zh.append((pos, end))
+                                    free = True
+                                pos = text_zh_compact.find(zh_c, pos + 1)
+                            ekey = (kind, name)
+                            if free and ekey not in seen_keys:
+                                seen_keys.add(ekey)
+                                matched_refs.append((kind, rid, f"zh:{zh_c}"))
 
                     if has_ascii and len(entities) + len(matched_refs) < limit:
                         for name_l, kind, rid, name in idx["en"]:
@@ -436,6 +465,8 @@ def ground_text_entities(
         finally:
             conn.close()
 
+    # Without the data nothing says a Replica exists: the slang names the item itself.
+    resolved_slang = _settle_replica_slang(resolved_slang, None)
     elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 2)
     env = {"game": "poe1", "patch": "3.30", "pobVersion": pob_ver, "dataVersion": data_ver}
     context_block = _format_ground_context_block(

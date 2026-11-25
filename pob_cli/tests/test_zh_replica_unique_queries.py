@@ -282,33 +282,67 @@ def test_a_replica_query_still_matches_on_item_type(tmp_path: Path) -> None:
     # The words after the Replica mark may name a base type or a class, with or without --ilvl.
     assert names("仿品 sulphur flask") == {"Replica Sorrow of the Divine"}
     assert names("仿品 sulphur flask", ilvl=100) == {"Replica Sorrow of the Divine"}
+    assert names("仿品 硫磺药剂") == names("仿品 药剂") == {"Replica Sorrow of the Divine"}
     assert names("仿品 amulet") == {"Replica Atziri's Foible", "Replica Astramentis"}
     assert names("replica 神圣哀悼") == {"Replica Sorrow of the Divine"}
     assert names("仿品 no such thing") == set()
+    # A piece from the middle of a base type, or of a mod line, is a name no Replica has.
+    assert names("仿品灵护") == names("仿品 灵护", ilvl=100) == set()  # 海灵护身符
+    assert names("仿品 consecrated") == names("仿品 圣徽之外") == set()
 
 
-def test_grounding_names_the_replica_when_slang_sits_next_to_a_replica_mark(tmp_path: Path) -> None:
-    from pob_cli.game_data.grounding import _resolve_slang
+def test_grounding_names_the_replica_when_slang_carries_a_replica_mark(tmp_path: Path) -> None:
+    import sqlite3
 
-    def canon(text: str) -> list[str]:
-        return [r["canonical"] for r in _resolve_slang(text)]
+    from pob_cli.game_data.grounding import _resolve_slang, _settle_replica_slang
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE uniques (name_lower TEXT)")
+    conn.executemany("INSERT INTO uniques VALUES (?)", [("replica headhunter",), ("replica farrul's fur",)])
+
+    def canon(text: str, db: sqlite3.Connection | None = conn) -> list[str]:
+        return [r["canonical"] for r in _settle_replica_slang(_resolve_slang(text), db)]
 
     assert canon("猎首") == ["Headhunter"]
-    for marked in ("仿品·猎首", "赝品猎首", "仿品 猎首", "猎首【仿品】", "我带了仿品·猎首"):
+    for marked in ("仿品·猎首", "赝品猎首", "仿品 猎首", "猎首【仿品】", "【仿品】猎首", "猎首仿品", "我带了仿品·猎首"):
         assert canon(marked) == ["Replica Headhunter"], marked
     # A slang word inside a longer one is not a hit of its own; both items named means both.
     assert canon("仿品猎首") == ["Replica Headhunter"]
     assert canon("猎首和仿品猎首") == ["Replica Headhunter", "Headhunter"]
     assert canon("仿品清单里没有猎首") == ["Headhunter"]
+    # A mark that belongs to the neighbouring name is not this name's mark.
+    assert canon("猎首 仿品猫衣") == ["Replica Farrul's Fur", "Headhunter"]
+    assert canon("神圣哀悼【仿品】 猎首") == ["Headhunter"]
+    assert canon("猎首 赝品神圣哀悼") == ["Headhunter"]
+    # No such Replica in the data, or no data: the item itself, never an invented name.
+    assert canon("仿品魔血") == ["Mageblood"]
+    assert canon("仿品·猎首", None) == ["Headhunter"]
+    conn.close()
 
     _english_for_zh_cached.cache_clear()
     pob_root, rt_dir = _build_replica_fixture_pob(tmp_path)
+
+    def grounded(text: str) -> list[str]:
+        return [e["name"] for e in ground_text_entities(text, pob_dir=pob_root, runtime_dir=rt_dir)["entities"]]
+
     for text in ("仿品·猫衣", "猫衣【仿品】", "仿品猫衣"):
+        assert grounded(text) == ["Replica Farrul's Fur"], text
+    assert grounded("猫衣") == ["Farrul's Fur"]
+    assert grounded("仿品魔血") == ["Mageblood"]
+    # A shorter name inside a longer one is not named, unless it also stands on its own.
+    assert grounded("神圣哀悼【仿品】") == ["Replica Sorrow of the Divine"]
+    assert grounded("神圣哀悼【仿品】和神圣哀悼") == ["Replica Sorrow of the Divine", "Sorrow of the Divine"]
+
+
+def test_grounding_reads_the_bracketed_replica_form_in_a_traditional_locale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("POB_LANG", "zh-TW")
+    _english_for_zh_cached.cache_clear()
+    pob_root, rt_dir = _build_replica_fixture_pob(tmp_path)
+    for text in ("神圣哀悼【仿品】", "贗品．神聖哀悼"):
         ents = ground_text_entities(text, pob_dir=pob_root, runtime_dir=rt_dir)["entities"]
-        assert [e["name"] for e in ents] == ["Replica Farrul's Fur"], text
-    assert [e["name"] for e in ground_text_entities("猫衣", pob_dir=pob_root, runtime_dir=rt_dir)["entities"]] == [
-        "Farrul's Fur"
-    ]
+        assert [e["name"] for e in ents] == ["Replica Sorrow of the Divine"], text
 
 
 def test_data_unique_zh_tw_locale_matches_simplified_and_traditional_replica_queries(
