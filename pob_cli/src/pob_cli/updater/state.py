@@ -360,7 +360,10 @@ def probe_engine_gate(engine_dir: Path, timeout_sec: float = 20.0) -> dict[str, 
             pass
 
 
-def _save_bootstrap_missing_state(eng_dir: Path, rt_dir: Path, err: str) -> dict[str, Any]:
+def _save_bootstrap_missing_state(
+    eng_dir: Path, rt_dir: Path, err: str, *, hint: str | None = None
+) -> dict[str, Any]:
+    """Record that no engine is installed. `hint` replaces the default advice, which is about the network."""
     state = {
         "state": STATE_BOOTSTRAP_MISSING,
         "localPobVersion": None,
@@ -370,7 +373,7 @@ def _save_bootstrap_missing_state(eng_dir: Path, rt_dir: Path, err: str) -> dict
         "checkedAt": time.time(),
         "engineDir": str(eng_dir),
         "networkError": err,
-        "userHint": _build_user_hint(STATE_BOOTSTRAP_MISSING, None, err),
+        "userHint": hint or _build_user_hint(STATE_BOOTSTRAP_MISSING, None, err),
     }
     save_update_state(state, rt_dir)
     return state

@@ -20,6 +20,7 @@ from ..updater import (
     get_update_warning,
     is_valid_engine_dir,
     load_update_state,
+    recover_idle_engine,
     resolve_engine_root,
 )
 from .read_cache import READ_CACHE_ACTIONS, SlotReadCache
@@ -237,6 +238,8 @@ class DaemonManager:
 
         launch_bg_check = False
         with self._exclusive_barrier():
+            # An update killed mid-swap leaves a mix of two versions that still looks valid.
+            recover_idle_engine(self.pob_dir)
             checked_at = float(self.update_status.get("checkedAt") or 0.0)
             engine_valid = is_valid_engine_dir(self.pob_dir)
             fresh_ok = (

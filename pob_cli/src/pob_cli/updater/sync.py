@@ -24,7 +24,7 @@ from .constants import (
     _is_version_newer,
     _to_httpx_timeout,
 )
-from .engine_lock import STAGING_DIRNAME, EngineBusyError, engine_update_lock, recover_idle_engine
+from .engine_lock import STAGING_DIRNAME, EngineLockError, engine_update_lock, recover_idle_engine
 from .manifest import (
     _render_local_manifest_xml,
     diff_pob_manifest,
@@ -342,7 +342,7 @@ def _apply_and_finalize_update(
             engine_dir=write_dir,
             rt_dir=rt_dir,
             err_msg=apply_res.get("error") or "gate_result probe failed",
-            rolled_back=True,
+            rolled_back=bool(apply_res.get("rolledBack")),
         )
 
     final_tools_ver = remote_tools_ver if tools_needs_update else (local_vers["pobToolsVersion"] or remote_tools_ver)
@@ -421,8 +421,9 @@ def check_and_apply_updates(
                 include_zh=include_zh,
                 probe_fn=probe_callable,
             )
-        except EngineBusyError as exc:  # callers get a state, never an exception, for "not installed yet"
-            return _save_bootstrap_missing_state(target, rt_dir, str(exc))
+        except EngineLockError as exc:  # callers get a state, never an exception, for "not installed yet"
+            # Busy or not writable: the default hint would send the user to their proxy settings.
+            return _save_bootstrap_missing_state(target, rt_dir, str(exc), hint=str(exc))
 
     recover_idle_engine(active_dir)
     local_vers = detect_local_versions(active_dir, rt_dir)
@@ -563,6 +564,6 @@ def check_and_apply_updates(
                 mirror=mirror,
                 probe_callable=probe_callable,
             )
-    except EngineBusyError as exc:
-        # The other process is applying this same update; report it as still pending.
+    except EngineLockError as exc:
+        # Another process is applying this same update, or the folder is read-only: still pending.
         return _still_pending({"updateSkipped": str(exc)})

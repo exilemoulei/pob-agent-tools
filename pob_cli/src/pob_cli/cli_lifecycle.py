@@ -125,6 +125,7 @@ def cmd_bootstrap(
     from .updater import (
         STATE_BOOTSTRAP_MISSING,
         EngineGateError,
+        EngineLockError,
         UpdateError,
         bootstrap_engine,
         get_update_warning,
@@ -151,6 +152,10 @@ def cmd_bootstrap(
     except EngineGateError as exc:
         detail = str(exc).strip() or type(exc).__name__
         err = click.ClickException(f"PoB engine bootstrap gate check failed: {detail}")
+        err.exit_code = DAEMON_FAILURE_EXIT_CODE
+        raise err from exc
+    except EngineLockError as exc:  # busy or read-only engine folder: nothing wrong with the request
+        err = click.ClickException(str(exc).strip() or type(exc).__name__)
         err.exit_code = DAEMON_FAILURE_EXIT_CODE
         raise err from exc
     except UpdateError as exc:
@@ -275,6 +280,8 @@ def cmd_update(
         ]
         if res.get("networkError"):
             rows.append(["Network Error", res["networkError"]])
+        if res.get("updateSkipped"):
+            rows.append(["Update Skipped", res["updateSkipped"]])
         body = "### PoB Engine Update Status\n" + render_table(["Field", "Value"], rows)
         _emit_text(_prepend_warning(body, res), out_path=out_path)
 

@@ -49,6 +49,7 @@ from .constants import (
     resolve_proxy,
     rewrite_github_url,
 )
+from .engine_lock import EngineLockError, recover_idle_engine
 from .manifest import (
     _load_manifest_stat_cache,
     _render_local_manifest_xml,
@@ -144,6 +145,7 @@ __all__ = [
     "UPDATE_STATE_FILENAME",
     "USER_AGENT",
     "EngineGateError",
+    "EngineLockError",
     "ManifestFileEntry",
     "PobManifest",
     "UpdateError",
@@ -197,6 +199,7 @@ __all__ = [
     "load_update_state",
     "parse_pob_manifest",
     "probe_engine_gate",
+    "recover_idle_engine",
     "resolve_engine_root",
     "resolve_luajit_binary",
     "resolve_mirror",

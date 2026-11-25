@@ -27,6 +27,7 @@ from .engine_lock import (
     BACKUP_DIRNAME,
     STAGING_DIRNAME,
     backup_file,
+    discard_backup,
     engine_update_lock,
     restore_interrupted_apply,
 )
@@ -67,12 +68,27 @@ def _apply_staged_files_with_gate(
 
     # A backup folder still here belongs to a run that died mid-swap: its files go back first.
     restore_interrupted_apply(eng)
+    if bak_dir.is_dir():
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        return {
+            "ok": False,
+            "rolledBack": False,
+            "probe": None,
+            "error": (
+                f"An earlier update was cut short and its files in {bak_dir} could not be put back, "
+                "most likely because an engine is still running. Run `pob stop` and retry."
+            ),
+        }
     bak_dir.mkdir(parents=True, exist_ok=True)
 
     backed_up: list[tuple[Path, Path]] = []
     created: list[Path] = []
+    # `.bak` is deleted only once nothing needs it: the swap is kept, or every file went back.
+    kept = False
+    rolled_back = False
 
-    def _rollback() -> None:
+    def _rollback() -> bool:
+        whole = True
         for dst, bak in reversed(backed_up):
             try:
                 dst.parent.mkdir(parents=True, exist_ok=True)
@@ -83,13 +99,14 @@ def _apply_staged_files_with_gate(
                     if bak.exists():
                         shutil.copy2(bak, dst)
                 except Exception:
-                    pass
+                    whole = False
         for created_file in reversed(created):
             try:
                 if created_file.is_file():
                     created_file.unlink()
             except Exception:
                 pass
+        return whole
 
     try:
         for rel_path, staged_src in staged_files.items():
@@ -113,32 +130,36 @@ def _apply_staged_files_with_gate(
 
         probe = probe_fn(eng)
         if not probe.get("ok"):
-            _rollback()
+            rolled_back = _rollback()
             return {
                 "ok": False,
-                "rolledBack": True,
+                "rolledBack": rolled_back,
                 "probe": probe,
                 "error": probe.get("error") or "gate_result probe failed",
             }
+        kept = True
         return {
             "ok": True,
             "rolledBack": False,
             "probe": probe,
         }
     except Exception as exc:
-        _rollback()
+        rolled_back = _rollback()
         return {
             "ok": False,
-            "rolledBack": True,
+            "rolledBack": rolled_back,
             "probe": None,
             "error": f"{type(exc).__name__}: {exc}",
         }
     except BaseException:
-        # Ctrl-C or an exit mid-swap: the `finally` below deletes the backups, so use them first.
-        _rollback()
+        # Ctrl-C or an exit mid-swap. A second one inside the rollback leaves `.bak` for the next run.
+        rolled_back = _rollback()
         raise
     finally:
-        shutil.rmtree(bak_dir, ignore_errors=True)
+        if kept:
+            discard_backup(eng)
+        elif rolled_back:
+            shutil.rmtree(bak_dir, ignore_errors=True)
         shutil.rmtree(staging_dir, ignore_errors=True)
 
 

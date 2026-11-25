@@ -13,6 +13,7 @@ from .constants import UpdateError
 from .self_update import _lock
 
 BACKUP_DIRNAME = ".bak"
+_DISCARDED_DIRNAME = ".bak-done"
 STAGING_DIRNAME = ".staging"
 LOCK_FILENAME = ".update.lock"
 _PARTIAL_SUFFIX = ".pob-partial"
@@ -20,7 +21,11 @@ _PARTIAL_SUFFIX = ".pob-partial"
 _held = threading.local()
 
 
-class EngineBusyError(UpdateError):
+class EngineLockError(UpdateError):
+    """The engine folder could not be taken for an install or update."""
+
+
+class EngineBusyError(EngineLockError):
     """Another process or thread is installing or updating the same engine folder."""
 
 
@@ -43,7 +48,7 @@ def engine_update_lock(engine_dir: Path) -> Iterator[None]:
         eng.mkdir(parents=True, exist_ok=True)
         fh = open(eng / LOCK_FILENAME, "a+b")
     except OSError as exc:
-        raise UpdateError(f"Cannot write to the engine folder {eng}: {exc}") from exc
+        raise EngineLockError(f"Cannot write to the engine folder {eng}: {exc}") from exc
     with fh:
         try:
             _lock(fh)
@@ -69,6 +74,27 @@ def backup_file(src: Path, bak: Path) -> None:
     os.replace(partial, bak)
 
 
+def discard_backup(engine_dir: Path) -> None:
+    """Drop the backups of a swap that is being kept.
+
+    One rename decides it. Deleting `.bak` file by file could be cut short and leave a folder
+    that looks like an interrupted swap, and the next run would put old files back over an
+    update that had gone through.
+    """
+    eng = Path(engine_dir)
+    bak_dir = eng / BACKUP_DIRNAME
+    done_dir = eng / _DISCARDED_DIRNAME
+    shutil.rmtree(done_dir, ignore_errors=True)
+    if not bak_dir.is_dir():
+        return
+    try:
+        os.rename(bak_dir, done_dir)
+    except OSError:
+        shutil.rmtree(bak_dir, ignore_errors=True)  # no rename here: the plain delete is all there is
+        return
+    shutil.rmtree(done_dir, ignore_errors=True)
+
+
 def restore_interrupted_apply(engine_dir: Path) -> int:
     """Put back the files an update had replaced when it was cut short; return how many.
 
@@ -76,21 +102,29 @@ def restore_interrupted_apply(engine_dir: Path) -> int:
     marks a run killed between its first replaced file and its probe, which leaves the engine a
     mix of two versions that still passes for a valid one. Files the dead run added stay: nothing
     recorded them, and the next update check finds whatever is missing next to them.
+
+    A backup that cannot be put back (a running engine holds the file open on Windows) stays in
+    `.bak` for the next try, so `.bak` still being there afterwards means the restore is not done.
     """
     eng = Path(engine_dir)
+    shutil.rmtree(eng / _DISCARDED_DIRNAME, ignore_errors=True)
     bak_dir = eng / BACKUP_DIRNAME
     if not bak_dir.is_dir():
         return 0
     restored = 0
+    complete = True
     for bak in sorted(p for p in bak_dir.rglob("*") if p.is_file()):
         if bak.name.endswith(_PARTIAL_SUFFIX):
             continue  # its copy was cut short, so the engine still holds the original
         dst = eng / bak.relative_to(bak_dir)
-        with suppress(OSError):
+        try:
             dst.parent.mkdir(parents=True, exist_ok=True)
             os.replace(bak, dst)
             restored += 1
-    shutil.rmtree(bak_dir, ignore_errors=True)
+        except OSError:
+            complete = False
+    if complete:
+        shutil.rmtree(bak_dir, ignore_errors=True)
     return restored
 
 
