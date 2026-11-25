@@ -14,6 +14,7 @@ from .self_update import _lock
 
 BACKUP_DIRNAME = ".bak"
 _KEPT_MARKER = ".bak-kept"
+_DISCARDED_DIRNAME = ".bak-done"
 STAGING_DIRNAME = ".staging"
 LOCK_FILENAME = ".update.lock"
 _PARTIAL_SUFFIX = ".pob-partial"
@@ -83,39 +84,58 @@ def discard_backup(engine_dir: Path) -> None:
     update that had gone through.
     """
     eng = Path(engine_dir)
-    if not (eng / BACKUP_DIRNAME).is_dir():
+    bak_dir = eng / BACKUP_DIRNAME
+    if not bak_dir.is_dir():
         return
-    with suppress(OSError):  # a folder that takes no new file still gets the plain delete
+    try:
         (eng / _KEPT_MARKER).touch()
+    except OSError:
+        # No room for a new file (a full disk): a rename needs none and says the same thing. With
+        # neither, `.bak` stays whole and the next run puts the old engine back in one piece, which
+        # the update check after it repairs; a partial delete would leave a mix nothing repairs.
+        with suppress(OSError):
+            os.rename(bak_dir, eng / _DISCARDED_DIRNAME)
     _finish_discard(eng)
 
 
 def _finish_discard(eng: Path) -> None:
+    shutil.rmtree(eng / _DISCARDED_DIRNAME, ignore_errors=True)
+    marker = eng / _KEPT_MARKER
+    if not marker.exists():
+        return
     bak_dir = eng / BACKUP_DIRNAME
     shutil.rmtree(bak_dir, ignore_errors=True)
     if not bak_dir.exists():
         # Only once `.bak` is gone: a marker left behind would have the next run's backups deleted.
         with suppress(OSError):
-            (eng / _KEPT_MARKER).unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
+
+
+def unrestored_swap(engine_dir: Path) -> str | None:
+    """Say so when `engine_dir` still holds half of an update that could not be put back."""
+    eng = Path(engine_dir)
+    bak_dir = eng / BACKUP_DIRNAME
+    if (eng / _KEPT_MARKER).exists() or not bak_dir.is_dir():
+        return None
+    return (
+        f"An earlier update was cut short and its files in {bak_dir} could not be put back, "
+        "most likely because an engine is still running. Run `pob stop` and retry; "
+        "delete that folder only to keep the engine exactly as it is now."
+    )
 
 
 def backup_in_the_way(engine_dir: Path) -> str | None:
     """Why no new swap may start in `engine_dir`, or None when nothing of an earlier one is left."""
     eng = Path(engine_dir)
+    marker = eng / _KEPT_MARKER
+    if not marker.exists():
+        return unrestored_swap(eng)
     bak_dir = eng / BACKUP_DIRNAME
-    if (eng / _KEPT_MARKER).exists():
-        return (
-            f"The backups of the last update in {bak_dir} could not be deleted, most likely because "
-            "another program holds one of them open. The engine itself is complete. "
-            "Close that program or delete the folder, then retry."
-        )
-    if bak_dir.is_dir():
-        return (
-            f"An earlier update was cut short and its files in {bak_dir} could not be put back, "
-            "most likely because an engine is still running. Run `pob stop` and retry; "
-            "delete that folder only to keep the engine exactly as it is now."
-        )
-    return None
+    left = bak_dir if bak_dir.exists() else marker
+    return (
+        f"What the last update left in {left} could not be deleted, most likely because another "
+        "program holds it open. The engine itself is complete. Close that program or delete it, then retry."
+    )
 
 
 def restore_interrupted_apply(engine_dir: Path) -> int:
@@ -130,8 +150,8 @@ def restore_interrupted_apply(engine_dir: Path) -> int:
     `.bak` for the next try, so `.bak` still being there afterwards means the restore is not done.
     """
     eng = Path(engine_dir)
+    _finish_discard(eng)  # a swap that was kept: its backups are leftovers, not something to put back
     if (eng / _KEPT_MARKER).exists():
-        _finish_discard(eng)  # that swap was kept: its backups are leftovers, not something to put back
         return 0
     bak_dir = eng / BACKUP_DIRNAME
     if not bak_dir.is_dir():

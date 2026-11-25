@@ -23,6 +23,7 @@ from pob_cli.updater.engine_lock import (
     engine_update_lock,
     recover_idle_engine,
     restore_interrupted_apply,
+    unrestored_swap,
 )
 
 OK_PROBE = {"ok": True, "pobVersion": "2.69.0"}
@@ -203,8 +204,8 @@ def test_a_backup_that_cannot_go_back_is_kept_and_blocks_the_next_swap(
     assert bak.read_bytes() == b"old main\n" and main.read_bytes() == b"new main\n"
 
     staged = _stage(engine, {"PoE1/Modules/Main.lua": b"newer main\n"})
-    res = bootstrap_mod._apply_staged_files_with_gate(engine, staged, probe_fn=lambda _p: dict(OK_PROBE))
-    assert res["ok"] is False and res["rolledBack"] is False and "pob stop" in res["error"]
+    with pytest.raises(EngineLockError, match=r"could not be put back.*pob stop"):
+        bootstrap_mod._apply_staged_files_with_gate(engine, staged, probe_fn=lambda _p: dict(OK_PROBE))
     assert main.read_bytes() == b"new main\n" and bak.read_bytes() == b"old main\n"
     assert not (engine / ".staging").exists()
 
@@ -237,12 +238,12 @@ def test_a_kept_swap_cannot_be_mistaken_for_an_interrupted_one(
     with engine_update_lock(engine):
         assert main.read_bytes() == b"new main\n"
     assert recover_idle_engine(engine) == 0 and main.read_bytes() == b"new main\n"
-    blocked = bootstrap_mod._apply_staged_files_with_gate(
-        engine, _stage(engine, {"PoE1/Modules/Main.lua": b"newer main\n"}), probe_fn=lambda _p: dict(OK_PROBE)
-    )
-    assert blocked["ok"] is False and blocked["rolledBack"] is False
-    assert "could not be deleted" in blocked["error"] and "engine itself is complete" in blocked["error"]
+    newer = _stage(engine, {"PoE1/Modules/Main.lua": b"newer main\n"})
+    with pytest.raises(EngineLockError, match=r"could not be deleted.*engine itself is complete") as blocked:
+        bootstrap_mod._apply_staged_files_with_gate(engine, newer, probe_fn=lambda _p: dict(OK_PROBE))
+    assert str(engine / ".bak") in str(blocked.value)
     assert main.read_bytes() == b"new main\n" and (engine / ".bak-kept").is_file()
+    assert unrestored_swap(engine) is None  # leftovers of a kept swap are no fault of the engine
 
     monkeypatch.undo()
     with engine_update_lock(engine):
@@ -289,10 +290,12 @@ def test_a_failed_swap_that_could_not_be_undone_is_not_reported_as_rolled_back(
     assert main.read_bytes() == b"broken main\n"
     assert (engine / ".bak" / "PoE1" / "Modules" / "Main.lua").read_bytes() == b"working main\n"
 
-    # The next run cannot swap either, and says that nothing was touched instead of blaming the probe.
-    with pytest.raises(updater.EngineGateError, match="did not start") as again:
+    # The next run cannot swap either: that is a folder it cannot take, not a probe that failed.
+    with pytest.raises(EngineLockError, match="could not be put back"):
         updater.bootstrap_engine(from_dir=source, runtime_dir=rt, probe_fn=lambda _p: dict(OK_PROBE))
-    assert "could not be put back" in str(again.value)
+    assert updater.get_update_warning({"state": updater.STATE_DEGRADED_ROLLBACK, "networkError": "x"}) == (
+        updater.state._build_user_hint(updater.STATE_DEGRADED_ROLLBACK, None, "x", rolled_back=False)
+    )
 
     hint_kept = updater.state._build_user_hint(updater.STATE_DEGRADED_ROLLBACK, "2.68.1", "Build.Init")
     hint_mixed = updater.state._build_user_hint(
@@ -391,3 +394,102 @@ def test_a_daemon_puts_an_interrupted_swap_back_before_its_first_worker_loads_it
     mgr.start()
     assert mgr._workers["main"].seen_main == b"old main\n"
     assert not (engine / ".bak").exists()
+
+
+def test_a_kept_swap_survives_a_marker_that_cannot_be_written_or_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = _make_fake_engine(tmp_path / "engine", files={"Modules/Main.lua": b"old main\n"})
+    main = engine / "PoE1" / "Modules" / "Main.lua"
+    real_touch, real_unlink, real_rmtree = Path.touch, Path.unlink, engine_lock_mod.shutil.rmtree
+
+    def _no_new_file(self: Path, *a: Any, **k: Any) -> None:
+        if self.name == ".bak-kept":
+            raise OSError(28, "No space left on device", str(self))
+        real_touch(self, *a, **k)
+
+    def _backups_stay(path: Any, *a: Any, **k: Any) -> None:
+        if Path(path).name in (".bak", ".bak-done") and Path(path).exists():
+            return
+        real_rmtree(path, *a, **k)
+
+    # A full disk takes no marker, and the delete is cut short: the rename still says "kept".
+    monkeypatch.setattr(Path, "touch", _no_new_file)
+    monkeypatch.setattr(engine_lock_mod.shutil, "rmtree", _backups_stay)
+    staged = _stage(engine, {"PoE1/Modules/Main.lua": b"new main\n"})
+    assert bootstrap_mod._apply_staged_files_with_gate(engine, staged, probe_fn=lambda _p: dict(OK_PROBE))["ok"]
+    assert (engine / ".bak-done").is_dir() and not (engine / ".bak").exists()
+    monkeypatch.undo()
+    with engine_update_lock(engine):
+        assert main.read_bytes() == b"new main\n" and not (engine / ".bak-done").exists()
+
+    def _marker_held(self: Path, *a: Any, **k: Any) -> None:
+        if self.name == ".bak-kept":
+            raise PermissionError(13, "The process cannot access the file", str(self))
+        real_unlink(self, *a, **k)
+
+    # The backups go but a scanner holds the marker: the message names what is really in the way.
+    monkeypatch.setattr(Path, "unlink", _marker_held)
+    staged = _stage(engine, {"PoE1/Modules/Main.lua": b"newer main\n"})
+    assert bootstrap_mod._apply_staged_files_with_gate(engine, staged, probe_fn=lambda _p: dict(OK_PROBE))["ok"]
+    assert (engine / ".bak-kept").is_file() and not (engine / ".bak").exists()
+    with pytest.raises(EngineLockError) as held:
+        bootstrap_mod._apply_staged_files_with_gate(
+            engine, _stage(engine, {"PoE1/Modules/Main.lua": b"newest\n"}), probe_fn=lambda _p: dict(OK_PROBE)
+        )
+    assert str(engine / ".bak-kept") in str(held.value) and str(engine / ".bak") + " " not in str(held.value)
+    monkeypatch.undo()
+    with engine_update_lock(engine):
+        assert main.read_bytes() == b"newer main\n" and not (engine / ".bak-kept").exists()
+
+
+def test_an_update_refused_before_its_swap_stays_pending_and_a_stuck_added_file_is_no_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = _make_fake_engine(tmp_path / "engine", files={"Modules/Main.lua": b"old main\n"})
+    added = engine / "PoE1" / "Modules" / "Added.lua"
+    real_unlink = Path.unlink
+
+    def _added_held(self: Path, *a: Any, **k: Any) -> None:
+        if self == added:
+            raise PermissionError(13, "The process cannot access the file", str(self))
+        real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", _added_held)
+    staged = _stage(engine, {"PoE1/Modules/Main.lua": b"new main\n", "PoE1/Modules/Added.lua": b"added\n"})
+    res = bootstrap_mod._apply_staged_files_with_gate(
+        engine, staged, probe_fn=lambda _p: {"ok": False, "error": "Build.Init"}
+    )
+    monkeypatch.undo()
+    assert res["ok"] is False and added.is_file()
+    assert res["rolledBack"] is False  # a file of the failed update is still in the engine
+    text = bootstrap_mod._failed_apply_text(res, engine)
+    assert text.startswith("Build.Init. Not every file") and "was put back as it was" not in text
+    assert bootstrap_mod._failed_apply_text({**res, "rolledBack": True}, engine).endswith("was put back as it was.")
+
+
+def test_a_daemon_on_a_half_updated_engine_says_so_with_every_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = _make_fake_engine(tmp_path / "engine", files={"Modules/Main.lua": b"new main\n"})
+    main, _bak = _old_main_backed_up(engine)
+    real_replace = os.replace
+
+    def _file_in_use(src: Any, dst: Any) -> None:
+        if Path(dst) == main:
+            raise PermissionError(13, "The process cannot access the file", str(dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(engine_lock_mod.os, "replace", _file_in_use)
+    monkeypatch.setattr(daemon_mod, "BridgeWorker", _IdleWorker)
+    mgr = daemon_mod.DaemonManager(
+        pob_dir=engine, token="tok", runtime_dir=tmp_path / "rt", offline=True, skip_update_check=True
+    )
+    mgr.start()
+    warned = mgr._attach_warning_if_degraded({})
+    assert "could not be put back" in warned["updateWarning"] and "pob stop" in warned["updateWarning"]
+
+    monkeypatch.setattr(engine_lock_mod.os, "replace", real_replace)
+    assert recover_idle_engine(engine) == 1
+    assert "updateWarning" not in mgr._attach_warning_if_degraded({})
+

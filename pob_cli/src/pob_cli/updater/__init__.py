@@ -49,7 +49,7 @@ from .constants import (
     resolve_proxy,
     rewrite_github_url,
 )
-from .engine_lock import EngineLockError, recover_idle_engine
+from .engine_lock import EngineLockError, recover_idle_engine, unrestored_swap
 from .manifest import (
     _load_manifest_stat_cache,
     _render_local_manifest_xml,
@@ -208,5 +208,6 @@ __all__ = [
     "save_update_state",
     "seed_from_legacy_dir",
     "shutil",
+    "unrestored_swap",
     "verify_pob_sha1",
 ]

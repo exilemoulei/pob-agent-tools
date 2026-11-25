@@ -208,6 +208,7 @@ def get_update_warning(state: dict[str, Any] | None) -> str | None:
         st,
         local_pob_version=state.get("localPobVersion"),
         network_error=state.get("networkError"),
+        rolled_back=bool(state.get("rolledBack")),
     )
 
 

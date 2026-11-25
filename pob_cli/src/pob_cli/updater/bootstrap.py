@@ -26,6 +26,7 @@ from .constants import (
 from .engine_lock import (
     BACKUP_DIRNAME,
     STAGING_DIRNAME,
+    EngineLockError,
     backup_file,
     backup_in_the_way,
     discard_backup,
@@ -71,8 +72,9 @@ def _apply_staged_files_with_gate(
     restore_interrupted_apply(eng)
     blocked = backup_in_the_way(eng)
     if blocked:
+        # Nothing was swapped, so this is a folder that cannot be taken, not an update that failed.
         shutil.rmtree(staging_dir, ignore_errors=True)
-        return {"ok": False, "rolledBack": False, "untouched": True, "probe": None, "error": blocked}
+        raise EngineLockError(blocked)
     bak_dir.mkdir(parents=True, exist_ok=True)
 
     backed_up: list[tuple[Path, Path]] = []
@@ -99,7 +101,7 @@ def _apply_staged_files_with_gate(
                 if created_file.is_file():
                     created_file.unlink()
             except Exception:
-                pass
+                whole = False  # a file of the failed update stays in the engine
         return whole
 
     try:
@@ -157,6 +159,14 @@ def _apply_staged_files_with_gate(
         shutil.rmtree(staging_dir, ignore_errors=True)
 
 
+def _failed_apply_text(apply_res: dict[str, Any], eng_dir: Path) -> str:
+    """The probe's error plus what became of the engine folder, which the probe's error does not say."""
+    err = str(apply_res.get("error") or "gate_result probe failed").rstrip(". ")
+    if apply_res.get("rolledBack"):
+        return f"{err}. {eng_dir} was put back as it was."
+    return f"{err}. Not every file of {eng_dir} could be put back; run `pob stop` and repeat the command."
+
+
 def _bootstrap_from_dir(
     from_dir: Path,
     eng_dir: Path,
@@ -193,14 +203,7 @@ def _bootstrap_from_dir(
     staged = {p.relative_to(staging_dir): p for p in staging_dir.rglob("*") if p.is_file()}
     apply_res = _apply_staged_files_with_gate(eng_dir, staged, probe_fn=probe_callable)
     if not apply_res["ok"]:
-        if apply_res.get("untouched"):
-            raise EngineGateError(f"Offline bootstrap did not start: {apply_res.get('error')}")
-        outcome = (
-            f"{eng_dir} was put back as it was."
-            if apply_res.get("rolledBack")
-            else f"Not every file of {eng_dir} could be put back; run `pob stop` and repeat the command."
-        )
-        raise EngineGateError(f"Offline bootstrap failed gate_result probe: {apply_res.get('error')}. {outcome}")
+        raise EngineGateError(f"Offline bootstrap failed gate_result probe: {_failed_apply_text(apply_res, eng_dir)}")
     probe = apply_res["probe"]
     vers = detect_local_versions(eng_dir, rt_dir)
     state = {
@@ -424,7 +427,7 @@ def _bootstrap_engine_locked(
             if rolled_back:
                 state["rolledBack"] = True
             save_update_state(state, rt_dir)
-            raise EngineGateError(err)
+            raise EngineGateError(_failed_apply_text(apply_res, eng_dir))
 
         _write_pobtools_meta(
             eng_dir,
