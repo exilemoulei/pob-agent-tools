@@ -137,6 +137,7 @@ def test_search_slot_invokes_trade_search_with_defaults(monkeypatch: Any) -> Non
         Path(kwargs["out_path"]).write_text(json.dumps(_AMU), encoding="utf-8")
 
     monkeypatch.setattr(upgrade_cmd.cmd_trade_search, "callback", _fake_callback)
+    monkeypatch.setattr(upgrade_cmd, "_try_auto_trade_query", lambda **_: {"query": {}})
     with click.Context(upgrade_cmd.cmd_trade_upgrade) as ctx:
         data = upgrade_cmd._search_slot(ctx, "amulet", per_slot=3, league=None, proxy=None, target="main")
     assert data == _AMU
@@ -149,6 +150,7 @@ def test_search_slot_turns_nonzero_exit_into_error(monkeypatch: Any) -> None:
         click.get_current_context().exit(4)
 
     monkeypatch.setattr(upgrade_cmd.cmd_trade_search, "callback", _fake_callback)
+    monkeypatch.setattr(upgrade_cmd, "_try_auto_trade_query", lambda **_: {"query": {}})
     with click.Context(upgrade_cmd.cmd_trade_upgrade) as ctx, pytest.raises(RuntimeError, match="exited 4"):
         upgrade_cmd._search_slot(ctx, "amulet", per_slot=3, league=None, proxy=None, target="main")
 
@@ -166,3 +168,65 @@ def test_upgrade_markdown_free_move_error(monkeypatch: Any) -> None:
     _patch(monkeypatch, search={"amulet": _AMU}, respec_error="engine busy")
     text = _run(["trade", "upgrade", "--budget", "50", "--slot", "amulet"]).output
     assert "- respec: engine busy" in text and "### Support Link Optimisation" in text
+
+
+_REAL_SEARCH_SLOT = upgrade_cmd._search_slot
+
+
+def _real_search(monkeypatch: Any, *, auto_ok: bool = True) -> None:
+    """Run the real `_search_slot`; the inner trade search writes its JSON like the real one does."""
+    from pob_cli.cli_common import _emit_json
+
+    def _fake_callback(**kwargs: Any) -> None:
+        _emit_json(_AMU, out_path=kwargs["out_path"])
+
+    monkeypatch.setattr(upgrade_cmd.cmd_trade_search, "callback", _fake_callback)
+    monkeypatch.setattr(upgrade_cmd, "_search_slot", _REAL_SEARCH_SLOT)
+    monkeypatch.setattr(upgrade_cmd, "_try_auto_trade_query", lambda **_: {"query": {}} if auto_ok else None)
+
+
+def test_upgrade_json_stdout_stays_parseable(monkeypatch: Any) -> None:
+    _patch(monkeypatch, search={})
+    _real_search(monkeypatch)
+    out = _run(["trade", "upgrade", "--budget", "100", "--slot", "amulet", "--json"])
+    assert out.exit_code == 0, out.output
+    assert json.loads(out.output)["plan"]["picks"]
+
+
+def test_upgrade_auto_query_failure_is_skipped(monkeypatch: Any) -> None:
+    _patch(monkeypatch, search={})
+    _real_search(monkeypatch, auto_ok=False)
+    data = json.loads(_run(["trade", "upgrade", "--budget", "100", "--slot", "amulet", "--json"]).output)
+    assert data["skippedSlots"] == [{"slot": "amulet", "error": "auto-query failed"}] and data["plan"]["picks"] == []
+
+
+def test_upgrade_probe_failure_keeps_free_moves(monkeypatch: Any) -> None:
+    calls = _patch(monkeypatch, search={})
+    fake = cli_mod._daemon_call
+
+    def _items_down(action: str, params: dict[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
+        if action == "items":
+            raise click.ClickException("items failed")
+        return fake(action, params, **kw)
+
+    monkeypatch.setattr(cli_mod, "_daemon_call", _items_down)
+    out = _run(["trade", "upgrade", "--budget", "100", "--json"])
+    assert out.exit_code == 0, out.output
+    data = json.loads(out.output)
+    assert data["free"]["respec"]["rounds"] == [] and data["slots"] == []
+    assert data["skippedSlots"] == [{"slot": "*", "error": "slot probe: items failed"}]
+    assert "respec" in calls.actions
+
+
+def test_upgrade_unequip_failure_ranks_slot_last(monkeypatch: Any) -> None:
+    _patch(monkeypatch, search={"amulet": _AMU, "helmet": _HELM, "gloves": _HELM})
+    fake = cli_mod._daemon_call
+
+    def _amulet_probe_down(action: str, params: dict[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
+        if action == "item_unequip" and (params or {}).get("slot") == "Amulet":
+            raise click.ClickException("probe failed")
+        return fake(action, params, **kw)
+
+    monkeypatch.setattr(cli_mod, "_daemon_call", _amulet_probe_down)
+    data = json.loads(_run(["trade", "upgrade", "--budget", "100", "--top-slots", "3", "--json"]).output)
+    assert [s["tradeSlot"] for s in data["slots"]] == ["helmet", "gloves", "amulet"]

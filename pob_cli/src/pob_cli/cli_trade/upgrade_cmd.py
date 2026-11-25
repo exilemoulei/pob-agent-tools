@@ -6,6 +6,8 @@ the plan's total is an estimate. Nothing is applied to the build.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import tempfile
 from pathlib import Path
@@ -17,23 +19,29 @@ from ..cli_common import _emit_json, _emit_text, _output_options, invoke_daemon
 from ..scoring import parse_score
 from ..trade_eval.budget import DEFAULT_PLAN_SCORE, PLAN_STATS, plan_budget
 from ..trade_eval.upgrade import UPGRADE_SLOTS, rank_weak_slots, unequip_loss
+from ..trade_query import pob_slot_for_slot
 from .common import _TARGET_SLOT_TYPE, _default_target_slot
 from .other_cmds import trade_group
 from .plan_cmd import format_plan_markdown
-from .search_cmd import cmd_trade_search
+from .search_cmd import _try_auto_trade_query, cmd_trade_search
 
 _SUMMARY_STAT = {"dps": "primaryDps", "ehp": "totalEhp"}
 
 
 def _search_slot(ctx: click.Context, trade_slot: str, *, per_slot: int, league: str | None, proxy: str | None, target: str) -> dict[str, Any]:
     """Run `pob trade search --auto-query --pob on --json` for one slot and return its payload."""
+    # trade search silently falls back to a stat-less cheapest-first query when auto-query fails.
+    if _try_auto_trade_query(pob_slot=pob_slot_for_slot(trade_slot), slot=trade_slot, target=target, league=league) is None:
+        raise RuntimeError("auto-query failed")
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "search.json"
         try:
-            ctx.invoke(
-                cmd_trade_search, slot=trade_slot, auto_query=True, pob_mode="on", pob_limit=per_slot,
-                league=league, proxy=proxy, target=target, as_json=True, out_path=str(out),
-            )
+            # The inner command echoes "Saved JSON to ..." on stdout; keep the outer --json parseable.
+            with contextlib.redirect_stdout(io.StringIO()):
+                ctx.invoke(
+                    cmd_trade_search, slot=trade_slot, auto_query=True, pob_mode="on", pob_limit=per_slot,
+                    league=league, proxy=proxy, target=target, as_json=True, out_path=str(out),
+                )
         except click.exceptions.Exit as exc:
             if exc.exit_code:
                 raise RuntimeError(f"trade search exited {exc.exit_code}") from exc
@@ -66,7 +74,10 @@ def _pick_slots(target: str, score: dict[str, float], top: int) -> list[dict[str
     for s in items.get("slots") or []:
         name = s.get("name")
         if name in UPGRADE_SLOTS and s.get("selItemId") and not s.get("inactive"):
-            losses[name] = unequip_loss(invoke_daemon("item_unequip", {"target": target, "slot": name, "apply": False}), score)
+            try:
+                losses[name] = unequip_loss(invoke_daemon("item_unequip", {"target": target, "slot": name, "apply": False}), score)
+            except click.ClickException:
+                losses[name] = None  # unverified: ranked after every measured slot
     return rank_weak_slots(items, losses, top)
 
 
@@ -142,9 +153,14 @@ def cmd_trade_upgrade(
     chosen = _resolve_slots(slots) if slots else None
 
     free = _free_moves(target, score)  # first, so a trade timeout still leaves something to show
-    chosen = chosen if chosen is not None else _pick_slots(target, score, top_slots)
-    payloads: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
+    if chosen is None:
+        try:
+            chosen = _pick_slots(target, score, top_slots)
+        except click.ClickException as exc:
+            chosen = []
+            skipped.append({"slot": "*", "error": f"slot probe: {exc.format_message()}"})
+    payloads: list[dict[str, Any]] = []
     for row in chosen:
         try:
             payloads.append(_search_slot(ctx, row["tradeSlot"], per_slot=per_slot, league=league, proxy=proxy, target=target))
