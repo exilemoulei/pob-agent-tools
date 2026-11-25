@@ -323,10 +323,14 @@ def _convocation_case(
     conv_support: dict[str, Any] | None = None,
     main_support: dict[str, Any] | None = None,
     condition_text: str = "Minions are Aggressive if you've used a Minion Skill Recently",
+    main_item_text: str = "",
+    conv_with: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     conv = [_gem("Convocation", "Convocation")]
     if automated:
         conv.append(conv_support or _gem("Automation Support", "SupportAutomation", support=True))
+    if conv_with:
+        conv.append(conv_with)
     main = [main_gem] + ([main_support] if main_support else [])
     skills_res = {
         "mainSocketGroup": 1,
@@ -341,6 +345,7 @@ def _convocation_case(
         skills_res=skills_res,
         items_res={"items": [], "slots": []},
         cfg_res={"sections": [], "customMods": [{"title": "Viscera", "text": text, "enabled": True}]},
+        equipped_slots_raw=[{"slotName": "Body Armour", "raw": main_item_text}] if main_item_text else None,
     )
 
 
@@ -383,7 +388,7 @@ def test_a_minion_skill_cast_by_hand_feeds_the_condition_whatever_convocation_do
         (_gem("Mirror Arrow", "MirrorArrow"), _gem("Manaforged Arrows", "SupportManaforgedArrows", support=True)),
         # A triggered minion skill is not used either.
         (_gem("Summon Raging Spirit", "SummonRagingSpirit"), _gem("Cast On Critical Strike", "SupportCastOnCriticalStrike", support=True)),
-        (_gem("Summon Raging Spirit", "SummonRagingSpirit"), _gem("Cast on Death", "SupportCastOnDeath", support=True)),
+        (_gem("Summon Skeletons", "SummonSkeletons"), _gem("Spellslinger", "Spellslinger", support=True)),
     ],
 )
 def test_a_skill_that_does_not_feed_the_condition_leaves_the_warning_standing(
@@ -410,7 +415,6 @@ def test_the_attack_that_fires_a_cast_on_support_is_itself_used_by_hand(attack: 
     "support",
     [
         _gem("Cast on Melee Kill", "SupportCastOnMeleeKill", support=True),
-        _gem("Cast on Death", "SupportCastOnDeath", support=True),
         _gem("Cast when Damage Taken", "SupportCastWhenDamageTaken", support=True),
         # Told by the id alone, and by the name alone.
         _gem("", "SupportCastOnWardBreak", support=True),
@@ -422,6 +426,54 @@ def test_convocation_behind_any_trigger_support_is_not_called_manual(support: di
     gaps, mechanics = _convocation_case(spectre, automated=True, conv_support=support)
     assert _bricked(gaps)
     assert (mechanics.get("minionSkillTrigger") or {}).get("status") != "active_dependency"
+
+
+@pytest.mark.parametrize(
+    ("main_gem", "main_support"),
+    [
+        # None of these is Triggerable in PoB, so no trigger support can fire them.
+        (_gem("Vaal Summon Skeletons", "VaalSummonSkeletons"), _gem("Cast On Critical Strike", "SupportCastOnCriticalStrike", support=True)),
+        (_gem("Death Wish", "DeathWish"), _gem("Cast while Channelling", "SupportCastWhileChannelling", support=True)),
+        (_gem("Holy Strike", "HolyStrike"), _gem("Manaforged Arrows", "SupportManaforgedArrows", support=True)),
+        # Cast on Death takes no minion skill.
+        (_gem("Summon Raging Spirit", "SummonRagingSpirit"), _gem("Cast on Death", "SupportCastOnDeath", support=True)),
+    ],
+)
+def test_a_trigger_that_cannot_support_the_skill_leaves_it_used_by_hand(main_gem: dict[str, Any], main_support: dict[str, Any]) -> None:
+    gaps, _ = _convocation_case(main_gem, automated=True, main_support=main_support)
+    assert not _bricked(gaps)
+
+
+def test_automation_fires_convocation_and_not_the_minion_spell_linked_beside_it() -> None:
+    spectre = _gem("Raise Spectre", "RaiseSpectre")
+    gaps, _ = _convocation_case(spectre, automated=True, conv_with=_gem("Summon Raging Spirit", "SummonRagingSpirit"))
+    assert not _bricked(gaps)
+
+
+def test_convocation_linked_to_cast_on_death_is_still_cast_by_hand() -> None:
+    spectre = _gem("Raise Spectre", "RaiseSpectre")
+    gaps, mechanics = _convocation_case(spectre, automated=True, conv_support=_gem("Cast on Death", "SupportCastOnDeath", support=True))
+    assert not _bricked(gaps)
+    assert mechanics["minionSkillTrigger"]["status"] == "active_dependency"
+
+
+@pytest.mark.parametrize(
+    ("main_gem", "item_text", "bricked"),
+    [
+        # An item that triggers socketed spells of one element fires no minion skill, and never the attack.
+        (_gem("Holy Strike", "HolyStrike"), "Trigger a Socketed Lightning Spell on Hit, with a 0.25 second Cooldown", False),
+        (_gem("Summon Raging Spirit", "SummonRagingSpirit"), "Trigger a Socketed Cold Spell on Melee Critical Strike, with a 0.25 second Cooldown", False),
+        (_gem("Mirror Arrow", "MirrorArrow"), "Trigger a Socketed Spell when you Attack with a Bow, with a 0.3 second Cooldown", False),
+        # One that triggers any socketed spell fires the minion spell; Maloney's Mechanism fires the bow attack.
+        (_gem("Summon Raging Spirit", "SummonRagingSpirit"), "Trigger a Socketed Spell when you Attack with a Bow, with a 0.3 second Cooldown", True),
+        (_gem("Summon Skeletons", "SummonSkeletons"), "Trigger Socketed Minion Spells on Kill with this Weapon", True),
+        (_gem("Mirror Arrow", "MirrorArrow"), "Trigger a Socketed Bow Skill when you Cast a Spell while wielding a Bow, with a 1 second Cooldown", True),
+        (_gem("Summon Raging Spirit", "SummonRagingSpirit"), "Trigger a Socketed Bow Skill when you Cast a Spell while wielding a Bow, with a 1 second Cooldown", False),
+    ],
+)
+def test_an_item_trigger_fires_only_the_kind_of_skill_its_text_names(main_gem: dict[str, Any], item_text: str, bricked: bool) -> None:
+    gaps, _ = _convocation_case(main_gem, automated=True, main_item_text=item_text)
+    assert _bricked(gaps) is bricked
 
 
 def test_the_condition_is_read_in_the_wordings_the_chinese_dictionaries_use() -> None:
@@ -566,15 +618,17 @@ def test_skill_and_reference_docs_330_wickerman_vestigial_and_cli_contracts() ->
         assert "stop exploring" not in low, f"Nagging prompt leaked into {doc_name}"
 
 
-def test_the_hand_cast_minion_skills_are_the_ones_pob_types_so() -> None:
-    """The id table against the engine's skill files, so a PoB update that adds a gem shows up here."""
+def test_the_minion_skill_tables_are_what_pob_types_them() -> None:
+    """The id tables against the engine's skill files, so a PoB update that adds a gem shows up here."""
     import re
 
     from engine_paths import find_engine_data
 
     from pob_cli.analyzer.pitfalls_minion_trigger import (
         _HAND_CAST_MINION_SKILL_IDS,
-        _MINION_ATTACK_SKILL_IDS,
+        _SPELL_TRIGGER_SUPPORT_IDS,
+        _TRIGGERABLE_MINION_BOW_ATTACK_IDS,
+        _TRIGGERABLE_MINION_SPELL_IDS,
     )
 
     engine = find_engine_data()
@@ -582,25 +636,40 @@ def test_the_hand_cast_minion_skills_are_the_ones_pob_types_so() -> None:
     if skills_dir is None or not skills_dir.is_dir():
         pytest.skip("no engine on this machine")
 
-    def typed(path: Path) -> dict[str, tuple[str, bool]]:
-        parts = re.split(r'\nskills\["([^"]+)"\] = \{', path.read_text(encoding="utf-8"))
-        out: dict[str, tuple[str, bool]] = {}
-        for sid, body in zip(parts[1::2], parts[2::2], strict=True):
-            m = re.search(r"skillTypes = \{([^\n]*)\}", body)
-            out[sid] = (m.group(1) if m else "", "permanentMinion = true" in body)
+    def blocks(*names: str) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for f in sorted(p for n in names for p in skills_dir.glob(n)):
+            parts = re.split(r'\nskills\["([^"]+)"\] = \{', f.read_text(encoding="utf-8"))
+            out.update(zip(parts[1::2], parts[2::2], strict=True))
         return out
 
-    gem_skills: dict[str, tuple[str, bool]] = {}
-    for f in sorted(skills_dir.glob("act_*.lua")):
-        gem_skills.update(typed(f))
+    def field(body: str, name: str) -> str:
+        m = re.search(name + r" = \{([^\n]*)\}", body)
+        return m.group(1) if m else ""
+
+    def has(types: str, *names: str) -> bool:
+        return all(f"SkillType.{n}]" in types or f"SkillType.{n}," in types for n in names)
+
+    gems = {sid.lower(): body for sid, body in blocks("act_*.lua").items()}
+    other = {sid.lower(): body for sid, body in blocks("other.lua").items()}
     used = {
-        sid.lower()
-        for sid, (types, permanent) in gem_skills.items()
-        if "SkillType.Minion]" in types and "SkillType.Triggered]" not in types and not permanent
+        sid
+        for sid, body in gems.items()
+        if has(field(body, "skillTypes"), "Minion") and not has(field(body, "skillTypes"), "Triggered") and "permanentMinion = true" not in body
     }
     item_granted = {"bloodoffering", "deathwish"}
-    assert used - {"heraldofpurity"} == _HAND_CAST_MINION_SKILL_IDS - item_granted
-    other = typed(skills_dir / "other.lua")
-    assert all("SkillType.Minion]" in other[s][0] for s in ("BloodOffering", "DeathWish"))
-    attacks = {sid.lower() for sid, (types, _) in gem_skills.items() if sid.lower() in used and "SkillType.Attack]" in types}
-    assert attacks == _MINION_ATTACK_SKILL_IDS
+    assert item_granted <= _HAND_CAST_MINION_SKILL_IDS
+    assert all(has(field(other[s], "skillTypes"), "Minion") for s in item_granted)
+    assert used - {"convocation", "heraldofpurity"} == _HAND_CAST_MINION_SKILL_IDS - item_granted
+
+    types = {sid: field((gems | other)[sid], "skillTypes") for sid in _HAND_CAST_MINION_SKILL_IDS}
+    assert {s for s, t in types.items() if has(t, "Spell", "Triggerable")} == _TRIGGERABLE_MINION_SPELL_IDS
+    assert {s for s, t in types.items() if has(t, "Attack", "Triggerable")} == _TRIGGERABLE_MINION_BOW_ATTACK_IDS
+    assert all(has(t, "RangedAttack") for s, t in types.items() if s in _TRIGGERABLE_MINION_BOW_ATTACK_IDS)
+    assert not [s for s, t in types.items() if has(t, "Instant")]
+    assert has(field(other["convocation"], "skillTypes"), "Spell", "Triggerable", "Instant")
+
+    supports = blocks("sup_*.lua")
+    assert _SPELL_TRIGGER_SUPPORT_IDS <= set(supports)
+    assert has(field(supports["SupportCastOnDeath"], "excludeSkillTypes"), "Minion")
+    assert has(field(supports["SupportManaforgedArrows"], "requireSkillTypes"), "Triggerable", "Attack")

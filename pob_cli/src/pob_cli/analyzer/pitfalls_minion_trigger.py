@@ -27,16 +27,40 @@ _HAND_CAST_MINION_SKILL_IDS: frozenset[str] = frozenset(
         "HolyStrike",
     )
 )
-# The attacks among them. A Cast on ... support or Automation in their group triggers the spells
-# linked to it, never the attack that is used to fire them.
-_MINION_ATTACK_SKILL_IDS: frozenset[str] = frozenset(
+# A trigger fires only what it can support. Of the skills above, the Cast on/when/while supports,
+# Spellslinger, Arcanist Brand and an item that triggers socketed spells take the ones PoB types
+# Spell and Triggerable; Manaforged Arrows and Maloney's Mechanism take the bow attacks. The rest
+# (the melee attacks, the Vaal skills, Death Wish) are used by hand whatever they are linked to.
+# Automation takes instant spells only, so Convocation and none of these; Cast on Death takes no
+# minion skill at all.
+_TRIGGERABLE_MINION_SPELL_IDS: frozenset[str] = frozenset(
     s.lower()
     for s in (
-        "BlinkArrow", "BlinkArrowAltX", "BlinkArrowAltY", "MirrorArrow", "MirrorArrowAltX", "MirrorArrowAltY",
-        "DominatingBlow", "DominatingBlowAltX", "HolyStrike",
+        "AnimateWeapon", "AnimateWeaponAltX", "AnimateWeaponAltY", "BodyswapAltX", "BoneOffering", "FleshOffering",
+        "SpiritOffering", "BloodOffering", "DarkPact", "RaiseSpectreAltX", "RaiseZombieAltY",
+        "SummonRagingSpirit", "SummonRagingSpiritAltX", "SummonReaper", "SummonReaperAltX",
+        "SummonSkeletons", "SummonSkeletonsAltX", "SummonSkeletonsAltY", "Absolution", "AbsolutionAltX",
     )
 )
-_TRIGGER_SUPPORT_ID_PREFIXES = ("SupportCastOn", "SupportCastWh", "SupportAwakenedCast")
+_TRIGGERABLE_MINION_BOW_ATTACK_IDS: frozenset[str] = frozenset(
+    s.lower() for s in ("BlinkArrow", "BlinkArrowAltX", "BlinkArrowAltY", "MirrorArrow", "MirrorArrowAltX", "MirrorArrowAltY")
+)
+_SPELL_TRIGGER_SUPPORT_IDS: frozenset[str] = frozenset(
+    {
+        "SupportCastOnCriticalStrike", "SupportCastOnCritTriggered", "SupportAwakenedCastOnCriticalStrike",
+        "SupportCastOnCritTriggeredPlus", "SupportCastOnMeleeKill", "SupportCastOnMeleeKillTriggered",
+        "SupportCastWhenStunned", "SupportCastWhileChannelling", "SupportCastWhileChannellingTriggered",
+        "SupportAwakenedCastWhileChannelling", "SupportCastWhileChannellingTriggeredPlus",
+        "SupportCastOnWardBreak", "SupportCastWhenDamageTaken",
+    }
+)
+_SPELL_TRIGGER_SUPPORT_NAMES = (
+    "cast when stunned", "cast on critical strike", "cast while channelling", "cast on melee kill",
+    "cast on ward break", "cast when damage taken", "受伤时施放", "受傷時施放", "arcanist brand", "spellslinger",
+)
+# "Trigger a Socketed Spell ..." and "Trigger Socketed (Minion) Spells ..."; an item that names an
+# element, curses or warcries fires none of these skills.
+_ITEM_SPELL_TRIGGER_RE = re.compile(r"trigger (?:a )?socketed (?:minion )?spells?\b|触发插槽内")
 
 
 def _find_recent_minion_sources(ctx: dict[str, Any]) -> list[str]:
@@ -96,25 +120,22 @@ def _check_minion_convocation_trigger(
         slot_low = str(raw_map.get(g_slot) or "").lower()
         has_auto = any(gsid in ("Automation", "SupportAutomation") or any(t in ("automation", "automation support", "自动化", "自動化") for t in toks) for toks, gsid, _ in parsed)
         has_cwdt = any(gsid == "SupportCastWhenDamageTaken" or any("cast when damage taken" in t or "受伤时施放" in t or "受傷時施放" in t for t in toks) for toks, gsid, _ in parsed)
-        item_trig = any(p in slot_low for p in ("trigger a socketed", "trigger socketed", "触发插槽内"))
-        # Manaforged Arrows and a triggering item are what fire a socketed attack on their own.
-        atk_trig = item_trig or any(gsid == "SupportManaforgedArrows" or "manaforged arrows" in " ".join(toks) for toks, gsid, _ in parsed)
-        has_other = item_trig or any(
-            gsid.startswith(_TRIGGER_SUPPORT_ID_PREFIXES)
-            or any(
-                p in " ".join(toks)
-                for p in ("cast when stunned", "cast on critical strike", "cast while channelling", "cast on melee kill", "cast on death", "cast on ward break", "arcanist brand", "spellslinger")
-            )
+        spell_trig = bool(_ITEM_SPELL_TRIGGER_RE.search(slot_low)) or any(
+            gsid in _SPELL_TRIGGER_SUPPORT_IDS or any(p in " ".join(toks) for p in _SPELL_TRIGGER_SUPPORT_NAMES)
             for toks, gsid, _ in parsed
         )
-        is_trig = has_auto or has_cwdt or has_other
+        bow_trig = "trigger a socketed bow skill" in slot_low or any(
+            gsid == "SupportManaforgedArrows" or "manaforged arrows" in " ".join(toks) for toks, gsid, _ in parsed
+        )
         t_lbl = "Automation Support" if has_auto else ("Cast when Damage Taken Support" if has_cwdt else "triggered socket")
         for toks, gsid, is_sup in parsed:
             if gsid == "Convocation" or any(t in ("convocation", "号召", "號召") for t in toks):
-                (trig_conv.append((g_idx, g_slot, t_lbl)) if is_trig else man_conv.append((g_idx, g_slot)))
-            elif not is_sup and gsid not in ("Automation", "SupportAutomation"):
+                # Convocation is an instant, triggerable spell: Automation and every spell trigger take it.
+                (trig_conv.append((g_idx, g_slot, t_lbl)) if (has_auto or spell_trig) else man_conv.append((g_idx, g_slot)))
+            elif not is_sup:
                 sid = gsid.lower()
-                if sid in _HAND_CAST_MINION_SKILL_IDS and not (atk_trig if sid in _MINION_ATTACK_SKILL_IDS else is_trig):
+                fired = (spell_trig and sid in _TRIGGERABLE_MINION_SPELL_IDS) or (bow_trig and sid in _TRIGGERABLE_MINION_BOW_ATTACK_IDS)
+                if sid in _HAND_CAST_MINION_SKILL_IDS and not fired:
                     has_manual_combat = True
 
     if recent and trig_conv and not man_conv and not has_manual_combat:
