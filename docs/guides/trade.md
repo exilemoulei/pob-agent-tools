@@ -78,6 +78,17 @@ Each candidate's `Trade listing` link is the same search narrowed to that listin
 
 Plans one budget across several slots without calling the trade API again. Save each slot's `pob trade search --pob on --json --out <slot>.json`, then pass the files: the plan keeps listings with a chaos price and a PoB result, scores each as `Σ W × Δ%` (default `dps=1,ehp=0.25`, the same blend as `--sort pob`), and picks at most one listing per slot so the total score is highest within `--budget` chaos. It also lists the best score per chaos across all slots. Each delta was verified alone against the current build, so the combined gain is an estimate: apply the picks one at a time with `pob item try` to confirm.
 
+### `pob trade upgrade --budget N [--slot S]... [--top-slots 3] [--per-slot 5] [--score dps=W,ehp=W] [--league L] [--proxy U] [--json]`
+
+A one-shot **reference** list for "where should the next N chaos go?". It chains the steps above:
+
+1. **Free moves first**: one round of `pob respec` and one pass of `pob rank-gems --optimize` on the main group, listed apart from the chaos plan.
+2. **Weakest slots**: unless `--slot` is given, empty gear slots come first, then the slots whose item loses the least score when unequipped (a what-if `item unequip` per slot); the first `--top-slots` are searched.
+3. **Live trade**: each slot runs `pob trade search --auto-query --pob on --pob-limit <--per-slot>`. A slot that fails (rate limit, no results) is listed under `skippedSlots` and the rest carry on.
+4. **Plan**: the results go through the same knapsack as `pob trade plan`.
+
+Expect about 1–3 minutes for three slots, mostly trade API rate limits. Nothing is applied to the build, and the plan's total is an estimate (each listing was verified alone).
+
 ### `pob trade convert (--text T | --file f) --to fire|cold|lightning [--out f] [--force] [--json]`
 
 Rewrites Harvest-convertible explicit single-element modifiers in PoB item text and prints conversion rules, 3.30 costs, warnings, and skipped reasons.
