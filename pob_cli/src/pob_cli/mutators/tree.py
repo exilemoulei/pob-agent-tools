@@ -136,6 +136,12 @@ def _apply_tree_changes_in_place(
             raise ValueError(f"Node {nid} requires confirmation ({res.get('needsConfirm')}).")
         if isinstance(res, dict) and "allocatedNodes" in res:
             cur_state = res
+            # Checked on the state this click returned: a later deallocation in the same call may
+            # take the node away again, and a node also named for deallocation hides nothing.
+            if nid not in {int(x) for x in res.get("allocatedNodes", [])}:
+                raise ValueError(
+                    f"Passive node {nid} could not be allocated (disconnected or unreachable from current tree)."
+                )
             verified_alloc_ids.append(nid)
         else:
             cur_state = w.call("get_tree_state", {})
@@ -157,9 +163,7 @@ def _apply_tree_changes_in_place(
     requested_dealloc_ids = {nid for nid, _ in resolved_dealloc}
     for alloc_nid in verified_alloc_ids:
         if alloc_nid not in final_alloc and alloc_nid not in requested_dealloc_ids:
-            raise ValueError(
-                f"Passive node {alloc_nid} could not be allocated (disconnected or unreachable from current tree)."
-            )
+            noop_warnings.append(f"Node {alloc_nid} was allocated and then removed again by a deallocation in this call.")
     orphaned_nodes = sorted((initial_alloc - final_alloc) - requested_dealloc_ids)
 
     final_points = cur_state.get("points") or {}
