@@ -21,7 +21,7 @@ from ..trade_client import (
     TradeError,
 )
 from ..trade_item import parse_item_text, sanitize_text
-from ..trade_query import CATEGORY_BY_SLOT, pob_slot_for_slot
+from ..trade_query import CATEGORY_BY_SLOT, _normalize_slot, pob_slot_for_slot
 from ..updater import format_stderr_update_alert
 
 SLOT_HINT = (
@@ -29,6 +29,14 @@ SLOT_HINT = (
     "ring1, ring2, ring3, weapon1, weapon2, bow, wand, claw, dagger, "
     "sceptre, staff, flask1..5, jewel"
 )
+UNCATEGORIZED_SLOT_NOTE_TEMPLATE = (
+    "Slot {slot!r} (3.30 Viscera/Graft) has no GGG Trade category filter; "
+    "query runs uncategorized using --name / --stat filters."
+)
+
+
+def _uncategorized_slot_note(slot: str | None) -> str:
+    return UNCATEGORIZED_SLOT_NOTE_TEMPLATE.format(slot=slot)
 
 _PSEUDO_SUM_RE = re.compile(r"^\s*Sum:\s*([+-]?\d+(?:\.\d+)?)", re.IGNORECASE)
 
@@ -88,9 +96,11 @@ def _is_known_slot(slot: str | None) -> bool:
         return False
     norm = slot.strip().lower().replace("-", "_").replace(" ", "_")
     compact = norm.replace("_", "")
+    normalized = _normalize_slot(slot)
     return (
         norm in CATEGORY_BY_SLOT
         or compact in CATEGORY_BY_SLOT
+        or normalized in CATEGORY_BY_SLOT
         or pob_slot_for_slot(slot) is not None
     )
 

@@ -16,6 +16,7 @@ from .aliases import (
     STAT_TYPE_ORDER,
     _normalize_slot,
 )
+from .polarity import is_zh_negative_to_positive_match, try_polarity_inversion
 
 _SCOPE_SUFFIX_RE = re.compile(r"\s*\((local|shields|global)\)\s*$", re.IGNORECASE)
 _LEADING_PLACEHOLDER_RE = re.compile(r"^(?:#%\s+|#\s+)+")
@@ -31,29 +32,8 @@ _UNREQUESTED_MULTIPLIER_TOKENS: frozenset[str] = frozenset({"more", "less", "red
 
 _STOPWORDS: frozenset[str] = frozenset(
     {
-        "to",
-        "of",
-        "the",
-        "a",
-        "an",
-        "in",
-        "on",
-        "and",
-        "or",
-        "for",
-        "with",
-        "per",
-        "you",
-        "your",
-        "have",
-        "has",
-        "are",
-        "is",
-        "by",
-        "at",
-        "from",
-        "as",
-        "if",
+        "to", "of", "the", "a", "an", "in", "on", "and", "or", "for", "with", "per",
+        "you", "your", "have", "has", "are", "is", "by", "at", "from", "as", "if",
     }
 )
 
@@ -70,6 +50,7 @@ class StatMatch:
     disambiguation_candidates: tuple[dict[str, Any], ...] = ()
     disambiguation_aura: str | None = None
     is_ambiguous_bare_aura: bool = False
+    polarity_inverted: bool = False
 
 
 def _extract_affected_aura(template: str) -> str | None:
@@ -456,6 +437,29 @@ def aura_disambiguation_for_query(
     return (aura, tuple(out)) if out else (None, ())
 
 
+def _score_stat_entries(
+    index: _EntryIndex,
+    target: str,
+    target_core: str,
+    target_tokens: frozenset[str],
+    slot_norm: str,
+    requested_scope: str,
+    threshold: float,
+) -> list[tuple[float, int, int, float, _PreparedEntry]]:
+    candidates = _select_candidates(index, target, target_core, target_tokens)
+    scored: list[tuple[float, int, int, float, _PreparedEntry]] = []
+    for item in candidates:
+        base_score = _base_similarity(target, target_core, target_tokens, item)
+        if base_score < threshold:
+            continue
+        scope_adj = _scope_adjustment(item.base_template, item.scope_tag, slot_norm, requested_scope)
+        verb_adj = _verb_penalty(target_tokens, item.tokens)
+        effective = round(base_score + scope_adj + verb_adj, 6)
+        scored.append((effective, -item.priority, -len(item.base_template), base_score, item))
+    scored.sort(key=lambda row: row[:3], reverse=True)
+    return scored
+
+
 def resolve_stat(
     text: str,
     entries: list[dict[str, Any]],
@@ -485,24 +489,34 @@ def resolve_stat(
     if not index.prepared:
         return None
 
-    candidates = _select_candidates(index, target, target_core, target_tokens)
-
-    scored: list[tuple[float, int, int, float, _PreparedEntry]] = []
-    for item in candidates:
-        base_score = _base_similarity(target, target_core, target_tokens, item)
-        if base_score < threshold:
-            continue
-        scope_adj = _scope_adjustment(item.base_template, item.scope_tag, slot_norm, requested_scope)
-        verb_adj = _verb_penalty(target_tokens, item.tokens)
-        effective = round(base_score + scope_adj + verb_adj, 6)
-        scored.append((effective, -item.priority, -len(item.base_template), base_score, item))
+    scored = _score_stat_entries(index, target, target_core, target_tokens, slot_norm, requested_scope, threshold)
+    inverted = try_polarity_inversion(
+        query_base,
+        target_tokens,
+        scored,
+        threshold,
+        strip_leading_placeholder=_strip_leading_placeholder,
+        extract_tokens=_extract_tokens,
+        score_entries=lambda t, tc, toks, thr: _score_stat_entries(
+            index, t, tc, toks, slot_norm, requested_scope, thr
+        ),
+    )
+    if inverted is not None:
+        base_score, item = inverted
+        return StatMatch(
+            id=item.stat_id,
+            text=item.raw_text,
+            score=round(min(1.0, max(0.0, base_score)), 3),
+            template=item.base_template,
+            polarity_inverted=True,
+        )
 
     if not scored:
         return None
-    scored.sort(key=lambda row: row[:3], reverse=True)
     best_effective, _, _, base_score, item = scored[0]
     disambig, disambig_aura = _collect_aura_disambiguation(scored, item, best_effective, target_core)
     is_bare_aura = bool(_BARE_AFFECTED_BY_RE.match(target_core))
+    zh_inverted = is_zh_negative_to_positive_match(cleaned_in, item.tokens)
     return StatMatch(
         id=item.stat_id,
         text=item.raw_text,
@@ -511,6 +525,7 @@ def resolve_stat(
         disambiguation_candidates=disambig,
         disambiguation_aura=disambig_aura,
         is_ambiguous_bare_aura=bool(is_bare_aura and len(disambig) > 1),
+        polarity_inverted=zh_inverted,
     )
 
 

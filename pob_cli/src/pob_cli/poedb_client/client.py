@@ -34,6 +34,7 @@ _LAST_STALE = threading.local()
 
 POEDB_BASE_URL = "https://poedb.tw"
 POEDB_CDN_URL = "https://cdn.poedb.tw"
+_POEDB_RETRY_BACKOFF_SEC = 0.4
 
 # Community/legacy CN aliases that differ from poedb.tw current CN client strings
 COMMUNITY_ALIASES: dict[str, str] = {
@@ -76,7 +77,7 @@ class _LazyClient:
             owned.__exit__(*exc)
 
 
-def _poedb_get(
+def _poedb_get_once(
     url: str,
     *,
     proxy: str | None = None,
@@ -84,24 +85,53 @@ def _poedb_get(
     client: httpx.Client | _LazyClient | None = None,
 ) -> str:
     resolved_timeout = DEFAULT_HTTP_TIMEOUT if timeout is None else timeout
-    try:
-        if isinstance(client, _LazyClient):
-            resp = client.get_client().get(url)
-            resp.raise_for_status()
-            return resp.text
-        if client is not None:
-            resp = client.get(url)
-            resp.raise_for_status()
-            return resp.text
-        with _make_httpx_client(timeout=resolved_timeout, proxy=proxy) as own_client:
-            resp = own_client.get(url)
-            resp.raise_for_status()
-            return resp.text
-    except (httpx.HTTPError, OSError) as exc:
-        raise RuntimeError(
-            f"PoEDB request failed for '{url}': {exc}. "
-            "Check network access or set POB_PROXY / HTTPS_PROXY / --proxy."
-        ) from exc
+    if isinstance(client, _LazyClient):
+        resp = client.get_client().get(url)
+        resp.raise_for_status()
+        return resp.text
+    if client is not None:
+        resp = client.get(url)
+        resp.raise_for_status()
+        return resp.text
+    with _make_httpx_client(timeout=resolved_timeout, proxy=proxy) as own_client:
+        resp = own_client.get(url)
+        resp.raise_for_status()
+        return resp.text
+
+
+def _poedb_get(
+    url: str,
+    *,
+    proxy: str | None = None,
+    timeout: float | httpx.Timeout | None = None,
+    client: httpx.Client | _LazyClient | None = None,
+    retry_backoff: float = _POEDB_RETRY_BACKOFF_SEC,
+) -> str:
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            return _poedb_get_once(url, proxy=proxy, timeout=timeout, client=client)
+        except (httpx.TransportError, OSError) as exc:
+            last_exc = exc
+            if attempt == 0:
+                if retry_backoff > 0:
+                    time.sleep(retry_backoff)
+                continue
+        except httpx.HTTPStatusError as exc:
+            last_exc = exc
+            status_code = exc.response.status_code if exc.response is not None else 0
+            if attempt == 0 and (status_code == 429 or 500 <= status_code < 600):
+                if retry_backoff > 0:
+                    time.sleep(retry_backoff)
+                continue
+            break
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            break
+    raise RuntimeError(
+        f"PoEDB request failed for '{url}': {last_exc}. "
+        "Check network access or set POB_PROXY / HTTPS_PROXY / --proxy."
+    ) from last_exc
 
 
 def _discover_autocomplete_urls(
