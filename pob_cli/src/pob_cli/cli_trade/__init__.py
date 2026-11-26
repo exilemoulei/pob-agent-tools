@@ -6,6 +6,7 @@ from ..daemon import call_daemon
 from ..external_data import fetch_currency_chaos_rates, resolve_current_trade_league
 from ..trade_client import TradeClient, extract_listing_trade_meta, resolve_trade_league, seller_url
 from ..trade_query import load_trade_stats
+from .cluster_cmd import cmd_trade_cluster
 from .common import (
     _TARGET_SLOT_TYPE,
     SLOT_HINT,
@@ -70,6 +71,7 @@ __all__ = [
     "cmd_bench_list",
     "cmd_bench_suggest",
     "cmd_trade_appraise",
+    "cmd_trade_cluster",
     "cmd_trade_convert",
     "cmd_trade_leagues",
     "cmd_trade_plan",
