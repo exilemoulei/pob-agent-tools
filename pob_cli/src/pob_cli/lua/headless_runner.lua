@@ -446,6 +446,14 @@ do
 			CAPS.evalNodePaths = true
 		end
 	end
+
+	local ip = load_ext("interactions_probe.lua")
+	if type(ip) == "table" and type(ip.rpc_handlers) == "table" then
+		register_handlers(ip.rpc_handlers)
+		if ip.rpc_handlers.scan_unsupported_mods and ip.rpc_handlers.inspect_mod_interactions then
+			CAPS.interactionsProbe = true
+		end
+	end
 end
 
 -- Blocking NDJSON stdin/stdout RPC loop
