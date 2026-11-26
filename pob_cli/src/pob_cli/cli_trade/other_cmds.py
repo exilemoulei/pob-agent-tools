@@ -12,8 +12,26 @@ from ..formatters import emit_json, render_table
 from ..guardrails import GuardrailScope, check_input, check_input_item_raw, validate_url
 from ..trade_client import TradeError
 from ..trade_item import convert_item_text
-from ..trade_query import resolve_stat, suggest_stats
+from ..trade_query import get_stat_polarity_info, resolve_stat, suggest_stats
 from .common import SLOT_HINT, _echo_utf8, _err_utf8, _trade_error
+
+
+def _polarity_json(stat_id: str) -> dict[str, object]:
+    better, better_src = get_stat_polarity_info(stat_id)
+    out: dict[str, object] = {"better": better}
+    if better_src:
+        out["betterSource"] = better_src
+    return out
+
+
+def _fmt_polarity_md(stat_id: str) -> str:
+    better, better_src = get_stat_polarity_info(stat_id)
+    tag = f" ({better_src.upper()})" if better_src else ""
+    if better < 0:
+        return f"↓ lower-raw{tag}"
+    if better == 0:
+        return f"· neutral{tag}"
+    return f"↑{tag}"
 
 
 @click.group("trade")
@@ -68,8 +86,25 @@ def cmd_trade_stats(
             "query": text,
             "slot": slot,
             "source": source,
-            "match": {"id": match.id, "text": match.text, "score": match.score} if match else None,
-            "suggestions": [{"id": item.id, "text": item.text, "score": item.score} for item in suggestions],
+            "match": (
+                {
+                    "id": match.id,
+                    "text": match.text,
+                    "score": match.score,
+                    **_polarity_json(match.id),
+                }
+                if match
+                else None
+            ),
+            "suggestions": [
+                {
+                    "id": item.id,
+                    "text": item.text,
+                    "score": item.score,
+                    **_polarity_json(item.id),
+                }
+                for item in suggestions
+            ],
         }
         _emit_json(payload, compact=compact, out_path=out_path, sanitize=True)
     else:
@@ -77,14 +112,20 @@ def cmd_trade_stats(
 
         lines: list[str] = [w.format_markdown() for w in get_active_warnings()]
         if match:
-            lines.append(f"Resolved (`{source}`): `{match.text}` -> `{match.id}` (score {match.score:.3f})")
+            lines.append(
+                f"Resolved (`{source}`): `{match.text}` -> `{match.id}` "
+                f"(score {match.score:.3f}, polarity {_fmt_polarity_md(match.id)})"
+            )
         else:
             lines.append(f"No confident match for `{text}` (source: `{source}`).")
         if suggestions:
             lines.append(
                 render_table(
-                    ["Text", "Stat ID", "Score"],
-                    [[item.text, item.id, f"{item.score:.3f}"] for item in suggestions],
+                    ["Text", "Stat ID", "Score", "Polarity"],
+                    [
+                        [item.text, item.id, f"{item.score:.3f}", _fmt_polarity_md(item.id)]
+                        for item in suggestions
+                    ],
                 )
             )
         _emit_text("\n".join(lines), out_path=out_path)

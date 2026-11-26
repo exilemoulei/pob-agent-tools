@@ -6,6 +6,15 @@ import re
 import sqlite3
 from pathlib import Path
 
+from .apt_supplements import (
+    get_stat_polarity as get_stat_polarity,
+)
+from .apt_supplements import (
+    get_stat_polarity_info as get_stat_polarity_info,
+)
+from .apt_supplements import (
+    lookup_apt_zh_stat as lookup_apt_zh_stat,
+)
 from .zh_aliases import (
     _BRACE_NUM_RE as _BRACE_NUM_RE,
 )

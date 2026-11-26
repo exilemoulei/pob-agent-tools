@@ -6,6 +6,8 @@ deterministic `mtime=0`, `compresslevel=9` `.json.gz` artifacts under `pob_cli/s
 - `apt_item_drops.json.gz`: boss/invitation/fragment/map drop groups with bilingual EN/ZH names.
 - `apt_non_gear_items.json.gz`: non-gear bilingual dictionary (divination cards, currencies,
   fragments, scarabs, oils, catalysts, fossils, essences, maps) absent from PoB SQLite.
+- `apt_trade_supplements.json.gz`: trade stat polarity (`better` in `{-1, 0}`) and trimmed
+  folded-Chinese trade stat templates (`pseudo.*`, `option: true`, Watcher's Eye, crafted/implicit/fractured/enchant).
 """
 
 from __future__ import annotations
@@ -13,7 +15,9 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -241,6 +245,81 @@ def build_non_gear_items(data_root: Path, tw_map: dict[tuple[str, str], str]) ->
     return {"v": 1, "items": rows}
 
 
+_CJK_BRACKET_RE = re.compile(r"[【】「」『』《》]")
+_STAT_SPACE_RE = re.compile(r"\s+")
+
+
+def _iter_flat_stats(rows: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    for row in rows:
+        sub = row.get("stats")
+        if isinstance(sub, list):
+            for child in sub:
+                if isinstance(child, dict):
+                    yield child
+        else:
+            yield row
+
+
+def _normalize_zh_template(raw: str) -> str:
+    s = _CJK_BRACKET_RE.sub("", fold_han(raw)).strip()
+    return _STAT_SPACE_RE.sub(" ", s)
+
+
+def build_trade_supplements(data_root: Path) -> dict[str, Any]:
+    en_stats = _read_ndjson(data_root / "en" / "stats.ndjson")
+    tw_stats = _read_ndjson(data_root / "cmn-Hant" / "stats.ndjson")
+
+    polarity: dict[str, int] = {}
+    for entry in _iter_flat_stats(en_stats):
+        better = entry.get("better")
+        if better not in (-1, 0):
+            continue
+        ids_map = (entry.get("trade") or {}).get("ids") or {}
+        if not isinstance(ids_map, dict):
+            continue
+        for id_list in ids_map.values():
+            if isinstance(id_list, list):
+                for stat_id in id_list:
+                    if isinstance(stat_id, str) and stat_id:
+                        polarity[stat_id] = int(better)
+
+    zh_templates: dict[str, str] = {}
+    for entry in _iter_flat_stats(tw_stats):
+        if entry.get("mercenary") or entry.get("fromAreaMods") or entry.get("anointments"):
+            continue
+        trade = entry.get("trade") or {}
+        ids_map = trade.get("ids") or {}
+        if not isinstance(ids_map, dict):
+            continue
+        ref = str(entry.get("ref") or "").strip()
+        if not ref:
+            continue
+        keep = (
+            "pseudo" in ids_map
+            or bool(trade.get("option"))
+            or "while affected by" in ref.lower()
+            or "crafted" in ids_map
+            or "implicit" in ids_map
+            or "fractured" in ids_map
+            or "enchant" in ids_map
+            or bool(entry.get("modFamily"))
+            or bool(entry.get("jewelleryQuality"))
+        )
+        if not keep:
+            continue
+        for matcher in entry.get("matchers") or []:
+            if not isinstance(matcher, dict):
+                continue
+            ms = str(matcher.get("string") or "").strip()
+            if not ms:
+                continue
+            key = _normalize_zh_template(ms)
+            if key:
+                zh_templates.setdefault(key, ref)
+
+    return {"v": 1, "polarity": polarity, "zh": zh_templates}
+
+
 def generate_apt_data(apt_dir: Path, *, out_dir: Path = DEFAULT_OUT_DIR) -> dict[str, int]:
     data_root = _resolve_data_root(apt_dir)
     tw_map = _build_tw_item_map(data_root)
@@ -251,6 +330,11 @@ def generate_apt_data(apt_dir: Path, *, out_dir: Path = DEFAULT_OUT_DIR) -> dict
     sizes["apt_non_gear_items.json.gz"] = _write_deterministic_gz(
         out_dir / "apt_non_gear_items.json.gz", non_gear_payload
     )
+    if (data_root / "en" / "stats.ndjson").is_file() and (data_root / "cmn-Hant" / "stats.ndjson").is_file():
+        trade_payload = build_trade_supplements(data_root)
+        sizes["apt_trade_supplements.json.gz"] = _write_deterministic_gz(
+            out_dir / "apt_trade_supplements.json.gz", trade_payload
+        )
     return sizes
 
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from .apt_supplements import _CJK_BRACKET_RE, lookup_apt_zh_stat
+
 ZH_STAT_ALIASES: dict[str, str] = {
     # Life & Mana
     "生命": "+# to maximum Life",
@@ -141,7 +143,7 @@ def translate_stat_query(text: str) -> str:
 
     # The alias table is Simplified, while pob-zh shows Traditional names (能量護盾). Unfolded, such
     # a query skipped the table and the fuzzy fallback picked another stat ("Has no Energy Shield").
-    raw = fold_han(original)
+    raw = _CJK_BRACKET_RE.sub("", fold_han(original)).strip()
 
     # Direct exact lookup
     direct = ZH_STAT_ALIASES.get(raw)
@@ -160,6 +162,10 @@ def translate_stat_query(text: str) -> str:
                 sub = cleaned[len(prefix) :]
                 if sub in ZH_STAT_ALIASES:
                     return ZH_STAT_ALIASES[sub]
+
+    apt_en = lookup_apt_zh_stat(raw)
+    if apt_en:
+        return apt_en
 
     # Fallback: query local PoB SQLite translations table when available
     try:
