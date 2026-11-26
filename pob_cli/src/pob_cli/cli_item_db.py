@@ -1,4 +1,4 @@
-"""`pob item db` Click command (Unique/Rare DB search and what-if equip)."""
+"""`pob item db` Click command (Unique/Rare DB search, slot/type filters, and PoB stat sorting)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .cli_common import (
 
 
 @click.command("db")
-@click.argument("query")
+@click.argument("query", metavar="[QUERY]", required=False, default="")
 @click.option(
     "--type",
     "db_type",
@@ -23,11 +23,26 @@ from .cli_common import (
     show_default=True,
     help="PoB item database kind.",
 )
-@click.option("--slot", help="Target equipment slot when equipping/comparing.")
+@click.option("--slot", help="Filter DB by slot (e.g. 'Helmet', 'Body Armour', 'Ring 2', '头盔') and target slot when equipping.")
+@click.option(
+    "--sort",
+    "sort_mode",
+    help="Sort Unique DB by PoB engine metric (e.g. dps, combined, hit, dot, ehp, maxhit, life, es, minion, or exact sortMode).",
+)
+@click.option("--item-type", "item_type", help="Filter DB by PoB item type (e.g. 'Bow', 'Armour', 'One Handed Melee').")
+@click.option("--requirement", help="Filter Unique DB by requirement (any, level, attributes, useable).")
+@click.option(
+    "--obtainable",
+    help="Filter Unique DB by source (default: obtainable; use 'any' for retired/legacy, or boss, corruption, vendor, core).",
+)
+@click.option("--search-mode", "search_mode", help="Match QUERY in anywhere (default), names, or modifiers.")
+@click.option("--league", help="Filter Unique DB by league (e.g. 'any', 'No league', or league name).")
+@click.option("--list-sorts", "list_sorts", is_flag=True, help="List all supported PoB ItemDB sort modes and filter options.")
 @click.option("--index", "item_index", type=int, help="1-based match index to select when equipping.")
 @click.option("--equip", is_flag=True, help="Try equipping selected DB item (what-if unless --apply).")
 @click.option("--apply", is_flag=True, help="Persist equipped DB item into build (implies --equip).")
 @click.option("--limit", type=int, default=15, show_default=True, help="Maximum matches to return.")
+@click.option("--page", type=int, default=1, show_default=True, help="1-based results page.")
 @click.option("--with-tooltips", "with_tooltips", is_flag=True, help="Fetch native PoB tooltips for search matches (slower).")
 @click.option("--with-raw", "with_raw", is_flag=True, help="Include raw PoE item text in search listing.")
 @_target_option(allow_slot_alias=False)
@@ -37,10 +52,18 @@ def cmd_item_db(
     query: str,
     db_type: str,
     slot: str | None,
+    sort_mode: str | None,
+    item_type: str | None,
+    requirement: str | None,
+    obtainable: str | None,
+    search_mode: str | None,
+    league: str | None,
+    list_sorts: bool,
     item_index: int | None,
     equip: bool,
     apply: bool,
     limit: int,
+    page: int,
     with_tooltips: bool,
     with_raw: bool,
     target: str,
@@ -48,62 +71,46 @@ def cmd_item_db(
     compact: bool,
     out_path: str | None,
 ) -> None:
-    """Search PoB's built-in Unique/Rare item database (EN/ZH) and optionally try/equip a match."""
-    from .formatters import format_mutation_report, render_table, strip_pob_escapes
+    """Search, filter, stat-rank, or try/equip items from PoB's built-in Unique/Rare database."""
+    from .formatters.item_db_md import format_item_db_markdown
     from .guardrails import GuardrailScope, check_input
 
-    check_input(query, scope=GuardrailScope.DATA_QUERY, expected_game="poe1")
+    q = (query or "").strip()
+    if q:
+        check_input(q, scope=GuardrailScope.DATA_QUERY, expected_game="poe1")
     if slot:
         check_input(slot, scope=GuardrailScope.SLOT, expected_game="poe1")
+    if item_type:
+        check_input(item_type, scope=GuardrailScope.CATEGORY, expected_game="poe1")
 
-    res = invoke_daemon(
-        "item_db",
-        {
-            "target": target,
-            "query": query,
-            "db_type": db_type.upper(),
-            "slot": slot,
-            "index": item_index,
-            "equip": bool(equip or apply),
-            "apply": apply,
-            "limit": limit,
-            "with_tooltips": with_tooltips,
-            "with_raw": with_raw,
-        },
-        timeout=60.0,
-    )
+    if not list_sorts and not q and not slot and not item_type and not league and not sort_mode:
+        raise click.UsageError(
+            "Provide QUERY, --slot, --item-type, --league, or --list-sorts "
+            '(e.g. `pob item db "Mageblood"` or `pob item db --slot Helmet --sort dps`).'
+        )
+
+    payload = {
+        "target": target,
+        "query": q,
+        "db_type": db_type.upper(),
+        "slot": slot,
+        "sort": sort_mode,
+        "item_type": item_type,
+        "requirement": requirement,
+        "obtainable": obtainable,
+        "search_mode": search_mode,
+        "league": league,
+        "list_sorts": list_sorts,
+        "index": item_index,
+        "equip": bool(equip or apply),
+        "apply": apply,
+        "limit": limit,
+        "page": page,
+        "with_tooltips": with_tooltips,
+        "with_raw": with_raw,
+    }
+    res = invoke_daemon("item_db", payload, timeout=120.0 if sort_mode else 60.0)
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)
         return
-
-    if not res.get("equipped"):
-        rows = []
-        for m in res.get("matches", []):
-            title = strip_pob_escapes(m.get("titleZh") or m.get("title") or m.get("nameZh") or m.get("name") or "-")
-            base = strip_pob_escapes(m.get("baseNameZh") or m.get("baseName") or m.get("type") or "-")
-            rows.append([m.get("index"), title, base, m.get("primarySlot") or "-", m.get("league") or "-"])
-        body = (
-            f"### PoB Item DB Search (`{res.get('dbType')}`): `{query}` ({res.get('total', 0)} hits)\n"
-            + render_table(["#", "Title", "Base", "Primary Slot", "League"], rows)
-        )
-        _emit_text(body, out_path=out_path)
-        return
-
-    sel = res.get("selectedItem") or {}
-    sel_name = strip_pob_escapes(sel.get("titleZh") or sel.get("title") or sel.get("name") or query)
-    lines = [f"### Item DB Equip: {sel_name} (Slot: `{res.get('slotName') or 'Auto'}`)"]
-    tip = res.get("tooltip") or {}
-    t_lines = tip.get("lines") or []
-    if t_lines:
-        lines.append("\n#### Native PoB Tooltip")
-        for ln in t_lines:
-            txt = (
-                strip_pob_escapes(ln.get("text") or ln.get("raw") or "")
-                if isinstance(ln, dict)
-                else strip_pob_escapes(str(ln))
-            )
-            if txt:
-                lines.append(f"  {txt}")
-    if res.get("mutation"):
-        lines.append("\n" + format_mutation_report(f"Item DB Simulation ({sel_name})", res["mutation"]))
-    _emit_text("\n".join(lines), out_path=out_path)
+    _emit_text(format_item_db_markdown(res), out_path=out_path)
