@@ -492,8 +492,13 @@ def cmd_tree_diff(
     else:
         params["ref_target"] = against
 
-    res = invoke_daemon("tree_diff", params, timeout=90.0)
+    res = _invoke_tree_daemon("tree_diff", params, timeout=90.0)
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)
         return
     _emit_text(format_tree_diff_markdown(res), out_path=out_path)
+
+
+from .cli_tree_wheels import register_tree_wheel_commands as _register_tree_wheel_commands  # noqa: E402
+
+_register_tree_wheel_commands(grp_tree)

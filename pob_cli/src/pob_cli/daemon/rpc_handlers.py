@@ -24,6 +24,9 @@ from .rpc_tree import (
 from .rpc_tree import (
     _h_tree_prune as _h_tree_prune,
 )
+from .rpc_tree import (
+    _h_tree_rank_wheels as _h_tree_rank_wheels,
+)
 from .runtime import normalize_slot_name
 
 if TYPE_CHECKING:

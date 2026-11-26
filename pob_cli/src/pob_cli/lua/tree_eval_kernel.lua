@@ -136,7 +136,26 @@ local function lookup_mastery_effect_id(mastery_map, nid)
 	return tonumber(raw)
 end
 
-local function resolve_candidate_override(spec, mode, node_ids, mastery_map)
+local function build_proxy_mod_node(spec, idx, mod_lines)
+	local proxy_node = {
+		id = 995000 + idx,
+		type = "Normal",
+		name = "ProxyBenchmark_" .. tostring(idx),
+		sd = {},
+	}
+	for i, line in ipairs(mod_lines) do
+		if type(line) == "string" and line ~= "" then
+			proxy_node.sd[#proxy_node.sd + 1] = line
+		end
+	end
+	if #proxy_node.sd == 0 then
+		return nil
+	end
+	spec.tree:ProcessStats(proxy_node)
+	return proxy_node
+end
+
+local function resolve_candidate_override(spec, mode, node_ids, mastery_map, extra_mod_lines, idx)
 	local add_nodes = nil
 	local remove_nodes = nil
 	local count = 0
@@ -177,6 +196,14 @@ local function resolve_candidate_override(spec, mode, node_ids, mastery_map)
 					add_nodes[nd] = true
 				end
 			end
+		end
+	end
+
+	if mode == "add" and type(extra_mod_lines) == "table" and #extra_mod_lines > 0 then
+		local p_node = build_proxy_mod_node(spec, idx or 1, extra_mod_lines)
+		if p_node then
+			add_nodes = add_nodes or {}
+			add_nodes[p_node] = true
 		end
 	end
 
@@ -230,7 +257,10 @@ local function handle_eval_node_paths(params)
 			local mastery_map = (type(cand) == "table" and type(cand.masteryEffects) == "table")
 					and cand.masteryEffects
 				or nil
-			local ov, ov_err, n_cnt = resolve_candidate_override(spec, mode, node_ids, mastery_map)
+			local extra_mods = (type(cand) == "table" and type(cand.extraModLines) == "table")
+					and cand.extraModLines
+				or nil
+			local ov, ov_err, n_cnt = resolve_candidate_override(spec, mode, node_ids, mastery_map, extra_mods, idx)
 			if ov_err then
 				results[#results + 1] = {
 					key = c_key,
