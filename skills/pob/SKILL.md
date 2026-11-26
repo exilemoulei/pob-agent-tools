@@ -60,7 +60,7 @@ pob batch --json-ops '[...]' [--return "skills,summary"] (ops: references/whatif
 pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--max-dist 5] | pob rank-gems [--group main] [--slot N|--add-link]
 pob bench suggest --slot boots --stat "抗性" | pob trade search --slot ring1 [--realm global|tw] [--name "<Unique>"] [--corrupted yes|no|any] [--securable] [--auto-query | --stat "生命>=60" --sum "火抗|冰抗|电抗>=80"] [--bench-craft "最大生命"] [--max-per-seller 2] [--normalize-quality auto|on|off] --budget 5 --currency divine
 pob timeless search --jewel "Lethal Pride" --socket <nodeId|id1,id2|all> --stat CombinedDPS | pob lang [zh-CN|zh-TW|en] [--realm global|tw]
-pob map-regex [@build.xml] [--tier both|t16|t17] [--mode safe|brick] [--avoid "<id|kw>"] [--allow "<id|kw>"] [--min-quant 80] [--client-lang auto|zh-CN|zh-TW|en] # <=250-char 0-FP stash regex
+pob map-regex ['@build.xml'] [--tier both|t16|t17] [--mode safe|brick] [--avoid "<id|kw>"] [--allow "<id|kw>"] [--min-quant 80] [--client-lang auto|zh-CN|zh-TW|en] # <=250-char 0-FP stash regex
 ```
 `--target SLUG` picks a build slot (`main`, `ref`); `--slot` is an equipment/socket slot only on `items`/`item`/`trade`/`bench`/`data`/`rank-gems`/`skill new-group` (elsewhere `--slot gloves` is refused with exit 1).
 
