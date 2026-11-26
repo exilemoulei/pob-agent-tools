@@ -17,7 +17,7 @@
 
 它会给你诸多优化建议，还能按构筑缺口去市集找对你最有提升的装备（支持浮士德金币一口价筛选、同卖家刷屏去重与自动补满 +20% 品质跑 PoB 对比），直接提供购买链接
 
-甚至几秒就能帮你搜完永恒珠宝（连新的深渊永恒珠宝也支持），还能按构筑机制一键生成 0 误杀的 T16/T17 刷图正则（`pob map-regex`）！
+甚至几秒就能帮你搜完永恒珠宝（连新的深渊永恒珠宝也支持），还能按构筑机制一键生成 0 误杀的 T16/T17 刷图正则（`pob map-regex`，仅输出纯文本供玩家手动复制到仓库搜索框，绝不读写或交互游戏客户端、文件或悬浮窗），以及离线反查 Boss/碎片掉落池与中文通货/命运卡市集查价（`pob data drop`、`pob price`）！
 
 ---
 
@@ -82,7 +82,7 @@
 
 ## 致谢与开源协议
 
-- **上游与灵感**：[**ianderse/pob-mcp**](https://github.com/ianderse/pob-mcp)（GPL-3.0）、[**shalayiding/POEMCP**](https://github.com/shalayiding/POEMCP)、[**Hsiung-Shao/PobTools-zh**](https://github.com/Hsiung-Shao/PobTools-zh)（中文化词库与早期无头桥接）、[**PathOfBuildingCommunity/PathOfBuilding**](https://github.com/PathOfBuildingCommunity/PathOfBuilding)。
+- **上游与灵感**：[**ianderse/pob-mcp**](https://github.com/ianderse/pob-mcp)（GPL-3.0）、[**shalayiding/POEMCP**](https://github.com/shalayiding/POEMCP)、[**Hsiung-Shao/PobTools-zh**](https://github.com/Hsiung-Shao/PobTools-zh)（中文化词库与早期无头桥接）、[**PathOfBuildingCommunity/PathOfBuilding**](https://github.com/PathOfBuildingCommunity/PathOfBuilding)、[**SnosMe/awakened-poe-trade**](https://github.com/SnosMe/awakened-poe-trade)（MIT，精简离线地图词缀、Boss 掉落池、非装备通货/命运卡词典及市集词缀补丁，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）。
 - **社区贡献**：
   - [**@ChangMenQAQ**](https://github.com/ChangMenQAQ)（[PR #1](https://github.com/exilemoulei/pob4agents/pull/1)）：官方交易搜索、丰收同阶转抗与工艺台词缀方案。
   - [**@restartgr**](https://github.com/restartgr)（[PR #2](https://github.com/exilemoulei/pob4agents/pull/2)、[PR #4](https://github.com/exilemoulei/pob4agents/pull/4)、[PR #6](https://github.com/exilemoulei/pob4agents/pull/6)）：面板“去水”分析、`--keep` 条件保留、构筑恢复校验、错误退出码与中英文文档润色。

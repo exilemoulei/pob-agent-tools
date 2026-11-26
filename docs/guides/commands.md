@@ -65,10 +65,11 @@ pob compare [<ref_source>] [--keep <spec>]... [--no-auto-keep] [--target <slug>]
 pob borrow [--item-slot "Weapon 1,Amulet"] [--skill-group main] [--ref-target ref] [--apply] [--json]
 
 # Local 0ms Game Data (Daemon-Free, Variadic) & External Economy/PoEDB/Wiki (Cached, Variadic)
-pob data <gem|unique|mod|base|translate|tattoo|runegraft|tree|tick> ["<q1>" ...] [--slot S] [--ilvl N] [--mod "<stat>"] [--kind all|tattoo|runegraft] [--legacy] [--type T] [--asc A] [--cdr N] [--aps R] [--spells N] [--quality-breakpoints] [--search-quality Q] [--active-only] [--limit 25 (0 = all)] [--rebuild] [--json]
+pob data <gem|unique|mod|base|translate|tattoo|runegraft|tree|tick|drop> ["<q1>" ...] [--slot S] [--ilvl N] [--mod "<stat>"] [--kind all|tattoo|runegraft] [--legacy] [--type T] [--asc A] [--cdr N] [--aps R] [--spells N] [--quality-breakpoints] [--search-quality Q] [--active-only] [--limit 25 (0 = all)] [--rebuild] [--json]
+# drop: zero-engine offline boss/fragment/map drop lookup (forward boss->loot & reverse item->dropSources; `pob data unique` also attaches `dropSources`). translate works offline for currencies/divcards/maps even without an engine.
 # tattoo / runegraft: passive overrides from PoB's TattooPassives (runegraft lists runegrafts only; tattoo --kind narrows; --legacy adds retired tattoos; --slot is the passive it replaces, e.g. "Small Strength", Mastery, Keystone; --mod filters by stat). tree also takes a node id. mod lists Vestigial implicits (source Vestigial) with the donor unique; --slot follows PoB: only on a unique of the donor's item type (helmet, body armour, gloves, boots, shield)
 pob poedb "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us] [--proxy <url>] [--limit 150] [--json]
-pob price "<q1>" ["<q2>" ...] [--league L] [--category all|unique|gem|imbuedgem|...] [--variant S] [--limit 20] [--detailed] [--proxy <url>] [--json]
+pob price "<q1>" ["<q2>" ...] [--league L] [--category all|unique|gem|imbuedgem|...] [--variant S] [--limit 20] [--detailed] [--proxy <url>] [--json] # accepts EN or ZH/TW/slang queries (e.g. 神圣石, 剥离石, 医者, 药剂师)
 pob meta [--league L] [--skill "<EN|中文>"] [--class "<EN|中文>"] [--top 15] [--proxy <url>] [--json] # poe.ninja league meta share (accepts EN substring, ZH/TW names, and slang like 正火/酋长)
 pob research "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us|en] [--proxy <url>] [--limit 150] [--max-chars 12000] [--json] # Concurrent poedb.tw + poewiki.net dual-source research (--limit 0 = every mod row, --max-chars 0 = unlimited)
 pob wiki "<q1>" ["<q2>" ...] [--max-chars 12000] [--proxy <url>] [--json]               # Local PoEDB bilingual index exact match + Mechanics/Interactions priority extraction (--max-chars 0 = unlimited)

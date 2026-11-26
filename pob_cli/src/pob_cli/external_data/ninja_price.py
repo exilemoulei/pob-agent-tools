@@ -47,6 +47,31 @@ def _should_auto_detail(query: str, variant: str | None) -> bool:
     return any(pat.search(combined) for pat in _AUTO_DETAIL_PATTERNS)
 
 
+def _resolve_price_query(raw_query: str) -> tuple[str, dict[str, str] | None]:
+    """Translate non-ASCII (CN/TW/slang) price queries into canonical English before poe.ninja lookup."""
+    q_clean = raw_query.strip()
+    if not q_clean or q_clean.isascii():
+        return q_clean, None
+    from .. import game_data as gd
+
+    q_tw = gd.normalize_tw_query(q_clean)
+    slang_hit = gd.resolve_player_slang(q_tw) or (gd.resolve_player_slang(q_clean) if q_tw != q_clean else None)
+    if slang_hit is not None:
+        return slang_hit[0], {"from": q_clean, "to": slang_hit[0]}
+    non_gear_en = gd.resolve_non_gear_en(q_clean) or (gd.resolve_non_gear_en(q_tw) if q_tw != q_clean else None)
+    if non_gear_en:
+        return non_gear_en, {"from": q_clean, "to": non_gear_en}
+    try:
+        en_name = gd.english_for_zh(q_clean) or (gd.english_for_zh(q_tw) if q_tw != q_clean else None)
+    except Exception:
+        en_name = None
+    if en_name:
+        return en_name, {"from": q_clean, "to": en_name}
+    if q_tw and q_tw != q_clean and q_tw.isascii():
+        return q_tw, {"from": q_clean, "to": q_tw}
+    return q_clean, None
+
+
 def _extract_cluster_passives(line: dict[str, Any]) -> int | None:
     variant = str(line.get("variant") or "")
     m = re.search(r"(\d+)\s*passives?", variant, re.IGNORECASE)
@@ -138,6 +163,8 @@ def _narrow_detailed_types(
 def _score_price_matches(
     query: str,
     *,
+    search_query: str | None = None,
+    resolved_alias: dict[str, str] | None = None,
     resolved_league: str,
     cat_key: str,
     variant: str | None,
@@ -148,7 +175,7 @@ def _score_price_matches(
     source_by_type: dict[str, list[dict[str, Any]]],
     is_stale: bool = False,
 ) -> dict[str, Any]:
-    q = query.strip().lower()
+    q = (search_query if search_query is not None else query).strip().lower()
     v_low = variant.strip().lower() if variant and variant.strip() else None
 
     matches: list[dict[str, Any]] = []
@@ -225,6 +252,9 @@ def _score_price_matches(
         "totalMatches": len(matches),
         "matches": matches[:limit],
     }
+    if resolved_alias is not None:
+        out["resolvedQuery"] = resolved_alias["to"]
+        out["resolvedAlias"] = resolved_alias
     if is_stale:
         out["stale"] = True
     return out
@@ -248,16 +278,18 @@ def query_price(
     from ..guardrails import GuardrailScope, check_input, validate_url
 
     q_raw = query.strip()
-    q = q_raw.lower()
-    if not q:
+    if not q_raw:
         raise ValueError("Price query cannot be empty.")
     validate_url(q_raw, expected_game="poe1", cli_subcommand="price")
     check_input(q_raw, scope=GuardrailScope.DATA_QUERY, expected_game="poe1")
     if category and category.strip().lower() != "all":
         check_input(category, scope=GuardrailScope.CATEGORY, expected_game="poe1")
 
+    resolved_q, resolved_alias = _resolve_price_query(q_raw)
+    q = resolved_q.lower()
+
     pkg = _pkg()
-    is_detailed = bool(detailed or _should_auto_detail(query, variant))
+    is_detailed = bool(detailed or _should_auto_detail(resolved_q, variant))
 
     resolved_league = league or pkg.resolve_current_trade_league(proxy=proxy)
     _LAST_STALE.value = False
@@ -294,6 +326,8 @@ def query_price(
 
     return _score_price_matches(
         query,
+        search_query=resolved_q,
+        resolved_alias=resolved_alias,
         resolved_league=resolved_league,
         cat_key=cat_key,
         variant=variant,
@@ -348,20 +382,21 @@ def query_price_multi(
             divine_chaos_rate = float(line.get("chaos") or line.get("chaosValue") or 0.0)
             break
 
-    per_query_plan: list[tuple[str, bool, tuple[str, ...]]] = []
+    per_query_plan: list[tuple[str, str, dict[str, str] | None, bool, tuple[str, ...]]] = []
     all_stash_types: list[str] = []
     seen_stash: set[str] = set()
     for q_raw in clean_queries:
-        q_det = bool(detailed or _should_auto_detail(q_raw, variant))
+        res_q, res_alias = _resolve_price_query(q_raw)
+        q_det = bool(detailed or _should_auto_detail(res_q, variant))
         if q_det:
-            t_types = _narrow_detailed_types(q_raw.lower(), cat_key, types_to_search, overviews)
+            t_types = _narrow_detailed_types(res_q.lower(), cat_key, types_to_search, overviews)
             for ov_type in t_types:
                 if ov_type not in seen_stash:
                     seen_stash.add(ov_type)
                     all_stash_types.append(ov_type)
         else:
             t_types = types_to_search
-        per_query_plan.append((q_raw, q_det, t_types))
+        per_query_plan.append((q_raw, res_q, res_alias, q_det, t_types))
 
     fetched_stash: dict[str, list[dict[str, Any]]] = {}
     stash_stale_types: set[str] = set()
@@ -372,7 +407,7 @@ def query_price_multi(
         )
 
     results: list[dict[str, Any]] = []
-    for q_raw, q_det, t_types in per_query_plan:
+    for q_raw, res_q, res_alias, q_det, t_types in per_query_plan:
         q_stale = dense_stale
         if q_det:
             if any(t in stash_stale_types or t in stash_failed_types for t in t_types):
@@ -383,6 +418,8 @@ def query_price_multi(
         results.append(
             _score_price_matches(
                 q_raw,
+                search_query=res_q,
+                resolved_alias=res_alias,
                 resolved_league=resolved_league,
                 cat_key=cat_key,
                 variant=variant,

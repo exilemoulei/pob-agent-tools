@@ -210,7 +210,9 @@ def _english_for_zh_cached(
             en = str(row.get("en") or "").strip()
             if en and not _CJK_RE.search(en) and not ZH_NON_NAME_KEY_RE.match(en):
                 return en
-    return None
+    from .apt_non_gear import resolve_non_gear_en
+
+    return resolve_non_gear_en(text)
 
 
 def english_for_zh(

@@ -7,6 +7,8 @@ Reads PoB Lua data files (`PoE1/Data/`) and optional Simplified Chinese dictiona
 
 from __future__ import annotations
 
+from .apt_drops import lookup_item_drop_sources, query_drop_sources, query_drop_sources_multi
+from .apt_non_gear import resolve_non_gear_en, search_apt_non_gear
 from .constants import (
     _ACTIVE_AWAKENED_EXCEPTIONAL_LOWER,
     _CJK_PARTICLE_RE,
@@ -305,16 +307,21 @@ __all__ = [
     "ground_text_entities",
     "is_legacy_awakened_gem",
     "lookup_fact_cards_for_build",
+    "lookup_item_drop_sources",
     "mod_rolls_on_base",
     "normalize_stat_lines",
     "normalize_tw_query",
+    "query_drop_sources",
+    "query_drop_sources_multi",
     "query_gem_quality_breakpoints",
     "query_local_data",
     "query_multi",
     "query_tattoo_data",
     "query_tick_breakpoints",
     "query_tree_data",
+    "resolve_non_gear_en",
     "resolve_player_slang",
     "resolve_pob_dir",
     "resolve_runtime_dir",
+    "search_apt_non_gear",
 ]

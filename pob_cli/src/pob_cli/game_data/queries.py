@@ -225,8 +225,23 @@ def query_local_data(
     if slot:
         check_input(slot, scope=GuardrailScope.SLOT, expected_game="poe1")
 
-    db_path = _gd.ensure_gamedata_index(pob_dir=pob_dir, runtime_dir=runtime_dir)
     limit = int(limit)
+    try:
+        db_path = _gd.ensure_gamedata_index(pob_dir=pob_dir, runtime_dir=runtime_dir)
+    except FileNotFoundError:
+        if kind_norm != "translate":
+            raise
+        from .apt_non_gear import build_offline_translate_response
+
+        return build_offline_translate_response(
+            q_clean,
+            q_tw,
+            slot=slot,
+            ilvl=ilvl,
+            mod_clean=mod_clean,
+            limit=limit,
+            warnings=[w.to_dict() for w in warnings] if warnings else None,
+        )
     q_lower = _fold_search_text(q_tw)
 
     resolved_alias: dict[str, str] | None = None
@@ -412,7 +427,16 @@ def query_multi(
     if isinstance(db, sqlite3.Connection):
         conn = db
     else:
-        db_path = Path(db) if db is not None else _gd.ensure_gamedata_index(pob_dir=pob_dir, runtime_dir=runtime_dir)
+        try:
+            db_path = Path(db) if db is not None else _gd.ensure_gamedata_index(pob_dir=pob_dir, runtime_dir=runtime_dir)
+        except FileNotFoundError:
+            if kind_norm != "translate":
+                raise
+            from .apt_non_gear import build_offline_translate_multi_response
+
+            return build_offline_translate_multi_response(
+                clean_queries, q_tw_map, slot=slot, ilvl=ilvl, mod_clean=mod_clean, limit=limit, warnings_by_query=warnings_by_query
+            )
         conn = sqlite3.connect(_sqlite_ro_uri(db_path), uri=True)
         own_conn = True
 

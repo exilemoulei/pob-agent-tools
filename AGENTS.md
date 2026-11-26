@@ -20,6 +20,7 @@ pyinstaller --noconfirm --clean pob_cli/packaging/pob.spec  # dist/pob; on macOS
 python pob_cli/scripts/gen_han_fold.py Unihan.zip     # regenerate game_data/tables_han.py from Unicode's Unihan
 python pob_cli/scripts/update_bench_costs.py          # regenerate data/bench_costs.json (needs an engine; online unless --from-local-poedb)
 python pob_cli/scripts/update_map_mods.py --apt-dir <dir>  # regenerate data/map_mods_3_30.json from MIT awakened-poe-trade data
+python pob_cli/scripts/update_apt_data.py --apt-dir <dir>  # regenerate data/apt_*.json.gz from an awakened-poe-trade checkout (offline)
 gh workflow run engine.yml -R exilemoulei/pob4agents  # the real-engine gate on Windows, macOS and Linux
 ```
 
@@ -46,7 +47,7 @@ Releases are cut by bumping `__version__` in `pob_cli/src/pob_cli/__init__.py` a
 
 ## Conventions
 
-- **Generated files are never edited by hand:** `game_data/tables_han.py`, `data/bench_costs.json`, `data/map_mods_3_30.json`, `uv.lock` (change it with `uv add` / `uv lock`) and `bucket/pob.json`. Change the generator or its input instead.
+- **Generated files are never edited by hand:** `game_data/tables_han.py`, `data/bench_costs.json`, `data/map_mods_3_30.json`, `data/apt_*.json.gz`, `uv.lock` (change it with `uv add` / `uv lock`) and `bucket/pob.json`. Change the generator or its input instead.
 - **Tests.** Unit tests run offline on fakes. Real-engine tests skip when no engine is found. The full gate's ratchet depends on the engine: with no `--min-passed/--max-skipped` flags it follows the machine and prints an INFO line — `>=905` passed and `<=25` skipped with the legacy `PobTools[20261102]` seed, `<=32` with a bootstrapped engine (Windows keeps its POSIX-only skips), `<=120` engine-less; with a bootstrapped engine use `engine.yml`'s numbers (`--min-passed 1331 --max-skipped 8` on macOS/Linux, `1306` / `32` on Windows; each OS skips the tests written for the other). A change that adds real-engine tests raises those numbers in `engine.yml` in the same change. Timing assertions scale with `POB_TEST_PERF_SLACK`.
 - **Chinese text.** The display language defaults to Simplified (`zh-CN`) and can be switched to Traditional (`zh-TW`) or English with `pob lang` / `POB_LANG`, while queries and slang are mostly Simplified. Compare Chinese labels only after `game_data.fold_han`, and fall back to the English name from `game_data.english_for_zh`. Keep `--json` fields English; localize only human output.
 - **Exit codes are a contract:** `1` for a bad request, `5` for a daemon or engine fault with a clean `Error: ...` line, `0`..`6` for trade. Agents branch on them.

@@ -119,6 +119,9 @@ def _fmt_game_data_unique(results: list[dict[str, Any]]) -> list[str]:
         meta = [x for x in [f"ReqLv {r['req_level']}" if r.get("req_level") else "", r.get("league") or "", r.get("source") or ""] if x]
         if meta:
             lines.append("- " + " | ".join(meta))
+        drop_sources = r.get("dropSources") or []
+        if drop_sources:
+            lines.append("- **Drop Sources**: " + ", ".join(str(s) for s in drop_sources[:8]))
         matched_mods = r.get("matched_mods") or []
         if matched_mods:
             for mm in matched_mods[:4]:
@@ -326,4 +329,52 @@ def format_meta_markdown(res: dict[str, Any]) -> str:
     ]
     lines.append("\n#### Top Main Skills")
     lines.append(render_table(["Skill", "Share", "Est. Builds", "Top Classes"], sk_rows))
+    return "\n".join(lines)
+
+
+def _fmt_drop_ent(ent: dict[str, Any]) -> str:
+    en = str(ent.get("name") or "-")
+    zh = str(ent.get("zhName") or "")
+    return f"{zh} ({en})" if (zh and zh != en) else en
+
+
+def format_drop_data(res: dict[str, Any]) -> str:
+    """Format `pob data drop` forward/reverse results into Markdown."""
+    lines: list[str] = []
+    for w in res.get("warnings") or []:
+        if isinstance(w, dict):
+            tag = "[POE1-PATCH-WARN]" if w.get("category") == "legacy_patch" else "[POE1-TRAP-WARN]"
+            lines.append(f"> {tag} `{w.get('trigger', '')}`: {w.get('warning', '')}")
+    alias = res.get("resolvedAlias")
+    alias_note = f" (alias `{alias['from']}` -> `{alias['to']}`)" if isinstance(alias, dict) and alias.get("to") else ""
+    lines.append(
+        f"### Drop Lookup (`apt`): `{res.get('query')}`{alias_note} — "
+        f"`{res.get('count', 0)}` matches (`{res.get('elapsedMs', 0)}ms`)"
+    )
+    forward = res.get("forward") or []
+    reverse = res.get("reverse") or []
+    if not forward and not reverse:
+        lines.append("_(no matching boss/fragment/map drop pools)_")
+        return "\n".join(lines)
+    if forward:
+        lines.append("\n#### Dropped Loot (Forward)")
+        f_rows = [
+            [
+                ", ".join(_fmt_drop_ent(s) for s in (grp.get("sources") or [])),
+                ", ".join(f"{_fmt_drop_ent(it)} [{it.get('category', 'item')}]" for it in (grp.get("items") or [])),
+            ]
+            for grp in forward
+        ]
+        lines.append(render_table(["Boss / Fragment / Map", "Dropped Items"], f_rows))
+    if reverse:
+        lines.append("\n#### Drop Sources (Reverse)")
+        r_rows = [
+            [
+                _fmt_drop_ent(entry.get("item") or {}),
+                str((entry.get("item") or {}).get("category") or "-"),
+                ", ".join(_fmt_drop_ent(s) for s in (entry.get("dropSources") or [])),
+            ]
+            for entry in reverse
+        ]
+        lines.append(render_table(["Item", "Category", "Drop Sources"], r_rows))
     return "\n".join(lines)

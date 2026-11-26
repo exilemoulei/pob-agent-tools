@@ -246,4 +246,12 @@ def _query_uniques(
         scored.append(((mod_tier, tier, len(name_l), name_l), payload))
 
     scored.sort(key=lambda item: item[0])
-    return [item[1] if isinstance(item[1], dict) else json.loads(item[1]) for item in _slice_limit(scored, limit)]
+    out = [item[1] if isinstance(item[1], dict) else json.loads(item[1]) for item in _slice_limit(scored, limit)]
+    from .apt_drops import lookup_item_drop_sources
+
+    for obj in out:
+        if isinstance(obj, dict):
+            ds = lookup_item_drop_sources(obj.get("name"))
+            if ds:
+                obj["dropSources"] = ds
+    return out
