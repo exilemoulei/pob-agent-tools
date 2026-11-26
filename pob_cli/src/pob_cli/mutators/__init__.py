@@ -91,12 +91,16 @@ from .skills_resolve import (
     _resolve_gem_specs_batch,
 )
 from .sweep_report import _compact_sweep_summary, _extract_compact_calcs, _json_safe_num, _safe_ele_max_hit
+from .tattoos import apply_tattoo_in_place, apply_tree_tattoo
 from .tree import (
     _apply_tree_changes_in_place,
     _resolve_node_token,
     change_tree,
     modify_tree,
 )
+
+edit_raw_item_mods = _edit_raw_item_mods
+resolve_slot_from_items = _resolve_slot_from_items
 
 __all__ = [
     "DB_STAT_SORT_MAX",
@@ -157,10 +161,13 @@ __all__ = [
     "add_skill_gem",
     "add_skill_group",
     "anoint_item",
+    "apply_tattoo_in_place",
+    "apply_tree_tattoo",
     "capture_digest",
     "change_tree",
     "create_new_build",
     "edit_item_mods",
+    "edit_raw_item_mods",
     "list_item_db_sorts",
     "modify_config",
     "modify_skill",
@@ -168,6 +175,7 @@ __all__ = [
     "query_item_db",
     "remove_skill_gem",
     "replace_skill_group",
+    "resolve_slot_from_items",
     "run_batch",
     "run_sweep",
     "search_and_try_item_db",
