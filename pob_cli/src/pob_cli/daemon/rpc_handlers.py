@@ -469,6 +469,67 @@ def _h_compute_grad_build(_m: DaemonManager, params: dict[str, Any], w: BridgeWo
     return w.call("compute_grad_build", rpc_params, timeout=30.0)
 
 
+def _h_map_regex(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    from ..locale_cfg import current_lang, normalize_lang
+    from ..map_regex import build_map_regex_result, load_corpus, resolve_preset_ids
+    from ..snapshot import load_build
+
+    slot_nm = normalize_slot_name(params.get("target") or getattr(w, "slot_name", None))
+    src = params.get("source")
+    xml_code = params.get("xml_code")
+    has_load_arg = bool(src or xml_code or (params.get("realm") and str(params.get("realm")).lower() == "cn"))
+    src_hash = compute_source_hash(params) if has_load_arg else None
+    read_cache = getattr(m, "_read_cache", None)
+    if has_load_arg:
+        matched = (
+            read_cache.matching_slot_load(slot_nm, history_of(w).rev, bool(getattr(w, "last_good_code", None)), src_hash)
+            if read_cache is not None
+            else None
+        )
+        if matched is None:
+            load_meta = load_build(
+                w,
+                source=src,
+                xml_code=xml_code,
+                char_name=params.get("char_name"),
+                league=params.get("league"),
+                realm=params.get("realm"),
+            )
+            if read_cache is not None:
+                read_cache.record_slot_load(slot_nm, history_of(w).rev, src_hash, load_meta, live=is_live_source(params))
+
+    if not getattr(w, "last_good_code", None) and not has_load_arg:
+        raise DaemonRequestError(
+            f"No build loaded in '{slot_nm}' slot. Pass SOURCE, run `pob load <source>`, or use `--preset-only`."
+        )
+    if not get_worker_caps(w).get("mapRegexProbe"):
+        raise RuntimeError("mapRegexProbe capability unavailable on this engine worker")
+
+    raw_lang = str(params.get("client_lang") or "auto").strip()
+    eff_lang = current_lang(m.runtime_dir) if raw_lang.lower() == "auto" else normalize_lang(raw_lang)
+    corpus = load_corpus(eff_lang, engine_root=m.pob_dir)
+    avoid_ids = resolve_preset_ids(params.get("avoid"), corpus)
+    allow_ids = resolve_preset_ids(params.get("allow"), corpus)
+    probe = w.call("map_regex_probe", {}, timeout=30.0)
+    res = build_map_regex_result(
+        probe,
+        tier=str(params.get("tier") or "both"),
+        mode=str(params.get("mode") or "safe"),
+        avoid_ids=avoid_ids,
+        allow_ids=allow_ids,
+        client_lang=eff_lang,
+        max_len=int(params["max_len"]) if params.get("max_len") is not None else 250,
+        min_quant=int(params["min_quant"]) if params.get("min_quant") is not None else None,
+        min_pack=int(params["min_pack"]) if params.get("min_pack") is not None else None,
+        corpus=corpus,
+    )
+    res["targetSlot"] = slot_nm
+    res["rev"] = history_of(w).rev
+    if src_hash:
+        res["sourceHash"] = src_hash
+    return m._attach_warning_if_degraded(res)
+
+
 _SLOT_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "load": _h_load,
     "export": _h_export,
@@ -489,6 +550,7 @@ _SLOT_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "trade_eval_items": _h_trade_eval_items,
     "trade_generate_query": _h_trade_generate_query,
     "compute_grad_build": _h_compute_grad_build,
+    "map_regex": _h_map_regex,
     **MUTATE_ACTION_HANDLERS,
 }
 

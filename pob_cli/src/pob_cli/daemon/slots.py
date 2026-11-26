@@ -501,7 +501,7 @@ class DaemonManager:
                 drift_warn: str | None = None
                 if (
                     target == "main"
-                    and action not in ("load", "new_build", "diagnose")
+                    and action not in ("load", "new_build", "diagnose", "map_regex")
                     and not getattr(worker, "last_good_code", None)
                 ):
                     with self._lock:
