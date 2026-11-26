@@ -283,7 +283,8 @@ def infer_on_hit_auto_keeps(
 
     _scan_debuff_lines(player_lines, hit_rate=hit_rate, stats=stats, check_skill_type=True, out=out)
     if extra_mod_lines:
-        _scan_debuff_lines(list(extra_mod_lines), hit_rate=hit_rate, stats=stats, check_skill_type=False, out=out)
+        # AG / companion gear hits at AG's own slow melee cadence, never at player cast/attack speed.
+        _scan_debuff_lines(list(extra_mod_lines), hit_rate=1.8, stats=None, check_skill_type=False, out=out)
 
     if "conditionenemymaimed" not in out and isinstance(skills_res, dict):
         main_idx = skills_res.get("mainSocketGroup")

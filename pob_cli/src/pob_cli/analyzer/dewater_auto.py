@@ -153,6 +153,9 @@ def infer_auto_keep_and_flask_notes(
     tree_summary: dict[str, Any] | None = None,
     equipped_slots_raw: list[dict[str, Any]] | None = None,
     alloc_node_stats: list[tuple[str, list[str]]] | None = None,
+    extra_mod_lines: list[str] | None = None,
+    worker: Any = None,
+    minion_itemsets: dict[str, Any] | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Infer build-guaranteed config auto-keep reasons and the notes on flasks whose stripping needs a word."""
     st = stats or {}
@@ -258,10 +261,22 @@ def infer_auto_keep_and_flask_notes(
 
     from .dewater_mechanics import infer_on_hit_auto_keeps
 
+    eff_extra_lines = extra_mod_lines
+    if eff_extra_lines is None:
+        if minion_itemsets is not None:
+            from .pitfalls_ag import extract_ag_on_hit_mod_lines
+
+            eff_extra_lines = extract_ag_on_hit_mod_lines(minion_itemsets)
+        elif worker is not None:
+            from .pitfalls_ag import extract_ag_on_hit_mod_lines, fetch_minion_itemsets
+
+            eff_extra_lines = extract_ag_on_hit_mod_lines(fetch_minion_itemsets(worker))
+
     for k, reason in infer_on_hit_auto_keeps(
         stats=st,
         skills_res=skills_res,
         mod_lines=tok["all_mod_lines"],
+        extra_mod_lines=eff_extra_lines,
     ).items():
         auto_keep.setdefault(k, reason)
 
@@ -447,6 +462,7 @@ def dewater_smart_in_place(
         tree_summary=eff_tree,
         equipped_slots_raw=eff_raw,
         alloc_node_stats=alloc_st,
+        worker=worker,
     )
     return dewater_build_in_place(
         worker,

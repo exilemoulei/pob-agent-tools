@@ -30,6 +30,7 @@ from .inspectors import inspect_items
 from .notes import fetch_build_notes
 from .pitfalls_core import _detect_build_mechanics_and_pitfalls
 from .pitfalls_triggers import deduplicate_trigger_gaps
+from .static_checks import collect_passive_point_issues
 from .summary import _is_tincture_item, extract_summary
 from .tree_helpers import apply_node_override
 from .tree_inspect import inspect_tree
@@ -377,18 +378,11 @@ def diagnose_build(
         items_raw_res = {"items": [], "slots": []}
 
     info = summary.get("buildInfo") or {}
-    pts = info.get("points") or {}
-    used_pts, used_max = int(pts.get("used") or 0), int(pts.get("usedMax") or 0)
-
     gaps = [g for g in (audit.get("healthIssues") or []) if g.get("category") != "TriggerOverspeed"]
-    if used_max > 0 and used_pts < used_max:
-        gaps.append(
-            {
-                "category": "Points",
-                "severity": "LOW",
-                "message": f"Unallocated passive points: {used_pts}/{used_max} ({used_max - used_pts} remaining)",
-            }
-        )
+    existing_pts = {g.get("message") for g in gaps if g.get("category") == "Points"}
+    for pt_gap in collect_passive_point_issues(info, include_unallocated=True):
+        if pt_gap["message"] not in existing_pts:
+            gaps.append(pt_gap)
 
     mg = summary.get("mainGroup") or {}
     main_gems_raw = [
@@ -473,6 +467,7 @@ def diagnose_build(
                 stats=stats_full, skills_res=all_skills_res, items_res=items_raw_res,
                 build_info=info, tree_summary=tree_summary,
                 equipped_slots_raw=items_info.get("equippedSlots"), alloc_node_stats=alloc_node_stats,
+                worker=worker,
             )[0]
             if auto_keep
             else {}
