@@ -3,20 +3,28 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import click
 
-from .cli_common import daemon_call_cli, echo_utf8, emit_output, resolve_target_slot
+from .cli_common import (
+    ctx_wants_json,
+    daemon_call_cli,
+    echo_utf8,
+    emit_output,
+    output_options,
+    pob2_command,
+    resolve_output_flags,
+    resolve_target_slot,
+    target_option,
+)
 from .formatters import format_notes_md
 
 
-@click.command("load")
+@pob2_command("load")
 @click.argument("source", required=True)
-@click.option("--target", type=str, default=None, help="Target build slot (default: main).")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@target_option(allow_slot_alias=True)
+@output_options
 @click.pass_context
-def cmd_load(ctx: click.Context, source: str, target: str | None, as_json: bool) -> None:
+def cmd_load(ctx: click.Context, source: str, target: str, as_json: bool) -> None:
     """Load a PoE2 build (code, XML file, pobb.in, poe2db.tw, poe.ninja/poe2, maxroll, WeGame) into a slot."""
     slot = resolve_target_slot(target)
     res = daemon_call_cli("load", {"source": source, "target": slot})
@@ -47,51 +55,49 @@ def cmd_load(ctx: click.Context, source: str, target: str | None, as_json: bool)
     emit_output(ctx, res, as_json=as_json, markdown_text="\n".join(lines))
 
 
-@click.command("export")
-@click.option("--target", type=str, default=None, help="Target build slot (default: main).")
+@pob2_command("export")
+@target_option(allow_slot_alias=True)
 @click.option("--xml", "include_xml", is_flag=True, default=False, help="Output decoded XML instead of share code.")
-@click.option("--out", "out_file", type=click.Path(dir_okay=False), default=None, help="Write exported code/XML to file.")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@output_options
 @click.pass_context
 def cmd_export(
     ctx: click.Context,
-    target: str | None,
+    target: str,
     include_xml: bool,
-    out_file: str | None,
     as_json: bool,
 ) -> None:
     """Export the current PoE2 slot build as a PoB2 share code or XML."""
     slot = resolve_target_slot(target)
     res = daemon_call_cli("export", {"target": slot, "include_xml": include_xml})
-    if as_json:
-        emit_output(ctx, res, as_json=True, out_path=out_file)
+    if as_json or ctx_wants_json(ctx):
+        emit_output(ctx, res, as_json=True)
         return
     body = str(res.get("xml") if include_xml else res.get("code") or "")
-    if out_file:
-        p = Path(out_file)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(body + "\n", encoding="utf-8", newline="\n")
-        echo_utf8(f"Exported to {p}")
+    _compact, eff_out = resolve_output_flags(ctx)
+    if eff_out is not None:
+        eff_out.parent.mkdir(parents=True, exist_ok=True)
+        eff_out.write_text(body + "\n", encoding="utf-8", newline="\n")
+        echo_utf8(f"Exported to {eff_out}")
         return
     echo_utf8(body)
 
 
-@click.command("notes")
-@click.option("--target", type=str, default=None, help="Target build slot (default: main).")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@pob2_command("notes")
+@target_option(allow_slot_alias=True)
+@output_options
 @click.pass_context
-def cmd_notes(ctx: click.Context, target: str | None, as_json: bool) -> None:
+def cmd_notes(ctx: click.Context, target: str, as_json: bool) -> None:
     """Display author build Notes with PoB colour escape codes stripped."""
     slot = resolve_target_slot(target)
     res = daemon_call_cli("notes", {"target": slot})
     emit_output(ctx, res, as_json=as_json, markdown_text=format_notes_md(res))
 
 
-@click.command("undo")
-@click.option("--target", type=str, default=None, help="Target build slot (default: main).")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@pob2_command("undo")
+@target_option(allow_slot_alias=True)
+@output_options
 @click.pass_context
-def cmd_undo(ctx: click.Context, target: str | None, as_json: bool) -> None:
+def cmd_undo(ctx: click.Context, target: str, as_json: bool) -> None:
     """Undo the last committed edit on the target PoE2 build slot."""
     slot = resolve_target_slot(target)
     res = daemon_call_cli("undo", {"target": slot})
@@ -99,11 +105,11 @@ def cmd_undo(ctx: click.Context, target: str | None, as_json: bool) -> None:
     emit_output(ctx, res, as_json=as_json, markdown_text=md)
 
 
-@click.command("redo")
-@click.option("--target", type=str, default=None, help="Target build slot (default: main).")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@pob2_command("redo")
+@target_option(allow_slot_alias=True)
+@output_options
 @click.pass_context
-def cmd_redo(ctx: click.Context, target: str | None, as_json: bool) -> None:
+def cmd_redo(ctx: click.Context, target: str, as_json: bool) -> None:
     """Redo the previously undone edit on the target PoE2 build slot."""
     slot = resolve_target_slot(target)
     res = daemon_call_cli("redo", {"target": slot})

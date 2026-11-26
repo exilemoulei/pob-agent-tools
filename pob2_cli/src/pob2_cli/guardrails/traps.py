@@ -54,7 +54,7 @@ POE1_ONLY_TRAPS_FOR_POB2: tuple[TrapRule, ...] = (
         ),
         error="PoE2 has no Hideout Crafting Bench, no Orb of Scouring, and no Orb of Alteration.",
         remediation="Use PoE2 0.5.5 tiered orbs, Essences/Alloys (max 1 Crafted mod), Desecration Bones (max 1), and Ritual Omens via `pob2 craft`.",
-        equivalent_command="pob2 craft plan --base <base> --target <mod>",
+        equivalent_command="pob2 craft plan --base <base> --want <mod>",
     ),
     TrapRule(
         rule_id="POE1_FLASK_SLOTS_3_5",
@@ -145,7 +145,7 @@ POE1_ONLY_TRAPS_FOR_POB2: tuple[TrapRule, ...] = (
         regex=re.compile(r"(?m)^(?:Shaper|Elder|Crusader|Redeemer|Hunter|Warlord|Synthesised) Item\b|^\{(?:shaper|elder|crusader|redeemer|hunter|warlord)\}"),
         error="PoE1 Atlas Influence bases (`Shaper`/`Elder`/`Conqueror`/`Synthesised`) do not exist in PoE2.",
         remediation="Use PoE2 normal, Essence, Verisium Alloy, Desecrated, and Corrupted modifier pools.",
-        equivalent_command="pob2 craft odds --base <base> --target <mod>",
+        equivalent_command="pob2 craft odds --base <base> --want <mod>",
     ),
     TrapRule(
         rule_id="POE1_SIX_LINK_ARMOUR_SOCKETS",

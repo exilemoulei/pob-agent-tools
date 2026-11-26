@@ -162,7 +162,8 @@ def _h_tree(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str, 
 
 
 def _h_items(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
-    return m._attach_warning_if_degraded(inspect_items(w, slot=params.get("slot")))
+    inc_raw = bool(params.get("include_raw") or params.get("raw"))
+    return m._attach_warning_if_degraded(inspect_items(w, slot=params.get("slot"), include_raw=inc_raw))
 
 
 def _h_skills(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:

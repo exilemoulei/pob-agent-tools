@@ -11,7 +11,14 @@ import click
 
 from . import updater
 from .bridge_client import BridgeWorker
-from .cli_common import daemon_call_cli, emit_output, resolve_target_slot
+from .cli_common import (
+    daemon_call_cli,
+    emit_output,
+    output_options,
+    pob2_command,
+    resolve_target_slot,
+    target_option,
+)
 from .errors import DaemonRequestError
 from .game_profile import stamp_game
 from .importers.share_urls import resolve_poe2_build_source
@@ -45,14 +52,14 @@ def _load_source_into_worker(worker: BridgeWorker, build_source: str, *, data_di
     worker.call("import_code", {"code": resolved.code, "mode": "replace"})
 
 
-@click.command("fix-gaps")
+@pob2_command("fix-gaps")
 @click.option(
     "--build",
     "build_source",
     default=None,
     help="Optional standalone PoE2 build source (XML file, share code, pobb.in, poe2db, WeGame). Omit to use active daemon slot.",
 )
-@click.option("--target", default=None, help="Target daemon build slot (default: main).")
+@target_option(allow_slot_alias=True)
 @click.option(
     "--overcap",
     "overcap_target",
@@ -82,12 +89,12 @@ def _load_source_into_worker(worker: BridgeWorker, build_source: str, *, data_di
     default=None,
     help="Optional PoB2 engine root directory for standalone `--build` runs (defaults to POB2_ENGINE_DIR).",
 )
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
+@output_options
 @click.pass_context
 def cmd_fix_gaps(
     ctx: click.Context,
     build_source: str | None,
-    target: str | None,
+    target: str,
     overcap_target: int,
     chaos_target: int,
     apply_flag: bool,
@@ -135,7 +142,7 @@ def cmd_fix_gaps(
     )
 
 
-@click.command("spirit")
+@pob2_command("spirit")
 @click.option(
     "--budget",
     type=int,
@@ -148,7 +155,7 @@ def cmd_fix_gaps(
     default=None,
     help="Optional standalone PoE2 build source (XML file, share code, URL) for live CoW Spirit deficit rescue.",
 )
-@click.option("--target", default=None, help="Target daemon build slot when rescuing active slot (default: main).")
+@target_option(allow_slot_alias=True, help_text="Target daemon build slot when rescuing active slot (default: main).")
 @click.option(
     "--apply",
     "apply_flag",
@@ -163,13 +170,13 @@ def cmd_fix_gaps(
     default=None,
     help="Optional PoB2 engine root directory for standalone `--build` runs (defaults to POB2_ENGINE_DIR).",
 )
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
+@output_options
 @click.pass_context
 def cmd_spirit(
     ctx: click.Context,
     budget: int | None,
     build_source: str | None,
-    target: str | None,
+    target: str,
     apply_flag: bool,
     metric: str,
     engine_dir: Path | None,

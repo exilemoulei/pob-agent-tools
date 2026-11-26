@@ -30,14 +30,15 @@ def _select_live_instill_shortlist(
     priced_pool: list[tuple[InstillRecipe, dict[str, Any]]],
     metric: str,
     top_live_eval: int,
+    warnings: list[str] | None = None,
 ) -> list[tuple[InstillRecipe, dict[str, Any]]]:
     """Fast (<5ms) offline pre-scoring over `priced_pool` (skipping already-allocated nodes).
 
     Takes union of Top-12 offline stat score + Top-12 efficiency (score/cost_ex) + Top-4 budget picks,
     capped at `top_live_eval` (default 20), avoiding the 35s full-tree `node_power` scan.
     """
-    alloc_ids = get_allocated_node_ids(worker)
-    profile = extract_build_profile(worker)
+    alloc_ids = get_allocated_node_ids(worker, warnings=warnings)
+    profile = extract_build_profile(worker, warnings=warnings)
     pool = [(inst, pinfo) for inst, pinfo in priced_pool if inst.node_id not in alloc_ids] or priced_pool
     k_limit = max(1, int(top_live_eval))
     if len(pool) <= k_limit:
@@ -74,7 +75,7 @@ def _eval_instills_live(
     top_live_eval: int,
     warnings: list[str],
 ) -> list[RankedCandidate]:
-    prescored = _select_live_instill_shortlist(worker, priced_pool, metric, top_live_eval)
+    prescored = _select_live_instill_shortlist(worker, priced_pool, metric, top_live_eval, warnings=warnings)
     equipped_baseline = read_metric_value(worker, metric)
     unanointed_raw, existing_anoint = strip_anoint_from_amulet_raw(am_raw)
 
@@ -90,7 +91,9 @@ def _eval_instills_live(
     batch_raws = [mraw for _, _, mraw in valid_pairs]
     if existing_anoint and valid_pairs:
         batch_raws = [unanointed_raw, *batch_raws]
-    raw_deltas = eval_item_raw_deltas_live(worker, "Amulet", batch_raws, metric, equipped_baseline)
+    raw_deltas = eval_item_raw_deltas_live(
+        worker, "Amulet", batch_raws, metric, equipped_baseline, warnings=warnings
+    )
     if existing_anoint and raw_deltas:
         delta_unanointed = raw_deltas[0]
         cand_deltas = raw_deltas[1:]
@@ -161,6 +164,8 @@ def rank_instillations(
             continue
         priced_pool.append((inst, pinfo))
 
+    eff_mode = "live_cow" if worker is not None else "offline_heuristic"
+    candidates: list[RankedCandidate] | None = None
     if worker is not None:
         try:
             _am_id, am_raw, _meta = find_equipped_slot_item(worker, "Amulet")
@@ -175,15 +180,23 @@ def rank_instillations(
                 top_candidates=(),
                 warnings=(str(exc),),
             )
-        candidates = _eval_instills_live(
-            worker,
-            am_raw=am_raw,
-            priced_pool=priced_pool,
-            metric=metric,
-            top_live_eval=top_live_eval,
-            warnings=warnings,
-        )
-    else:
+        try:
+            candidates = _eval_instills_live(
+                worker,
+                am_raw=am_raw,
+                priced_pool=priced_pool,
+                metric=metric,
+                top_live_eval=top_live_eval,
+                warnings=warnings,
+            )
+        except Exception as exc:
+            warnings.append(
+                f"[live-eval-degraded] Live CoW instillation evaluation failed ({exc}); fell back to offline heuristic scoring."
+            )
+            eff_mode = "offline_heuristic"
+            candidates = None
+
+    if candidates is None:
         candidates = []
         for inst, pinfo in priced_pool:
             cost_ex = float(pinfo["totalCostEx"])
@@ -217,8 +230,8 @@ def rank_instillations(
         pareto_frontier=tuple(frontier),
         top_candidates=tuple(ranked[: max(1, limit)]),
         warnings=tuple(warnings),
-        eval_mode="live_cow" if worker is not None else "offline_heuristic",
-        shortlisted_from=len(priced_pool) if worker is not None else None,
+        eval_mode=eff_mode,
+        shortlisted_from=len(priced_pool) if eff_mode == "live_cow" else None,
     )
 
 

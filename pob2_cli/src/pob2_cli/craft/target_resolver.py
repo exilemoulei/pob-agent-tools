@@ -139,7 +139,7 @@ def suggest_target_queries(
     ilvl: int = 82,
     limit: int = 6,
 ) -> list[str]:
-    """Return Top-*limit* closest valid `--target` query strings from *mod_tiers*."""
+    """Return Top-*limit* closest valid `--want` query strings from *mod_tiers*."""
     cands = [
         m
         for m in mod_tiers

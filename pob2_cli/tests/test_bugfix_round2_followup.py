@@ -383,7 +383,7 @@ def test_p2_craft_odds_outcomes_distribution_sum_tiers_and_cli() -> None:
     assert "Orb of Transmutation" in r_md.output
     assert "FamilyId" in r_md.output
 
-    # 3. Combined `--outcomes` + `--target`
+    # 3. Combined `--outcomes` + `--want`
     r_both = runner.invoke(
         cli_main,
         [
@@ -393,7 +393,7 @@ def test_p2_craft_odds_outcomes_distribution_sum_tiers_and_cli() -> None:
             "Crystal Focus",
             "--lever",
             "Perfect Exalted Orb",
-            "--target",
+            "--want",
             "+2 to Level of all Spell Skills",
             "--outcomes",
             "--json",

@@ -188,11 +188,13 @@ def _read_spirit_and_combat(worker: Any) -> tuple[float, float, float, float]:
     return total, true_unres, dps, ehp
 
 
-def _check_campaign_spirit_quests(worker: Any) -> list[dict[str, Any]]:
+def _check_campaign_spirit_quests(worker: Any, *, warnings: list[str] | None = None) -> list[dict[str, Any]]:
     missing: list[dict[str, Any]] = []
     try:
         cfg = worker.call("list_config", {})
-    except Exception:
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(f"[spirit-degraded] list_config failed during campaign Spirit check ({exc}).")
         return missing
     vals: dict[str, Any] = {}
     for sec in cfg.get("sections") or ():
@@ -213,14 +215,24 @@ def _loss_score(
     return dps_loss_pct + ehp_loss_pct * 0.6 + tie_bias
 
 
-def _probe_gem_tooltip_cut(worker: Any, g_idx: int, gem_idx: int) -> tuple[int, float, float, bool, bool] | None:
+def _probe_gem_tooltip_cut(
+    worker: Any,
+    g_idx: int,
+    gem_idx: int,
+    *,
+    warnings: list[str] | None = None,
+) -> tuple[int, float, float, bool, bool] | None:
     """Zero-mutation ~15ms probe via `gem_tooltip`.
 
     Returns `(freed_spirit, ddps, dehp, mentions_spirit_res, reserves_life_instead)` or `None`.
     """
     try:
         gt = worker.call("gem_tooltip", {"group": g_idx, "index": gem_idx})
-    except Exception:
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(
+                f"[live-eval-degraded] gem_tooltip probe failed on group {g_idx} gem {gem_idx} ({exc}); fell back to BuildTransaction CoW."
+            )
         return None
     if not isinstance(gt, dict):
         return None
@@ -252,6 +264,7 @@ def evaluate_live_spirit_options(
     worker: Any,
     *,
     catalog: RuneInstillCatalog | None = None,
+    warnings: list[str] | None = None,
 ) -> list[SpiritOption]:
     """Probe Spirit-freeing actions on a live `BridgeWorker` in `<3s` with consistent single-buff deltas."""
     cat = catalog or load_rune_instill_catalog()
@@ -278,7 +291,7 @@ def evaluate_live_spirit_options(
             sp_entry = cat.spirit_supports_by_key.get(gname.strip().lower())
             if sp_entry is not None:
                 cgroup = f"g{g_idx}_gem{gem_idx}"
-                probe = _probe_gem_tooltip_cut(worker, g_idx, gem_idx) if gem.get("gemId") else None
+                probe = _probe_gem_tooltip_cut(worker, g_idx, gem_idx, warnings=warnings) if gem.get("gemId") else None
                 if probe is not None:
                     freed, ddps, dehp, _mres, _rlife = probe
                     if freed > 0:
@@ -325,7 +338,7 @@ def evaluate_live_spirit_options(
 
         if g_idx != main_idx and primary_sp_gem is not None:
             probe = (
-                _probe_gem_tooltip_cut(worker, g_idx, int(primary_sp_gem.get("index") or 1))
+                _probe_gem_tooltip_cut(worker, g_idx, int(primary_sp_gem.get("index") or 1), warnings=warnings)
                 if primary_sp_gem.get("gemId")
                 else None
             )
@@ -378,9 +391,10 @@ def solve_live_spirit_deficit(
 ) -> SpiritKnapsackPlan:
     """Solve Spirit over-reservation on a live `BridgeWorker` (`SpiritUnreserved >= 0`)."""
     cat = catalog or load_rune_instill_catalog()
+    warnings: list[str] = []
     _tot, unres, _dps, _ehp = _read_spirit_and_combat(worker)
     deficit = deficit_override if deficit_override is not None else max(0, round(-unres))
-    missing_quests = _check_campaign_spirit_quests(worker)
+    missing_quests = _check_campaign_spirit_quests(worker, warnings=warnings)
     azcapa_hint = (
         "Check Soul Core of Azcapa (+15 Spirit on martial weapon/helmet socket where legal) "
         "and campaign +100 Spirit rewards before cutting buffs."
@@ -397,9 +411,10 @@ def solve_live_spirit_deficit(
             all_evaluated=(),
             missing_campaign_spirit=tuple(missing_quests),
             azcapa_hint=None,
+            warnings=tuple(warnings),
         )
 
-    evaluated = evaluate_live_spirit_options(worker, catalog=cat)
+    evaluated = evaluate_live_spirit_options(worker, catalog=cat, warnings=warnings)
     chosen, freed = solve_deficit_knapsack(evaluated, deficit)
     return SpiritKnapsackPlan(
         mode="rescue",
@@ -410,6 +425,7 @@ def solve_live_spirit_deficit(
         all_evaluated=tuple(sorted(evaluated, key=lambda o: (o.loss_score / max(1, o.spirit_delta), -o.spirit_delta))),
         missing_campaign_spirit=tuple(missing_quests),
         azcapa_hint=azcapa_hint,
+        warnings=tuple(warnings),
     )
 
 

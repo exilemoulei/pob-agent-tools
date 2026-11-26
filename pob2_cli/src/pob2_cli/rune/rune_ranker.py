@@ -74,6 +74,7 @@ def _eval_runes_live(
     top_live_eval: int,
     price_book: PriceBook | None,
     catalog: RuneInstillCatalog,
+    warnings: list[str],
 ) -> list[RankedCandidate]:
     shortlist = _select_live_rune_shortlist(eligible, parity, metric, price_book, top_live_eval)
     baseline = read_metric_value(worker, metric)
@@ -91,11 +92,12 @@ def _eval_runes_live(
                 allow_overwrite_bound=True,
                 catalog=catalog,
             )
-        except ValueError:
+        except ValueError as exc:
+            warnings.append(f"[rune-rank-skipped] Skipped `{rune.name}` ({exc}).")
             continue
         valid_pairs.append((rune, mods, mutated_raw))
     deltas = eval_item_raw_deltas_live(
-        worker, slot_name, [mraw for _, _, mraw in valid_pairs], metric, baseline
+        worker, slot_name, [mraw for _, _, mraw in valid_pairs], metric, baseline, warnings=warnings
     )
     candidates: list[RankedCandidate] = []
     for (rune, mods, _mraw), gain in zip(valid_pairs, deltas, strict=False):
@@ -179,24 +181,35 @@ def rank_runes_for_slot(
         ]
 
     total_eligible = len(eligible)
+    eff_mode = "live_cow" if worker is not None else "offline_heuristic"
+    candidates: list[RankedCandidate] | None = None
     if worker is not None:
-        candidates = _eval_runes_live(
-            worker,
-            eligible=eligible,
-            parity=parity,
-            slot_name=slot_name,
-            raw_item_text=raw_item_text,
-            item_type=item_type,
-            sub_type=sub_type,
-            base_name=base_name,
-            char_level=char_level,
-            is_shaman=is_shaman,
-            metric=metric,
-            top_live_eval=top_live_eval,
-            price_book=price_book,
-            catalog=cat,
-        )
-    else:
+        try:
+            candidates = _eval_runes_live(
+                worker,
+                eligible=eligible,
+                parity=parity,
+                slot_name=slot_name,
+                raw_item_text=raw_item_text,
+                item_type=item_type,
+                sub_type=sub_type,
+                base_name=base_name,
+                char_level=char_level,
+                is_shaman=is_shaman,
+                metric=metric,
+                top_live_eval=top_live_eval,
+                price_book=price_book,
+                catalog=cat,
+                warnings=warnings,
+            )
+        except Exception as exc:
+            warnings.append(
+                f"[live-eval-degraded] Live CoW rune evaluation failed on `{slot_name}` ({exc}); fell back to offline heuristic scoring."
+            )
+            eff_mode = "offline_heuristic"
+            candidates = None
+
+    if candidates is None:
         candidates = []
         for rune, mods in eligible:
             cost_ex, src = resolve_rune_price_ex(rune, price_book=price_book)
@@ -231,8 +244,8 @@ def rank_runes_for_slot(
         pareto_frontier=tuple(frontier),
         top_candidates=tuple(ranked[: max(1, limit)]),
         warnings=tuple(warnings),
-        eval_mode="live_cow" if worker is not None else "offline_heuristic",
-        shortlisted_from=total_eligible if worker is not None else None,
+        eval_mode=eff_mode,
+        shortlisted_from=total_eligible if eff_mode == "live_cow" else None,
     )
 
 

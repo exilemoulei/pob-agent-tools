@@ -8,7 +8,14 @@ from typing import Any
 
 import click
 
-from .cli_common import daemon_call_cli, emit_output, resolve_target_slot
+from .cli_common import (
+    daemon_call_cli,
+    emit_output,
+    output_options,
+    pob2_command,
+    resolve_target_slot,
+    target_option,
+)
 from .formatters import format_what_if_md
 from .guardrails import normalize_poe2_equipment_slot
 
@@ -44,7 +51,7 @@ def _format_what_if_with_details_md(payload: dict[str, Any]) -> str:
             pa = op.get("pointsUsedAfter")
             nd = op.get("nodesDeltaCount")
             pnodes = op.get("allocatedPathNodes") or []
-            mode_tag = " [anoint/isolated preview]" if op.get("isolatedMode") else ""
+            mode_tag = " [instill/isolated preview]" if op.get("isolatedMode") else ""
             path_part = f" | path travel nodes: {len(pnodes)} ({pnodes[:8]}{'...' if len(pnodes) > 8 else ''})" if pnodes else ""
             extra.append(f"- Tree Node `{nid}` ({nm}){mode_tag}: points {pb} -> {pa} (delta {nd:+d}){path_part}")
             if op.get("connectivityWarning"):
@@ -63,8 +70,8 @@ def _format_what_if_with_details_md(payload: dict[str, Any]) -> str:
     return base_md + "\n" + "\n".join(extra)
 
 
-@click.command("what-if")
-@click.option("--target", type=str, default=None, help="Target build slot (default: main).")
+@pob2_command("what-if")
+@target_option(allow_slot_alias=False)
 @click.option("--apply", "do_apply", is_flag=True, default=False, help="Commit mutation to slot history (default: CoW rollback).")
 @click.option("--level", type=int, default=None, help="Test character level change.")
 @click.option("--slot", type=str, default=None, help="Equipment slot to equip --item-text / --item-file into.")
@@ -75,12 +82,12 @@ def _format_what_if_with_details_md(payload: dict[str, Any]) -> str:
 @click.option("--alloc-mode", "alloc_mode", type=int, default=None, help="Passive tree allocMode (0=shared, 1=WS1, 2=WS2).")
 @click.option("--tree-node", "tree_node", type=int, default=None, help="Toggle allocation of a passive tree node ID.")
 @click.option(
-    "--anoint-preview",
     "--isolated-node",
+    "--anoint-preview",
     "anoint_preview",
     is_flag=True,
     default=False,
-    help="Preview --tree-node in isolation (like an amulet anoint) without allocating intermediate travel nodes.",
+    help="Preview --tree-node in isolation (like an amulet instillation) without allocating intermediate travel nodes.",
 )
 @click.option("--attribute-node", "attribute_node", type=int, default=None, help="Attribute travel node ID to switch.")
 @click.option("--attribute", type=str, default=None, help="Target attribute (str/dex/int or 1/2/3).")
@@ -94,11 +101,11 @@ def _format_what_if_with_details_md(payload: dict[str, Any]) -> str:
 @click.option("--config-key", "config_key", type=str, default=None, help="Config input key to toggle/set.")
 @click.option("--config-value", "config_value", type=str, default=None, help="Config input value (true/false/int/str).")
 @click.option("--custom-mods", "custom_mods", type=str, default=None, help="Replace Configuration custom modifiers text.")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@output_options
 @click.pass_context
 def cmd_what_if(
     ctx: click.Context,
-    target: str | None,
+    target: str,
     do_apply: bool,
     level: int | None,
     slot: str | None,
@@ -160,12 +167,12 @@ def cmd_what_if(
     emit_output(ctx, res, as_json=as_json, markdown_text=_format_what_if_with_details_md(res))
 
 
-@click.command("diff")
+@pob2_command("diff")
 @click.argument("source", required=True)
-@click.option("--target", type=str, default=None, help="Base build slot (default: main).")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@target_option(allow_slot_alias=True, help_text="Base build slot (default: main).")
+@output_options
 @click.pass_context
-def cmd_diff(ctx: click.Context, source: str, target: str | None, as_json: bool) -> None:
+def cmd_diff(ctx: click.Context, source: str, target: str, as_json: bool) -> None:
     """Diff the active PoE2 slot build against another build code, file, or share URL."""
     res = daemon_call_cli("diff", {"target": resolve_target_slot(target), "source": source})
     emit_output(ctx, res, as_json=as_json, markdown_text=format_what_if_md(res))

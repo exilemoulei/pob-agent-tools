@@ -198,13 +198,14 @@ def solve_fix_gaps_live(
             ws1, level=bare.level, ascendancy=bare.ascendancy, giants_blood=bare.giants_blood, ws2_stats=ws2
         )
 
+    solver_warnings: list[str] = []
     rollback_ok: bool | None = None
     with BuildTransaction(worker, scope=BuildScope.ACTIVE_SETS, will_commit=apply) as tx:
         for cname in ("Charm 1", "Charm 2", "Charm 3"):
             try:
                 worker.call("set_slot_active", {"slotName": cname, "active": False})
-            except Exception:
-                pass
+            except Exception as exc:
+                solver_warnings.append(f"[rebalance-degraded] Could not deactivate `{cname}` ({exc}).")
 
         for sl in audit.slots:
             if sl.stripped_runes:
@@ -256,7 +257,7 @@ def solve_fix_gaps_live(
             chk = tx.rollback_verified(before_digest)
             rollback_ok = bool(chk.get("verified"))
 
-    all_warnings = (*audit.warnings, *s1.warnings, *s2.warnings, *s3.warnings, *s4.warnings)
+    all_warnings = (*audit.warnings, *solver_warnings, *s1.warnings, *s2.warnings, *s3.warnings, *s4.warnings)
     return FixGapsReport(
         before=audit.current,
         bare_net=bare,

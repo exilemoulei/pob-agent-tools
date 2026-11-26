@@ -292,6 +292,7 @@ def audit_equipped_slot(
     raw_text: str,
     is_shaman: bool = False,
     catalog: RuneInstillCatalog | None = None,
+    warnings: list[str] | None = None,
 ) -> EquippedSlotAudit:
     """Audit a single equipped slot for editable rune sockets, Crafted slot availability, and catalysts."""
     cat = catalog or load_rune_instill_catalog()
@@ -308,9 +309,11 @@ def audit_equipped_slot(
             insp = inspect_item_text(raw_text)
             open_pre = insp.open_prefixes
             open_suf = insp.open_suffixes
-            has_open_crafted = (not insp.has_crafted_mod) and (open_pre + open_suf > 0)
-        except Exception:
+            has_open_crafted = (insp.crafted_mod_count == 0) and (open_pre + open_suf > 0)
+        except Exception as exc:
             has_open_crafted = False
+            if warnings is not None:
+                warnings.append(f"[net-gap-degraded] Crafted-slot inspection skipped on `{slot_name}` ({exc}).")
 
     catalyst_eligible = (
         slot_name in _JEWELLERY_BELT_SLOTS
@@ -404,6 +407,7 @@ def analyze_live_net_gap(
                 raw_text=raw_txt,
                 is_shaman=is_shaman,
                 catalog=cat,
+                warnings=warnings,
             )
         )
 
@@ -423,8 +427,8 @@ def analyze_live_net_gap(
             for cname in sorted(_CHARM_SLOTS):
                 try:
                     worker.call("set_slot_active", {"slotName": cname, "active": False})
-                except Exception:
-                    pass
+                except Exception as exc:
+                    warnings.append(f"[rebalance-degraded] Could not deactivate `{cname}` ({exc}).")
         ws1_stats = worker.call("get_stats", {}).get("stats") or {}
         ws2_stats: dict[str, Any] | None = None
         if has_ws2_equip:

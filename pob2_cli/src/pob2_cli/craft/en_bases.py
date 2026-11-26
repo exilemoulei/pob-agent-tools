@@ -153,7 +153,7 @@ def check_poe1_base_hallucination(raw_base: str) -> None:
             trigger=s,
             error=f"`{s}` is a PoE1-only base/item and does not exist in PoE2 0.5.5. {POE1_ONLY_BASES[hit_key]}",
             remediation="Use a valid PoE2 0.5.5 base item (e.g. `Vile Robe`, `Attuned Wand`, `Emerald`, `Breach Ring`, `Solar Amulet`) or run `pob` for PoE1.",
-            equivalent_command='pob2 craft odds --base "Vile Robe" --target "T1 Energy Shield"',
+            equivalent_command='pob2 craft odds --base "Vile Robe" --want "T1 Energy Shield"',
             rule_id="CRAFT_POE1_BASE",
         )
 

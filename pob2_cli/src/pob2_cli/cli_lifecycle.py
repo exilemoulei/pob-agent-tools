@@ -8,19 +8,24 @@ from typing import Any
 
 import click
 
-from .cli_common import daemon_call_cli, echo_utf8, emit_output
+from .cli_common import daemon_call_cli, emit_output, output_options, pob2_command
 from .daemon import run_daemon_forever, stop_daemon
-from .errors import EXIT_REQUEST_ERROR
+from .errors import (
+    BootstrapMissingError,
+    CrossGameHallucinationError,
+    DaemonRequestError,
+    LegacyPatchTrapError,
+)
 from .game_profile import GAME_ID
 from .updater import bootstrap_engine
 
 
-@click.command("bootstrap")
+@pob2_command("bootstrap")
 @click.option("--from-dir", "from_dir", type=click.Path(exists=True, file_okay=False, path_type=Path), default=None, help="Seed engine from a local PoB2 / PobTools directory (read-only copy).")
 @click.option("--proxy", type=str, default=None, help="Optional HTTP/SOCKS proxy URL.")
 @click.option("--mirror", type=str, default=None, help="Optional GitHub mirror prefix.")
 @click.option("--force", is_flag=True, default=False, help="Force reinstall even if valid engine exists.")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@output_options
 @click.pass_context
 def cmd_bootstrap(
     ctx: click.Context,
@@ -33,17 +38,18 @@ def cmd_bootstrap(
     """Install or seed the headless PoB2 Slim LuaJIT engine."""
     try:
         res = bootstrap_engine(from_dir=from_dir, proxy=proxy, mirror=mirror, force=force)
-    except Exception as exc:
-        echo_utf8(f"Bootstrap failed: {exc}", err=True)
-        raise SystemExit(EXIT_REQUEST_ERROR) from exc
+    except (CrossGameHallucinationError, LegacyPatchTrapError, DaemonRequestError, BootstrapMissingError):
+        raise
+    except (ValueError, FileNotFoundError) as exc:
+        raise DaemonRequestError(f"Bootstrap failed: {exc}") from exc
     payload = {"game": GAME_ID, **dict(res)}
     md = f"PoB2 engine bootstrap: state={payload.get('state')} engineDir={payload.get('engineDir')}"
     emit_output(ctx, payload, as_json=as_json, markdown_text=md)
 
 
-@click.command("status")
+@pob2_command("status")
 @click.option("--no-start", is_flag=True, default=False, help="Do not auto-start the daemon if stopped.")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@output_options
 @click.pass_context
 def cmd_status(ctx: click.Context, no_start: bool, as_json: bool) -> None:
     """Show PoB2 daemon status, capabilities, language, and loaded build slots."""
@@ -62,8 +68,8 @@ def cmd_status(ctx: click.Context, no_start: bool, as_json: bool) -> None:
     emit_output(ctx, res, as_json=as_json, markdown_text=md)
 
 
-@click.command("stop")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@pob2_command("stop")
+@output_options
 @click.pass_context
 def cmd_stop(ctx: click.Context, as_json: bool) -> None:
     """Stop the running local PoB2 daemon cleanly."""
@@ -72,22 +78,30 @@ def cmd_stop(ctx: click.Context, as_json: bool) -> None:
     emit_output(ctx, res, as_json=as_json, markdown_text=md)
 
 
-@click.command("serve")
+@pob2_command("serve")
 @click.option("--pob-dir", type=Path, default=None, help="Explicit PoB2 engine directory.")
 @click.option("--data-dir", type=Path, default=None, help="Explicit PoE2 localization data directory.")
 @click.option("--port", type=int, default=0, help="Loopback TCP port (0 = ephemeral).")
 @click.option("--skip-update-check", is_flag=True, default=False, help="Skip startup update check.")
-def cmd_serve(pob_dir: Path | None, data_dir: Path | None, port: int, skip_update_check: bool) -> None:
+@output_options
+def cmd_serve(
+    pob_dir: Path | None,
+    data_dir: Path | None,
+    port: int,
+    skip_update_check: bool,
+    as_json: bool = False,
+) -> None:
     """Run the PoB2 headless HTTP daemon in the foreground."""
+    _ = as_json
     run_daemon_forever(pob_dir=pob_dir, data_dir=data_dir, port=port, skip_update_check=skip_update_check)
 
 
-@click.command("update")
+@pob2_command("update")
 @click.option("--check", "check_only", is_flag=True, default=False, help="Check remote versions without applying.")
 @click.option("--force", is_flag=True, default=False, help="Force engine update even if current.")
 @click.option("--proxy", type=str, default=None, help="Optional proxy URL.")
 @click.option("--mirror", type=str, default=None, help="Optional GitHub mirror prefix.")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@output_options
 @click.pass_context
 def cmd_update(
     ctx: click.Context,

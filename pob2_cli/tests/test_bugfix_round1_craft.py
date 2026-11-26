@@ -254,7 +254,7 @@ def test_p1_base_whitelist_poe1_block_garbage_no_traceback_and_cn_affixes() -> N
     assert "[POE2-CROSS-GAME-BLOCK]" in r_poe1_item.output
     assert "Traceback" not in r_poe1_item.output
 
-    r_poe1_odds = runner.invoke(cli_main, ["craft", "odds", "--base", "Viridian Jewel", "--target", "T1 Life"])
+    r_poe1_odds = runner.invoke(cli_main, ["craft", "odds", "--base", "Viridian Jewel", "--want", "T1 Life"])
     assert r_poe1_odds.exit_code == 1
     assert "[POE2-CROSS-GAME-BLOCK]" in r_poe1_odds.output
     assert "Traceback" not in r_poe1_odds.output
@@ -316,12 +316,12 @@ def test_p2_emotion_three_tiers_implicits_parity_and_target_suggestions() -> Non
     r_ch = runner.invoke(cli_main, ["craft", "odds", "--help"])
     assert r_ch.exit_code == 0 and "T1 Spell Damage" in r_ch.output
 
-    # Bad --target exits rc=1 with Top-6 valid suggestions and 0 tracebacks
+    # Bad --want exits rc=1 with Top-6 valid suggestions and 0 tracebacks
     eng = ModPoolEngine()
     with pytest.raises(UnknownTargetError) as exc_t:
         eng.resolve_target("Body_Armours_int", "nonexistent_mod_xyz")
     assert len(exc_t.value.suggestions) == 6
-    r_bt = runner.invoke(cli_main, ["craft", "odds", "--base", "Vile Robe", "--target", "nonexistent_mod_xyz"])
+    r_bt = runner.invoke(cli_main, ["craft", "odds", "--base", "Vile Robe", "--want", "nonexistent_mod_xyz"])
     assert r_bt.exit_code == 1
     assert "[POE2-UNKNOWN-TARGET]" in r_bt.output
     assert "Traceback" not in r_bt.output

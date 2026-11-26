@@ -142,10 +142,11 @@ class PriceBook:
         use_fallback_prices: bool = True,
         excluded: list[str] | tuple[str, ...] | None = None,
         source_summary: str | None = None,
+        extra_warnings: list[str] | tuple[str, ...] = (),
     ) -> PriceBook:
         """Construct a sanitized price book guaranteeing every priced lever is strictly > 0 Ex."""
         table: dict[str, float] = {}
-        warns: list[str] = []
+        warns: list[str] = list(extra_warnings)
         used_fb = False
         if use_fallback_prices:
             for name, val in DEFAULT_CRAFTING_PRICES_EX.items():
@@ -386,6 +387,7 @@ def fetch_live_price_book(
     merged_prices: dict[str, float] = {}
     merged_vols: dict[str, float] = {}
     sources: list[str] = []
+    fetch_warnings: list[str] = []
     headers = {"User-Agent": "pob24agents/0.1 (+https://github.com/exilemoulei/pob4agents)"}
 
     # 1. Official unauthenticated GGG Currency Exchange hourly snapshot
@@ -412,8 +414,10 @@ def fetch_live_price_book(
                         merged_vols.setdefault(k, vol)
                     if p_n and "poe.ninja" not in sources:
                         sources.append("poe.ninja")
-    except Exception:
-        pass
+    except Exception as exc:
+        fetch_warnings.append(
+            f"[price-book-degraded] Live currency feed fetch failed ({exc}); fell back to offline baseline prices."
+        )
 
     return PriceBook.build(
         merged_prices or None,
@@ -421,4 +425,5 @@ def fetch_live_price_book(
         use_fallback_prices=True,
         excluded=excluded,
         source_summary="+".join(sources) if sources else "offline_baseline",
+        extra_warnings=fetch_warnings,
     )

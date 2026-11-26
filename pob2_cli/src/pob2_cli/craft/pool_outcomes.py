@@ -350,7 +350,7 @@ def rank_target_suggestions(
     *,
     limit: int = 6,
 ) -> list[str]:
-    """Rank valid `--target` candidate strings by token/stem overlap + edit-distance similarity."""
+    """Rank valid `--want` candidate strings by token/stem overlap + edit-distance similarity."""
     raw_q = (translated_query or "").strip()
     m_tier = _TIER_PREFIX_RE.match(raw_q)
     req_tier = int(m_tier.group(1)) if m_tier else None

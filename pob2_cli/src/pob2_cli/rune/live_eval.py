@@ -91,11 +91,15 @@ def _weapon_type_tags(wtype: str) -> set[str]:
     return tags
 
 
-def extract_build_profile(worker: Any) -> BuildProfile | None:
+def extract_build_profile(worker: Any, *, warnings: list[str] | None = None) -> BuildProfile | None:
     """Extract live build offensive profile in <3ms from `get_stats` + `list_items`."""
     try:
         stats = worker.call("get_stats", {}).get("stats") or {}
-    except Exception:
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(
+                f"[live-eval-degraded] get_stats failed during build profile extraction ({exc}); fell back to generic stat weights."
+            )
         return None
     is_attack = float(stats.get("MainHandTotalDPS") or stats.get("MainHandAverageHit") or 0.0) > 0.0
     is_spell = not is_attack
@@ -134,8 +138,11 @@ def extract_build_profile(worker: Any) -> BuildProfile | None:
                 sid = int(sl.get("selItemId") or sl.get("selectedId") or sl.get("itemId") or 0)
                 if sid in by_id:
                     wtags.update(_weapon_type_tags(str(by_id[sid].get("type") or "")))
-    except Exception:
-        pass
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(
+                f"[live-eval-degraded] list_items failed during weapon tag detection ({exc}); fell back to weapon-agnostic profile."
+            )
     if not wtags and is_attack:
         wtags.add("unarmed")
     return BuildProfile(
@@ -321,12 +328,16 @@ def parse_tooltip_metric_delta(tooltip_res: dict[str, Any], metric: str) -> tupl
     return best_val, True
 
 
-def get_allocated_node_ids(worker: Any) -> set[int]:
+def get_allocated_node_ids(worker: Any, *, warnings: list[str] | None = None) -> set[int]:
     """Return currently allocated passive tree node IDs (<1ms)."""
     try:
         ts = worker.call("get_tree_state", {})
         return {int(nid) for nid in (ts.get("allocatedNodes") or ())}
-    except Exception:
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(
+                f"[live-eval-degraded] get_tree_state failed ({exc}); allocated-node filter skipped."
+            )
         return set()
 
 
@@ -346,6 +357,8 @@ def eval_item_raw_deltas_live(
     raw_items: list[str],
     metric: str,
     baseline: float,
+    *,
+    warnings: list[str] | None = None,
 ) -> list[float]:
     """Evaluate exact metric deltas vs current equipped *slot_name* for each raw item text.
 
@@ -368,15 +381,29 @@ def eval_item_raw_deltas_live(
                 use_tooltip = False
         else:
             use_tooltip = False
-    except Exception:
+            if warnings is not None:
+                warnings.append(
+                    f"[live-eval-degraded] item_tooltip returned non-dict payload on `{slot_name}`; fell back to BuildTransaction CoW."
+                )
+    except Exception as exc:
         use_tooltip = False
+        if warnings is not None:
+            warnings.append(
+                f"[live-eval-degraded] item_tooltip probe failed on `{slot_name}` ({exc}); fell back to BuildTransaction CoW."
+            )
 
     if use_tooltip:
-        for raw in raw_items[1:]:
-            tt = worker.call("item_tooltip", {"raw": raw, "slotName": slot_name, "compare": True})
-            d, _ok = parse_tooltip_metric_delta(tt if isinstance(tt, dict) else {}, metric)
-            deltas.append(d)
-        return deltas
+        try:
+            for raw in raw_items[1:]:
+                tt = worker.call("item_tooltip", {"raw": raw, "slotName": slot_name, "compare": True})
+                d, _ok = parse_tooltip_metric_delta(tt if isinstance(tt, dict) else {}, metric)
+                deltas.append(d)
+            return deltas
+        except Exception as exc:
+            if warnings is not None:
+                warnings.append(
+                    f"[live-eval-degraded] item_tooltip batch failed mid-run on `{slot_name}` ({exc}); fell back to BuildTransaction CoW."
+                )
 
     # Single outer BuildTransaction fallback (1 snapshot + 1 export_code total, rebuild=False between probes)
     out: list[float] = []

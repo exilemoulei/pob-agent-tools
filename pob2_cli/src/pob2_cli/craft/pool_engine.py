@@ -91,7 +91,7 @@ class ModPoolEngine:
         ilvl: int = 82,
         limit: int = 6,
     ) -> list[str]:
-        """Return Top-*limit* closest valid `--target` query strings from *base_slug*'s modifier pool."""
+        """Return Top-*limit* closest valid `--want` query strings from *base_slug*'s modifier pool."""
         return suggest_target_queries(self.get_mod_tiers(base_slug), query, ilvl=ilvl, limit=limit)
 
     def _is_tag_eligible(self, mod: ModEntry, effective_tags: set[str]) -> bool:

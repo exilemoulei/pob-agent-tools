@@ -18,14 +18,17 @@ def extract_summary(worker: Any) -> dict[str, Any]:
     digest = capture_digest(worker)
     out = compact_digest_summary(digest)
     info = digest.get("buildInfo") or {}
+    degraded: list[str] = []
     try:
         out["engineDiagnostics"] = worker.get_engine_diagnostics()
-    except Exception:
-        pass
+    except Exception as exc:
+        degraded.append(f"[summary-degraded] get_engine_diagnostics failed ({exc}).")
     try:
         out["weaponSetState"] = worker.call("get_weapon_set_state", {})
-    except Exception:
-        pass
+    except Exception as exc:
+        degraded.append(f"[summary-degraded] get_weapon_set_state failed ({exc}).")
+    if degraded:
+        out["warnings"] = [*(out.get("warnings") or []), *degraded]
     return attach_version_stamp(
         out,
         pob2_version=getattr(worker, "pob_version", None),
@@ -67,6 +70,7 @@ def diagnose_build(
     audit = run_deep_audit(worker, overcap_target=overcap_target, chaos_floor=chaos_floor)
     notes = fetch_clean_notes(worker)
     node_power: dict[str, Any] | None = None
+    diag_warnings: list[str] = []
     if include_node_power:
         try:
             np_raw = worker.call("node_power", {"maxDepth": max_depth}, timeout=45.0)
@@ -77,8 +81,9 @@ def diagnose_build(
                 "weaponSet": np_raw.get("weaponSet"),
                 "topNodes": [r for r in (np_raw.get("report") or []) if not r.get("allocated")][:10],
             }
-        except Exception:
+        except Exception as exc:
             node_power = None
+            diag_warnings.append(f"[diagnose-degraded] node_power failed ({exc}); omitted passive power ranking.")
 
     payload: dict[str, Any] = {
         "game": GAME_ID,
@@ -88,6 +93,8 @@ def diagnose_build(
         "unsimulatedRedCards": audit.get("unsimulatedRedCards") or [],
         "findings": audit.get("findings") or [],
     }
+    if diag_warnings:
+        payload["warnings"] = diag_warnings
     if node_power is not None:
         payload["nodePower"] = node_power
     return attach_version_stamp(
@@ -97,19 +104,40 @@ def diagnose_build(
     )
 
 
-def inspect_items(worker: Any, *, slot: str | None = None) -> dict[str, Any]:
+def inspect_items(worker: Any, *, slot: str | None = None, include_raw: bool = False) -> dict[str, Any]:
     canon_slot = normalize_poe2_equipment_slot(slot, command="items") if (slot and slot.strip()) else None
     res = worker.call("list_items", {}) or {}
-    items = res.get("items") or []
-    slots = res.get("slots") or []
+    items = list(res.get("items") or [])
+    slots = list(res.get("slots") or [])
+    raw_text: str | None = None
     if canon_slot:
         sl_low = canon_slot.lower()
-        slots = [s for s in slots if str(s.get("name") or "").lower() == sl_low]
-        slot_ids = {s.get("itemId") for s in slots if s.get("itemId")}
-        items = [it for it in items if it.get("id") in slot_ids]
+        slots = [s for s in slots if isinstance(s, dict) and str(s.get("name") or "").lower() == sl_low]
+        slot_ids = {
+            int(s.get("selItemId") or s.get("selectedId") or s.get("itemId") or 0)
+            for s in slots
+            if isinstance(s, dict)
+        }
+        slot_ids.discard(0)
+        items = [it for it in items if isinstance(it, dict) and int(it.get("id") or 0) in slot_ids]
+        if include_raw and items:
+            first_id = int(items[0].get("id") or 0)
+            raw_text = str(items[0].get("raw") or "")
+            if not raw_text and first_id > 0:
+                raw_text = str((worker.call("item_raw", {"id": first_id}) or {}).get("raw") or "")
     info = worker.call("get_build_info", {}) or {}
+    out_payload: dict[str, Any] = {
+        "game": GAME_ID,
+        "slots": slots,
+        "items": items,
+        "activeItemSetId": res.get("activeItemSetId"),
+    }
+    if canon_slot:
+        out_payload["slot"] = canon_slot
+    if include_raw:
+        out_payload["raw"] = raw_text
     return attach_version_stamp(
-        {"game": GAME_ID, "slots": slots, "items": items, "activeItemSetId": res.get("activeItemSetId")},
+        out_payload,
         pob2_version=getattr(worker, "pob_version", None),
         tree_version=info.get("treeVersion"),
     )

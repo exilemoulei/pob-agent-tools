@@ -268,7 +268,7 @@ _POE1_ONLY_CMD_RE: tuple[tuple[str, re.Pattern[str], str, str], ...] = (
         "CMD_POE1_BENCH",
         re.compile(r"(?:^|\s)(?:pob2?\s+)?bench(?:\s|$)", re.IGNORECASE),
         "PoE2 has no Hideout Crafting Bench (`bench` is PoE1-only).",
-        "pob2 craft plan --base <base> --target <mod>",
+        "pob2 craft plan --base <base> --want <mod>",
     ),
     (
         "CMD_POE1_MAP_REGEX",

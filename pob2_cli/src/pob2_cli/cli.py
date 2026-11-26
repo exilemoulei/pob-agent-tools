@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
-import json
 import os
 import sys
-from pathlib import Path
 from typing import Any
 
 if len(sys.argv) > 1 and sys.argv[1] == "_lua-host":
@@ -25,12 +23,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "_daemon":
 import click
 
 from . import __version__
-from .compat import ensure_utf8
-from .errors import (
-    CrossGameHallucinationError,
-    DaemonRequestError,
-    LegacyPatchTrapError,
-)
+from .cli_common import Pob2Group, ctx_wants_json, echo_utf8, emit_output, output_options
 from .game_profile import (
     CLI_NAME,
     ENV_OFFLINE,
@@ -47,6 +40,7 @@ from .locale_cfg import SUPPORTED_LANGS, get_active_lang, set_active_lang
 
 # Core engine/lifecycle subcommands registered lazily (must exist when listed here).
 _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
+    "help": (".cli_help", "cmd_help", "Show compact 1-screen PoE2 CLI cheat-sheet (--brief) or command help."),
     "bootstrap": (".cli_lifecycle", "cmd_bootstrap", "Install or seed the headless PoB2 Slim LuaJIT engine."),
     "status": (".cli_lifecycle", "cmd_status", "Show PoB2 daemon status, capabilities, and loaded slots."),
     "stop": (".cli_lifecycle", "cmd_stop", "Stop the running local PoB2 daemon cleanly."),
@@ -74,7 +68,7 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
 # in the package tree (enables conflict-free parallel feature branch merges).
 _OPTIONAL_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
     "craft": (".cli_craft", "craft_group", "PoE2 crafting odds, MDP solver, and step-by-step plans."),
-    "item": (".cli_craft", "item_group", "Inspect PoE2 item modifiers, open slots, and 0.5.5 legality."),
+    "item": (".cli_item", "item_group", "Inspect PoE2 items (--slot/--text/--file) and rank slot uniques (item db)."),
     "ground": (".cli_ground", "cmd_ground", "Fast (<15ms, daemon-free) PoE2 entity & mechanic grounding."),
     "import": (".cli_import", "cmd_import", "Import PoE2 builds (PoB2 code, share URL, CN WeGame link)."),
     "rune": (".cli_rune", "rune_group", "Rank PoE2 runes, soul cores, and idols with socket parity."),
@@ -87,11 +81,6 @@ _OPTIONAL_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
 _HIDDEN_LAZY_SUBCOMMANDS: dict[str, tuple[str, str]] = {}
 
 
-def _echo_utf8(text: str, *, err: bool = False) -> None:
-    ensure_utf8(sys.stderr if err else sys.stdout)
-    click.echo(text, err=err)
-
-
 def _module_exists(mod_path: str) -> bool:
     full_name = importlib.util.resolve_name(mod_path, __package__)
     try:
@@ -100,19 +89,8 @@ def _module_exists(mod_path: str) -> bool:
         return False
 
 
-def _ctx_wants_json(ctx: click.Context | None) -> bool:
-    if ctx is not None:
-        if ctx.params.get("as_json"):
-            return True
-        root = ctx.find_root()
-        raw_args = root.meta.get("pob2_raw_args")
-        if isinstance(raw_args, (list, tuple)) and "--json" in raw_args:
-            return True
-    return "--json" in sys.argv[1:]
-
-
-class ExtensibleLazyGroup(click.Group):
-    """Click Group with lazy core subcommands, optional extension auto-mount, and guardrail exit codes."""
+class ExtensibleLazyGroup(Pob2Group):
+    """Click Group with lazy core subcommands, optional extension auto-mount, and 0/1/5 exit codes."""
 
     def __init__(
         self,
@@ -189,30 +167,6 @@ class ExtensibleLazyGroup(click.Group):
             with formatter.section("Commands"):
                 formatter.write_dl(rows)
 
-    def make_context(
-        self,
-        info_name: str | None,
-        args: list[str],
-        parent: click.Context | None = None,
-        **extra: Any,
-    ) -> click.Context:
-        raw_args_copy = list(args)
-        ctx = super().make_context(info_name, args, parent=parent, **extra)
-        ctx.meta["pob2_raw_args"] = raw_args_copy
-        return ctx
-
-    def invoke(self, ctx: click.Context) -> Any:
-        try:
-            return super().invoke(ctx)
-        except (CrossGameHallucinationError, LegacyPatchTrapError) as exc:
-            _echo_utf8(exc.format_human(), err=True)
-            if _ctx_wants_json(ctx):
-                _echo_utf8(json.dumps(exc.to_dict(), ensure_ascii=False, indent=2))
-            ctx.exit(1)
-        except DaemonRequestError as exc:
-            _echo_utf8(f"Error: {exc}", err=True)
-            ctx.exit(getattr(exc, "exit_code", 1))
-
 
 @click.group(
     cls=ExtensibleLazyGroup,
@@ -222,6 +176,7 @@ class ExtensibleLazyGroup(click.Group):
 )
 @click.version_option(__version__, "-V", "--version", prog_name=CLI_NAME)
 @click.option("--offline", is_flag=True, help=f"Skip network update checks (sets {ENV_OFFLINE}=1).")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
 @click.option("--compact", is_flag=True, default=False, help="Emit compact single-line JSON for --json.")
 @click.option(
     "--out",
@@ -231,27 +186,18 @@ class ExtensibleLazyGroup(click.Group):
     help="Write output to a UTF-8 (no BOM) file.",
 )
 @click.pass_context
-def main(ctx: click.Context, offline: bool, compact: bool, out_path: str | None) -> None:
+def main(ctx: click.Context, offline: bool, as_json: bool, compact: bool, out_path: str | None) -> None:
     """Headless Path of Building (PoE2) CLI for build analysis, what-if testing, and crafting."""
     if offline:
         os.environ[ENV_OFFLINE] = "1"
     ctx.ensure_object(dict)
+    ctx.obj["as_json"] = as_json
     ctx.obj["compact"] = compact
     ctx.obj["out"] = out_path
 
 
-def _emit_payload(payload: dict[str, Any], *, compact: bool = False, out_path: str | None = None) -> None:
-    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":") if compact else None, indent=None if compact else 2)
-    if out_path:
-        target = Path(out_path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text + "\n", encoding="utf-8", newline="\n")
-        return
-    _echo_utf8(text)
-
-
 @main.command("about")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
+@output_options
 @click.pass_context
 def cmd_about(ctx: click.Context, as_json: bool) -> None:
     """Show version, license, runtime isolation profile, and GPLv3 attribution notices."""
@@ -276,10 +222,6 @@ def cmd_about(ctx: click.Context, as_json: bool) -> None:
             ],
         }
     )
-    if as_json:
-        obj = ctx.find_root().obj or {}
-        _emit_payload(info, compact=bool(obj.get("compact")), out_path=obj.get("out"))
-        return
     lines = [
         f"{PACKAGE_NAME} ({CLI_NAME}) v{__version__} — {GAME_NAME} [{GAME_ID}]",
         f"License: {LICENSE_SPDX}",
@@ -287,12 +229,12 @@ def cmd_about(ctx: click.Context, as_json: bool) -> None:
         f"Attribution: {POE2BRAIN_ATTRIBUTION}",
         "Upstream & references: PathOfBuilding-PoE2 (MIT), ackness/pobr (MIT), PobTools-zh, pob4agents contributors",
     ]
-    _echo_utf8("\n".join(lines))
+    emit_output(ctx, info, as_json=as_json, markdown_text="\n".join(lines))
 
 
 @main.command("lang")
 @click.argument("value", required=False, default=None)
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
+@output_options
 @click.pass_context
 def cmd_lang(ctx: click.Context, value: str | None, as_json: bool) -> None:
     """Get or set display language (`zh-CN`, `zh-TW`, `en`)."""
@@ -306,11 +248,7 @@ def cmd_lang(ctx: click.Context, value: str | None, as_json: bool) -> None:
             raise click.UsageError(str(exc)) from exc
         payload = stamp_game({"lang": saved["lang"], "source": "config", "configPath": saved["configPath"]})
 
-    if as_json:
-        obj = ctx.find_root().obj or {}
-        _emit_payload(payload, compact=bool(obj.get("compact")), out_path=obj.get("out"))
-        return
-    _echo_utf8(f"lang={payload['lang']} (source={payload['source']})")
+    emit_output(ctx, payload, as_json=as_json, markdown_text=f"lang={payload['lang']} (source={payload['source']})")
 
 
 def register_lazy_subcommand(name: str, module_path: str, attr_name: str, help_text: str) -> None:
@@ -330,6 +268,8 @@ __all__ = [
     "ExtensibleLazyGroup",
     "cmd_about",
     "cmd_lang",
+    "ctx_wants_json",
+    "echo_utf8",
     "main",
     "register_command",
     "register_lazy_subcommand",

@@ -3,26 +3,17 @@
 
 from __future__ import annotations
 
-import json
-import sys
-from pathlib import Path
-
 import click
 
-from .compat import ensure_utf8
+from .cli_common import ctx_wants_json, emit_output, output_options, pob2_command
 from .game_data import ground_query
 
 
-def _echo(text: str, *, err: bool = False) -> None:
-    ensure_utf8(sys.stderr if err else sys.stdout)
-    click.echo(text, err=err)
-
-
-@click.command("ground")
+@pob2_command("ground")
 @click.argument("query", nargs=-1, required=True)
 @click.option("--category", default=None, help="按类别过滤（combat/defence/gems/keystone/ailment/atlas/crafting）。")
 @click.option("--limit", type=int, default=5, show_default=True, help="最多返回卡片数。")
-@click.option("--json", "as_json", is_flag=True, default=False, help="输出机器可读 JSON。")
+@output_options
 @click.pass_context
 def cmd_ground(
     ctx: click.Context,
@@ -32,24 +23,11 @@ def cmd_ground(
     as_json: bool,
 ) -> None:
     """快速（<15ms，免引擎）核查 PoE2 0.5.5 机制知识卡、出处与防幻觉护栏。"""
+    eff_json = bool(as_json or ctx_wants_json(ctx))
     q_text = " ".join(query).strip()
-    res = ground_query(q_text, category=category, limit=limit, emit_stderr=(not as_json))
-    if as_json:
-        obj = (ctx.find_root().obj or {}) if ctx else {}
-        compact = bool(obj.get("compact"))
-        out_path = obj.get("out")
-        text = json.dumps(
-            res.to_dict(),
-            ensure_ascii=False,
-            separators=(",", ":") if compact else None,
-            indent=None if compact else 2,
-        )
-        if out_path:
-            p = Path(out_path)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(text + "\n", encoding="utf-8", newline="\n")
-            return
-        _echo(text)
+    res = ground_query(q_text, category=category, limit=limit, emit_stderr=(not eff_json))
+    if eff_json:
+        emit_output(ctx, res.to_dict(), as_json=True)
         return
 
     lines = [f"### PoE2 {res.patch} 机制核查 (`{res.query}`, {res.elapsed_ms:.2f} ms, 命中 {len(res.cards)} 条)"]
@@ -64,7 +42,7 @@ def cmd_ground(
             lines.append(f"- **公式**: `{c.formula_expr}`")
         lines.append(f"- **旧版/一代误区**: {c.poe1_or_stale_trap}")
         lines.append(f"- **核查出处**: `{c.source_ref}` (patch `{c.patch_verified}`)")
-    _echo("\n".join(lines))
+    emit_output(ctx, res.to_dict(), as_json=False, markdown_text="\n".join(lines))
 
 
 __all__ = ["cmd_ground"]

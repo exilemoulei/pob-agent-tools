@@ -49,10 +49,12 @@ def _apply_tree_node_op(worker: Any, spec: dict[str, Any], *, apply_flag: bool) 
 
     hover = worker.call("node_hover", {"id": nid}) or {}
     isolated: dict[str, Any] | None = None
+    isolated_warn: str | None = None
     try:
         isolated = worker.call("eval_isolated_node", {"id": nid})
-    except Exception:
+    except Exception as exc:
         isolated = None
+        isolated_warn = f"[what-if-degraded] eval_isolated_node failed for node {nid} ({exc})."
 
     node_name = str((isolated or {}).get("name") or nid)
     if anoint_preview:
@@ -94,6 +96,8 @@ def _apply_tree_node_op(worker: Any, spec: dict[str, Any], *, apply_flag: bool) 
                 "pathDist": isolated.get("pathDist"),
                 "delta": isolated.get("delta"),
             }
+        elif isolated_warn:
+            op_out["degradedWarning"] = isolated_warn
         return op_out
 
     click_res = worker.call("tree_click", {"id": nid}) or {}
@@ -163,6 +167,8 @@ def _apply_tree_node_op(worker: Any, spec: dict[str, Any], *, apply_flag: bool) 
         }
     if conn_warn:
         op_entry["connectivityWarning"] = conn_warn
+    if isolated_warn:
+        op_entry["degradedWarning"] = isolated_warn
     return op_entry
 
 

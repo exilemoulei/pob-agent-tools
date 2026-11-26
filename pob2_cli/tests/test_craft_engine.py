@@ -423,7 +423,7 @@ def test_cli_craft_and_item_inspect_smoke() -> None:
 
     r_plan = runner.invoke(
         cli_main,
-        ["craft", "plan", "--base", "Attuned Wand", "--ilvl", "82", "--target", "T2 Spell Damage", "--sims", "80", "--json"],
+        ["craft", "plan", "--base", "Attuned Wand", "--ilvl", "82", "--want", "T2 Spell Damage", "--sims", "80", "--json"],
     )
     assert r_plan.exit_code == 0, r_plan.output
     pdata = json.loads(r_plan.output)
@@ -434,6 +434,6 @@ def test_cli_craft_and_item_inspect_smoke() -> None:
     # Removed lever via CLI exits with code 1 (LegacyPatchTrapError)
     r_block = runner.invoke(
         cli_main,
-        ["craft", "odds", "--base", "Attuned Wand", "--target", "T1 Spell Damage", "--lever", "Recombinator", "--json"],
+        ["craft", "odds", "--base", "Attuned Wand", "--want", "T1 Spell Damage", "--lever", "Recombinator", "--json"],
     )
     assert r_block.exit_code == 1

@@ -7,7 +7,14 @@ from typing import Any
 
 import click
 
-from .cli_common import emit_output, resolve_target_slot
+from .cli_common import (
+    emit_output,
+    output_options,
+    pob2_command,
+    pob2_group,
+    resolve_target_slot,
+    target_option,
+)
 from .daemon import call_daemon, read_daemon_state
 from .errors import CrossGameHallucinationError, DaemonRequestError, LegacyPatchTrapError
 from .game_profile import stamp_game
@@ -26,23 +33,23 @@ from .rune import (
 def _try_live_daemon_slot(action: str, params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     """Attempt live CoW ranking against an already-running PoB2 daemon slot without spawning a cold process."""
     if read_daemon_state() is None:
-        return None, "No running PoB2 daemon found; fell back to offline heuristic ranking."
+        return None, "[live-eval-degraded] No running PoB2 daemon found; fell back to offline heuristic ranking."
     try:
         return call_daemon(action, params, auto_start=False, timeout=90.0), None
     except (CrossGameHallucinationError, LegacyPatchTrapError):
         raise
     except Exception as exc:
-        return None, f"Live daemon slot unavailable ({exc}); fell back to offline heuristic ranking."
+        return None, f"[live-eval-degraded] Live daemon slot unavailable ({exc}); fell back to offline heuristic ranking."
 
 
-@click.group("rune")
+@pob2_group("rune")
 def rune_group() -> None:
     """Inspect and Pareto-rank PoE2 0.5.5 runes, soul cores, and idols with Item.lua socket parity."""
 
 
 @rune_group.command("inspect")
 @click.argument("name", required=True)
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
+@output_options
 @click.pass_context
 def cmd_rune_inspect(ctx: click.Context, name: str, as_json: bool) -> None:
     """Inspect a PoE2 rune, soul core, or idol (slots, req_level, isSocketBound, Bonded mods, price)."""
@@ -106,7 +113,7 @@ def cmd_rune_inspect(ctx: click.Context, name: str, as_json: bool) -> None:
     default=None,
     help="Include Shaman-only Bonded rune bonuses (auto-detected from live daemon build when omitted).",
 )
-@click.option("--target", default=None, help="Target daemon build slot (default: main).")
+@target_option(allow_slot_alias=False)
 @click.option(
     "--offline-heuristic",
     is_flag=True,
@@ -124,7 +131,7 @@ def cmd_rune_inspect(ctx: click.Context, name: str, as_json: bool) -> None:
     show_default=True,
     help="Max shortlisted runes evaluated via live CoW (keeps weapon-slot ranking <3s).",
 )
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
+@output_options
 @click.pass_context
 def cmd_rune_rank(
     ctx: click.Context,
@@ -133,7 +140,7 @@ def cmd_rune_rank(
     base_name: str,
     char_level: int | None,
     is_shaman: bool | None,
-    target: str | None,
+    target: str,
     offline_heuristic: bool,
     metric: str,
     max_budget_ex: float | None,
@@ -193,7 +200,7 @@ def cmd_rune_rank(
     )
 
 
-@click.group("instill")
+@pob2_group("instill")
 def instill_group() -> None:
     """Lookup and bridge PoE2 0.5.5 ordered amulet instillations & Liquid Emotions."""
 
@@ -212,7 +219,7 @@ def instill_group() -> None:
     ),
 )
 @click.option("--limit", type=int, default=10, show_default=True, help="Max matches for substring queries.")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
+@output_options
 @click.pass_context
 def cmd_instill_lookup(
     ctx: click.Context,
@@ -297,7 +304,7 @@ def cmd_instill_lookup(
 
 @instill_group.command("bridge")
 @click.argument("emotion", required=True)
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
+@output_options
 @click.pass_context
 def cmd_instill_bridge(ctx: click.Context, emotion: str, as_json: bool) -> None:
     """Bridge short `<X>`, legacy `Distilled <X>`, and live 0.5.5 `Diluted/Liquid/Concentrated/Potent Liquid <X>` (rejects Ancient jewel emotions)."""
@@ -320,11 +327,11 @@ def cmd_instill_bridge(ctx: click.Context, emotion: str, as_json: bool) -> None:
     emit_output(ctx, stamp_game(payload), as_json=as_json, markdown_text=md)
 
 
-@click.command("rank-instill")
+@pob2_command("rank-instill")
 @click.option("--metric", default="CombinedDPS", show_default=True, help="Target metric (CombinedDPS | TotalEHP).")
 @click.option("--budget", "max_budget_ex", type=float, default=None, help="Optional max instillation cost in Exalted Orbs.")
 @click.option("--limit", type=int, default=15, show_default=True, help="Maximum top candidates to output.")
-@click.option("--target", default=None, help="Target daemon build slot (default: main).")
+@target_option(allow_slot_alias=True)
 @click.option(
     "--offline-heuristic",
     is_flag=True,
@@ -339,14 +346,14 @@ def cmd_instill_bridge(ctx: click.Context, emotion: str, as_json: bool) -> None:
     show_default=True,
     help="Max offline-shortlisted notables verified via live PoB2 calc (<2.5s).",
 )
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
+@output_options
 @click.pass_context
 def cmd_rank_instill(
     ctx: click.Context,
     metric: str,
     max_budget_ex: float | None,
     limit: int,
-    target: str | None,
+    target: str,
     offline_heuristic: bool,
     top_live_eval: int,
     as_json: bool,

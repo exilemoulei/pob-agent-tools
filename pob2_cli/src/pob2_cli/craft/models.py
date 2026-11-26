@@ -107,7 +107,7 @@ class UnknownBaseError(DaemonRequestError, ValueError):
 
 
 class UnknownTargetError(DaemonRequestError, ValueError):
-    """Raised when a `--target` modifier query cannot be resolved in the base's 0.5.5 pool."""
+    """Raised when a `--want` modifier query cannot be resolved in the base's 0.5.5 pool."""
 
     error_kind: str = "unknown_target"
 

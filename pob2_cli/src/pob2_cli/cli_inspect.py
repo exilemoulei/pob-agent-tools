@@ -5,48 +5,55 @@ from __future__ import annotations
 
 import click
 
-from .cli_common import daemon_call_cli, emit_output, resolve_target_slot
+from .cli_common import (
+    daemon_call_cli,
+    emit_output,
+    output_options,
+    pob2_command,
+    resolve_target_slot,
+    target_option,
+)
+from .cli_item import run_unique_slot_ranking
 from .formatters import (
     format_audit_md,
     format_compare_md,
     format_summary_md,
-    format_uniques_md,
 )
 from .guardrails import normalize_poe2_equipment_slot
 
 
-@click.command("summary")
-@click.option("--target", type=str, default=None, help="Target build slot (default: main).")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@pob2_command("summary")
+@target_option(allow_slot_alias=True)
+@output_options
 @click.pass_context
-def cmd_summary(ctx: click.Context, target: str | None, as_json: bool) -> None:
+def cmd_summary(ctx: click.Context, target: str, as_json: bool) -> None:
     """Show PoE2 build headline summary with PoB2 version & patch stamp."""
     res = daemon_call_cli("summary", {"target": resolve_target_slot(target)})
     emit_output(ctx, res, as_json=as_json, markdown_text=format_summary_md(res))
 
 
-@click.command("audit")
-@click.option("--target", type=str, default=None, help="Target build slot (default: main).")
+@pob2_command("audit")
+@target_option(allow_slot_alias=True)
 @click.option("--overcap", type=int, default=15, show_default=True, help="Recommended elemental overcap buffer (%) for Waystone curses/Exposure.")
 @click.option("--chaos-floor", "chaos_floor", type=int, default=0, show_default=True, help="Target Chaos resistance floor (%).")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@output_options
 @click.pass_context
-def cmd_audit(ctx: click.Context, target: str | None, overcap: int, chaos_floor: int, as_json: bool) -> None:
+def cmd_audit(ctx: click.Context, target: str, overcap: int, chaos_floor: int, as_json: bool) -> None:
     """Run S4/T3.4 PoE2 deep audit (conversion dead mods, ArmourRatio=10, Deflection illusion, CI lock, [PoB2未模拟] red cards, 4-dim dehydration)."""
     res = daemon_call_cli("audit", {"target": resolve_target_slot(target), "overcap": overcap, "chaos_floor": chaos_floor})
     emit_output(ctx, res, as_json=as_json, markdown_text=format_audit_md(res))
 
 
-@click.command("diagnose")
-@click.option("--target", type=str, default=None, help="Target build slot (default: main).")
+@pob2_command("diagnose")
+@target_option(allow_slot_alias=True)
 @click.option("--overcap", type=int, default=15, show_default=True, help="Recommended elemental overcap buffer (%).")
 @click.option("--chaos-floor", "chaos_floor", type=int, default=0, show_default=True, help="Target Chaos resistance floor (%).")
 @click.option("--node-power", "node_power", is_flag=True, default=False, help="Include top nearby passive node power rankings.")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@output_options
 @click.pass_context
 def cmd_diagnose(
     ctx: click.Context,
-    target: str | None,
+    target: str,
     overcap: int,
     chaos_floor: int,
     node_power: bool,
@@ -61,49 +68,47 @@ def cmd_diagnose(
     emit_output(ctx, res, as_json=as_json, markdown_text=md)
 
 
-@click.command("uniques")
+@pob2_command("uniques")
 @click.option("--slot", type=str, required=True, help="Target equipment slot (including Flask 1..2 and Charm 1..3).")
-@click.option("--stat", type=str, default=None, help="Optional ranking stat (default: primary DPS).")
-@click.option("--top", type=int, default=15, show_default=True, help="Number of top uniques to return.")
+@click.option("--stat", "--sort", "sort_stat", type=str, default=None, help="Optional ranking stat/metric (default: primary DPS).")
+@click.option("--top", "--limit", "limit", type=click.IntRange(min=1), default=15, show_default=True, help="Number of top uniques to return.")
 @click.option("--no-sanctified", "no_sanctified", is_flag=True, default=False, help="Skip 0.78x-1.22x Sanctified/Vaal roll-range evaluation.")
-@click.option("--target", type=str, default=None, help="Target build slot (default: main).")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@target_option(allow_slot_alias=False)
+@output_options
 @click.pass_context
 def cmd_uniques(
     ctx: click.Context,
     slot: str,
-    stat: str | None,
-    top: int,
+    sort_stat: str | None,
+    limit: int,
     no_sanctified: bool,
-    target: str | None,
+    target: str,
     as_json: bool,
 ) -> None:
-    """Keyword-free full-slot PoE2 unique ranking (including Flask/Charm) with 0.78x-1.22x Sanctified roll range."""
-    canon_slot = normalize_poe2_equipment_slot(slot, command="uniques")
-    res = daemon_call_cli(
-        "uniques",
-        {
-            "target": resolve_target_slot(target),
-            "slot": canon_slot,
-            "stat": stat,
-            "top": top,
-            "eval_sanctified": not no_sanctified,
-        },
+    """Keyword-free full-slot PoE2 unique ranking (alias of `pob2 item db`; incl. Flask/Charm & Sanctified 0.78x-1.22x)."""
+    run_unique_slot_ranking(
+        ctx,
+        slot=slot,
+        sort_stat=sort_stat,
+        limit=limit,
+        no_sanctified=no_sanctified,
+        target=target,
+        as_json=as_json,
+        command_label="uniques",
     )
-    emit_output(ctx, res, as_json=as_json, markdown_text=format_uniques_md(res))
 
 
-@click.command("compare")
+@pob2_command("compare")
 @click.argument("ref_source", required=False, default=None)
 @click.option("--ref-target", "ref_target", type=str, default=None, help="Compare against another loaded slot (e.g. ref).")
-@click.option("--target", type=str, default=None, help="Primary build slot (default: main).")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@target_option(allow_slot_alias=True, help_text="Primary build slot (default: main).")
+@output_options
 @click.pass_context
 def cmd_compare(
     ctx: click.Context,
     ref_source: str | None,
     ref_target: str | None,
-    target: str | None,
+    target: str,
     as_json: bool,
 ) -> None:
     """5-dimension Compare Power Report (Items / Tree / Main Skill / Supports / Config) against a reference build."""
@@ -118,43 +123,43 @@ def cmd_compare(
     emit_output(ctx, res, as_json=as_json, markdown_text=format_compare_md(res))
 
 
-@click.command("items")
-@click.option("--slot", type=str, default=None, help="Optional filter by slot name.")
-@click.option("--target", type=str, default=None, help="Target build slot (default: main).")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@pob2_command("items")
+@click.option("--slot", type=str, default=None, help="Optional filter by PoE2 equipment slot name.")
+@target_option(allow_slot_alias=False)
+@output_options
 @click.pass_context
-def cmd_items(ctx: click.Context, slot: str | None, target: str | None, as_json: bool) -> None:
+def cmd_items(ctx: click.Context, slot: str | None, target: str, as_json: bool) -> None:
     """List equipped PoE2 items and slots."""
     canon_slot = normalize_poe2_equipment_slot(slot, command="items") if (slot and slot.strip()) else None
     res = daemon_call_cli("items", {"target": resolve_target_slot(target), "slot": canon_slot})
     emit_output(ctx, res, as_json=as_json)
 
 
-@click.command("skills")
-@click.option("--target", type=str, default=None, help="Target build slot (default: main).")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@pob2_command("skills")
+@target_option(allow_slot_alias=True)
+@output_options
 @click.pass_context
-def cmd_skills(ctx: click.Context, target: str | None, as_json: bool) -> None:
+def cmd_skills(ctx: click.Context, target: str, as_json: bool) -> None:
     """List PoE2 skill groups, gems, and weapon-set bindings."""
     res = daemon_call_cli("skills", {"target": resolve_target_slot(target)})
     emit_output(ctx, res, as_json=as_json)
 
 
-@click.command("tree")
-@click.option("--target", type=str, default=None, help="Target build slot (default: main).")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@pob2_command("tree")
+@target_option(allow_slot_alias=True)
+@output_options
 @click.pass_context
-def cmd_tree(ctx: click.Context, target: str | None, as_json: bool) -> None:
+def cmd_tree(ctx: click.Context, target: str, as_json: bool) -> None:
     """Inspect allocated PoE2 passive tree nodes, weapon-set modes, and attribute overrides."""
     res = daemon_call_cli("tree", {"target": resolve_target_slot(target)})
     emit_output(ctx, res, as_json=as_json)
 
 
-@click.command("config")
-@click.option("--target", type=str, default=None, help="Target build slot (default: main).")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON output.")
+@pob2_command("config")
+@target_option(allow_slot_alias=True)
+@output_options
 @click.pass_context
-def cmd_config(ctx: click.Context, target: str | None, as_json: bool) -> None:
+def cmd_config(ctx: click.Context, target: str, as_json: bool) -> None:
     """Inspect PoB2 Configuration options and active toggles."""
     res = daemon_call_cli("config_list", {"target": resolve_target_slot(target)})
     emit_output(ctx, res, as_json=as_json)

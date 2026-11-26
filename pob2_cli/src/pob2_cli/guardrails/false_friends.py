@@ -59,7 +59,7 @@ VERSION_DRIFT_BLOCKS_POE2: tuple[VersionDriftBlockRule, ...] = (
         zh_phrases=("同质化崇高预兆", "同质化富豪预兆", "同质化预兆"),
         error="Omen of Homogenising Exaltation & Coronation were removed from drop pools in PoE2 Patch 0.4.0.",
         remediation="In 0.5.5, use Greater/Perfect Exalt + Sinistral/Dextral Exaltation, Perfect Essences/Alloys (max 1 Crafted), or Abyssal Desecration.",
-        equivalent_command="pob2 craft plan --base <base> --target <mod>",
+        equivalent_command="pob2 craft plan --base <base> --want <mod>",
     ),
     VersionDriftBlockRule(
         rule_id="POE2_REMOVED_RECOMBINATOR",
@@ -70,7 +70,7 @@ VERSION_DRIFT_BLOCKS_POE2: tuple[VersionDriftBlockRule, ...] = (
         zh_phrases=("重组器", "重组预兆", "重組器"),
         error="Recombinators and Omen of Recombination were phased out in PoE2 Patch 0.5.0.",
         remediation="In 0.5.5, use 4-mod Fracturing Orb checkpoints + Verisium Alloys / Perfect Essences (max 1 Crafted) + Abyssal Desecration.",
-        equivalent_command="pob2 craft plan --base <base> --target <mod>",
+        equivalent_command="pob2 craft plan --base <base> --want <mod>",
     ),
 )
 
