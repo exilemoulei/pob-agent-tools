@@ -115,18 +115,42 @@ def _unmodelled_spend_reason(
         (g for g in groups if isinstance(g, dict) and (g.get("isMain") or (main_idx is not None and g.get("index") == main_idx))),
         None,
     )
-    for gm in (main_group or {}).get("gems") or []:
-        if not isinstance(gm, dict) or not gm.get("enabled", True):
-            continue
-        blob = " ".join(strip_pob_escapes(str(gm.get(k) or "")) for k in ("name", "nameSpec", "nameZh", "skillId")).lower()
-        if any(t in blob for t in _TOTEM_TOKENS):
-            return "totem"
+    gems = [gm for gm in (main_group or {}).get("gems") or [] if isinstance(gm, dict) and gm.get("enabled", True)]
+    for gm in gems:
         if gm.get("support"):
+            blob = " ".join(_name_parts(gm))
+            if any(t in blob for t in _TOTEM_TOKENS):
+                return "totem"
             if any(t in blob for t in _TRIGGER_SUPPORT_TOKENS):
                 return "triggered"
-        elif blob.startswith(_MINION_ACTIVE_PREFIXES):
-            return "minion"
+    selected = _selected_active_parts(main_group or {}, gems)
+    if any(t in part for part in selected for t in _TOTEM_TOKENS):
+        return "totem"
+    if any(part.startswith(_MINION_ACTIVE_PREFIXES) for part in selected):
+        return "minion"
     return None
+
+
+def _name_parts(entry: dict[str, Any]) -> list[str]:
+    parts = (strip_pob_escapes(str(entry.get(k) or "")).strip().lower() for k in ("name", "nameSpec", "nameZh", "skillId"))
+    return [part for part in parts if part]
+
+
+def _selected_active_parts(group: dict[str, Any], gems: list[dict[str, Any]]) -> list[str]:
+    """Names of the group's selected active skill; empty when the listing does not say which it is.
+
+    Another active gem in the same links (a Decoy Totem next to Fireball) says nothing about the
+    selected skill, so only that skill's own name may rule the estimate out.
+    """
+    skills = group.get("skills") or []
+    try:
+        idx = int(group.get("mainActiveSkill") or 1)
+    except (TypeError, ValueError):
+        idx = 1
+    if 1 <= idx <= len(skills) and isinstance(skills[idx - 1], dict):
+        return _name_parts(skills[idx - 1])
+    actives = [gm for gm in gems if not gm.get("support")]
+    return _name_parts(actives[0]) if len(actives) == 1 else []
 
 
 def collect_mana_sustain_issues(

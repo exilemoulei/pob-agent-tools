@@ -193,6 +193,21 @@ def test_mana_spend_note_is_labelled_estimate_and_skips_unmodelled_skills() -> N
         assert not any("Mana spend rate" in i["message"] for i in issues), skills
 
 
+def test_mana_spend_note_judges_the_selected_skill_not_its_neighbours() -> None:
+    def has_note(skills: dict[str, Any]) -> bool:
+        return any("Mana spend rate" in i["message"] for i in collect_mana_sustain_issues(_spend_stats(), skills))
+
+    listed = [{"name": "Fireball", "skillId": "Fireball"}, {"name": "Decoy Totem", "skillId": "DecoyTotem"}]
+    for neighbour in ("Decoy Totem", "Summon Skitterbots"):
+        shared = _main_group(("Fireball", False), (neighbour, False))
+        assert has_note(shared), neighbour  # the listing does not say which is selected: keep the note
+        shared["groups"][0].update(skills=listed, mainActiveSkill=1)
+        assert has_note(shared), neighbour
+    shared["groups"][0]["mainActiveSkill"] = 2  # the totem itself is selected
+    assert not has_note(shared)
+    assert not has_note(_main_group(("Summon Skeletons", False), ("Minion Damage Support", True)))
+
+
 def test_trigger_overspeed_without_probe_is_medium_estimate() -> None:
     from pob_cli.analyzer.pitfalls_triggers import ESTIMATE_SUFFIX, _fmt_overspeed_gap
 
