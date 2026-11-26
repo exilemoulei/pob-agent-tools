@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from xml.sax.saxutils import escape, quoteattr
+from xml.sax.saxutils import escape
 
 from ..errors import DaemonRequestError
 from ..guardrails import validate_build_xml
@@ -20,10 +20,28 @@ from .wegame_tables import (
     PASSIVE_JEWEL_SLOTS,
     ClassSpec,
     resolve_class_spec,
+    resolve_jewel_base_from_metadata_id,
 )
 from .wegame_translate import WeGameTranslator, is_progress_counter_stat, parse_leading_int
 
 _PASSIVE_JEWEL_RE = re.compile(r"^PassiveJewel_(\d+)$")
+
+
+def _pob2_xml_attr(value: str) -> str:
+    """Format a PoB2 XML attribute matching PoE2/lua/xml.lua `encodeContent`.
+
+    PoB2's `xml.lua` `decodeContent` ONLY decodes `&amp;`, `&lt;`, `&gt;`, `&apos;`, `&quot;`
+    and strips `&#10;` to empty string. Keep literal `\\n` inside double-quoted attributes.
+    """
+    escaped = (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+    return f'"{escaped}"'
 
 
 @dataclass(frozen=True)
@@ -225,7 +243,7 @@ def _format_pob2_xml(
     lines: list[str] = ['<?xml version="1.0" encoding="UTF-8"?>', "<PathOfBuilding2>"]
     lines.append(
         f'\t<Build level="{level}" targetVersion="0_1" mainSocketGroup="1" '
-        f'className={quoteattr(spec.class_name)} ascendClassName={quoteattr(spec.ascendancy_name)} '
+        f'className={_pob2_xml_attr(spec.class_name)} ascendClassName={_pob2_xml_attr(spec.ascendancy_name)} '
         f'characterLevelAutoMode="false"/>'
     )
 
@@ -234,7 +252,7 @@ def _format_pob2_xml(
     lines.append(
         f'\t\t<Spec treeVersion="0_5" classId="{spec.class_id}" classInternalId="{spec.class_id}" '
         f'ascendClassId="{spec.ascend_id}" secondaryAscendClassId="nil" '
-        f'ascendancyInternalId={quoteattr(asc_internal)} nodes="{_csv(nodes)}" masteryEffects="">'
+        f'ascendancyInternalId={_pob2_xml_attr(asc_internal)} nodes="{_csv(nodes)}" masteryEffects="">'
     )
     lines.append(f'\t\t\t<WeaponSet1 nodes="{_csv(ws1)}"/>')
     lines.append(f'\t\t\t<WeaponSet2 nodes="{_csv(ws2)}"/>')
@@ -260,8 +278,8 @@ def _format_pob2_xml(
             c = g["cand"]
             corr = "true" if g["corrupted"] else "nil"
             lines.append(
-                f'\t\t\t\t<Gem count="1" skillId={quoteattr(c.skill_id)} gemId={quoteattr(c.gem_id)} '
-                f'variantId={quoteattr(c.variant_id)} nameSpec={quoteattr(c.name)} '
+                f'\t\t\t\t<Gem count="1" skillId={_pob2_xml_attr(c.skill_id)} gemId={_pob2_xml_attr(c.gem_id)} '
+                f'variantId={_pob2_xml_attr(c.variant_id)} nameSpec={_pob2_xml_attr(c.name)} '
                 f'level="{g["level"]}" quality="{g["quality"]}" enabled="true" '
                 f'enableGlobal1="true" enableGlobal2="true" corrupted="{corr}"/>'
             )
@@ -272,15 +290,19 @@ def _format_pob2_xml(
     lines.append('\t<Config activeConfigSet="1">')
     lines.append('\t\t<ConfigSet id="1" title="Default">')
     for q_key in DEFAULT_QUEST_BOOLEAN_KEYS:
-        lines.append(f'\t\t\t<Input name={quoteattr(q_key)} boolean="false"/>')
+        lines.append(f'\t\t\t<Input name={_pob2_xml_attr(q_key)} boolean="false"/>')
     for q_key in DEFAULT_QUEST_OPTION_KEYS:
-        lines.append(f'\t\t\t<Input name={quoteattr(q_key)} string=""/>')
+        lines.append(f'\t\t\t<Input name={_pob2_xml_attr(q_key)} string=""/>')
     if quest_mods:
-        lines.append(f'\t\t\t<Input name="customMods" string={quoteattr(chr(10).join(quest_mods))}/>')
+        # Keep literal newlines in string="..." for PoE2/lua/xml.lua decodeContent compatibility.
+        lines.append(f'\t\t\t<Input name="customMods" string={_pob2_xml_attr(chr(10).join(quest_mods))}/>')
     lines.append("\t\t</ConfigSet>")
     lines.append("\t</Config>")
 
-    ws_flag = "true" if use_second_ws else "false"
+    # In PoB2, useSecondWeaponSet="true" activates WS2 as the active panel; keep WS1 active ("false")
+    # by default while still populating Weapon 1 Swap / Weapon 2 Swap slots and <WeaponSet2>.
+    _ = use_second_ws
+    ws_flag = "false"
     lines.append(f'\t<Items activeItemSet="1" useSecondWeaponSet="{ws_flag}" showStatDifferences="true">')
     for item_id, body in items:
         lines.append(f'\t\t<Item id="{item_id}">')
@@ -288,7 +310,7 @@ def _format_pob2_xml(
         lines.append("\t\t</Item>")
     lines.append(f'\t\t<ItemSet id="1" useSecondWeaponSet="{ws_flag}" title="Default">')
     for slot_name, item_id in slot_bindings:
-        lines.append(f'\t\t\t<Slot name={quoteattr(slot_name)} itemId="{item_id}"/>')
+        lines.append(f'\t\t\t<Slot name={_pob2_xml_attr(slot_name)} itemId="{item_id}"/>')
     for node_id, _item_id in jewel_sockets:
         lines.append(f'\t\t\t<SocketIdURL nodeId="{node_id}" name="Jewel {node_id}" itemPbURL=""/>')
     lines.append("\t\t</ItemSet>")
@@ -362,8 +384,16 @@ def convert_wegame_bundle_to_pob2_xml(
         for grp in jewel.get("mod_descriptions") or []:
             if isinstance(grp, dict) and isinstance(grp.get("values"), list):
                 mod_lines.extend(grp["values"])
+        # Prefer jewel.id metadata path (e.g. Metadata/Items/Jewels/JewelDex -> Emerald) over
+        # localized name so PoE1 legacy names never corrupt PoE2 jewel base types.
+        jewel_base = (
+            resolve_jewel_base_from_metadata_id(jewel.get("id"))
+            or jewel.get("name")
+            or jewel.get("id")
+            or "Ruby"
+        )
         synth_item = {
-            "baseType": jewel.get("name") or jewel.get("id") or "Jewel",
+            "baseType": jewel_base,
             "name": jewel.get("display_name") or "",
             "frameType": jewel.get("rarity", 2),
             "explicitMods": mod_lines,

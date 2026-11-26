@@ -23,6 +23,7 @@ from ..guardrails import POE1_ZH_TO_POE2_ALIAS, ZH_MISTRANSLATION_TRAPS
 from ..han_fold import fold_han
 from .wegame_tables import (
     BUNDLED_COMMON_BASES,
+    BUNDLED_COMMON_UNIQUES,
     CATALYST_ZH_TO_EN,
     RUNE_CN_OVERRIDES,
     RUNE_CN_TO_TW_BRIDGES,
@@ -264,6 +265,7 @@ class WeGameTranslator:
         self._stats_exact: dict[str, str] = {}
         self._gems_by_key: dict[tuple[str, bool], list[GemCandidate]] = {}
         self._known_en_runes: set[str] = set()
+        self._valid_poe2_bases: frozenset[str] = frozenset()
         self._load_bundled()
         self._load_mistranslation_bridges()
         if self.l10n_dir is not None:
@@ -279,6 +281,11 @@ class WeGameTranslator:
                     if c not in bucket:
                         bucket.append(c)
 
+    @property
+    def valid_poe2_bases(self) -> frozenset[str]:
+        """Return the set of all 0.5.5 canonical PoE2 itemBases names."""
+        return self._valid_poe2_bases
+
     def _register_gem(self, label: str, cand: GemCandidate) -> None:
         if not label:
             return
@@ -290,12 +297,18 @@ class WeGameTranslator:
                 bucket.append(cand)
 
     def _load_bundled(self) -> None:
+        payload = load_bundled_runes_gems()
+        raw_bases = payload.get("bases", ())
+        self._valid_poe2_bases = frozenset(str(b) for b in raw_bases if isinstance(b, str) and b)
+
         for zh, en in BUNDLED_COMMON_BASES.items():
-            self._items_by_zh[_norm_key(zh)] = en
+            if not self._valid_poe2_bases or en in self._valid_poe2_bases:
+                self._items_by_zh[_norm_key(zh)] = en
+        for zh, en in BUNDLED_COMMON_UNIQUES.items():
+            self._uniques_by_zh[_norm_key(zh)] = en
         for zh, en in RUNE_CN_OVERRIDES.items():
             self._runes_by_zh[_norm_key(zh)] = en
 
-        payload = load_bundled_runes_gems()
         for row in payload.get("runes", ()):
             if len(row) < 3:
                 continue
@@ -325,16 +338,20 @@ class WeGameTranslator:
                 self._register_gem(str(row[6]), cand)
 
     def _load_mistranslation_bridges(self) -> None:
-        # Link T2.1 38-group CN mistranslation table into base/gem/stat lookup normalization.
+        # Link T2.1 38-group CN mistranslation table without injecting non-PoE2-base names.
         for poe1_zh, (en_canon, poe2_zh) in POE1_ZH_TO_POE2_ALIAS.items():
-            self._items_by_zh.setdefault(_norm_key(poe1_zh), en_canon)
-            self._items_by_zh.setdefault(_norm_key(poe2_zh), en_canon)
+            if self._valid_poe2_bases and en_canon in self._valid_poe2_bases:
+                self._items_by_zh.setdefault(_norm_key(poe1_zh), en_canon)
+                self._items_by_zh.setdefault(_norm_key(poe2_zh), en_canon)
         for trap in ZH_MISTRANSLATION_TRAPS:
             if trap.en_term and trap.poe2_zh and "{" not in trap.en_term and "/" not in trap.en_term:
                 self._stats_exact.setdefault(_norm_key(trap.poe2_zh), trap.en_term)
 
     def _load_l10n_dir(self, l10n_dir: Path) -> None:
         # zh-rTW first (fallback), then zh-rCN (priority override).
+        # Filter items.json strictly by valid PoE2 0.5.5 itemBases to prevent PoE1 leftover
+        # entries (e.g. `Viridian Jewel` overwriting `Emerald`) from causing #2582 item drops.
+        valid_bases = self._valid_poe2_bases
         for loc in ("zh-rTW", "zh-rCN"):
             loc_dir = l10n_dir / loc
             if not loc_dir.is_dir():
@@ -342,7 +359,7 @@ class WeGameTranslator:
             is_cn = loc == "zh-rCN"
             for en, zh in _load_entries(loc_dir / "items.json").items():
                 key = _norm_key(zh)
-                if is_cn or key not in self._items_by_zh:
+                if (not valid_bases or en in valid_bases) and (is_cn or key not in self._items_by_zh):
                     self._items_by_zh[key] = en
                 if en in self._known_en_runes and (is_cn or key not in self._runes_by_zh):
                     self._runes_by_zh[key] = en

@@ -293,58 +293,151 @@ RUNE_CN_TO_TW_BRIDGES: tuple[tuple[str, str], ...] = (
     ("铁符文", "锻铁符文"),
 )
 
-# Common PoE2 item/jewel/flask/charm bases for offline operation without external Data/poe2.
+# Exact Metadata/Items/Jewels/* id -> PoE2 0.5.5 Bases/jewel.lua canonical base name.
+JEWEL_METADATA_ID_TO_BASE: dict[str, str] = {
+    "metadata/items/jewels/jewelstr": "Ruby",
+    "metadata/items/jewels/jeweldex": "Emerald",
+    "metadata/items/jewels/jewelint": "Sapphire",
+    "metadata/items/jewels/jeweldiamond": "Diamond",
+    "metadata/items/jewels/jeweltimeless": "Timeless Jewel",
+    "metadata/items/jewels/jewelstrradius": "Time-Lost Ruby",
+    "metadata/items/jewels/jewelradiusstr": "Time-Lost Ruby",
+    "metadata/items/jewels/jeweltimeloststr": "Time-Lost Ruby",
+    "metadata/items/jewels/jeweldexradius": "Time-Lost Emerald",
+    "metadata/items/jewels/jewelradiusdex": "Time-Lost Emerald",
+    "metadata/items/jewels/jeweltimelostdex": "Time-Lost Emerald",
+    "metadata/items/jewels/jewelintradius": "Time-Lost Sapphire",
+    "metadata/items/jewels/jewelradiusint": "Time-Lost Sapphire",
+    "metadata/items/jewels/jeweltimelostint": "Time-Lost Sapphire",
+    "metadata/items/jewels/jeweldiamondradius": "Time-Lost Diamond",
+    "metadata/items/jewels/jewelradiusdiamond": "Time-Lost Diamond",
+    "metadata/items/jewels/jeweltimelostdiamond": "Time-Lost Diamond",
+}
+
+
+def resolve_jewel_base_from_metadata_id(raw_id: str | None) -> str | None:
+    """Resolve WeGame GetJewels `jewel.id` metadata path to a valid PoE2 0.5.5 jewel base."""
+    if not raw_id or not isinstance(raw_id, str):
+        return None
+    norm = raw_id.strip().replace("\\", "/").lower()
+    if norm in JEWEL_METADATA_ID_TO_BASE:
+        return JEWEL_METADATA_ID_TO_BASE[norm]
+    if norm.startswith("metadata/items/jewels/"):
+        tail = norm.rsplit("/", 1)[-1]
+        is_radius = "radius" in tail or "timelost" in tail
+        if "diamond" in tail:
+            return "Time-Lost Diamond" if is_radius else "Diamond"
+        if "timeless" in tail:
+            return "Timeless Jewel"
+        if "str" in tail or "ruby" in tail:
+            return "Time-Lost Ruby" if is_radius else "Ruby"
+        if "dex" in tail or "emerald" in tail:
+            return "Time-Lost Emerald" if is_radius else "Emerald"
+        if "int" in tail or "sapphire" in tail:
+            return "Time-Lost Sapphire" if is_radius else "Sapphire"
+    return None
+
+
+# Common PoE2 0.5.5 concrete itemBases (every value MUST exist in PoE2/Data/Bases/*.lua).
 BUNDLED_COMMON_BASES: dict[str, str] = {
+    # Jewels (CN & TW folded variants)
+    "红玉": "Ruby",
     "红宝石": "Ruby",
+    "翡翠": "Emerald",
+    "绿宝石": "Emerald",
     "翠绿珠宝": "Emerald",
+    "蓝玉": "Sapphire",
     "蓝宝石": "Sapphire",
+    "宝钻": "Diamond",
     "钻石": "Diamond",
-    "无尽之钻": "From Nothing",
-    "虚无": "From Nothing",
-    "失落时光钻石": "Time-Lost Diamond",
+    "失落的红玉": "Time-Lost Ruby",
+    "时迭红宝石": "Time-Lost Ruby",
     "时光消逝红宝石": "Time-Lost Ruby",
+    "失落的翡翠": "Time-Lost Emerald",
+    "时迭绿宝石": "Time-Lost Emerald",
     "时光消逝翠绿珠宝": "Time-Lost Emerald",
+    "失落的蓝玉": "Time-Lost Sapphire",
+    "时迭蓝宝石": "Time-Lost Sapphire",
     "时光消逝蓝宝石": "Time-Lost Sapphire",
+    "失落的宝钻": "Time-Lost Diamond",
+    "时迭钻石": "Time-Lost Diamond",
+    "失落时光钻石": "Time-Lost Diamond",
+    # Flasks & Charms
     "终极生命药剂": "Ultimate Life Flask",
     "终极魔力药剂": "Ultimate Mana Flask",
     "巨大魔力药剂": "Gargantuan Mana Flask",
+    "抗毒咒符": "Antidote Charm",
     "解毒咒符": "Antidote Charm",
     "解毒护符": "Antidote Charm",
+    "根基咒符": "Grounding Charm",
     "接地咒符": "Grounding Charm",
     "接地护符": "Grounding Charm",
     "解冻咒符": "Thawing Charm",
     "解冻护符": "Thawing Charm",
     "黄金咒符": "Golden Charm",
+    # Jewellery & Belts
     "紫晶戒指": "Amethyst Ring",
     "裂隙戒指": "Breach Ring",
+    "裂痕戒指": "Breach Ring",
     "棱光戒指": "Prismatic Ring",
     "红玉戒指": "Ruby Ring",
     "蓝玉戒指": "Sapphire Ring",
     "黄玉戒指": "Topaz Ring",
+    "活力戒指": "Vitalic Ring",
     "生机戒指": "Vitalic Ring",
+    "维生之戒": "Vitalic Ring",
+    "日曜项链": "Solar Amulet",
     "太阳项链": "Solar Amulet",
+    "日耀项链": "Solar Amulet",
     "恒星项链": "Stellar Amulet",
     "琥珀项链": "Amber Amulet",
     "翠玉项链": "Jade Amulet",
     "海玉项链": "Lapis Amulet",
     "血石项链": "Bloodstone Amulet",
+    "万用腰带": "Utility Belt",
     "实用腰带": "Utility Belt",
     "重革腰带": "Heavy Belt",
-    "独创": "Ingenuity",
+    # Weapons, Quivers, Shields, Body Armours
+    "双弦弓": "Dualstring Bow",
+    "双联战弩": "Dyad Crossbow",
+    "双生十字弓": "Dyad Crossbow",
     "轰鸣十字弓": "Dyad Crossbow",
+    "双灵战弩": "Gemini Crossbow",
     "双子十字弓": "Gemini Crossbow",
     "围攻十字弓": "Bombard Crossbow",
     "攻城十字弓": "Siege Crossbow",
+    "调谐法杖": "Attuned Wand",
+    "调和法杖": "Attuned Wand",
     "精绝法杖": "Attuned Wand",
     "虹吸法杖": "Siphoning Wand",
     "挥发法杖": "Volatile Wand",
-    "塔盾": "Tower Shield",
-    "轻盾": "Buckler",
-    "法器": "Focus",
-    "箭袋": "Quiver",
+    "宽头箭袋": "Broadhead Quiver",
+    "火羽箭袋": "Fire Quiver",
+    "加固塔盾": "Braced Tower Shield",
+    "塔赫亚塔盾": "Tawhoan Tower Shield",
     "潜行外套": "Swiftstalker Coat",
     "猎鹰外套": "Falconer's Jacket",
     "先祖长袍": "Vile Robe",
+    # Incursion Limbs (PoE2/Data/Bases/incursionlimb.lua)
+    "守护之臂": "Guarding Arm",
+    "守卫之臂": "Guarding Arm",
+    "战斗之臂": "Combat Arm",
+    "施法之臂": "Caster Arm",
+    "衰老之臂": "Decrepifying Arm",
+    "偏转之臂": "Deflective Arm",
+    "指挥之臂": "Commanding Arm",
+    "闪避之腿": "Evasive Leg",
+    "疾跑之腿": "Sprinters Leg",
+    "稳健之腿": "Sturdy Leg",
+    "稳步之腿": "Surefooted Leg",
+    "沉着之腿": "Calm Leg",
+    "恢复之腿": "Restorative Leg",
+}
+
+BUNDLED_COMMON_UNIQUES: dict[str, str] = {
+    "无尽之钻": "From Nothing",
+    "虚无": "From Nothing",
+    "独创": "Ingenuity",
 }
 
 _BUNDLED_GZ_PATH = Path(__file__).resolve().parent.parent / "data" / "wegame_runes_gems.json.gz"
@@ -352,26 +445,29 @@ _BUNDLED_GZ_PATH = Path(__file__).resolve().parent.parent / "data" / "wegame_run
 
 @lru_cache(maxsize=1)
 def load_bundled_runes_gems() -> dict[str, Any]:
-    """Load bundled PoE2 0.5.5 ModRunes + Gems lookup payload (~38 KB gz)."""
+    """Load bundled PoE2 0.5.5 Bases + ModRunes + Gems lookup payload (~47 KB gz)."""
     if not _BUNDLED_GZ_PATH.is_file():
-        return {"version": "0.5.5", "runes": [], "gems": []}
+        return {"version": "0.5.5", "bases": [], "runes": [], "gems": []}
     raw = gzip.decompress(_BUNDLED_GZ_PATH.read_bytes()).decode("utf-8")
     data = json.loads(raw)
-    return data if isinstance(data, dict) else {"version": "0.5.5", "runes": [], "gems": []}
+    return data if isinstance(data, dict) else {"version": "0.5.5", "bases": [], "runes": [], "gems": []}
 
 
 __all__ = [
     "BUNDLED_COMMON_BASES",
+    "BUNDLED_COMMON_UNIQUES",
     "CATALYST_ZH_TO_EN",
     "CLASS_SPECS",
     "CLASS_ZH_TO_EN",
     "DEFAULT_QUEST_BOOLEAN_KEYS",
     "DEFAULT_QUEST_OPTION_KEYS",
     "EQUIPMENT_SLOT_MAP",
+    "JEWEL_METADATA_ID_TO_BASE",
     "PASSIVE_JEWEL_SLOTS",
     "RUNE_CN_OVERRIDES",
     "RUNE_CN_TO_TW_BRIDGES",
     "ClassSpec",
     "load_bundled_runes_gems",
     "resolve_class_spec",
+    "resolve_jewel_base_from_metadata_id",
 ]

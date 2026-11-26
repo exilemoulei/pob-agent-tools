@@ -21,9 +21,11 @@ from .wegame_tables import (
     DEFAULT_QUEST_BOOLEAN_KEYS,
     DEFAULT_QUEST_OPTION_KEYS,
     EQUIPMENT_SLOT_MAP,
+    JEWEL_METADATA_ID_TO_BASE,
     PASSIVE_JEWEL_SLOTS,
     ClassSpec,
     resolve_class_spec,
+    resolve_jewel_base_from_metadata_id,
 )
 from .wegame_translate import (
     GemCandidate,
@@ -40,6 +42,7 @@ __all__ = [
     "DEFAULT_QUEST_BOOLEAN_KEYS",
     "DEFAULT_QUEST_OPTION_KEYS",
     "EQUIPMENT_SLOT_MAP",
+    "JEWEL_METADATA_ID_TO_BASE",
     "PASSIVE_JEWEL_SLOTS",
     "PII_FIELD_NAMES",
     "WEGAME_API_BASE",
@@ -59,6 +62,7 @@ __all__ = [
     "parse_leading_int",
     "parse_wegame_share_url",
     "resolve_class_spec",
+    "resolve_jewel_base_from_metadata_id",
     "sanitize_item_fields",
     "sanitize_talent_tree",
     "sanitize_wegame_responses",

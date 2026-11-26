@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""Synthetic unit & CLI tests for T2.2c CN WeGame PoE2 cookie-free share importer.
+"""Synthetic unit, CLI, and live PoB2 engine E2E tests for T2.2c CN WeGame importer.
 
 All fixtures are 100% synthetic — zero real player share codes, openids, account names, or exports.
 """
@@ -7,6 +7,8 @@ All fixtures are 100% synthetic — zero real player share codes, openids, accou
 from __future__ import annotations
 
 import json
+import os
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,8 @@ import httpx
 import pytest
 from click.testing import CliRunner
 
+from pob2_cli import bridge_protocol, updater
+from pob2_cli.bridge_client import BridgeWorker
 from pob2_cli.cli import main as pob2_main
 from pob2_cli.errors import CrossGameHallucinationError, DaemonRequestError
 from pob2_cli.guardrails import validate_build_xml
@@ -30,18 +34,32 @@ from pob2_cli.importers import (
     fetch_wegame_share,
     parse_leading_int,
     parse_wegame_share_url,
+    resolve_jewel_base_from_metadata_id,
     sanitize_wegame_responses,
 )
 
 SYNTHETIC_SHARE_CODE = "SynthTestCode_0123456789ABCDEF"
 SYNTHETIC_SHARE_URL = f"https://www.wegame.com.cn/helper/poe2/#/share/{SYNTHETIC_SHARE_CODE}"
 
+# Real connected Mercenary (start=50986) passive nodes from PoE2/TreeData/0_5/tree.lua:
+#   - Path to PassiveJewel_16 (54127) and PassiveJewel_0 (26725)
+#   - Attribute choice nodes: 42350 (Str), 61438 (Dex), 28510 (Int)
+#   - Disjoint 2-node branches off 16168: set1=[45916, 19330], set2=[55478, 48006]
+_MERC_CONNECTED_HASHES = [
+    50986, 59779, 42350, 61438, 28510, 10247, 28370, 63526, 48635, 21755, 54127,
+    45969, 25374, 16168, 54232, 44659, 36629, 16725, 54811, 57703, 26725,
+]
+_MERC_WS1_NODES = [45916, 19330]
+_MERC_WS2_NODES = [55478, 48006]
 
-def _make_raw_five_responses(*, class_name: str = "猎巫人", double_escape_jewels: bool = True) -> dict[str, dict[str, Any]]:
-    """Build 100% synthetic 5-endpoint WeGame responses covering all 5 real-device pitfalls."""
+
+def _make_raw_five_responses(
+    *, class_name: str = "猎巫人", double_escape_jewels: bool = True
+) -> dict[str, dict[str, Any]]:
+    """Build 100% synthetic 5-endpoint WeGame responses using real PoE2 0.5.5 bases & connected nodes."""
     jewel_entries = [
         {
-            "socket_id": "PassiveJewel_4",
+            "socket_id": "PassiveJewel_0",
             "jewel": {
                 "id": "Metadata/Items/Jewels/JewelStr",
                 "name": "红宝石",
@@ -53,35 +71,15 @@ def _make_raw_five_responses(*, class_name: str = "猎巫人", double_escape_jew
             },
         },
         {
-            "socket_id": "PassiveJewel_12",
+            "socket_id": "PassiveJewel_16",
             "jewel": {
                 "id": "Metadata/Items/Jewels/JewelDex",
                 "name": "翠绿珠宝",
                 "display_name": "合成翠玉",
                 "rarity": 2,
                 "mod_descriptions": [
-                    {"values": ["速度提高 4 (4-8)% (local)"]}
+                    {"values": ["速度提高 4 (4-8)% (local)", "闪避值提高 12 (10-15)%"]}
                 ],
-            },
-        },
-        {
-            "socket_id": "PassiveJewel_16",
-            "jewel": {
-                "id": "Metadata/Items/Jewels/JewelInt",
-                "name": "蓝宝石",
-                "display_name": "合成蓝玉",
-                "rarity": 2,
-                "mod_descriptions": [{"values": ["能量护盾提高 15 (10-20)%"]}],
-            },
-        },
-        {
-            "socket_id": "PassiveJewel_17",
-            "jewel": {
-                "id": "Metadata/Items/Jewels/JewelDiamond",
-                "name": "钻石",
-                "display_name": "合成钻石",
-                "rarity": 3,
-                "mod_descriptions": [{"values": ["+10% 所有元素抗性"]}],
             },
         },
     ]
@@ -90,11 +88,11 @@ def _make_raw_five_responses(*, class_name: str = "猎巫人", double_escape_jew
         jewel_json = jewel_json.replace('"', '\\"')
 
     equipments: list[dict[str, Any]] = [
-        # Main weapon with rune sockets, mixed dict/str mods, special flags, Shaman Bonded line, quality markup
+        # Main weapon (Dualstring Bow) with rune sockets, mixed dict/str mods, 8 mod tags, Shaman Bonded line
         {
             "inventoryId": "Weapon",
-            "baseType": "双子十字弓",
-            "name": "合成弩炮",
+            "baseType": "双弦弓",
+            "name": "合成长弓",
             "frameType": 2,
             "ilvl": 82,
             "corrupted": True,
@@ -103,7 +101,6 @@ def _make_raw_five_responses(*, class_name: str = "猎巫人", double_escape_jew
             ],
             "requirements": [
                 {"name": "等级", "values": [["78", 0]]},
-                {"name": "力量", "values": [["104", 0]]},
                 {"name": "敏捷", "values": [["104", 0]]},
             ],
             "sockets": [{"type": "rune"}, {"type": "rune"}, {"type": "jewel"}],
@@ -127,13 +124,12 @@ def _make_raw_five_responses(*, class_name: str = "猎巫人", double_escape_jew
             "craftedMods": ["+35% 火焰抗性"],
             "desecratedMods": ["+30% 闪电抗性"],
             "mutatedMods": ["+25 力量"],
-            # Dummy PII field on item to verify item sanitizer strips unknown fields
             "account_name": "SYNTH_ITEM_PII",
         },
-        # Offhand + Weapon2 + Offhand2 (dual weapon set)
+        # Offhand (Broadhead Quiver) + Weapon2 (Attuned Wand) + Offhand2 (Braced Tower Shield)
         {
             "inventoryId": "Offhand",
-            "baseType": "箭袋",
+            "baseType": "宽头箭袋",
             "name": "合成箭袋",
             "frameType": 2,
             "ilvl": 80,
@@ -141,7 +137,7 @@ def _make_raw_five_responses(*, class_name: str = "猎巫人", double_escape_jew
         },
         {
             "inventoryId": "Weapon2",
-            "baseType": "精绝法杖",
+            "baseType": "调谐法杖",
             "name": "副手法杖",
             "frameType": 2,
             "ilvl": 81,
@@ -151,7 +147,7 @@ def _make_raw_five_responses(*, class_name: str = "猎巫人", double_escape_jew
         },
         {
             "inventoryId": "Offhand2",
-            "baseType": "塔盾",
+            "baseType": "加固塔盾",
             "name": "副手盾牌",
             "frameType": 2,
             "ilvl": 80,
@@ -171,7 +167,7 @@ def _make_raw_five_responses(*, class_name: str = "猎巫人", double_escape_jew
         # Amulet with half-width catalyst quality
         {
             "inventoryId": "Amulet",
-            "baseType": "太阳项链",
+            "baseType": "日曜项链",
             "name": "合成项链",
             "frameType": 2,
             "ilvl": 81,
@@ -182,19 +178,19 @@ def _make_raw_five_responses(*, class_name: str = "猎巫人", double_escape_jew
         {"inventoryId": "Flask", "x": 0, "baseType": "终极生命药剂", "frameType": 1, "ilvl": 75, "explicitMods": []},
         {"inventoryId": "Flask", "x": 1, "baseType": "终极魔力药剂", "frameType": 1, "ilvl": 75, "explicitMods": []},
         {
-            "inventoryId": "Flask", "x": 2, "baseType": "接地咒符", "frameType": 1, "ilvl": 70,
+            "inventoryId": "Flask", "x": 2, "baseType": "根基咒符", "frameType": 1, "ilvl": 70,
             "implicitMods": ["当你被感电时使用"], "explicitMods": [],
         },
         {
-            "inventoryId": "Flask", "x": 3, "baseType": "解毒咒符", "frameType": 1, "ilvl": 70,
+            "inventoryId": "Flask", "x": 3, "baseType": "抗毒咒符", "frameType": 1, "ilvl": 70,
             "implicitMods": ["当你中毒时使用"], "explicitMods": [],
         },
         {"inventoryId": "Flask", "x": 4, "baseType": "黄金咒符", "frameType": 1, "ilvl": 70, "explicitMods": []},
-        # Incursion limbs
-        {"inventoryId": "IncursionArmRight", "baseType": "合成右臂", "frameType": 2, "ilvl": 79, "explicitMods": []},
-        {"inventoryId": "IncursionArmLeft", "baseType": "合成左臂", "frameType": 2, "ilvl": 79, "explicitMods": []},
-        {"inventoryId": "IncursionLegRight", "baseType": "合成右腿", "frameType": 2, "ilvl": 79, "explicitMods": []},
-        {"inventoryId": "IncursionLegLeft", "baseType": "合成左腿", "frameType": 2, "ilvl": 79, "explicitMods": []},
+        # Incursion limbs using canonical 0.5.5 Bases/incursionlimb.lua bases
+        {"inventoryId": "IncursionArmRight", "baseType": "守护之臂", "frameType": 2, "ilvl": 79, "explicitMods": []},
+        {"inventoryId": "IncursionArmLeft", "baseType": "战斗之臂", "frameType": 2, "ilvl": 79, "explicitMods": []},
+        {"inventoryId": "IncursionLegRight", "baseType": "闪避之腿", "frameType": 2, "ilvl": 79, "explicitMods": []},
+        {"inventoryId": "IncursionLegLeft", "baseType": "疾跑之腿", "frameType": 2, "ilvl": 79, "explicitMods": []},
     ]
 
     return {
@@ -218,12 +214,12 @@ def _make_raw_five_responses(*, class_name: str = "猎巫人", double_escape_jew
         "GetTalentTree": {
             "result": {"error_code": 0, "error_message": ""},
             "talent_tree": {
-                "hashes": [1001, 1002, 1003, 60735, 46882, 54127, 32763],
-                "specialisations": {"set1": [2001, 2002], "set2": [3001, 3002]},
+                "hashes": list(_MERC_CONNECTED_HASHES),
+                "specialisations": {"set1": list(_MERC_WS1_NODES), "set2": list(_MERC_WS2_NODES)},
                 "skill_overrides": {
-                    "1001": {"grantedStrength": 5},
-                    "1002": {"grantedDexterity": 5},
-                    "1003": {"grantedIntelligence": 5},
+                    "42350": {"grantedStrength": 5},
+                    "61438": {"grantedDexterity": 5},
+                    "28510": {"grantedIntelligence": 5},
                 },
                 "quest_stats": [
                     "+100 [Spirit|精魂]",
@@ -233,7 +229,6 @@ def _make_raw_five_responses(*, class_name: str = "猎巫人", double_escape_jew
                     "[Charm|咒符]栏 +1",
                     "48 个[BrokenFace|毁面首领]",
                 ],
-                # Radius metadata dict on talent_tree must NEVER be confused with GetJewels.jewel_data string
                 "jewel_data": {"0": {"radius": 1500, "type": "JewelStr"}},
             },
         },
@@ -261,7 +256,6 @@ def _make_raw_five_responses(*, class_name: str = "猎巫人", double_escape_jew
                     ],
                 },
                 {
-                    # Collides in Gems.lua with UniqueBreachLightningBoltPlayer -> must pick regular gem!
                     "baseType": "闪电",
                     "support": False,
                     "properties": [{"type": 5, "name": "等级", "values": [["19", 0]]}],
@@ -326,7 +320,6 @@ def test_fetch_wegame_share_cookie_free_concurrent_and_strips_pii() -> None:
     assert bundle["version"] == 1
     assert bundle["role"] == {"level": 94, "class_name": "猎巫人"}
 
-    # Verify ZERO PII tokens survive anywhere in sanitized bundle
     serialized = json.dumps(bundle, ensure_ascii=False)
     for forbidden in (
         "SYNTH_OPENID_99999",
@@ -344,7 +337,6 @@ def test_fetch_wegame_share_cookie_free_concurrent_and_strips_pii() -> None:
     ):
         assert forbidden not in serialized
 
-    # Verify talent_tree.jewel_data radius dict was separated from GetJewels.jewel_data string
     assert isinstance(bundle["jewel_data"], str)
     assert "jewel_data" not in bundle["talent_tree"]
     assert isinstance(bundle["talent_tree"].get("jewel_radius_meta"), dict)
@@ -353,7 +345,6 @@ def test_fetch_wegame_share_cookie_free_concurrent_and_strips_pii() -> None:
 def test_fetch_wegame_share_rejects_redirect_and_partial_error_atomically() -> None:
     raw = _make_raw_five_responses()
 
-    # Case A: 302 redirect on GetSkills must fail immediately (never follow redirect)
     def redirect_handler(request: httpx.Request) -> httpx.Response:
         method = request.url.path.rsplit("/", 1)[-1]
         if method == "GetSkills":
@@ -363,7 +354,6 @@ def test_fetch_wegame_share_rejects_redirect_and_partial_error_atomically() -> N
     with pytest.raises(DaemonRequestError, match="HTTP 302"):
         fetch_wegame_share(SYNTHETIC_SHARE_URL, transport=httpx.MockTransport(redirect_handler))
 
-    # Case B: error_code != 0 on GetJewels aborts entire import without partial build
     raw_err = _make_raw_five_responses()
     raw_err["GetJewels"] = {"result": {"error_code": 8000001, "error_message": "Invalid"}, "jewel_data": ""}
     with pytest.raises(DaemonRequestError, match="8000001"):
@@ -371,7 +361,7 @@ def test_fetch_wegame_share_rejects_redirect_and_partial_error_atomically() -> N
 
 
 # ---------------------------------------------------------------------------
-# 3. Rich text cleaning, ModRunes.lua CN reverse lookup, gem disambiguation
+# 3. Text cleaning, ModRunes CN lookup, PoE1 items.json filter, gem disambig
 # ---------------------------------------------------------------------------
 
 
@@ -383,14 +373,49 @@ def test_clean_wegame_text_and_leading_int() -> None:
     assert parse_leading_int("not_a_num") is None
 
 
-def test_modrunes_cn_reverse_lookup_covers_real_cn_names() -> None:
-    tr = WeGameTranslator()
+def test_modrunes_cn_reverse_lookup_and_poe1_base_pollution_filter(tmp_path: Path) -> None:
+    # Simulate zh-rCN/items.json polluted with PoE1 leftover `"Viridian Jewel": "翠绿珠宝"`
+    cn_dir = tmp_path / "zh-rCN"
+    cn_dir.mkdir(parents=True)
+    (cn_dir / "items.json").write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "Viridian Jewel": "翠绿珠宝",
+                    "Crimson Jewel": "赤红珠宝",
+                    "Emerald": "翡翠",
+                    "Broadhead Quiver": "宽头箭袋",
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    tr = WeGameTranslator(data_dir=tmp_path)
+    assert len(tr.valid_poe2_bases) >= 1700
+    assert "Emerald" in tr.valid_poe2_bases
+    assert "Viridian Jewel" not in tr.valid_poe2_bases
+
+    # PoE1 leftover `Viridian Jewel` MUST NOT overwrite bundled PoE2 `Emerald`!
+    assert tr.translate_item_name("翠绿珠宝") == ("Emerald", True)
+    assert tr.translate_item_name("翡翠") == ("Emerald", True)
+    assert tr.translate_item_name("宽头箭袋") == ("Broadhead Quiver", True)
+
+    # Jewel metadata ID resolution
+    assert resolve_jewel_base_from_metadata_id("Metadata/Items/Jewels/JewelStr") == "Ruby"
+    assert resolve_jewel_base_from_metadata_id("Metadata/Items/Jewels/JewelDex") == "Emerald"
+    assert resolve_jewel_base_from_metadata_id("Metadata/Items/Jewels/JewelInt") == "Sapphire"
+    assert resolve_jewel_base_from_metadata_id("Metadata/Items/Jewels/JewelDiamond") == "Diamond"
+    assert resolve_jewel_base_from_metadata_id("Metadata/Items/Jewels/JewelTimeless") == "Timeless Jewel"
+    assert resolve_jewel_base_from_metadata_id("Metadata/Items/Jewels/JewelStrRadius") == "Time-Lost Ruby"
+
+    # ModRunes CN reverse lookup
     assert tr.translate_rune("高级冰川符文") == ("Greater Glacial Rune", True)
     assert tr.translate_rune("法瑞尔的狩猎符文") == ("Farrul's Rune of the Hunt", True)
     assert tr.translate_rune("萨奇沃的苍空符文") == ("Saqawal's Rune of the Sky", True)
     assert tr.translate_rune("高階鍛鐵符文") == ("Greater Iron Rune", True)
     assert tr.translate_rune("埃曼纳姆的凝视") == ("Amanamu's Gaze", True)
-    # Unknown rune preserved verbatim with matched=False (never silently dropped)
     assert tr.translate_rune("未知测试符文") == ("未知测试符文", False)
 
 
@@ -411,19 +436,17 @@ def test_gem_disambiguation_prefers_regular_gem_over_item_granted_variant() -> N
             ]
         }
     )
-    # Real Gems.lua collision: Lightning Bolt vs UniqueBreachLightningBoltPlayer
     res_lb = tr.translate_gem("闪电", is_support=False)
     assert res_lb.candidate is not None
     assert res_lb.candidate.skill_id == "LightningBoltPlayer"
 
-    # Synthetic Coming Calamity collision: must choose regular HeraldOfIcePlayer
     res_hoi = tr.translate_gem("冰霜之捷", is_support=False)
     assert res_hoi.candidate is not None
     assert res_hoi.candidate.skill_id == "HeraldOfIcePlayer"
 
 
 # ---------------------------------------------------------------------------
-# 4. Full conversion: 5 pitfalls, PoE2 slots, WS1/WS2, PassiveJewel, quests, Shaman
+# 4. Full conversion: xml.lua literal newlines, WS1 default, slots, quests, Shaman
 # ---------------------------------------------------------------------------
 
 
@@ -435,7 +458,10 @@ def test_full_wegame_conversion_to_valid_pob2_xml() -> None:
     assert result.ascendancy_name == "Witchhunter"
     assert result.level == 94
 
-    # Must pass PoE2 XML guardrail & fail PoE1 XML guardrail
+    # PoE2/lua/xml.lua compatibility: NEVER emit &#10;; preserve literal newlines inside customMods string="..."
+    assert "&#10;" not in result.xml
+    assert 'name="customMods" string="+100 to Spirit\n+10% to Fire Resistance\n' in result.xml
+
     validate_build_xml(result.xml, expected_game="poe2")
     with pytest.raises(CrossGameHallucinationError):
         validate_build_xml(result.xml, expected_game="poe1")
@@ -443,7 +469,11 @@ def test_full_wegame_conversion_to_valid_pob2_xml() -> None:
     root = ET.fromstring(result.xml)
     assert root.tag == "PathOfBuilding2"
 
-    # Tree: WS1/WS2 + AttributeOverride + PassiveJewel_<4,12,16,17> exact table mapping
+    # PassiveJewel_<n> table invariant check (including 4/12/16/17 real-device slots)
+    assert (PASSIVE_JEWEL_SLOTS[4], PASSIVE_JEWEL_SLOTS[12], PASSIVE_JEWEL_SLOTS[16], PASSIVE_JEWEL_SLOTS[17]) == (
+        60735, 46882, 54127, 32763
+    )
+
     spec = root.find("./Tree/Spec")
     assert spec is not None
     assert spec.attrib["treeVersion"] == "0_5"
@@ -451,27 +481,24 @@ def test_full_wegame_conversion_to_valid_pob2_xml() -> None:
     assert spec.attrib["ascendancyInternalId"] == "Mercenary2"
     ws1 = spec.find("./WeaponSet1")
     ws2 = spec.find("./WeaponSet2")
-    assert ws1 is not None and ws1.attrib["nodes"] == "2001,2002"
-    assert ws2 is not None and ws2.attrib["nodes"] == "3001,3002"
+    assert ws1 is not None and ws1.attrib["nodes"] == "19330,45916"
+    assert ws2 is not None and ws2.attrib["nodes"] == "48006,55478"
 
     attr = spec.find("./Overrides/AttributeOverride")
     assert attr is not None
-    assert attr.attrib["strNodes"] == "1001"
-    assert attr.attrib["dexNodes"] == "1002"
-    assert attr.attrib["intNodes"] == "1003"
+    assert attr.attrib["strNodes"] == "42350"
+    assert attr.attrib["dexNodes"] == "61438"
+    assert attr.attrib["intNodes"] == "28510"
 
     socket_node_ids = [int(s.attrib["nodeId"]) for s in spec.findall("./Sockets/Socket")]
-    assert socket_node_ids == [
-        PASSIVE_JEWEL_SLOTS[4],
-        PASSIVE_JEWEL_SLOTS[12],
-        PASSIVE_JEWEL_SLOTS[16],
-        PASSIVE_JEWEL_SLOTS[17],
-    ]
-    assert socket_node_ids == [60735, 46882, 54127, 32763]
+    assert socket_node_ids == [PASSIVE_JEWEL_SLOTS[0], PASSIVE_JEWEL_SLOTS[16]]
+    assert socket_node_ids == [26725, 54127]
 
-    # Equipment slots: dual weapon sets, Flask 1..2, Charm 1..3, Incursion limbs
+    # useSecondWeaponSet MUST stay "false" so WS1 stays active while Swap slots remain populated
     items_el = root.find("./Items")
-    assert items_el is not None and items_el.attrib["useSecondWeaponSet"] == "true"
+    assert items_el is not None and items_el.attrib["useSecondWeaponSet"] == "false"
+    item_set_el = items_el.find("./ItemSet")
+    assert item_set_el is not None and item_set_el.attrib["useSecondWeaponSet"] == "false"
     slot_names = {s.attrib["name"] for s in items_el.findall("./ItemSet/Slot")}
     for expected_slot in (
         "Weapon 1", "Weapon 2", "Weapon 1 Swap", "Weapon 2 Swap",
@@ -481,8 +508,8 @@ def test_full_wegame_conversion_to_valid_pob2_xml() -> None:
     ):
         assert expected_slot in slot_names
 
-    # Item 1 (Weapon): runes, 8 mod tags with dedup, quality, non-Shaman strips Bonded line
-    weapon_text = (items_el.find("./Item[@id='1']").text or "")
+    weapon_text = items_el.find("./Item[@id='1']").text or ""
+    assert "Dualstring Bow" in weapon_text
     assert "Quality: 20" in weapon_text
     assert "Rune: Greater Glacial Rune" in weapon_text
     assert "Rune: Farrul's Rune of the Hunt" in weapon_text
@@ -495,17 +522,19 @@ def test_full_wegame_conversion_to_valid_pob2_xml() -> None:
     assert "Bonded:" not in weapon_text
     assert "羁绊" not in weapon_text
     assert "Corrupted" in weapon_text
-    # Ensure explicit mod wasn't duplicated when also listed in fracturedMods/craftedMods
     assert weapon_text.count("+120 to maximum Life") == 1
     assert weapon_text.count("+35% to Fire Resistance") == 1
 
-    # Catalyst quality full-width and half-width
     all_item_texts = "\n".join((el.text or "") for el in items_el.findall("./Item"))
     assert "Quality (Fire Modifiers): +40%" in all_item_texts
     assert "Quality (Life Modifiers): +20%" in all_item_texts
     assert "Rune: Saqawal's Rune of the Sky" in all_item_texts
+    assert "Broadhead Quiver" in all_item_texts
+    assert "Braced Tower Shield" in all_item_texts
+    assert "Guarding Arm" in all_item_texts
+    assert "Emerald" in all_item_texts
+    assert "Viridian Jewel" not in all_item_texts
 
-    # Skills: leading-int level & quality, regular Lightning Bolt chosen over Unique variant
     gems = root.findall("./Skills/SkillSet/Skill/Gem")
     gem_by_skill = {g.attrib["skillId"]: g for g in gems}
     assert "IceNovaPlayer" in gem_by_skill
@@ -515,7 +544,6 @@ def test_full_wegame_conversion_to_valid_pob2_xml() -> None:
     assert "LightningBoltPlayer" in gem_by_skill
     assert "UniqueBreachLightningBoltPlayer" not in gem_by_skill
 
-    # Quest config: all 17 defaults disabled; actual quest_stats in customMods; BrokenFace filtered
     cfg_inputs = {el.attrib["name"]: el.attrib for el in root.findall("./Config/ConfigSet/Input")}
     for k in DEFAULT_QUEST_BOOLEAN_KEYS:
         assert cfg_inputs[k].get("boolean") == "false"
@@ -528,8 +556,7 @@ def test_full_wegame_conversion_to_valid_pob2_xml() -> None:
     assert "毁面首领" not in custom_mods
     assert "BrokenFace" not in custom_mods
 
-    # Notes contain mandatory [import] warnings & checklist
-    notes_text = (root.find("./Notes").text or "")
+    notes_text = root.find("./Notes").text or ""
     assert "[import] Shaman-only Bonded rune modifier stripped" in notes_text
     assert "[import] Equipment-socketed jewels require manual review." in notes_text
     assert "[import] WeGame does not export skill weapon-set bindings" in notes_text
@@ -563,7 +590,6 @@ def test_cli_import_mounted_and_end_to_end(tmp_path: Path) -> None:
     bundle_file.write_text(json.dumps(bundle, ensure_ascii=False), encoding="utf-8")
     out_xml = tmp_path / "imported.xml"
 
-    # JSON output + XML file write
     res = runner.invoke(pob2_main, ["import", str(bundle_file), "--out", str(out_xml), "--json"])
     assert res.exit_code == 0, res.output
     data = json.loads(res.output)
@@ -574,12 +600,53 @@ def test_cli_import_mounted_and_end_to_end(tmp_path: Path) -> None:
     assert out_xml.is_file()
     validate_build_xml(out_xml.read_text(encoding="utf-8"), expected_game="poe2")
 
-    # PoE1 URL -> exit 1
     bad_url = runner.invoke(pob2_main, ["import", "https://poe.game.qq.com/character-window/get-items"])
     assert bad_url.exit_code == 1
 
-    # PoE1 XML file -> exit 1
     poe1_xml = tmp_path / "poe1_bad.xml"
     poe1_xml.write_text('<PathOfBuilding><Build className="Templar"/></PathOfBuilding>', encoding="utf-8")
     bad_xml = runner.invoke(pob2_main, ["import", str(poe1_xml)])
     assert bad_xml.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# 6. Live PoB2 engine E2E verification (runs when POB2_ENGINE_DIR is set)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native lua51.dll live PoB2 E2E test")
+def test_live_pob2_wegame_import_e2e_zero_drops_spirit_ws1_and_dps(tmp_path: Path) -> None:
+    eng_raw = os.environ.get("POB2_ENGINE_DIR", "").strip() or os.environ.get("POB2_ROOT", "").strip()
+    data_raw = os.environ.get("POB2_DATA_DIR", "").strip()
+    eng = Path(eng_raw) if eng_raw else None
+    data_dir = Path(data_raw) if data_raw else None
+    if eng is None or not updater.is_valid_engine_dir(eng, data_dir=data_dir):
+        pytest.skip("Set POB2_ENGINE_DIR to run live PoB2 WeGame XML E2E test.")
+
+    # Exercise live Data/poe2/zh-rCN/items.json ingestion too (must reject PoE1 Viridian Jewel!)
+    l10n_dir = data_dir if (data_dir and (data_dir / "zh-rCN").is_dir()) else (eng / "Data" / "poe2")
+    bundle = sanitize_wegame_responses(_make_raw_five_responses(class_name="猎巫人", double_escape_jewels=True))
+    result = convert_wegame_bundle_to_pob2_xml(bundle, data_dir=l10n_dir if l10n_dir.is_dir() else None)
+    assert "&#10;" not in result.xml
+    assert "Viridian Jewel" not in result.xml
+
+    worker = BridgeWorker(slot_name="wegame_e2e", pob_dir=eng, data_dir=data_dir, runtime_dir=tmp_path / "rt")
+    try:
+        worker.start()
+        code = bridge_protocol.encode_xml_share_code(result.xml)
+        imp = worker.call("import_code", {"code": code, "mode": "replace"})
+        dropped = imp.get("droppedItems") or []
+        assert dropped == [], f"Expected 0 dropped items in live PoB2, got: {dropped}"
+
+        probe = worker.call("agent_probe_build", {}, timeout=30.0)
+        ws_state = worker.call("get_weapon_set_state", {})
+        stats = worker.call("get_stats", {})["stats"]
+
+        spirit = float(probe["resourceSlack"]["spirit"])
+        assert spirit >= 100.0, f"Expected quest_stats +100 Spirit to apply, got spirit={spirit}"
+        assert probe["weaponSet"]["activeWeaponSet"] == 1
+        assert ws_state["weaponSet1Used"] == 2
+        assert ws_state["weaponSet2Used"] == 2
+        assert float(stats.get("CombinedDPS") or 0.0) > 0.0
+    finally:
+        worker.stop()
