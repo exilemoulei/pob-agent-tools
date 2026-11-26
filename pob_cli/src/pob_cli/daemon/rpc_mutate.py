@@ -336,6 +336,24 @@ def _h_sweep(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict
     )
 
 
+def _h_rebalance(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    from ..rebalance import solve_rebalance
+
+    ap_raw = params.get("apply_plan") if params.get("apply_plan") is not None else params.get("applyPlan")
+    ms_raw = params.get("max_steps") if params.get("max_steps") is not None else params.get("maxSteps", 3)
+    me_raw = params.get("max_evals") if params.get("max_evals") is not None else params.get("maxEvals", 24)
+    return solve_rebalance(
+        w,
+        try_item_raw=params.get("try_item_raw") or params.get("tryItemRaw") or params.get("raw"),
+        slot_name=params.get("slot") or params.get("slotName") or params.get("slot_name"),
+        max_steps=parse_int(ms_raw, "max_steps"),
+        max_evals=parse_int(me_raw, "max_evals"),
+        include_chaos=opt_bool(params, "include_chaos", "includeChaos", default=False),
+        include_suppression=opt_bool(params, "include_suppression", "includeSuppression", default=False),
+        apply_plan=parse_int(ap_raw, "apply_plan") if ap_raw is not None else None,
+    )
+
+
 MUTATE_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "switch_main": _h_switch_main,
     "new_build": _h_new_build,
@@ -356,4 +374,5 @@ MUTATE_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "config_set": _h_config_set,
     "batch": _h_batch,
     "sweep": _h_sweep,
+    "rebalance": _h_rebalance,
 }

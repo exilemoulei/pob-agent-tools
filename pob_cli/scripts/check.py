@@ -32,8 +32,8 @@ MIN_PASSED_TESTS = 905
 MAX_SKIPPED_TESTS = 25  # engine plus the legacy PobTools seed: the strict tier
 _MAX_SKIPPED_BOOTSTRAPPED = 34  # engine from `pob bootstrap`: Windows keeps POSIX-only + slim LUT + Py<3.12 skips
 _MAX_SKIPPED_NO_ENGINE = (
-    158 if sys.platform == "win32" else 132
-)  # engine-less skips (~125 real-engine + 24 POSIX-only on Win32 + headroom)
+    184 if sys.platform == "win32" else 158
+)  # engine-less skips (~149 real-engine + 25 POSIX-only on Win32 + headroom)
 
 
 def _engine_tier(repo_root: Path) -> tuple[str, int]:
