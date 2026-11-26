@@ -235,7 +235,8 @@ def test_rank_gems_caveats_and_zero_mana_inspiration_filter() -> None:
 
 
 def test_detect_coc_overspeed_awakened_cdr_and_cwc_non_cdr() -> None:
-    # A. CoC with 14% CDR (4t=132ms -> 7.58/s cap) and 8.50 APS -> HIGH TriggerOverspeed!
+    # A. CoC with 14% CDR (4t=132ms -> 7.58/s cap) and 8.50 APS -> TriggerOverspeed. Without the
+    # engine's agentProbes cross-check it is a Python-table estimate: MEDIUM and labelled as such.
     skills_coc = {
         "mainSocketGroup": 1,
         "groups": [
@@ -260,7 +261,9 @@ def test_detect_coc_overspeed_awakened_cdr_and_cwc_non_cdr() -> None:
         equipped_slots_raw=boots_14cdr,
         trigger_attack_aps=8.5,
     )
-    assert any(g["category"] == "TriggerOverspeed" and g["severity"] == "HIGH" for g in gaps_coc)
+    overspeed = [g for g in gaps_coc if g["category"] == "TriggerOverspeed"]
+    assert overspeed and all(g["severity"] == "MEDIUM" for g in overspeed)
+    assert all("estimate, not engine-verified" in g["message"] for g in overspeed)
     trigs = mech_coc.get("triggers") or []
     assert trigs and trigs[0]["cooldown"]["ticks"] == 4 and trigs[0]["cooldown"]["overspeed"] is True
 

@@ -485,12 +485,13 @@ def _active_item_lines(raw_text: str | None) -> list[str]:
 
 
 def _count_item_sockets(raw_text: str | None) -> int | None:
+    """Count gem sockets (R/G/B/W) on an item; abyssal (A) and Delve (D) sockets hold no gems."""
     if not raw_text:
         return None
     m = _ITEM_SOCKETS_RE.search(raw_text)
     if not m:
         return None
-    letters = re.findall(r"[RGBWADrgbwad]", m.group(1))
+    letters = re.findall(r"[RGBWrgbw]", m.group(1))
     return len(letters) if letters else None
 
 

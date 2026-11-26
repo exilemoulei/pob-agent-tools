@@ -16,7 +16,7 @@ from ..snapshot import (
     _safe_min_ele_max_hit,
     verify_build,
 )
-from .constants import _KEEP_KEYWORDS
+from .constants import _KEEP_KEYWORDS, POB_GEM_FLAG_DEFAULTS
 from .dewater_steps import (
     _dewater_config_and_custom_mods,
     _dewater_flasks,
@@ -234,7 +234,7 @@ def _extract_probe_state(probe: dict[str, Any], res: dict[str, Any]) -> Any:
                         if f == "mainActiveSkill":
                             state[f] = int(group.get("mainActiveSkill") or 1)
                         else:
-                            state[f] = bool(gem.get(f, f == "enabled"))
+                            state[f] = bool(gem.get(f, POB_GEM_FLAG_DEFAULTS.get(f, False)))
                     return state
         return None
     raise ValueError(f"unknown probe kind {kind!r}")

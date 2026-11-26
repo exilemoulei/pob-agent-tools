@@ -14,6 +14,7 @@ from .constants import (
     INFLATION_CONFIG_EXACT,
     INFLATION_CONFIG_PREFIXES,
     PERMANENT_CONFIG_VARS,
+    POB_GEM_FLAG_DEFAULTS,
     TEMPORARY_SKILL_PATTERNS,
 )
 from .summary import (
@@ -364,7 +365,7 @@ def _dewater_skills(
                 or "瓦尔" in combined_lower
             )
             is_temp = any(pat in combined_lower for pat in TEMPORARY_SKILL_PATTERNS)
-            original_vaal_g1 = bool(gem.get("enableGlobal1", False))
+            original_vaal_g1 = bool(gem.get("enableGlobal1", POB_GEM_FLAG_DEFAULTS["enableGlobal1"]))
             is_active_vaal = is_vaal and original_vaal_g1
 
             selected_main_is_vaal = False
@@ -417,7 +418,7 @@ def _dewater_skills(
                     }
                 )
             else:
-                original_base_enabled = bool(gem.get("enableGlobal2", True))
+                original_base_enabled = bool(gem.get("enableGlobal2", POB_GEM_FLAG_DEFAULTS["enableGlobal2"]))
                 dewater_calls: list[tuple[str, dict[str, Any]]] = [
                     ("set_gem", {**gem_ref, "enableGlobal1": False, "enableGlobal2": original_base_enabled})
                 ]

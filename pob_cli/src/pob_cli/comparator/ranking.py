@@ -224,6 +224,10 @@ def rank_nodes(
                 res = worker.call("node_power", {"stat": eff_stat, "maxDepth": max_dist}, timeout=120.0)
             else:
                 raise
+        if not isinstance(res, dict):
+            raise RuntimeError(f"node_power returned no result for stat {eff_stat}")
+        if res.get("error") or res.get("ok") is False:
+            raise RuntimeError(f"node_power failed ({eff_stat}): {res.get('error') or 'ok=false'}")
 
         report = res.get("report", [])
         equipped_weapons = _detect_equipped_weapon_types(worker)

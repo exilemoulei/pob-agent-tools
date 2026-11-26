@@ -28,9 +28,22 @@ local ALL_DIMS = {}
 for i, d in ipairs(CORE_DIMS) do ALL_DIMS[i] = d end
 ALL_DIMS[21], ALL_DIMS[22], ALL_DIMS[23], ALL_DIMS[24] = "fire_res", "cold_res", "light_res", "chaos_res"
 
-local function primary_dps(out)
+-- "MinionCombinedDPS" reads the minion output (output.Minion).
+local function dps_for_key(out, key, m_out)
+	if key == "FullDPS" then return out.FullDPS or 0 end
+	if key == "MinionCombinedDPS" then
+		local m = (type(out.Minion) == "table" and out.Minion) or m_out or {}
+		return m.CombinedDPS or m.TotalDPS or 0
+	end
+	return out[key] or out.CombinedDPS or out.TotalDPS or 0
+end
+
+local function primary_dps(out, m_out)
 	if (out.FullDPS or 0) > 0 then return out.FullDPS, "FullDPS" end
-	return out.CombinedDPS or out.TotalDPS or 0, "CombinedDPS"
+	local own = out.CombinedDPS or out.TotalDPS or 0
+	local m_dps = own <= 0 and dps_for_key(out, "MinionCombinedDPS", m_out) or 0
+	if m_dps > 0 then return m_dps, "MinionCombinedDPS" end
+	return own, "CombinedDPS"
 end
 
 local function sum_item_attr_res(item, slot_num, mod_db)
@@ -372,8 +385,9 @@ local function handle_eval_scenario_envelope(_params)
 			reset_cfg(sc.overlay)
 			set_flasks_guards(sc.flasks, sc.guards)
 			build.configTab:BuildModList()
-			local out = (calcs.buildOutput(build, "MAIN").player.output) or {}
-			local dps, dps_key = primary_dps(out)
+			local sc_env = calcs.buildOutput(build, "MAIN")
+			local out = (sc_env.player.output) or {}
+			local dps, dps_key = primary_dps(out, sc_env.minion and sc_env.minion.output)
 			out_scenarios[sc.name] = {
 				dps = dps, dpsKey = dps_key, combinedDps = out.CombinedDPS or 0, fullDps = out.FullDPS or 0,
 				totalEhp = out.TotalEHP or 0, physMaxHit = out.PhysicalMaximumHitTaken or 0,
@@ -447,6 +461,7 @@ local function handle_compute_grad_build(params)
 	local dims = params.includeResists == true and ALL_DIMS or CORE_DIMS
 	local t0 = now_ms()
 	local calc_func, calc_base = calcs.getMiscCalculator(build)
+	-- Base and probes read the calculator output alike.
 	local base_dps, dps_key = primary_dps(calc_base)
 	local target_stat = (type(params.stat) == "string" and params.stat ~= "") and params.stat or dps_key
 	local use_full_dps = (target_stat == "FullDPS") or (dps_key == "FullDPS")
@@ -457,8 +472,7 @@ local function handle_compute_grad_build(params)
 	for i, dim_name in ipairs(dims) do
 		local ml, unit = build_probe_mods(dim_name, is_minion)
 		local out = calc_func({ addNodes = { [{ id = 991000 + i, modList = ml }] = true } }, use_full_dps)
-		local new_dps = (dps_key == "FullDPS" and (out.FullDPS or 0))
-			or (out[dps_key] or out.CombinedDPS or out.TotalDPS or 0)
+		local new_dps = dps_for_key(out, dps_key)
 		local new_ehp = out.TotalEHP or 0
 		local new_stat = (target_stat == dps_key) and new_dps or (out[target_stat] or new_dps)
 		local rel_dps, rel_ehp = ((new_dps - base_dps) / unit) / safe_dps, ((new_ehp - base_ehp) / unit) / safe_ehp

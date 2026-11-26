@@ -292,12 +292,18 @@ def _check_defensive_and_reservation_synergies(
             if aura_names:
                 unequipped_aura_groups.append(f"Group #{g.get('index')} ({', '.join(aura_names)})")
         if unequipped_aura_groups:
+            has_spectre = any(
+                tok in nm
+                for nm in (ctx.get("all_active_non_swap_low") or ())
+                for tok in ("spectre", "幽魂", "灵体", "靈體")
+            )
+            signal = " (this build raises Spectres)" if has_spectre else ""
             sim_msg = (
                 f"[SIMULATED AURA RESERVATION] Unequipped (`slot: -`) reservation aura group(s) detected while "
-                f"Mana is over-reserved: {', '.join(unequipped_aura_groups)}. These are likely "
-                "Spectre/Party/Mercenary simulated auras whose reservation is erroneously charged to the player's "
-                "mana pool in PoB — check disabling them before blaming or cutting player defensive auras "
-                "(e.g. Petrified Blood)!"
+                f"Mana is over-reserved: {', '.join(unequipped_aura_groups)}. If a group stands for a "
+                f"Spectre/Party/Mercenary aura{signal}, PoB still charges its reservation to the player's mana pool "
+                "— disable it before blaming or cutting player defensive auras (e.g. Petrified Blood); "
+                "if it is a real player aura, the over-reservation is real."
             )
             core_synergies.append(sim_msg)
-            gaps.append({"category": "Sustain", "severity": "MEDIUM", "message": sim_msg})
+            gaps.append({"category": "Sustain", "severity": "MEDIUM" if has_spectre else "LOW", "message": sim_msg})

@@ -87,7 +87,8 @@ def _check_main_group_anti_synergies(ctx: dict[str, Any], gaps: list[dict[str, s
                 "severity": "HIGH",
                 "message": (
                     f"Dead Inspiration Support in 0-mana Group #{mg_idx} ({mg_slot or 'main'}): "
-                    "Inspiration Support in a 0-mana group generates 0 Inspiration Charges in live play — "
+                    "Inspiration Charges are gained only when supported skills spend mana on upfront costs, "
+                    "so a 0-mana main skill generates none unless another skill in this group spends mana — "
                     "PoB max-charge assumption is fake water! Spend mana on a linked/supported skill or swap support."
                 ),
             }
@@ -242,6 +243,7 @@ def _check_main_group_sockets_and_swap(ctx: dict[str, Any], gaps: list[dict[str,
                 )
 
         if mg_slot and mg_slot in raw_by_slot:
+            # Gem sockets only: abyssal (A) and Delve (D) sockets never hold gems.
             total_socks = _count_item_sockets(raw_by_slot[mg_slot])
             if total_socks is not None and total_socks >= 5:
                 used_socks = sum(

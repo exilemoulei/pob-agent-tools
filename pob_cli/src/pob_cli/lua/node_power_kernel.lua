@@ -237,6 +237,7 @@ local function handle_node_power(params)
 	local max_depth = tonumber(params.maxDepth or params.max_depth)
 	local saved_view = build.viewMode
 	local saved_depth = build.calcsTab.nodePowerMaxDepth
+	local saved_power_stat = build.calcsTab.powerStat
 	if power_stat.stat ~= "FullDPS" then
 		build.viewMode = "CALCS"
 	end
@@ -257,6 +258,7 @@ local function handle_node_power(params)
 	end)
 	build.viewMode = saved_view
 	build.calcsTab.nodePowerMaxDepth = saved_depth
+	build.calcsTab.powerStat = saved_power_stat
 	if not ok then
 		error(report_or_err, 0)
 	end

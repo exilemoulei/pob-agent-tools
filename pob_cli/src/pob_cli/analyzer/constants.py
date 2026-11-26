@@ -55,6 +55,10 @@ TEMPORARY_SKILL_PATTERNS = (
     "瓦尔裂隙",
 )
 
+# Gem flag values PoB assumes when a gem omits them: SkillsTab:Load reads
+# `enableGlobal1 = not attrib or attrib == "true"` and `enableGlobal2 = attrib == "true"`.
+POB_GEM_FLAG_DEFAULTS: dict[str, bool] = {"enabled": True, "enableGlobal1": True, "enableGlobal2": False}
+
 # PoB NewConfigSet truthy defaultState values (Modules/ConfigOptions.lua) for inflation-matching
 # vars. bridge.lua's list_config does not serialize defaultState/isDefault, and reset_config
 # restores these to their defaultState (a no-op when already at defaultState).

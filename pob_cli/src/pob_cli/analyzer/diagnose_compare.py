@@ -249,7 +249,14 @@ def _run_diagnose_rankings(
     top_gems: dict[str, Any] | None = None
     rank_errors: list[str] = []
     primary_key = str((audit.get("original") or {}).get("primaryDpsKey") or "CombinedDPS")
-    node_stat = "CombinedDPS" if primary_key in ("CombinedDPS", "TotalDPS", "TotalDotDPS", "FullDPS") else primary_key
+    # Nodes and gems rank on the same stat: node_power accepts FullDPS (rank_nodes falls back to
+    # CombinedDPS and reports `stat_fallback` if the engine's powerStatList lacks it).
+    if primary_key == "FullDPS":
+        node_stat = "FullDPS"
+    elif primary_key in ("CombinedDPS", "TotalDPS", "TotalDotDPS"):
+        node_stat = "CombinedDPS"
+    else:
+        node_stat = primary_key
     gem_field = "FullDPS" if primary_key == "FullDPS" else "CombinedDPS"
 
     def _exec_rankings(label: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:

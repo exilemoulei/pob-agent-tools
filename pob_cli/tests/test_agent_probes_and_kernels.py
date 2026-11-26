@@ -592,12 +592,16 @@ def test_p1_1_exclude_periodic_reactive_triggers_and_p1_2_cospri_dedup() -> None
     upgraded = deduplicate_trigger_gaps([stale_0_cdr], probe_cospri_1spell)
     assert len(upgraded) == 1
     assert "32% CDR" in upgraded[0]["message"] and "5.05/s" in upgraded[0]["message"]
+    # Confirmed by the engine probe: HIGH, no estimate label.
+    assert upgraded[0]["severity"] == "HIGH" and "not engine-verified" not in upgraded[0]["message"]
 
-    # Offline fallback (agent_probe=None) preserves pitfalls_triggers TriggerOverspeed
+    # Offline fallback (agent_probe=None) preserves pitfalls_triggers TriggerOverspeed, as an estimate
     w_offline = _CapsFakeWorker(omit_caps_attr=True)
     diag_offline = analyzer.diagnose_build(w_offline, no_rank=True)
     offline_overspeeds = [g for g in diag_offline["healthGaps"] if g["category"] == "TriggerOverspeed"]
     assert len(offline_overspeeds) == 1
+    assert offline_overspeeds[0]["severity"] == "MEDIUM"
+    assert "estimate, not engine-verified" in offline_overspeeds[0]["message"]
 
 
 def test_live_engine_p1_automation_cospri_and_auto_query_labels_constraints(
