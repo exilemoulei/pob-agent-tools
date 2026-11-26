@@ -297,10 +297,12 @@ def parse_xml_spec_snapshot(xml_text: str, spec_selector: str) -> dict[str, Any]
                 iid = int(iid_s) if iid_s.isdigit() else 0
                 sockets.append({"nodeId": int(nid_s), "itemId": iid if iid > 0 else None})
 
+    raw_cls = (sp.attrib.get("classId") or "").strip()
     return {
         "label": f"Spec #{matched['index']}: {matched['title']}",
         "specIndex": matched["index"],
         "title": matched["title"],
+        "classId": int(raw_cls) if raw_cls.isdigit() else None,
         "treeVersion": sp.attrib.get("treeVersion"),
         "allocatedNodes": alloc_ids,
         "masterySelections": mastery_sel,

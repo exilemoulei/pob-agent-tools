@@ -13,6 +13,7 @@ from .diagnose_compare_md import (
     _fmt_diagnose_fact_cards_and_upgrades,
     format_diagnose_compare_markdown,
 )
+from .notes_md import format_notes_markdown
 from .primitives import (
     _parse_numeric_or_none,
     fmt_delta,
@@ -368,6 +369,9 @@ def format_diagnose_markdown(res: dict[str, Any], *, compact: bool = False) -> s
     lines.extend(_fmt_diagnose_gaps_and_mechanics(res, compact=compact))
     lines.extend(_fmt_diagnose_skills_and_gear(res, compact=compact))
     lines.extend(_fmt_diagnose_fact_cards_and_upgrades(res, compact=compact))
+    notes_md = format_notes_markdown(res)
+    if notes_md:
+        lines.append("\n" + notes_md)
     if not compact:
         env = res.get("env") or {}
         slot = str(env.get("slot") or res.get("targetSlot") or "main").strip() or "main"

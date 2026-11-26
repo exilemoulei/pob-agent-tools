@@ -28,6 +28,23 @@ def format_tree_diff_markdown(res: dict[str, Any]) -> str:
         f"### Passive Tree Diff: `{lbl_a}` -> `{lbl_b}`",
         f"- **Points**: `{pts_a}` -> `{pts_b}` (`{pts_delta:+d}` pts | `{s.get('sharedPoints', 0)}` shared)",
     ]
+    rg = res.get("respecGold") if isinstance(res.get("respecGold"), dict) else None
+    if rg and rg.get("estimatedGoldRespecTotal") is not None:
+        reg_n = int(rg.get("deallocatedRegularCount") or 0)
+        asc_n = int(rg.get("deallocatedAscendancyCount") or 0)
+        tot_g = int(rg["estimatedGoldRespecTotal"])
+        per_g = int(rg.get("goldPerPoint") or 0)
+        lv = rg.get("characterLevel")
+        if reg_n > 0 or asc_n > 0:
+            parts = []
+            if reg_n > 0:
+                parts.append(f"{reg_n} regular x {per_g:,}")
+            if asc_n > 0:
+                mult = int(rg.get("ascendancyMultiplier") or 5)
+                parts.append(f"{asc_n} ascendancy x {per_g * mult:,}")
+            lines.append(f"- **Estimated Respec Cost** (Lv.{lv}): `{tot_g:,} Gold` ({' + '.join(parts)})")
+        else:
+            lines.append(f"- **Estimated Respec Cost** (Lv.{lv}): `0 Gold` (no nodes refunded)")
 
     # 1. Ascendancy / Bloodline summary
     asc_add = s.get("ascendancyAdded") or []

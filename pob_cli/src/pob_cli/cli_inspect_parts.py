@@ -405,6 +405,8 @@ _DIAGNOSE_JSON_KEYS: dict[str, tuple[str, ...]] = {
         "dewateredPinnacle",
         "inflationStripped",
         "topWaterSources",
+        "notes",
+        "notesMeta",
     ),
     "gaps": ("healthGaps", "thresholdProbes", "core_synergies", "buildMechanics", "agentProbe", "socketSummary"),
     "items": ("equippedItems",),
@@ -438,8 +440,17 @@ def _slice_diagnose_json(res: dict[str, Any], section: str) -> dict[str, Any]:
 def _slice_diagnose_markdown(full_md: str, section: str) -> str:
     if section == "all":
         return full_md
-    parts = full_md.split("\n#### ")
-    if len(parts) <= 1:
+    notes_marker = "\n#### Author Notes (作者备注)"
+    notes_block = ""
+    body_md = full_md
+    if notes_marker in full_md:
+        body_md, rest = full_md.split(notes_marker, 1)
+        tip_marker = "\n\n_Tip: run `"
+        if tip_marker in rest:
+            rest, _ = rest.split(tip_marker, 1)
+        notes_block = "#### Author Notes (作者备注)" + rest
+    parts = body_md.split("\n#### ")
+    if len(parts) <= 1 and not notes_block:
         return full_md
     preamble = parts[0]
     if section == "summary":
@@ -465,6 +476,8 @@ def _slice_diagnose_markdown(full_md: str, section: str) -> str:
         )
         if keep_sec:
             matched.append("#### " + raw_sec)
+    if section == "summary" and notes_block:
+        matched.append(notes_block)
     if not matched:
         return f"{header}\n\n_(no {section} entries)_"
     return header + "\n\n" + "\n\n".join(matched)

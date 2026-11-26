@@ -150,6 +150,7 @@ def cmd_load(
     from .daemon import emit_stderr_update_alert
     from .errors import CrossGameHallucinationError
     from .formatters import format_bilingual, render_table, strip_pob_escapes
+    from .formatters.notes_md import format_notes_markdown
     from .formatters.tree_diff_md import format_progression_stages_markdown
     from .updater import load_update_state
 
@@ -233,6 +234,9 @@ def cmd_load(
     )
     if stages_md:
         body = body + "\n" + stages_md
+    notes_md = format_notes_markdown(res)
+    if notes_md:
+        body = body + "\n\n" + notes_md
     extra_notes = [str(n) for n in (res.get("importNotes") or []) if n]
     extra_warns = [str(w) for w in (res.get("translateWarnings") or []) if w]
     if extra_notes or extra_warns:

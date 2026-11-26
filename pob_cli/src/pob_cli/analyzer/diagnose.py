@@ -27,6 +27,7 @@ from .diagnose_probes import (
     detect_volatile_vaal_opportunity,
 )
 from .inspectors import inspect_items
+from .notes import fetch_build_notes
 from .pitfalls_core import _detect_build_mechanics_and_pitfalls
 from .pitfalls_triggers import deduplicate_trigger_gaps
 from .summary import _is_tincture_item, extract_summary
@@ -364,14 +365,10 @@ def diagnose_build(
     with worker.lock:
         all_skills_res, cfg_res_diag, items_raw_res, tree_state_diag = _call_batch(
             worker,
-            [
-                ("list_skills", {}),
-                ("list_config", {}),
-                ("list_items", {}),
-                ("get_tree_state", {}),
-            ],
+            [("list_skills", {}), ("list_config", {}), ("list_items", {}), ("get_tree_state", {})],
             raise_on_error=False,
         )
+        notes_payload = fetch_build_notes(worker)
     if not isinstance(all_skills_res, dict) or all_skills_res.get("_error"):
         all_skills_res = {"groups": [summary["mainGroup"]] if summary.get("mainGroup") else []}
     if not isinstance(cfg_res_diag, dict) or cfg_res_diag.get("_error"):
@@ -514,6 +511,7 @@ def diagnose_build(
         "topGems": top_gems,
         "rankErrors": rank_errors,
         "restoreCheck": audit.get("restoreCheck"),
+        **notes_payload,
     }
     if build_mechanics.get("agentProbe") is not None:
         out_diag["agentProbe"] = build_mechanics["agentProbe"]

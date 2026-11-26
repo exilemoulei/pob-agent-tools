@@ -132,4 +132,7 @@ def load_build(
         tx.commit_load(load_source_label(source, out.get("character")))
         if tx.history.persist_warning:
             out["persistWarning"] = tx.history.persist_warning
+        from ..analyzer.notes import fetch_build_notes
+
+        out.update(fetch_build_notes(worker))
         return out

@@ -9,6 +9,7 @@ from typing import Any
 
 from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
+from ..game_data.respec_gold import estimate_respec_gold
 from ..game_data.tree_graph import PassiveGraph, build_passive_graph
 from ..importers import share_code_to_xml
 from ..importers_stages import parse_xml_spec_snapshot
@@ -181,6 +182,8 @@ def _diff_snapshots(
     snap_a: dict[str, Any],
     snap_b: dict[str, Any],
     nodes_db: dict[str, Any],
+    *,
+    include_respec_gold: bool = True,
 ) -> dict[str, Any]:
     """Compute structured 5-section passive tree diff between snapshot A (`current`) and snapshot B (`ref`)."""
     alloc_a = {int(x) for x in snap_a.get("allocatedNodes", [])}
@@ -206,6 +209,20 @@ def _diff_snapshots(
         "ascendancyAdded": [_node_record(nodes_db, n) for n in sorted(asc_b - asc_a)],
         "ascendancyRemoved": [_node_record(nodes_db, n) for n in sorted(asc_a - asc_b)],
     }
+    respec_gold: dict[str, Any] | None = None
+    if include_respec_gold:
+        cls_a, cls_b = snap_a.get("classId"), snap_b.get("classId")
+        same_class = (cls_a is None or cls_b is None or int(cls_a) == int(cls_b))
+        if same_class:
+            dealloc_reg = [n for n in (main_a - main_b) if n < 65536]
+            dealloc_asc = [n for n in (asc_a - asc_b) if n < 65536]
+            est = estimate_respec_gold(
+                snap_a.get("characterLevel"),
+                regular_nodes=len(dealloc_reg),
+                ascendancy_nodes=len(dealloc_asc),
+            )
+            if est.get("estimatedGoldRespecTotal") is not None:
+                respec_gold = est
 
     # 2. Keystones
     ks_a = {n for n in main_a if base_graph.node_type(n) == "Keystone"}
@@ -342,6 +359,7 @@ def _diff_snapshots(
 
     return {
         "summary": summary,
+        "respecGold": respec_gold,
         "keystones": keystones,
         "wheels": wheels_diff,
         "masteries": masteries_diff,
@@ -361,11 +379,15 @@ def _capture_worker_tree_snapshot(worker: BridgeWorker, label: str) -> tuple[dic
         # Extract masterySelections from XML if available for exact <nodeId>:<effectId>.
         # Propagate BridgeError from RPC; only swallow XML decode/parse failures.
         xml_masteries: dict[int, int] = {}
+        char_level: int | None = None
         exp = worker.call("export_code", {})
         if isinstance(exp, dict) and exp.get("code"):
             try:
                 xml_txt = share_code_to_xml(str(exp["code"]))
                 root = ET.fromstring(xml_txt.lstrip("\ufeff"))
+                build_el = root.find("Build")
+                if build_el is not None and (build_el.attrib.get("level") or "").isdigit():
+                    char_level = int(build_el.attrib["level"])
                 tree_el = root.find("Tree")
                 if tree_el is not None:
                     a_idx = max(1, int(tree_el.attrib.get("activeSpec", "1") or "1"))
@@ -376,9 +398,17 @@ def _capture_worker_tree_snapshot(worker: BridgeWorker, label: str) -> tuple[dic
                             xml_masteries[int(m.group(1))] = int(m.group(2))
             except (ValueError, KeyError, TypeError, ET.ParseError):
                 pass
+        if char_level is None:
+            try:
+                info = worker.call("get_build_info", {})
+                if isinstance(info, dict) and info.get("level") is not None:
+                    char_level = int(info["level"])
+            except Exception:
+                pass
         snap = {
             **ts,
             "label": label,
+            "characterLevel": char_level,
             "itemsRes": items_res,
             "masterySelections": xml_masteries,
         }
@@ -396,7 +426,7 @@ def diff_tree_slots(
     snap_a, nodes_db = _capture_worker_tree_snapshot(main_worker, label_a)
     snap_b, nodes_db_b = _capture_worker_tree_snapshot(ref_worker, label_b)
     merged_db = {**nodes_db_b, **nodes_db}
-    res = _diff_snapshots(snap_a, snap_b, merged_db)
+    res = _diff_snapshots(snap_a, snap_b, merged_db, include_respec_gold=False)
     res["mode"] = "slots"
     return res
 
@@ -420,6 +450,22 @@ def diff_tree_specs(
             xml_str = share_code_to_xml(str(code_res.get("code") or ""))
         snap_a = parse_xml_spec_snapshot(xml_str, spec_a)
         snap_b = parse_xml_spec_snapshot(xml_str, spec_b)
+        char_level: int | None = None
+        try:
+            b_el = ET.fromstring(xml_str.lstrip("\ufeff")).find("Build")
+            if b_el is not None and (b_el.attrib.get("level") or "").isdigit():
+                char_level = int(b_el.attrib["level"])
+        except (ValueError, ET.ParseError):
+            pass
+        if char_level is None:
+            try:
+                info = worker.call("get_build_info", {})
+                if isinstance(info, dict) and info.get("level") is not None:
+                    char_level = int(info["level"])
+            except Exception:
+                pass
+        snap_a["characterLevel"] = char_level
+        snap_b["characterLevel"] = char_level
         tv = snap_a.get("treeVersion") or snap_b.get("treeVersion")
         nodes_db = worker.get_cached_tree_data(tv).get("nodes", {})
     # Populate default socket entries from nodes_db so enrich_tree_sockets classifies sockets accurately.

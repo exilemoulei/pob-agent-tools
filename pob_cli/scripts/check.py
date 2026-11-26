@@ -30,7 +30,7 @@ MIN_PASSED_TESTS = 905
 # no gate: the defaults follow the tier this machine is actually in, and `engine.yml` still passes
 # explicit counts so CI keeps an exact ratchet.
 MAX_SKIPPED_TESTS = 25  # engine plus the legacy PobTools seed: the strict tier
-_MAX_SKIPPED_BOOTSTRAPPED = 32  # engine from `pob bootstrap`: Windows keeps POSIX-only + slim LUT skips
+_MAX_SKIPPED_BOOTSTRAPPED = 34  # engine from `pob bootstrap`: Windows keeps POSIX-only + slim LUT + Py<3.12 skips
 _MAX_SKIPPED_NO_ENGINE = 120  # no engine at all: every real-engine test skips
 
 

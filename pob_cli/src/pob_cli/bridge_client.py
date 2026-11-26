@@ -527,6 +527,10 @@ class BridgeWorker:
         with self._lock:
             return apply_worker_locale(self, norm)
 
+    def get_notes(self) -> dict[str, Any]:
+        """Read build author notes via PoB's `get_notes` RPC."""
+        return self.call("get_notes", {})
+
     def get_cached_tree_data(self, tree_version: str | None = None) -> dict[str, Any]:
         """Fetch and cache static tree_data for the active tree version."""
         with self._lock:
