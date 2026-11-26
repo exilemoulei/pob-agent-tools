@@ -227,3 +227,10 @@ def test_tw_realm_league_mapping_unmapped_fields_and_untruncated_default_shards(
     assert single_q["stats"][0]["filters"] == [
         {"id": "explicit.pseudo_timeless_jewel_ahuana", "value": {"min": 10000, "max": 10000}}
     ]
+
+
+def test_tw_realm_unmapped_ascii_league_emits_warning_entry() -> None:
+    res = _fake_search_result(jewel="Glorious Vanity", conqueror="Mazcotl", seed_count=2)
+    plan = build_timeless_trade_plan(res, league="FutureUnmappedLeague", realm="tw", status="securable")
+    assert plan["league"] == "FutureUnmappedLeague"
+    assert {"field": "league", "value": "FutureUnmappedLeague"} in plan["unmappedTwFields"]

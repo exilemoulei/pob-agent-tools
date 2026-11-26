@@ -551,7 +551,7 @@ def test_trade_search_pob_on_exits_6_on_daemon_errors(
             return [sample_row]
 
     monkeypatch.setattr(cli_trade, "load_trade_stats", lambda *a, **k: (sample_stats, "mock_local"))
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *a, **k: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *a, **k: ("Covens", None))
     monkeypatch.setattr(cli_trade, "TradeClient", _FakeClient)
     monkeypatch.setattr(daemon, "call_daemon", _raising(exc))
     monkeypatch.setattr(cli_trade, "call_daemon", _raising(exc))
@@ -886,7 +886,7 @@ def test_verify_candidates_batch_propagates_bootstrap_missing_error(
 
     boot_exc = BootstrapMissingError("engine missing", update_status={"state": "bootstrap_missing"})
     monkeypatch.setattr(cli_trade, "load_trade_stats", lambda *a, **k: (sample_stats, "mock_local"))
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *a, **k: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *a, **k: ("Covens", None))
     monkeypatch.setattr(cli_trade, "TradeClient", _FakeClient)
     monkeypatch.setattr(daemon, "call_daemon", _raising(boot_exc))
     monkeypatch.setattr(cli_trade, "call_daemon", _raising(boot_exc))

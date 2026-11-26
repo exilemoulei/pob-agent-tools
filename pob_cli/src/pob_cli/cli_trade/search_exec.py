@@ -13,7 +13,13 @@ from ..cli_common import _emit_json
 from ..errors import BootstrapMissingError, CrossGameHallucinationError
 from ..guardrails import GuardrailScope, check_input, validate_url
 from ..locale_cfg import current_realm
-from ..trade_client import TradeError, localize_query_for_tw, seller_url, unmapped_tw_ascii_fields
+from ..trade_client import (
+    TradeError,
+    extract_listing_trade_meta,
+    localize_query_for_tw,
+    seller_url,
+    unmapped_tw_ascii_fields,
+)
 from ..trade_eval import Candidate, compare_items, score_deltas, verify_candidates_batch
 from ..trade_item import (
     build_english_item_text,
@@ -36,7 +42,6 @@ from .common import (
     _conversion_payload,
     _err_utf8,
     _is_known_slot,
-    _listing_trade_meta,
     _price_of,
     _trade_error,
     _weighted_sum_of,
@@ -152,7 +157,10 @@ def _build_candidates_from_rows(
 
         deltas = compare_items(current, item, weights=weight_map, preferred=preferred)
         amount, price_currency = _price_of(row)
-        trade_mode, gold_fee, price_type = _listing_trade_meta(row)
+        listing_meta = extract_listing_trade_meta(row)
+        trade_mode = listing_meta["tradeMode"]
+        gold_fee = listing_meta["goldFee"]
+        price_type = listing_meta["priceType"]
         candidate = Candidate(
             raw=row,
             item=item,
@@ -434,12 +442,13 @@ def _execute_trade_api_query(
             "realm": eff_realm,
         }
         try:
-            league_name = _ct._resolve_league(league, **resolve_kw)
+            league_name, league_warning = _ct.resolve_trade_league(league, **resolve_kw)
         except TradeError as exc:
             _trade_error(ctx, exc)
             return None
-        league_warning = getattr(client, "league_warning", None)
-        league_warning = league_warning if isinstance(league_warning, str) and league_warning else None
+        if not league_warning:
+            client_warn = getattr(client, "league_warning", None)
+            league_warning = client_warn if isinstance(client_warn, str) and client_warn else None
         if league_warning:
             _err_utf8(f"Warning: {league_warning}")
         try:

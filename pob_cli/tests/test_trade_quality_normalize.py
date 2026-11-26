@@ -48,7 +48,7 @@ def _encode_xml(xml_str: str) -> str:
 
 def test_cli_normalize_quality_flag_wiring_and_unmodified_item_text(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_trade, "load_trade_stats", _mock_trade_stats)
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Covens", None))
 
     row = {
         "id": "chest_0q",

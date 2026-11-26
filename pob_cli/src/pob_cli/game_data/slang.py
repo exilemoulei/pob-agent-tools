@@ -62,7 +62,48 @@ PLAYER_SLANG_MAP: dict[str, tuple[str, str]] = {
     "闪耀精华": ("Coruscating Elixir", "unique"),
     "玫瑰杖": ("Legacy of the Rose", "unique"),
     "玫瑰遗产": ("Legacy of the Rose", "unique"),
+    "苦难杖": ("Cane of Kulemak", "unique"),
+    "库勒马克之杖": ("Cane of Kulemak", "unique"),
+    "库勒马克的苦难": ("Cane of Kulemak", "unique"),
+    "恶魔头": ("Archdemon Crown", "base"),
+    "大恶魔之冠": ("Archdemon Crown", "base"),
+    "崇高愿景": ("Sublime Vision", "unique"),
+    "希望之线": ("Thread of Hope", "unique"),
+    "不可能的逃脱": ("Impossible Escape", "unique"),
+    "禁断之肉": ("Forbidden Flesh", "unique"),
+    "禁断之炎": ("Forbidden Flame", "unique"),
+    "守望之眼": ("Watcher's Eye", "unique"),
+    "三相珠宝": ("Watcher's Eye", "unique"),
+    "三相": ("Watcher's Eye", "unique"),
+    "意义之光": ("The Light of Meaning", "unique"),
+    "光彩夺目": ("Glorious Vanity", "unique"),
+    "致命的骄傲": ("Lethal Pride", "unique"),
+    "残酷的约束": ("Brutal Restraint", "unique"),
+    "军事信仰": ("Militant Faith", "unique"),
+    "优雅的狂妄": ("Elegant Hubris", "unique"),
+    "瓶中信仰": ("Bottled Faith", "unique"),
+    "逝日": ("Dying Sun", "unique"),
+    "消逝之光": ("Dying Sun", "unique"),
+    "始源之源": ("Progenesis", "unique"),
+    "血肉药剂": ("Progenesis", "unique"),
+    "女王水": ("Atziri's Promise", "unique"),
+    "鲁米": ("Rumi's Concoction", "unique"),
+    "鲁米的灵药": ("Rumi's Concoction", "unique"),
+    "狮吼": ("Lion's Roar", "unique"),
+    "卡兰德之触": ("Kalandra's Touch", "unique"),
+    "魔暴之痕": ("Void Battery", "unique"),
+    "虚空电池": ("Void Battery", "unique"),
+    "无常之躯": ("Inpulsa's Broken Heart", "unique"),
+    "爆甲": ("Inpulsa's Broken Heart", "unique"),
+    "深渊头": ("Abyssus", "unique"),
+    "多里亚尼的原型": ("Doryani's Prototype", "unique"),
+    "电穿甲": ("Doryani's Prototype", "unique"),
     # Popular Skill & Support Gems
+    "离心电能": ("Lightning Tendrils of Eccentricity", "gem"),
+    "离心闪电卷须": ("Lightning Tendrils of Eccentricity", "gem"),
+    "觉醒启蒙": ("Awakened Enlighten Support", "gem"),
+    "觉醒赋予": ("Awakened Empower Support", "gem"),
+    "觉醒增幅": ("Awakened Enhance Support", "gem"),
     "吟唱时施放": ("Cast while Channelling", "gem"),
     "引导时施放": ("Cast while Channelling", "gem"),
     "暴击时施放": ("Cast On Critical Strike", "gem"),
@@ -148,6 +189,7 @@ PLAYER_SLANG_MAP: dict[str, tuple[str, str]] = {
 }
 
 _SLANG_SORTED_KEYS: tuple[str, ...] = tuple(sorted(PLAYER_SLANG_MAP.keys(), key=len, reverse=True))
+_SLANG_FOLDED_MAP: dict[str, tuple[str, str]] = {_fold_search_text(k): v for k, v in PLAYER_SLANG_MAP.items()}
 
 _GROUND_EN_STOPWORDS: frozenset[str] = frozenset(
     {
@@ -184,7 +226,7 @@ _GROUND_ZH_STOPWORDS: frozenset[str] = frozenset(
 
 
 def resolve_player_slang(query: str) -> tuple[str, str] | None:
-    """Resolve a PoE1 CN player slang term (exact match) into `(canonical_en, kind_hint)`."""
+    """Resolve a PoE1 CN/TW player slang term (exact or folded match) into `(canonical_en, kind_hint)`."""
     if not query:
         return None
     q = query.strip()
@@ -192,4 +234,4 @@ def resolve_player_slang(query: str) -> tuple[str, str] | None:
     if hit is not None:
         return hit
     q_low = _fold_search_text(q)
-    return PLAYER_SLANG_MAP.get(q_low)
+    return PLAYER_SLANG_MAP.get(q_low) or _SLANG_FOLDED_MAP.get(q_low)

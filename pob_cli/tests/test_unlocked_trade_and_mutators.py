@@ -193,7 +193,7 @@ def test_trade_search_surrogate_k_forwards_prefilter_k_and_raises_default_fetch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(cli_trade, "load_trade_stats", lambda *_a, **_kw: (MOCK_STATS, "mock"))
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Keepers")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Keepers", None))
 
     all_rows = {
         f"id_{i}": {

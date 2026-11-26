@@ -704,7 +704,7 @@ def test_surrogate_k_plus_pob_limit_slicing_and_cow_restore_no_rebuild(monkeypat
     # End-to-end CLI -> rpc_handlers._h_trade_eval_items -> eval_trade_items with --surrogate-k 50 --pob-limit 3
     mock_stats = [{"id": "explicit.stat_3299347043", "text": "+# to maximum Life", "type": "explicit"}]
     monkeypatch.setattr(cli_trade, "load_trade_stats", lambda *_a, **_kw: (mock_stats, "mock"))
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Keepers")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Keepers", None))
 
     # Give low indices high price/irrelevant order, high indices (50..54) highest Life so surrogate picks 54, 53, 52
     rows_by_id = {

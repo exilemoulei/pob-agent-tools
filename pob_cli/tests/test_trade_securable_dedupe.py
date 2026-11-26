@@ -12,9 +12,9 @@ from click.testing import CliRunner
 
 from pob_cli import cli_trade
 from pob_cli.cli import main
-from pob_cli.cli_trade.common import _listing_trade_meta
 from pob_cli.cli_trade.fresh_bargain import _market_chaos
 from pob_cli.trade_client import NoResults, TradeClient
+from pob_cli.trade_client.league_meta import extract_listing_trade_meta
 from pob_cli.trade_eval import (
     Candidate,
     compute_price_floor_note,
@@ -135,25 +135,30 @@ def test_no_results_reflects_queried_status() -> None:
             client.search("Covens", {"query": {"status": {"option": "securable"}}})
 
 
+def _meta_tuple(row: dict[str, Any]) -> tuple[str, int | None, str | None]:
+    meta = extract_listing_trade_meta(row)
+    return meta["tradeMode"], meta["goldFee"], meta["priceType"]
+
+
 def test_cookie_invariant_buyout_detection() -> None:
     # Anonymous Merchant's Tab listing: fee present, no hideout_token
-    assert _listing_trade_meta(_row("a", amount=2, fee=2280)) == ("securable", 2280, "~b/o")
+    assert _meta_tuple(_row("a", amount=2, fee=2280)) == ("securable", 2280, "~b/o")
     # Online Merchant's Tab listing with both fee and whisper
-    assert _listing_trade_meta(_row("b", amount=2, fee=2280, whisper="@s hi")) == ("securable", 2280, "~b/o")
+    assert _meta_tuple(_row("b", amount=2, fee=2280, whisper="@s hi")) == ("securable", 2280, "~b/o")
     # Guard: fee == 0 alongside whisper is treated as in_person (not instant buyout)
-    assert _listing_trade_meta(_row("b0", amount=2, fee=0, whisper="@seller hi")) == ("in_person", None, "~b/o")
+    assert _meta_tuple(_row("b0", amount=2, fee=0, whisper="@seller hi")) == ("in_person", None, "~b/o")
     # Guard: fee == 0 with hideout_token still counts as securable
-    assert _listing_trade_meta(_row("b1", amount=2, fee=0, hideout_token="tok")) == ("securable", 0, "~b/o")
+    assert _meta_tuple(_row("b1", amount=2, fee=0, hideout_token="tok")) == ("securable", 0, "~b/o")
     # Cookie listing with hideout_token only
-    assert _listing_trade_meta(_row("c", amount=5, hideout_token="tok_123", price_type="~price")) == (
+    assert _meta_tuple(_row("c", amount=5, hideout_token="tok_123", price_type="~price")) == (
         "securable",
         None,
         "~price",
     )
     # Traditional whisper listing (never carries fee)
-    assert _listing_trade_meta(_row("d", amount=1, whisper="@s hi")) == ("in_person", None, "~b/o")
+    assert _meta_tuple(_row("d", amount=1, whisper="@s hi")) == ("in_person", None, "~b/o")
     # Malformed boolean fee is ignored
-    assert _listing_trade_meta(_row("e", amount=1, fee=True)) == ("in_person", None, "~b/o")
+    assert _meta_tuple(_row("e", amount=1, fee=True)) == ("in_person", None, "~b/o")
 
 
 @pytest.mark.parametrize(
@@ -239,7 +244,7 @@ def test_market_chaos_one_seller_one_vote_and_securable_denoising() -> None:
 
 def test_candidate_dedupe_clones_and_max_per_seller_before_pob(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_trade, "load_trade_stats", _mock_trade_stats)
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Covens", None))
     monkeypatch.setattr(cli_trade, "_chaos_rates", lambda *_a, **_kw: {"chaos": 1.0})
 
     # Spammer has 3 identical clones + 3 more distinct items; Legit has 2 distinct items

@@ -33,6 +33,10 @@ from .client import (
 from .client import (
     _read_stats_cache as _read_stats_cache,
 )
+from .league_meta import (
+    extract_listing_trade_meta,
+    resolve_trade_league,
+)
 from .ratelimit import TradeRateLimiter
 from .tw_names import (
     clear_tw_name_cache,
@@ -131,9 +135,11 @@ __all__ = [
     "_env_cookie",
     "_make_httpx_client",
     "clear_tw_name_cache",
+    "extract_listing_trade_meta",
     "localize_query_for_tw",
     "map_tw_league",
     "redact",
+    "resolve_trade_league",
     "seller_url",
     "tempfile",
     "to_tw_trade_name",

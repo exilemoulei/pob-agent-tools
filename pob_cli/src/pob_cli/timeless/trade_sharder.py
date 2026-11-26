@@ -379,6 +379,13 @@ def build_timeless_trade_plan(
         if (eff_realm == "tw" and shards)
         else []
     )
+    if (
+        eff_realm == "tw"
+        and eff_league
+        and eff_league.isascii()
+        and any(c.isalpha() for c in eff_league)
+    ):
+        unmapped_tw.append({"field": "league", "value": eff_league})
     return {
         "jewel": canon_jewel, "baseType": base_type, "conqueror": "any" if is_any_req else (conqueror_names[0] if conqueror_names else ""),
         "conquerors": conqueror_names, "conquerorStatIds": stat_ids,

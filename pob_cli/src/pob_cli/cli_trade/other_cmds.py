@@ -13,7 +13,12 @@ from ..guardrails import GuardrailScope, check_input, check_input_item_raw, vali
 from ..locale_cfg import current_realm, trade_base_url_for_realm
 from ..trade_client import TradeError
 from ..trade_item import convert_item_text
-from ..trade_query import get_stat_polarity_info, resolve_stat, suggest_stats
+from ..trade_query import (
+    aura_disambiguation_for_query,
+    get_stat_polarity_info,
+    resolve_stat,
+    suggest_stats,
+)
 from .common import SLOT_HINT, TradeUsageGroup, _echo_utf8, _err_utf8, _trade_error
 
 
@@ -140,21 +145,29 @@ def cmd_trade_stats(
 
     match = resolve_stat(text, entries, slot=slot)
     suggestions = suggest_stats(text, entries, limit=limit, slot=slot)
+    disambig_cands: list[dict[str, object]] = list(match.disambiguation_candidates) if (match and match.disambiguation_candidates) else []
+    disambig_aura: str | None = match.disambiguation_aura if (match and match.disambiguation_candidates) else None
+    if match is None and not disambig_cands:
+        fb_aura, fb_cands = aura_disambiguation_for_query(text, entries)
+        if fb_cands:
+            disambig_aura = fb_aura
+            disambig_cands = list(fb_cands)
     if as_json:
-        payload = {
+        match_obj: dict[str, object] | None = None
+        if match:
+            match_obj = {
+                "id": match.id,
+                "text": match.text,
+                "score": match.score,
+                **_polarity_json(match.id),
+            }
+            if disambig_cands:
+                match_obj["disambiguationCandidates"] = disambig_cands
+        payload: dict[str, object] = {
             "query": text,
             "slot": slot,
             "source": source,
-            "match": (
-                {
-                    "id": match.id,
-                    "text": match.text,
-                    "score": match.score,
-                    **_polarity_json(match.id),
-                }
-                if match
-                else None
-            ),
+            "match": match_obj,
             "suggestions": [
                 {
                     "id": item.id,
@@ -165,6 +178,12 @@ def cmd_trade_stats(
                 for item in suggestions
             ],
         }
+        if disambig_cands:
+            payload["disambiguationCandidates"] = disambig_cands
+            payload["disambiguationWarning"] = (
+                f"Ambiguous aura modifier ({disambig_aura}); "
+                "specify which sibling stat you want from disambiguationCandidates."
+            )
         _emit_json(payload, compact=compact, out_path=out_path, sanitize=True)
     else:
         from ..guardrails import get_active_warnings
@@ -177,6 +196,11 @@ def cmd_trade_stats(
             )
         else:
             lines.append(f"No confident match for `{text}` (source: `{source}`).")
+        if disambig_cands:
+            sibs = "; ".join(f"`{c['text']}` ({c['id']})" for c in disambig_cands[:5])
+            lines.append(
+                f"> [DISAMBIGUATE] Aura query (`{disambig_aura}`); sibling stats: {sibs}"
+            )
         if suggestions:
             lines.append(
                 render_table(

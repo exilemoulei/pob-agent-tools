@@ -65,6 +65,19 @@ class StatPlan:
     weighted_groups: list[WeightedGroup] = field(default_factory=list)
 
 
+def _reject_if_ambiguous_aura(raw_text: str, match: StatMatch) -> None:
+    if not (match.is_ambiguous_bare_aura and len(match.disambiguation_candidates) > 1):
+        return
+    aura_lbl = match.disambiguation_aura or "aura"
+    lines = [
+        f"Ambiguous bare aura modifier ({aura_lbl}): {raw_text!r} matches multiple Watcher's Eye stats; "
+        "specify the exact effect line:"
+    ]
+    for cand in match.disambiguation_candidates:
+        lines.append(f"  - {cand['text']}  ({cand['id']})")
+    raise ValueError("\n".join(lines))
+
+
 def resolve_requests(
     requests: Iterable[StatRequest],
     entries: list[dict[str, Any]],
@@ -80,6 +93,7 @@ def resolve_requests(
                 lines.append(f"  - {suggestion.text}  ({suggestion.id})")
             lines.append("Rewrite the text, or use --want (scoring only, no filter).")
             raise ValueError("\n".join(lines))
+        _reject_if_ambiguous_aura(request.text, match)
         request.match = match
 
 
@@ -241,6 +255,7 @@ def plan_stats(
                 for suggestion in suggest_stats(item.text, entries, slot=slot):
                     lines.append(f"  - {suggestion.text}  ({suggestion.id})")
                 raise ValueError("\n".join(lines))
+            _reject_if_ambiguous_aura(item.text, match)
             resolved_entries.append(
                 WeightedStatEntry(
                     text=item.text,

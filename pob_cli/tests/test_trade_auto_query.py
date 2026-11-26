@@ -87,7 +87,7 @@ def _row(row_id: str, *, hours: float = 1.0, amount: float = 10.0) -> dict[str, 
 @pytest.fixture
 def searches(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     monkeypatch.setattr(cli_trade, "load_trade_stats", lambda *_a, **_kw: (MOCK_STATS, "mock"))
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Covens", None))
     return []
 
 

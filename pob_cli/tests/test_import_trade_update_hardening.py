@@ -222,7 +222,7 @@ def test_default_league_propagates_rate_limit_and_cookie(tmp_path: Path) -> None
 
 
 def test_resolve_league_rate_limited_exits_4(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(cli_trade, "resolve_current_trade_league", lambda **_k: "")
+    monkeypatch.setattr("pob_cli.trade_client.league_meta.resolve_current_trade_league", lambda **_k: "")
 
     class _Limited(TradeClient):
         def default_league(self) -> str:
@@ -234,16 +234,15 @@ def test_resolve_league_rate_limited_exits_4(monkeypatch: pytest.MonkeyPatch, tm
 
 
 def test_resolve_league_fallback_warns(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(cli_trade, "resolve_current_trade_league", lambda **_k: "")
-    shown: list[str] = []
-    monkeypatch.setattr("pob_cli.cli_trade.common._err_utf8", shown.append)
+    monkeypatch.setattr("pob_cli.trade_client.league_meta.resolve_current_trade_league", lambda **_k: "")
 
     def _broken(**_k: Any) -> TradeClient:
         return _trade_client(tmp_path, lambda _r: httpx.Response(500, text="boom"))
 
-    monkeypatch.setattr(cli_trade, "TradeClient", _broken)
-    assert cli_trade._resolve_league(None) == "Standard"
-    assert shown and "League lookup failed" in shown[0] and "--league" in shown[0]
+    monkeypatch.setattr("pob_cli.trade_client.league_meta.TradeClient", _broken)
+    league, warning = cli_trade.resolve_trade_league(None)
+    assert league == "Standard"
+    assert warning and "League lookup failed" in warning and "--league" in warning
 
 
 @pytest.mark.parametrize(

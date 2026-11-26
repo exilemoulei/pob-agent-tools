@@ -176,7 +176,7 @@ def test_listing_seller_and_age_in_report() -> None:
 
 def test_trade_search_max_age_bargain_and_seller_link(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_trade, "load_trade_stats", _mock_trade_stats)
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Covens", None))
     monkeypatch.setattr(cli_trade, "_chaos_rates", lambda *_a, **_kw: {"chaos": 1.0, "divine": 200.0})
 
     # Cheapest page is all 20h old (inside the server's 1-day window, outside --max-age 15);
@@ -236,7 +236,7 @@ def test_trade_search_max_age_bargain_and_seller_link(monkeypatch: pytest.Monkey
 
 def test_trade_search_plain_run_needs_no_currency_rates(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_trade, "load_trade_stats", _mock_trade_stats)
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Covens", None))
     lookups: list[int] = []
     monkeypatch.setattr(cli_trade, "_chaos_rates", lambda *_a, **_kw: lookups.append(1) or {"chaos": 1.0})
 
@@ -264,7 +264,7 @@ def test_trade_search_max_age_falls_back_to_older_listings(
 ) -> None:
     """Nothing fresh (window empty, or everything in it too old): list the older ones, clearly marked."""
     monkeypatch.setattr(cli_trade, "load_trade_stats", _mock_trade_stats)
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Covens", None))
 
     old_row = _make_row("old_only", 20, 40, "chaos", "Old#1")
     searches: list[dict[str, Any]] = []
@@ -305,7 +305,7 @@ def test_trade_search_bargain_reuses_any_age_asc_search_and_guards_under_5(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(cli_trade, "load_trade_stats", _mock_trade_stats)
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Covens", None))
     monkeypatch.setattr(cli_trade, "_chaos_rates", lambda *_a, **_kw: {"chaos": 1.0})
 
     # 10 priced listings, any-age asc: reuses single search for market median (100c).
@@ -368,7 +368,7 @@ def test_trade_search_bench_craft_preserves_bargain_seller_and_url(
 ) -> None:
     """Audit: --bench-craft variants cloned via replace() preserve price_chaos, bargain, seller, age_hours, seller_url."""
     monkeypatch.setattr(cli_trade, "load_trade_stats", _mock_trade_stats)
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Covens", None))
     monkeypatch.setattr(cli_trade, "_chaos_rates", lambda *_a, **_kw: {"chaos": 1.0, "divine": 200.0})
 
     # 9 expensive listings (100c) + 1 bargain listing (50c) with lower raw mod score so bargain promotion is exercised.

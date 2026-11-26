@@ -47,6 +47,59 @@ def _should_auto_detail(query: str, variant: str | None) -> bool:
     return any(pat.search(combined) for pat in _AUTO_DETAIL_PATTERNS)
 
 
+_AWAKENED_ZH_RE = re.compile(r"^(?:觉醒|覺醒|强辅|強輔)[\s·・]*(.+?)$|^(.+?)(?:[（(](?:强辅|強輔)[）)]|强辅|強輔)$")
+_FOULBORN_ZH_RE = re.compile(r"^(?:秽生|穢生)[\s·・]+(.+)$|^(?:秽生|穢生)(.+)$")
+_PRICE_BRACKETS_RE = re.compile(r"[【】「」『』《》]")
+
+
+def _resolve_zh_entity_name(term: str, gd: Any) -> tuple[str | None, str | None]:
+    """Resolve a single CN/TW/slang entity name to `(canonical_en, kind_hint)`."""
+    t_clean = _PRICE_BRACKETS_RE.sub("", term).strip()
+    if not t_clean:
+        return None, None
+    t_tw = gd.normalize_tw_query(t_clean)
+    slang_hit = gd.resolve_player_slang(t_clean) or (gd.resolve_player_slang(t_tw) if t_tw != t_clean else None)
+    if slang_hit is not None:
+        return slang_hit[0], slang_hit[1]
+    non_gear_en = gd.resolve_non_gear_en(t_clean) or (gd.resolve_non_gear_en(t_tw) if t_tw != t_clean else None)
+    if non_gear_en:
+        return non_gear_en, "non_gear"
+    try:
+        en_name = gd.english_for_zh(t_clean) or (gd.english_for_zh(t_tw) if t_tw != t_clean else None)
+    except Exception:
+        en_name = None
+    if en_name:
+        return en_name, None
+    # Fallback to local SQLite unique / gem / base tables when engine is available;
+    # accept only exact normalized matches (never arbitrary substring hits).
+    fold = getattr(gd, "fold_han", lambda s: s.strip().lower())
+    wanted_norms = {fold(t_clean).strip().lower(), fold(t_tw).strip().lower()}
+    wanted_norms.discard("")
+    for kind in ("unique", "gem", "base"):
+        try:
+            res = gd.query_local_data(kind, t_clean, limit=5)
+        except Exception:
+            break
+        rows = res.get("results") if isinstance(res, dict) else None
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            cand = str(row.get("name") or "").strip()
+            if not (cand and cand.isascii()):
+                continue
+            row_labels = (
+                cand,
+                str(row.get("zh_name") or ""),
+                str(row.get("name_zh") or ""),
+                str(row.get("nameZh") or ""),
+            )
+            if any(fold(lbl).strip().lower() in wanted_norms for lbl in row_labels if lbl.strip()):
+                return cand, kind
+    return None, None
+
+
 def _resolve_price_query(raw_query: str) -> tuple[str, dict[str, str] | None]:
     """Translate non-ASCII (CN/TW/slang) price queries into canonical English before poe.ninja lookup."""
     q_clean = raw_query.strip()
@@ -54,19 +107,29 @@ def _resolve_price_query(raw_query: str) -> tuple[str, dict[str, str] | None]:
         return q_clean, None
     from .. import game_data as gd
 
-    q_tw = gd.normalize_tw_query(q_clean)
-    slang_hit = gd.resolve_player_slang(q_tw) or (gd.resolve_player_slang(q_clean) if q_tw != q_clean else None)
-    if slang_hit is not None:
-        return slang_hit[0], {"from": q_clean, "to": slang_hit[0]}
-    non_gear_en = gd.resolve_non_gear_en(q_clean) or (gd.resolve_non_gear_en(q_tw) if q_tw != q_clean else None)
-    if non_gear_en:
-        return non_gear_en, {"from": q_clean, "to": non_gear_en}
-    try:
-        en_name = gd.english_for_zh(q_clean) or (gd.english_for_zh(q_tw) if q_tw != q_clean else None)
-    except Exception:
-        en_name = None
+    en_name, _kind = _resolve_zh_entity_name(q_clean, gd)
     if en_name:
         return en_name, {"from": q_clean, "to": en_name}
+
+    stripped = _PRICE_BRACKETS_RE.sub("", q_clean).strip()
+    m_awk = _AWAKENED_ZH_RE.match(stripped)
+    if m_awk:
+        stem = (m_awk.group(1) or m_awk.group(2) or "").strip()
+        stem_en, _ = _resolve_zh_entity_name(stem, gd)
+        if stem_en:
+            canon = stem_en if stem_en.lower().startswith("awakened ") else f"Awakened {stem_en}"
+            if not canon.lower().endswith(" support"):
+                canon = f"{canon} Support"
+            return canon, {"from": q_clean, "to": canon}
+
+    m_fb = _FOULBORN_ZH_RE.match(stripped)
+    if m_fb:
+        stem = (m_fb.group(1) or m_fb.group(2) or "").strip()
+        stem_en, _ = _resolve_zh_entity_name(stem, gd)
+        if stem_en:
+            return stem_en, {"from": q_clean, "to": stem_en}
+
+    q_tw = gd.normalize_tw_query(q_clean)
     if q_tw and q_tw != q_clean and q_tw.isascii():
         return q_tw, {"from": q_clean, "to": q_tw}
     return q_clean, None
@@ -142,6 +205,8 @@ def _narrow_detailed_types(
     cat_key: str,
     types_to_search: tuple[str, ...],
     overviews: dict[str, list[dict[str, Any]]],
+    *,
+    variant: str | None = None,
 ) -> tuple[str, ...]:
     if cat_key == "all" and overviews:
         q_tokens = [tok for tok in re.split(r"\s+", q) if len(tok) >= 3]
@@ -156,7 +221,14 @@ def _narrow_detailed_types(
                     break
             if matched_type:
                 narrowed.append(ov_type)
-        return tuple(narrowed)
+        if narrowed:
+            return tuple(narrowed)
+        # Fallback when dense overview lacks a stash-only variant (e.g. 21/20 gem or 6L unique)
+        if variant and re.search(r"\b\d{1,2}/\d{1,2}c?\b", variant, re.IGNORECASE):
+            return ("SkillGem", "ImbuedGem")
+        if variant and re.search(r"\b[56]l\b|\b[56]-?link\b", variant, re.IGNORECASE):
+            return ("UniqueWeapon", "UniqueArmour")
+        return ()
     return types_to_search
 
 
@@ -310,16 +382,19 @@ def query_price(
             break
 
     if is_detailed:
-        target_types = _narrow_detailed_types(q, cat_key, types_to_search, overviews)
-        fetched_stash, stash_stale_types, stash_failed_types = _fetch_stash_overviews_batch(
-            resolved_league, target_types, proxy=proxy
-        )
-        if any(t in stash_stale_types or t in stash_failed_types for t in target_types):
-            is_stale = True
-        source_by_type = {
-            ov_type: (fetched_stash.get(ov_type) or overviews.get(ov_type, []))
-            for ov_type in target_types
-        }
+        target_types = _narrow_detailed_types(q, cat_key, types_to_search, overviews, variant=variant)
+        if target_types:
+            fetched_stash, stash_stale_types, stash_failed_types = _fetch_stash_overviews_batch(
+                resolved_league, target_types, proxy=proxy
+            )
+            if any(t in stash_stale_types or t in stash_failed_types for t in target_types):
+                is_stale = True
+            source_by_type = {
+                ov_type: (fetched_stash.get(ov_type) or overviews.get(ov_type, []))
+                for ov_type in target_types
+            }
+        else:
+            source_by_type = {}
     else:
         target_types = types_to_search
         source_by_type = {ov_type: overviews.get(ov_type, []) for ov_type in target_types}
@@ -389,7 +464,7 @@ def query_price_multi(
         res_q, res_alias = _resolve_price_query(q_raw)
         q_det = bool(detailed or _should_auto_detail(res_q, variant))
         if q_det:
-            t_types = _narrow_detailed_types(res_q.lower(), cat_key, types_to_search, overviews)
+            t_types = _narrow_detailed_types(res_q.lower(), cat_key, types_to_search, overviews, variant=variant)
             for ov_type in t_types:
                 if ov_type not in seen_stash:
                     seen_stash.add(ov_type)
