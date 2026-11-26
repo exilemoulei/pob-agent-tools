@@ -27,6 +27,8 @@ LAYER_MAP: dict[str, int] = {
     "bridge_boot": 1,
     "bridge_trees": 1,
     "importers": 1,
+    "importers_codec": 1,
+    "importers_stages": 1,
     "profile_import": 1,
     "game_data": 1,
     "external_data": 1,
@@ -45,6 +47,7 @@ LAYER_MAP: dict[str, int] = {
     "trade_query": 2,
     "trade_eval": 2,
     "timeless": 2,
+    "map_regex": 2,
     # L3: daemon server & client
     "daemon": 3,
     # L4: CLI entry points
@@ -53,12 +56,15 @@ LAYER_MAP: dict[str, int] = {
     "cli": 4,
     "cli_help": 4,
     "cli_lifecycle": 4,
+    "cli_lang": 4,
     "cli_build_io": 4,
     "cli_inspect": 4,
     "cli_inspect_parts": 4,
     "cli_mutate_items": 4,
     "cli_mutate_skills": 4,
     "cli_mutate": 4,
+    "cli_tree": 4,
+    "cli_tree_wheels": 4,
     "cli_optimize": 4,
     "cli_self_update": 4,
     "cli_data_render": 4,
@@ -66,6 +72,7 @@ LAYER_MAP: dict[str, int] = {
     "cli_research": 4,
     "cli_trade": 4,
     "cli_timeless": 4,
+    "cli_map_regex": 4,
 }
 
 BLOCKED_RPC_EXACT: frozenset[str] = frozenset(

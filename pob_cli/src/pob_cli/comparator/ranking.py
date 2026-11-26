@@ -252,8 +252,9 @@ def rank_nodes(
                 if wm_kind is not None and wm_kind not in equipped_weapons:
                     filtered_masteries.append(strip_pob_escapes(str(r.get("name") or r.get("nameZh") or wm_kind)))
                     continue
-            if r.get("effectId") is not None and not r.get("allocSpec"):
-                r = {**r, "allocSpec": f"{r['id']}:{r['effectId']}"}
+            if not r.get("allocSpec") and r.get("id") is not None:
+                eff = r.get("effectId")
+                r = {**r, "allocSpec": f"{r['id']}:{eff}" if eff is not None else str(r["id"])}
             raw_candidates.append(r)
 
         best_by_effect: dict[Any, dict[str, Any]] = {}
@@ -316,6 +317,19 @@ def rank_nodes(
                 for s in res["nearbySockets"]
                 if isinstance(s, dict) and (bool(s.get("allocated")) or _safe_dist(s.get("cost")) <= max_dist)
             ]
+        try:
+            st_res = worker.call("get_stats", {})
+            if isinstance(st_res, dict) and isinstance(st_res.get("stats"), dict) and st_res["stats"]:
+                from ..analyzer.threshold_probes import compute_threshold_probes
+
+                out["thresholdProbes"] = compute_threshold_probes(
+                    st_res["stats"],
+                    mana_reservations=st_res.get("manaReservations")
+                    if isinstance(st_res.get("manaReservations"), list)
+                    else None,
+                )
+        except Exception:
+            pass
         return out
 
 

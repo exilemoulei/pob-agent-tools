@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import time
 from typing import Any
 
 import click
@@ -16,7 +17,16 @@ from ..daemon import BootstrapMissingError
 from ..errors import CrossGameHallucinationError
 from ..formatters import render_update_warning
 from ..importers import _get_cache_dir
-from ..trade_client import CookieRequired, NoResults, RateLimited, TradeClient, TradeError
+from ..json_io import atomic_write_json
+from ..locale_cfg import current_realm
+from ..trade_client import (
+    TW_LEAGUE_ALIASES,
+    CookieRequired,
+    NoResults,
+    RateLimited,
+    TradeClient,
+    TradeError,
+)
 from ..trade_item import parse_item_text, sanitize_text
 from ..trade_query import CATEGORY_BY_SLOT, pob_slot_for_slot
 from ..updater import format_stderr_update_alert
@@ -92,12 +102,19 @@ def _is_known_slot(slot: str | None) -> bool:
     )
 
 
-def _cached_league_offline() -> str | None:
-    cache_file = _get_cache_dir() / "poe_trade_league.json"
+def _league_cache_path(realm: str = "global") -> Any:
+    fname = "poe_trade_league.json" if realm == "global" else f"poe_trade_league_{realm}.json"
+    return _get_cache_dir() / fname
+
+
+def _cached_league_offline(realm: str = "global", *, ttl_sec: float | None = None) -> str | None:
+    cache_file = _league_cache_path(realm)
     if not cache_file.is_file():
         return None
     try:
         data = json.loads(cache_file.read_text(encoding="utf-8"))
+        if ttl_sec is not None and (time.time() - float(data.get("_ts") or 0.0)) >= ttl_sec:
+            return None
         league = str(data.get("league") or "").strip()
         return league or None
     except Exception:
@@ -110,13 +127,42 @@ def _resolve_league(
     offline_only: bool = False,
     proxy: str | None = None,
     client: TradeClient | None = None,
+    realm: str | None = None,
 ) -> str:
     import pob_cli.cli_trade as _ct
 
+    eff_realm = current_realm(cli_realm=realm) if realm is not None else (
+        getattr(client, "realm", None) or "global"
+    )
     if explicit and explicit.strip():
-        return explicit.strip()
+        cleaned = explicit.strip()
+        return TW_LEAGUE_ALIASES.get(cleaned.lower(), cleaned) if eff_realm == "tw" else cleaned
+    if eff_realm == "tw":
+        if offline_only:
+            return _cached_league_offline("tw") or "標準模式"
+        cached_tw = _cached_league_offline("tw", ttl_sec=3600.0)
+        if cached_tw and cached_tw != "標準模式":
+            return cached_tw
+        try:
+            if client is not None:
+                resolved = client.default_league()
+            else:
+                with _ct.TradeClient(proxy=proxy, realm="tw") as tw_client:
+                    resolved = tw_client.default_league()
+                    if tw_client.league_warning:
+                        _err_utf8(f"Warning: {tw_client.league_warning}")
+            try:
+                atomic_write_json(_league_cache_path("tw"), {"_ts": time.time(), "league": resolved})
+            except OSError:
+                pass
+            return resolved
+        except (RateLimited, CookieRequired):
+            raise  # same contract as the global realm below: exit 4 / 3, never a silent fallback
+        except TradeError:
+            return cached_tw or "標準模式"
+
     if offline_only:
-        return _cached_league_offline() or "Standard"
+        return _cached_league_offline("global") or "Standard"
     try:
         league = _ct.resolve_current_trade_league(proxy=proxy)
         if league:
@@ -127,7 +173,7 @@ def _resolve_league(
     # still falls back to Standard leaves `league_warning` on the client for the caller to show.
     if client is not None:
         return client.default_league()
-    with _ct.TradeClient(proxy=proxy) as fallback_client:
+    with _ct.TradeClient(proxy=proxy, realm="global") as fallback_client:
         league = fallback_client.default_league()
         if fallback_client.league_warning:
             _err_utf8(f"Warning: {fallback_client.league_warning}")
@@ -205,6 +251,31 @@ def _price_of(row: dict[str, Any]) -> tuple[float | None, str | None]:
         parsed_amount = None
     currency = price.get("currency")
     return parsed_amount, (str(currency) if currency else None)
+
+
+def _listing_trade_meta(row: dict[str, Any]) -> tuple[str, int | None, str | None]:
+    """Extract cookie-invariant `(trade_mode, gold_fee, price_type)` from a trade fetch row.
+
+    Anonymous responses strip `hideout_token` and online Merchant's Tab sellers may still
+    carry `whisper`, whereas traditional in-person listings never carry a Gold `fee`.
+    """
+    listing = row.get("listing") if isinstance(row, dict) else None
+    listing = listing if isinstance(listing, dict) else {}
+    raw_fee = listing.get("fee")
+    gold_fee = int(raw_fee) if isinstance(raw_fee, (int, float)) and not isinstance(raw_fee, bool) else None
+    is_securable = bool(listing.get("hideout_token")) or (
+        gold_fee is not None and (gold_fee > 0 or not listing.get("whisper"))
+    )
+    trade_mode = "securable" if is_securable else "in_person"
+    if not is_securable:
+        gold_fee = None
+    price_obj = listing.get("price")
+    price_type = str(price_obj.get("type") or "") or None if isinstance(price_obj, dict) else None
+    return trade_mode, gold_fee, price_type
+
+
+def _is_securable_row(row: dict[str, Any]) -> bool:
+    return _listing_trade_meta(row)[0] == "securable"
 
 
 def _weighted_sum_of(raw_item: dict[str, Any]) -> float | None:

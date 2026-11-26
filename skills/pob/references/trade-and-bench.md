@@ -8,6 +8,7 @@
 ## 1. Resolve Trade Stat IDs & Verify Slot Affix Existence (Official Trade = Ground Truth)
 ```powershell
 pob trade stats "法压" --slot boots
+pob trade stats "受到【坚定】影响时" --json   # Strips 【】 brackets, resolves Watcher's Eye/pseudo offline, exposes `better` (`1`/`-1`/`0`, `betterSource: "apt"`)
 pob trade stats "to Cold Resistance" --slot ring1
 
 # MANDATORY Ground-Truth check before claiming any affix can/cannot exist on a slot
@@ -31,8 +32,8 @@ pob trade search --slot ring2 --stat "冰霜抗性=42" --allow-conversion --conv
 # Bench-craft max-roll PoB simulation (--bench-craft; keeps originals + legal craft variants, PoB-ranked by default)
 pob trade search --slot gloves --budget 20 --currency divine --stat "to Dexterity=55" --bench-craft "Area Damage" --pob on
 
-# Fresh instant-buyout listings only (--max-age hours; if none is that fresh, older ones are shown and the report's `Listed:` line says so), underpriced ones flagged BARGAIN and listed first (--bargain percent below the going price, price only; a search matching 10,000+ listings flags nothing, so narrow it)
-pob trade search --slot ring1 --stat "生命>=80" --stat "冰抗>=40" --status securable --max-age 15 --bargain 30
+# Fresh instant-buyout listings only (`--securable` = Faustus Merchant's Tab Gold buyout; `--max-age` hours; `--bargain` percent below 1-seller-1-vote going price; `--max-per-seller 2` dedupes spammer listings before PoB eval; `--normalize-quality auto` evaluates modifiable <20%Q gear at +20%Q `[+20%Q]`)
+pob trade search --slot ring1 --stat "生命>=80" --stat "冰抗>=40" --securable --max-age 15 --bargain 30
 
 # Preview Harvest swap on a pasted item
 pob trade convert --file item.txt --to fire

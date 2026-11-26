@@ -12,8 +12,9 @@ from .cli_common import (
     _emit_text,
     _merge_keep_tokens,
     _output_options,
-    _prepare_load_source,
+    _prepare_load_source_with_stage,
     _read_json_input,
+    _ref_stage_options,
     _target_option,
     invoke_daemon,
 )
@@ -282,10 +283,13 @@ def cmd_rank_nodes(
 
     rows = []
     for idx, r in enumerate(res.get("byPerPoint", []), start=1):
+        node_spec = r.get("allocSpec") or (
+            f"{r.get('id')}:{r.get('effectId')}" if r.get("effectId") is not None else r.get("id")
+        )
         rows.append(
             [
                 idx,
-                r.get("id"),
+                node_spec,
                 strip_pob_escapes(r.get("nameZh") or r.get("name")),
                 r.get("type"),
                 r.get("pathDist"),
@@ -323,6 +327,13 @@ def cmd_rank_nodes(
                 "\n\n### Nearby Unallocated Jewel & Cluster Sockets (Unranked — no synthetic DPS)\n"
                 + render_table(["Node ID", "Kind / Sector", "Cost", "Travel Stats"], s_rows)
             )
+    probes = res.get("thresholdProbes")
+    if isinstance(probes, dict) and probes:
+        from .formatters.tree_prune_md import format_threshold_probes_markdown
+
+        p_lines = format_threshold_probes_markdown(probes, compact=True)
+        if p_lines:
+            body += "\n\n### Threshold Gap Probes\n" + "\n".join(p_lines)
     _emit_text(body, out_path=out_path)
 
 
@@ -355,7 +366,13 @@ def cmd_rank_gems(
     out_path: str | None,
 ) -> None:
     """Rank support/active candidate gems for a skill group by DPS gain."""
-    from .formatters import fmt_num, render_table, strip_pob_escapes
+    from .formatters import (
+        fmt_num,
+        format_bilingual,
+        lookup_localized_name,
+        render_table,
+        strip_pob_escapes,
+    )
 
     res = invoke_daemon(
         "rank_gems",
@@ -379,10 +396,12 @@ def cmd_rank_gems(
     for idx, gm in enumerate(cands, start=1):
         pct = gm.get("pct")
         pct_str = f"{float(pct):+.1f}%" if pct is not None else "-"
+        gm_en = strip_pob_escapes(gm.get("name"))
+        gm_zh = lookup_localized_name(gm_en, kind="gem") or strip_pob_escapes(gm.get("nameZh") or gm_en)
         row_g: list[Any] = [
             idx,
-            strip_pob_escapes(gm.get("nameZh") or gm.get("name")),
-            strip_pob_escapes(gm.get("name")),
+            gm_zh,
+            gm_en,
             fmt_num(gm.get("dps")),
             fmt_num(gm.get("delta")),
             pct_str,
@@ -391,8 +410,9 @@ def cmd_rank_gems(
             row_g.append(str(gm.get("caveat") or "-"))
         rows.append(row_g)
     headers_g = ["#", "Gem (ZH)", "Gem (EN)", "New DPS", "Delta", "Gain %"] + (["Caveat"] if has_caveats else [])
+    grp_lbl = format_bilingual(res.get("groupLabel"), res.get("groupLabelZh"), kind="gem") or strip_pob_escapes(res.get("groupLabel"))
     body = (
-        f"### Candidate Gem Ranking — Group #{res.get('groupIndex')} `{strip_pob_escapes(res.get('groupLabel'))}` ({res.get('mode')}, Base `{res.get('dpsField')}`: `{fmt_num(res.get('baseDps'))}`)\n"
+        f"### Candidate Gem Ranking — Group #{res.get('groupIndex')} `{grp_lbl}` ({res.get('mode')}, Base `{res.get('dpsField')}`: `{fmt_num(res.get('baseDps'))}`)\n"
         + render_table(headers_g, rows)
     )
     excluded = res.get("excludedSupports") or []
@@ -433,6 +453,7 @@ def cmd_rank_gems(
     show_default=True,
     help="Reference build slot slug (default: 'ref').",
 )
+@_ref_stage_options
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @_output_options
 def cmd_compare(
@@ -441,6 +462,10 @@ def cmd_compare(
     no_auto_keep: bool,
     target: str,
     ref_target: str,
+    ref_stage: str | None,
+    ref_spec: str | None,
+    ref_item_set: str | None,
+    ref_skill_set: str | None,
     as_json: bool,
     compact: bool,
     out_path: str | None,
@@ -453,12 +478,22 @@ def cmd_compare(
         params["keep"] = list(keep)
     if no_auto_keep:
         params["no_auto_keep"] = True
+    ref_frag: dict[str, str | None] = {}
     if ref_source:
-        resolved_src, resolved_xml_code = _prepare_load_source(ref_source)
+        resolved_src, resolved_xml_code, ref_frag = _prepare_load_source_with_stage(ref_source)
         if resolved_xml_code is not None:
             params["ref_xml_code"] = resolved_xml_code
         else:
             params["ref_source"] = resolved_src
+    for pkey, fkey, cli_val in (
+        ("ref_stage", "stage", ref_stage),
+        ("ref_spec", "spec", ref_spec),
+        ("ref_item_set", "item_set", ref_item_set),
+        ("ref_skill_set", "skill_set", ref_skill_set),
+    ):
+        eff = cli_val if (cli_val is not None and cli_val.strip()) else ref_frag.get(fkey)
+        if eff and eff.strip():
+            params[pkey] = eff.strip()
 
     res = invoke_daemon("compare", params)
     if as_json:

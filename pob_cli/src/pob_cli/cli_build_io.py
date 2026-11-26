@@ -10,7 +10,7 @@ from .cli_common import (
     _emit_json,
     _emit_text,
     _output_options,
-    _prepare_load_source,
+    _prepare_load_source_with_stage,
     _prepend_warning,
     _target_option,
     invoke_daemon,
@@ -36,7 +36,7 @@ def cmd_new(
     out_path: str | None,
 ) -> None:
     """Create a fresh empty build in the target slot with optional class, ascendancy, and level."""
-    from .formatters import render_table
+    from .formatters import format_bilingual, render_table
     from .guardrails import check_poe2_class_or_ascendancy
 
     check_poe2_class_or_ascendancy(class_name, field="class")
@@ -62,13 +62,11 @@ def cmd_new(
     info = detail.get("buildInfo") or res.get("buildInfo") or (res.get("after") or {}).get("buildInfo") or {}
     pts = info.get("points") or (res.get("after") or {}).get("points") or {}
     eff_level = info.get("level") or detail.get("level") or level or "-"
+    cls_lbl = format_bilingual(info.get("className") or class_name, info.get("classNameZh"), kind="asc") or "-"
+    asc_lbl = format_bilingual(info.get("ascendClassName") or ascendancy, info.get("ascendClassNameZh"), kind="asc") or "-"
     rows = [
         ["Target Slot", target],
-        [
-            "Class / Ascendancy",
-            f"{info.get('classNameZh') or info.get('className') or class_name or '-'} / "
-            f"{info.get('ascendClassNameZh') or info.get('ascendClassName') or ascendancy or '-'}",
-        ],
+        ["Class / Ascendancy", f"{cls_lbl} / {asc_lbl}"],
         ["Level", eff_level],
         [
             "Passive Points",
@@ -127,6 +125,10 @@ def cmd_profile(
     default=None,
     help="Official profile realm (`pc`, `xbox`, `sony`, or `cn` for poe.game.qq.com).",
 )
+@click.option("--stage", "stage", default=None, help="Unified progression stage (1-based index or title substring across Spec/ItemSet/SkillSet).")
+@click.option("--spec", "spec", default=None, help="Passive tree Spec 1-based index or title substring.")
+@click.option("--item-set", "item_set", default=None, help="ItemSet ID, 1-based index, or title substring.")
+@click.option("--skill-set", "skill_set", default=None, help="SkillSet ID, 1-based index, or title substring.")
 @_target_option(allow_slot_alias=True)
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @_output_options
@@ -135,6 +137,10 @@ def cmd_load(
     char_name: str | None,
     league: str | None,
     realm: str | None,
+    stage: str | None,
+    spec: str | None,
+    item_set: str | None,
+    skill_set: str | None,
     target: str,
     as_json: bool,
     compact: bool,
@@ -143,7 +149,8 @@ def cmd_load(
     """Load a build from local .xml/.txt file (or @file), share/profile URL (pobb.in/poe.ninja/pathofexile.com/poe.game.qq.com), or Base64 code."""
     from .daemon import emit_stderr_update_alert
     from .errors import CrossGameHallucinationError
-    from .formatters import render_table, strip_pob_escapes
+    from .formatters import format_bilingual, render_table, strip_pob_escapes
+    from .formatters.tree_diff_md import format_progression_stages_markdown
     from .updater import load_update_state
 
     if not source and (realm or "").lower() != "cn":
@@ -156,12 +163,17 @@ def cmd_load(
         params["league"] = league.strip()
     if realm and realm.strip():
         params["realm"] = realm.strip().lower()
+    frag_stages: dict[str, str | None] = {}
     if source:
-        resolved_src, resolved_xml_code = _prepare_load_source(source)
+        resolved_src, resolved_xml_code, frag_stages = _prepare_load_source_with_stage(source)
         if resolved_xml_code is not None:
             params["xml_code"] = resolved_xml_code
         else:
             params["source"] = resolved_src
+    for key, cli_val in (("stage", stage), ("spec", spec), ("item_set", item_set), ("skill_set", skill_set)):
+        eff = cli_val if (cli_val is not None and cli_val.strip()) else frag_stages.get(key)
+        if eff and eff.strip():
+            params[key] = eff.strip()
 
     try:
         res = invoke_daemon("load", params)
@@ -197,16 +209,15 @@ def cmd_load(
             return "-"
         entry = lst[idx]
         if isinstance(entry, dict):
-            return strip_pob_escapes(entry.get("labelZh") or entry.get("label") or "-")
-        return strip_pob_escapes(str(entry))
+            return format_bilingual(entry.get("label"), entry.get("labelZh"), kind="gem") or "-"
+        return format_bilingual(str(entry), kind="gem") or strip_pob_escapes(str(entry))
 
+    cls_lbl = format_bilingual(info.get("className"), info.get("classNameZh"), kind="asc") or "-"
+    asc_lbl = format_bilingual(info.get("ascendClassName"), info.get("ascendClassNameZh"), kind="asc") or "-"
     rows = [
         ["Target Slot", target],
         ["Import Method", res.get("importMethod")],
-        [
-            "Class / Ascendancy",
-            f"{info.get('classNameZh') or info.get('className')} / {info.get('ascendClassNameZh') or info.get('ascendClassName')}",
-        ],
+        ["Class / Ascendancy", f"{cls_lbl} / {asc_lbl}"],
         ["Level", info.get("level")],
         [
             "Passive Points",
@@ -217,6 +228,11 @@ def cmd_load(
         ["Active Skill", _dd_label(main_sk)],
     ]
     body = render_table(["Field", "Value"], rows)
+    stages_md = format_progression_stages_markdown(
+        res.get("availableStages") or {}, res.get("selectedStage")
+    )
+    if stages_md:
+        body = body + "\n" + stages_md
     extra_notes = [str(n) for n in (res.get("importNotes") or []) if n]
     extra_warns = [str(w) for w in (res.get("translateWarnings") or []) if w]
     if extra_notes or extra_warns:

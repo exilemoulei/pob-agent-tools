@@ -271,6 +271,9 @@ def build_query(
     exclude_corrupted_mirrored: bool | None = None,
     allow_corrupted: bool = False,
     max_age_hours: float | None = None,
+    name: str | None = None,
+    item_type: str | None = None,
+    corrupted: str | None = None,
 ) -> dict[str, Any]:
     """Build an official PoE1 ``/api/trade/search`` JSON request body."""
     status_norm = (status or "available").strip().lower()
@@ -345,6 +348,10 @@ def build_query(
         )
 
     query: dict[str, Any] = {"status": {"option": status_norm}}
+    if name and name.strip():
+        query["name"] = name.strip()
+    if item_type and item_type.strip():
+        query["type"] = item_type.strip()
     if stat_groups:
         query["stats"] = stat_groups
 
@@ -376,18 +383,29 @@ def build_query(
     if trade_filters:
         filter_block["trade_filters"] = {"filters": trade_filters}
 
-    should_exclude = (
-        (bool(plan.conversions) and not allow_corrupted)
+    cor_norm = (corrupted or "").strip().lower()
+    has_explicit_cor = cor_norm in ("yes", "true", "1", "no", "false", "0", "any")
+    should_exclude_corrupted = (
+        (bool(plan.conversions) and not allow_corrupted and not has_explicit_cor)
+        if exclude_corrupted_mirrored is None
+        else (bool(exclude_corrupted_mirrored) and not has_explicit_cor)
+    )
+    should_exclude_mirrored = (
+        ((bool(plan.conversions) or has_explicit_cor) and not allow_corrupted)
         if exclude_corrupted_mirrored is None
         else bool(exclude_corrupted_mirrored)
     )
-    if should_exclude:
-        filter_block["misc_filters"] = {
-            "filters": {
-                "corrupted": {"option": "false"},
-                "mirrored": {"option": "false"},
-            }
-        }
+    misc_filters: dict[str, Any] = {}
+    if should_exclude_corrupted:
+        misc_filters["corrupted"] = {"option": "false"}
+    if should_exclude_mirrored:
+        misc_filters["mirrored"] = {"option": "false"}
+    if cor_norm in ("yes", "true", "1"):
+        misc_filters["corrupted"] = {"option": "true"}
+    elif cor_norm in ("no", "false", "0"):
+        misc_filters["corrupted"] = {"option": "false"}
+    if misc_filters:
+        filter_block["misc_filters"] = {"filters": misc_filters}
 
     if filter_block:
         query["filters"] = filter_block

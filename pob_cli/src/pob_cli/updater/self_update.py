@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from .. import __version__
+from ..os_util import spawn_detached_process, win_hidden_subprocess_kwargs
 from .constants import _ASSET_TIMEOUT_SPEC, _AUTO_CHECK_TIMEOUT_SPEC, UpdateError, _to_httpx_timeout
 from .paths import detect_source_checkout_root, is_windows
 from .releases import asset_url, is_newer, latest_release_tag, release_platform_tag, signed_sums
@@ -128,18 +129,16 @@ def spawn_background_check(runtime_dir: Path) -> None:
     else:
         cmd = [sys.executable, "-c", "from pob_cli.cli import main; main()", "_release-check"]
     cmd += ["--runtime-dir", str(runtime_dir)]
-    kwargs: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    if is_windows():
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
-        kwargs["creationflags"] = flags
-    else:
-        kwargs["start_new_session"] = True
     try:
-        subprocess.Popen(cmd, **kwargs)
+        spawn_detached_process(
+            cmd,
+            sub=subprocess,
+            windows=is_windows(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
     except OSError:
         pass
 
@@ -252,7 +251,13 @@ def _unpack_and_check(staging: Path, name: str, data: bytes, target: str, versio
     if not exe.is_file():
         raise UpdateError(f"{name} has no {exe.name} at its root; not installing it.")
     try:
-        proc = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(
+            [str(exe), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            **win_hidden_subprocess_kwargs(subprocess, windows=is_windows()),
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise UpdateError(f"The downloaded {target} build does not run here: {exc}") from exc
     # `pob, version X`: compare the last word exactly, so 0.1.1 does not pass for 0.1.10.
@@ -460,18 +465,15 @@ def schedule_windows_swap(current: Path, new_dir: Path, version: str) -> None:
 
     script = windows_swap_script(os.getpid(), current, new_dir, version)
     encoded = base64.b64encode(script.encode("utf-16-le")).decode()
-    flags = (
-        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        | getattr(subprocess, "DETACHED_PROCESS", 0)
-        | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    )
     try:
-        subprocess.Popen(
+        spawn_detached_process(
             ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            sub=subprocess,
+            windows=is_windows(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=flags,
+            close_fds=True,
             # Outside the folder it moves; a working directory inside it would lock it.
             cwd=str(current.parent),
         )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import click
@@ -12,7 +13,8 @@ from .cli_common import SLOT_ALIAS_PARAM, _emit_json, _emit_text, _output_option
 # dropped here (`pob self-update --version X.Y.Z` stays visible).
 _GLOBAL_NOISE_OPTS = frozenset({"--help", "-h", "--compact", "--out", "--offline"})
 # Commands whose key options sit past the default cut-off (`--char/--realm/--json`, `--limit`, ...).
-_BRIEF_MAX_OPTS = {"diagnose": 16, "data": 20}
+# They are listed in full: a fixed higher cut-off hides those options again as soon as one is added.
+_BRIEF_UNCUT = frozenset({"diagnose", "data"})
 
 
 def _param_token(param: click.Parameter) -> str | None:
@@ -74,7 +76,7 @@ def build_brief_entries(root: click.Group, root_ctx: click.Context) -> list[dict
                     "name": name,
                     "kind": "command",
                     "summary": short,
-                    "flags": _command_signature(cmd, max_opts=_BRIEF_MAX_OPTS.get(name, 10)),
+                    "flags": _command_signature(cmd, max_opts=sys.maxsize if name in _BRIEF_UNCUT else 10),
                 }
             )
     return entries

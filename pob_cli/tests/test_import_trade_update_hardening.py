@@ -16,7 +16,7 @@ import httpx
 import pytest
 from click.testing import CliRunner
 
-from pob_cli import cli_trade, importers
+from pob_cli import cli_trade, importers, importers_codec
 from pob_cli.cli import main
 from pob_cli.errors import DaemonRequestError
 from pob_cli.profile_import import fetch_intl_character_bundle, share_url_guard
@@ -36,7 +36,7 @@ def test_share_code_decoder_drops_non_alphabet_chars_like_pob() -> None:
 
 
 def test_share_code_bomb_is_refused_as_request_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(importers, "MAX_SHARE_XML_BYTES", 1024)
+    monkeypatch.setattr(importers_codec, "MAX_SHARE_XML_BYTES", 1024)
     bomb = base64.urlsafe_b64encode(zlib.compress(b"<" + b"A" * 50_000)).decode()
     with pytest.raises(ValueError, match="exceeds"):
         importers.share_code_to_xml(bomb)

@@ -60,6 +60,8 @@ PLAYER_SLANG_MAP: dict[str, tuple[str, str]] = {
     "雷锤": ("Mjölner", "unique"),
     "诗人之笔": ("The Poet's Pen", "unique"),
     "闪耀精华": ("Coruscating Elixir", "unique"),
+    "玫瑰杖": ("Legacy of the Rose", "unique"),
+    "玫瑰遗产": ("Legacy of the Rose", "unique"),
     # Popular Skill & Support Gems
     "吟唱时施放": ("Cast while Channelling", "gem"),
     "引导时施放": ("Cast while Channelling", "gem"),

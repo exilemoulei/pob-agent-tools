@@ -21,7 +21,7 @@ from .cli_research import cmd_poedb, cmd_research, cmd_wiki
 @click.argument(
     "kind",
     type=click.Choice(
-        ["gem", "unique", "mod", "base", "translate", "tattoo", "runegraft", "tree", "tick"],
+        ["gem", "unique", "mod", "base", "translate", "tattoo", "runegraft", "tree", "tick", "drop"],
         case_sensitive=False,
     ),
 )
@@ -72,17 +72,30 @@ def cmd_data(
     compact: bool,
     out_path: str | None,
 ) -> None:
-    """Query local 0ms PoB Lua game/tree data & 0.033s tick calculator (`gem|unique|mod|base|translate|tattoo|runegraft|tree|tick`, daemon-free)."""
+    """Query local 0ms PoB Lua game/tree data, boss drops & 0.033s tick calculator (`gem|unique|mod|base|translate|tattoo|runegraft|tree|tick|drop`, daemon-free)."""
     from . import game_data as gd
 
     kind_low = kind.lower()
     if rebuild:
         if kind_low == "tree":
             gd.ensure_treedata_index(force_rebuild=True)
-        elif kind_low != "tick":
+        elif kind_low not in ("tick", "drop"):
             gd.ensure_gamedata_index(force_rebuild=True)
 
     q_list = [q.strip() for q in queries if q and q.strip()]
+
+    if kind_low == "drop":
+        if not q_list:
+            raise click.UsageError('Provide a query (e.g. `pob data drop "Echo of Loneliness"`).')
+        from .formatters.gamedata_md import format_drop_data
+
+        res = gd.query_drop_sources(q_list[0], limit=limit) if len(q_list) == 1 else gd.query_drop_sources_multi(q_list, limit=limit)
+        if as_json:
+            _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
+            return
+        md = format_drop_data(res) if len(q_list) == 1 else "\n\n".join(format_drop_data(res["results"][q]) for q in q_list)
+        _emit_text(md, out_path=out_path)
+        return
 
     if kind_low == "tick":
         if not q_list:

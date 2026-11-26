@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import __version__
+from ..os_util import win_hidden_subprocess_kwargs
 from .constants import (
     _ASSET_TIMEOUT_SPEC,
     _CHECK_TIMEOUT_SPEC,
@@ -138,6 +139,7 @@ def _self_test_runtime(bin_dir: Path) -> str | None:
             capture_output=True,
             text=True,
             timeout=15,
+            **win_hidden_subprocess_kwargs(subprocess),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return str(exc)
@@ -289,6 +291,7 @@ def _build_posix_runtime_from_source(
             capture_output=True,
             text=True,
             timeout=300,
+            **win_hidden_subprocess_kwargs(subprocess),
         )
         if lj_proc.returncode != 0:
             tail = (lj_proc.stderr or lj_proc.stdout or "")[-600:]
@@ -313,7 +316,14 @@ def _build_posix_runtime_from_source(
             "-o",
             str(utf8_out),
         ]
-        u8_proc = subprocess.run(cc_cmd, env=env, capture_output=True, text=True, timeout=120)
+        u8_proc = subprocess.run(
+            cc_cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            **win_hidden_subprocess_kwargs(subprocess),
+        )
         if u8_proc.returncode != 0:
             tail = (u8_proc.stderr or u8_proc.stdout or "")[-600:]
             raise UpdateError(f"Failed to compile lua-utf8.so (exit {u8_proc.returncode}): {tail}")

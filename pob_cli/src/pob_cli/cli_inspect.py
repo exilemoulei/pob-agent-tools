@@ -11,115 +11,34 @@ from .cli_common import (
     _emit_json,
     _emit_text,
     _output_options,
-    _prepare_load_source,
+    _prepare_load_source_with_stage,
     _prepend_warning,
+    _ref_stage_options,
     _target_option,
     invoke_daemon,
 )
-from .cli_inspect_parts import _apply_loop_guard, register_inspect_part_commands
+from .cli_inspect_parts import (
+    _DIAGNOSE_JSON_KEYS,
+    _DIAGNOSE_SECTIONS,
+    _apply_loop_guard,
+    _slice_diagnose_compare_markdown,
+    _slice_diagnose_json,
+    _slice_diagnose_markdown,
+    register_inspect_part_commands,
+)
 
-_DIAGNOSE_SECTIONS = ("all", "summary", "gaps", "items", "skills", "cards", "upgrades")
-_DIAGNOSE_JSON_KEYS: dict[str, tuple[str, ...]] = {
-    "summary": (
-        "amulet_7th_link",
-        "keystones",
-        "pantheon",
-        "ascendancyNodes",
-        "offence",
-        "minionOffence",
-        "defence",
-        "original",
-        "dewateredPinnacle",
-        "inflationStripped",
-        "topWaterSources",
-    ),
-    "gaps": ("healthGaps", "core_synergies", "buildMechanics", "agentProbe", "socketSummary"),
-    "items": ("equippedItems",),
-    "skills": ("mainGroup", "amulet_7th_link", "skillGroups"),
-    "cards": ("factCards", "advisories", "askGrounding"),
-    "upgrades": ("topNodes", "topGems", "socketSummary", "nearbySockets", "rankErrors"),
-}
-
-
-def _slice_diagnose_json(res: dict[str, Any], section: str) -> dict[str, Any]:
-    if section == "all" or not isinstance(res, dict):
-        return res
-    if res.get("mode") == "compare":
-        out_cmp = dict(res)
-        out_cmp["section"] = section
-        if isinstance(res.get("buildA"), dict):
-            out_cmp["buildA"] = _slice_diagnose_json(res["buildA"], section)
-        if isinstance(res.get("buildB"), dict):
-            out_cmp["buildB"] = _slice_diagnose_json(res["buildB"], section)
-        return out_cmp
-    out: dict[str, Any] = {"section": section}
-    for meta_k in ("env", "buildInfo", "mainGroup", "targetSlot", "rev", "sourceHash", "cached", "loopGuardWarning", "updateWarning", "restoreCheck"):
-        if meta_k in res:
-            out[meta_k] = res[meta_k]
-    for k in _DIAGNOSE_JSON_KEYS.get(section, ()):
-        if k in res:
-            out[k] = res[k]
-    return out
-
-
-def _slice_diagnose_markdown(full_md: str, section: str) -> str:
-    if section == "all":
-        return full_md
-    parts = full_md.split("\n#### ")
-    if len(parts) <= 1:
-        return full_md
-    preamble = parts[0]
-    if section == "summary":
-        header = preamble
-    else:
-        hdr_lines = [
-            ln
-            for ln in preamble.splitlines()
-            if ln.startswith(("[Env:", "### Build Diagnosis:", "> "))
-        ]
-        header = "\n".join(hdr_lines) if hdr_lines else preamble
-
-    matched: list[str] = []
-    for raw_sec in parts[1:]:
-        title = raw_sec.split("\n", 1)[0].strip()
-        keep_sec = (
-            (section == "summary" and title.startswith("1."))
-            or (section == "gaps" and title.startswith(("2.", "2b.", "2c. Build-Specific")))
-            or (section == "skills" and title.startswith("2c. All Skill Groups"))
-            or (section == "items" and title.startswith("2d."))
-            or (section == "cards" and title.startswith("3."))
-            or (section == "upgrades" and title.startswith("4."))
-        )
-        if keep_sec:
-            matched.append("#### " + raw_sec)
-    if not matched:
-        return f"{header}\n\n_(no {section} entries)_"
-    return header + "\n\n" + "\n\n".join(matched)
-
-
-def _slice_diagnose_compare_markdown(res: dict[str, Any], section: str) -> str:
-    """One section of a dual-build diagnosis, each build's part under its own heading.
-
-    Slicing the joined report would file the `## Build B Diagnosis` heading under Build A's last
-    section and print B's numbers as A's.
-    """
-    from .formatters import format_diagnose_markdown
-
-    head = format_diagnose_markdown(res).split("\n## Build A Diagnosis", 1)[0].rstrip()
-    if section != "summary":
-        # The comparison block goes; the env line and the update warning under it stay.
-        kept = [ln for ln in head.split("\n## ", 1)[0].splitlines() if ln.startswith(("[Env:", "> "))]
-        head = "\n".join(kept) if kept else head.split("\n", 1)[0]
-    parts = [head]
-    for label, key, slot in (
-        ("A", "buildA", res.get("target") or "main"),
-        ("B", "buildB", res.get("refTarget") or "ref"),
-    ):
-        build = res.get(key)
-        if isinstance(build, dict) and build:
-            parts.append(f"\n## Build {label} Diagnosis (`{slot}`)")
-            parts.append(_slice_diagnose_markdown(format_diagnose_markdown(build, compact=True), section))
-    return "\n".join(parts)
+__all__ = [
+    "_DIAGNOSE_JSON_KEYS",
+    "_DIAGNOSE_SECTIONS",
+    "_slice_diagnose_compare_markdown",
+    "_slice_diagnose_json",
+    "_slice_diagnose_markdown",
+    "cmd_audit",
+    "cmd_diagnose",
+    "cmd_ground",
+    "cmd_summary",
+    "register_inspect_commands",
+]
 
 
 @click.command("summary")
@@ -251,6 +170,8 @@ def cmd_summary(target: str, as_json: bool, compact: bool, out_path: str | None)
     default=None,
     help="Reference build slot slug for --compare (defaults to 'ref' when target=='main', else '<target>_ref').",
 )
+@click.option("--stage", "stage", default=None, help="Unified stage index/title for SOURCE build.")
+@_ref_stage_options
 @click.option("--char", "char_name", default=None, help="Character name when SOURCE is an official profile URL.")
 @click.option("--league", "league", default=None, help="Optional league filter for official profile URL import.")
 @click.option(
@@ -274,6 +195,11 @@ def cmd_diagnose(
     section: str,
     target: str,
     ref_target: str | None,
+    stage: str | None,
+    ref_stage: str | None,
+    ref_spec: str | None,
+    ref_item_set: str | None,
+    ref_skill_set: str | None,
     char_name: str | None,
     league: str | None,
     realm: str | None,
@@ -318,23 +244,38 @@ def cmd_diagnose(
     if ask_text and ask_text.strip():
         params["ask"] = ask_text.strip()
     if source:
-        resolved_src, resolved_xml_code = _prepare_load_source(source)
+        resolved_src, resolved_xml_code, src_frag = _prepare_load_source_with_stage(source)
         if resolved_xml_code is not None:
             params["xml_code"] = resolved_xml_code
         else:
             params["source"] = resolved_src
+        for key, cli_v in (("stage", stage), ("spec", None), ("item_set", None), ("skill_set", None)):
+            eff = cli_v if (cli_v and cli_v.strip()) else src_frag.get(key)
+            if eff and eff.strip():
+                params[key] = eff.strip()
         src_hash = compute_source_hash(params)
         if src_hash:
             params["source_hash"] = src_hash
     if compare_source:
         eff_ref = ref_target or ("ref" if target == "main" else f"{target}_ref")
         params["ref_target"] = eff_ref
-        cmp_src, cmp_xml_code = _prepare_load_source(compare_source)
+        cmp_src, cmp_xml_code, cmp_frag = _prepare_load_source_with_stage(compare_source)
         if cmp_xml_code is not None:
             params["compare_xml_code"] = cmp_xml_code
         else:
             params["compare_source"] = cmp_src
-        cmp_hash = compute_source_hash({"source": cmp_src, "xml_code": cmp_xml_code})
+        ref_hash_in: dict[str, Any] = {"source": cmp_src, "xml_code": cmp_xml_code}
+        for pkey, fkey, cli_v in (
+            ("ref_stage", "stage", ref_stage),
+            ("ref_spec", "spec", ref_spec),
+            ("ref_item_set", "item_set", ref_item_set),
+            ("ref_skill_set", "skill_set", ref_skill_set),
+        ):
+            eff = cli_v if (cli_v and cli_v.strip()) else cmp_frag.get(fkey)
+            if eff and eff.strip():
+                params[pkey] = eff.strip()
+                ref_hash_in[fkey] = eff.strip()
+        cmp_hash = compute_source_hash(ref_hash_in)
         if cmp_hash:
             params["compare_source_hash"] = cmp_hash
 
@@ -449,6 +390,15 @@ def cmd_audit(
         lines.append(render_table(["Severity", "Category", "Finding"], i_rows))
     else:
         lines.append("\n#### 1. Health & Hard Gaps\n- No critical resistance, attribute, or sustain gaps detected.")
+
+    probes = res.get("thresholdProbes")
+    if isinstance(probes, dict) and probes:
+        from .formatters.tree_prune_md import format_threshold_probes_markdown
+
+        p_lines = format_threshold_probes_markdown(probes, compact=True)
+        if p_lines:
+            lines.append("\n#### 1b. Threshold Gap Probes")
+            lines.extend(p_lines)
 
     stripped = res.get("inflationStripped", {})
     lines.append("\n#### 2. Inflation ('Water') Stripped for Pinnacle Boss Baseline")

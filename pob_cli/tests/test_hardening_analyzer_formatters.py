@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import threading
 from typing import Any
 
@@ -742,7 +743,10 @@ def test_formatter2_format_diagnose_amulet_7l_and_core_synergies() -> None:
         },
     }
     md = format_diagnose_markdown(diag)
-    assert "- **Linked Gems**: Splitting Steel (21/20%), Pierce (20/20%) + [Amulet 7L: Returning Projectiles (20/20%)]" in md
+    linked_line = next(ln for ln in md.splitlines() if ln.startswith("- **Linked Gems**: "))
+    assert re.search(r"\bSplitting Steel\)?\s+\(21/20%\)", linked_line)
+    assert re.search(r"\bPierce\)?\s+\(20/20%\)", linked_line)
+    assert "+ [Amulet 7L: Returning Projectiles (20/20%)]" in linked_line
     assert "#### 2b. Core Build Synergies & Do-Not-Brick Advisories" in md
     assert "- [7L SYNERGY] Returning Projectiles + Pierce: do NOT drop Pierce!" in md
     assert "- [DO NOT UNSPEC] The Agnostic + Valyrium/Bloodnotch/CWS: ES=0 lock." in md

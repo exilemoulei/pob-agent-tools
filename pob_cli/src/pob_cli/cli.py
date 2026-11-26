@@ -148,9 +148,9 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "Modify, add, or replace skill groups and support/active gems.",
     ),
     "tree": (
-        ".cli_mutate",
+        ".cli_tree",
         "grp_tree",
-        "Inspect passive tree (`pob tree [--search ...]`), mutate nodes (`change`), or switch class/ascendancy (`set-class`).",
+        "Inspect passive tree (`pob tree [slot]`), prune (`prune`), diff (`diff`), mutate (`change`), or switch class (`set-class`).",
     ),
     "config": (
         ".cli_mutate",
@@ -241,6 +241,11 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         ".cli_timeless",
         "timeless_group",
         "Find optimal timeless jewel seeds verified by headless PoB.",
+    ),
+    "map-regex": (
+        ".cli_map_regex",
+        "cmd_map_regex",
+        "Generate <=250-char 0-false-positive T16/T17 map filter regex tailored to your PoB build.",
     ),
     "help": (
         ".cli_help",

@@ -270,11 +270,29 @@ local function handle_node_power(params)
 	local used_eff = {}
 	local mult = (power_stat and power_stat.powerMultiplier) or 1
 	local m_defs = build.spec and build.spec.tree and build.spec.tree.masteryEffects
+	local do_tr = type(PobToolsGetTranslate) == "function"
+		and PobToolsGetTranslate()
+		and type(PobToolsTranslateDisplay) == "function"
+	local tr_fn = do_tr and PobToolsTranslateDisplay or nil
+
+	local function translate_lines(lines)
+		if not tr_fn or type(lines) ~= "table" then
+			return nil
+		end
+		local out_zh = {}
+		for j, ln in ipairs(lines) do
+			out_zh[j] = tr_fn(tostring(ln or ""))
+		end
+		return out_zh
+	end
+
 	for i, row in ipairs(raw_report) do
 		if row.pathDist == "Cluster" then
 			cluster_count = cluster_count + 1
 		end
-		local r_name, r_sd, eff_id, alloc_spec = row.name, row.sd, row.effectId, nil
+		local r_name, r_sd, eff_id = row.name, row.sd, row.effectId
+		local alloc_spec = row.id ~= nil and tostring(row.id) or nil
+		local r_name_zh, r_sd_zh = nil, nil
 		if row.type == "Mastery" then
 			local nd = build.spec and build.spec.nodes and build.spec.nodes[row.id]
 			if not eff_id and nd and nd.power and type(nd.power.masteryEffects) == "table" then
@@ -297,16 +315,35 @@ local function handle_node_power(params)
 			if eff_id then
 				alloc_spec = tostring(row.id) .. ":" .. tostring(eff_id)
 				local edef = m_defs and m_defs[eff_id]
-				if edef and type(edef.sd) == "table" and #edef.sd > 0 then
+				local raw_esd = edef and (edef.sd or edef.stats)
+				if type(raw_esd) == "table" and #raw_esd > 0 then
 					local esd = {}
-					for j, ln in ipairs(edef.sd) do
+					for j, ln in ipairs(raw_esd) do
 						esd[j] = tostring(ln):gsub("%s*\r?\n%s*", " ")
 					end
 					r_sd = esd
 					local base_nm = tostring((nd and nd.dn) or r_name or "Mastery"):gsub("%s*\r?\n%s*", " ")
 					base_nm = base_nm:match("^(.-)%s*:") or base_nm:match("^(.-)%s+/%s+") or base_nm
 					r_name = base_nm .. ": " .. table.concat(esd, "; ")
+					if tr_fn then
+						r_sd_zh = translate_lines(esd)
+						local base_zh = tr_fn(base_nm)
+						r_name_zh = base_zh .. ": " .. table.concat(r_sd_zh or esd, "; ")
+					end
+				elseif tr_fn and type(r_name) == "string" then
+					r_name_zh = tr_fn(r_name)
+					r_sd_zh = translate_lines(r_sd)
 				end
+			elseif tr_fn and type(r_name) == "string" then
+				r_name_zh = tr_fn(r_name)
+				r_sd_zh = translate_lines(r_sd)
+			end
+		elseif tr_fn then
+			if type(r_name) == "string" and r_name ~= "" then
+				r_name_zh = tr_fn(r_name)
+			end
+			if type(r_sd) == "table" and #r_sd > 0 then
+				r_sd_zh = translate_lines(r_sd)
 			end
 		end
 		report[i] = {
@@ -314,6 +351,7 @@ local function handle_node_power(params)
 			effectId = eff_id,
 			allocSpec = alloc_spec,
 			name = r_name,
+			nameZh = r_name_zh,
 			type = row.type,
 			allocated = row.allocated and true or false,
 			power = row.power or 0,
@@ -322,6 +360,7 @@ local function handle_node_power(params)
 			pathPowerStr = row.pathPowerStr,
 			pathDist = row.pathDist,
 			sd = r_sd,
+			sdZh = r_sd_zh,
 			x = row.x,
 			y = row.y,
 		}

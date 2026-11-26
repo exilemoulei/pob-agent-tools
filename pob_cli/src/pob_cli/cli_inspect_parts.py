@@ -43,7 +43,7 @@ def cmd_items(
     out_path: str | None,
 ) -> None:
     """List equipped items, inspect a single slot, or dump all equipped items & jewels (`--all --raw`)."""
-    from .formatters import render_table, strip_pob_escapes
+    from .formatters import format_bilingual, render_table, strip_pob_escapes
 
     if slot:
         from .guardrails import GuardrailScope, check_input
@@ -65,8 +65,14 @@ def cmd_items(
         if not item:
             _emit_text(_apply_loop_guard(res, f"Slot `{slot_name}` is empty."), out_path=out_path)
             return
+        is_uniq = str(item.get("rarity") or "").upper() in ("UNIQUE", "RELIC")
+        item_title = format_bilingual(
+            item.get("title") or item.get("name"),
+            item.get("titleZh") or item.get("nameZh"),
+            kind="unique" if is_uniq else "item",
+        ) or "-"
         lines = [
-            f"### Slot `{slot_name}`: {strip_pob_escapes(item.get('titleZh') or item.get('title') or item.get('name'))} (`{item.get('rarity')}`)",
+            f"### Slot `{slot_name}`: {item_title} (`{item.get('rarity')}`)",
         ]
         tip = res.get("tooltip") or {}
         for ln in tip.get("lines", []):
@@ -91,8 +97,16 @@ def cmd_items(
             if not it:
                 lines.append(f"\n#### `{slot_disp}` — _(Empty)_")
                 continue
-            title = strip_pob_escapes(it.get("titleZh") or it.get("title") or it.get("nameZh") or it.get("name") or "-")
-            base = strip_pob_escapes(it.get("baseNameZh") or it.get("baseName") or "")
+            is_uniq = str(it.get("rarity") or "").upper() in ("UNIQUE", "RELIC")
+            title = (
+                format_bilingual(
+                    it.get("title") or it.get("name"),
+                    it.get("titleZh") or it.get("nameZh"),
+                    kind="unique" if is_uniq else "item",
+                )
+                or "-"
+            )
+            base = format_bilingual(it.get("baseName"), it.get("baseNameZh"), kind="base")
             status = " [OFF]" if (s.get("isFlask") and not s.get("active")) else ""
             lines.append(f"\n#### `{slot_disp}`{status}: {title} — {base} (`{it.get('rarity') or '-'}`)")
             raw_txt = s.get("raw")
@@ -108,11 +122,17 @@ def cmd_items(
         if s.get("socketIndex"):
             slot_disp = f"{slot_disp} (#{s['socketIndex']})"
         state = "Active" if s.get("active") else ("Flask Off" if s.get("isFlask") else ("Inactive" if s.get("inactive") else "Equipped"))
+        is_uniq = str(it.get("rarity") or "").upper() in ("UNIQUE", "RELIC")
         rows.append(
             [
                 slot_disp,
-                strip_pob_escapes(it.get("titleZh") or it.get("title") or it.get("nameZh") or it.get("name") or "-"),
-                it.get("baseNameZh") or it.get("baseName") or "-",
+                format_bilingual(
+                    it.get("title") or it.get("name"),
+                    it.get("titleZh") or it.get("nameZh"),
+                    kind="unique" if is_uniq else "item",
+                )
+                or "-",
+                format_bilingual(it.get("baseName"), it.get("baseNameZh"), kind="base") or "-",
                 it.get("rarity") or "-",
                 state if it else "Empty",
             ]
@@ -127,7 +147,7 @@ def cmd_items(
 @_output_options
 def cmd_skills(group: str | None, target: str, as_json: bool, compact: bool, out_path: str | None) -> None:
     """List all skill groups or inspect gems and per-gem DPS tooltips in a group."""
-    from .formatters import fmt_num, render_table, strip_pob_escapes
+    from .formatters import fmt_num, format_bilingual, render_table
 
     res = invoke_daemon("skills", {"target": target, "group": group})
     if as_json:
@@ -143,15 +163,16 @@ def cmd_skills(group: str | None, target: str, as_json: bool, compact: bool, out
             rows.append(
                 [
                     gm.get("index"),
-                    strip_pob_escapes(gm.get("nameZh") or gm.get("name") or gm.get("nameSpec")),
+                    format_bilingual(gm.get("name") or gm.get("nameSpec"), gm.get("nameZh"), kind="gem") or "-",
                     "Support" if gm.get("support") else "Active",
                     f"{gm.get('level')}/{gm.get('quality')}%",
                     "Yes" if gm.get("enabled", True) else "No",
                     f"{dps_info.get('pct', 0):+.1f}% ({fmt_num(dps_info.get('delta'))})" if dps_info.get("pct") is not None else "-",
                 ]
             )
+        grp_lbl = format_bilingual(grp.get("displayLabel"), grp.get("displayLabelZh"), kind="gem") or "-"
         body = (
-            f"### Skill Group #{grp.get('index')}: {strip_pob_escapes(grp.get('displayLabelZh') or grp.get('displayLabel'))} (Slot: `{grp.get('slot') or '-'}`)\n"
+            f"### Skill Group #{grp.get('index')}: {grp_lbl} (Slot: `{grp.get('slot') or '-'}`)\n"
             + render_table(["#", "Gem", "Type", "Lv/Qual", "Enabled", "Tooltip DPS Impact"], rows)
         )
         _emit_text(_apply_loop_guard(res, body), out_path=out_path)
@@ -160,13 +181,13 @@ def cmd_skills(group: str | None, target: str, as_json: bool, compact: bool, out
     rows = []
     for g in res.get("groups", []):
         gems_summary = ", ".join(
-            f"{strip_pob_escapes(gm.get('nameZh') or gm.get('name'))}{'' if gm.get('enabled', True) else '[OFF]'}"
+            f"{format_bilingual(gm.get('name') or gm.get('nameSpec'), gm.get('nameZh'), kind='gem')}{'' if gm.get('enabled', True) else '[OFF]'}"
             for gm in g.get("gems", [])
         )
         rows.append(
             [
                 f"#{g['index']}{' *MAIN*' if g.get('isMain') else ''}",
-                strip_pob_escapes(g.get("displayLabelZh") or g.get("displayLabel") or g.get("label")),
+                format_bilingual(g.get("displayLabel") or g.get("label"), g.get("displayLabelZh"), kind="gem") or "-",
                 g.get("slot") or "-",
                 "Yes" if g.get("enabled", True) else "No",
                 "Yes" if g.get("includeInFullDPS") else "No",
@@ -368,6 +389,105 @@ def cmd_calc(
         _append_calc_match(lines, m)
 
     _emit_text(_apply_loop_guard(res, _prepend_active_guardrail_warnings("\n".join(lines))), out_path=out_path)
+
+
+_DIAGNOSE_SECTIONS = ("all", "summary", "gaps", "items", "skills", "cards", "upgrades")
+_DIAGNOSE_JSON_KEYS: dict[str, tuple[str, ...]] = {
+    "summary": (
+        "amulet_7th_link",
+        "keystones",
+        "pantheon",
+        "ascendancyNodes",
+        "offence",
+        "minionOffence",
+        "defence",
+        "original",
+        "dewateredPinnacle",
+        "inflationStripped",
+        "topWaterSources",
+    ),
+    "gaps": ("healthGaps", "thresholdProbes", "core_synergies", "buildMechanics", "agentProbe", "socketSummary"),
+    "items": ("equippedItems",),
+    "skills": ("mainGroup", "amulet_7th_link", "skillGroups"),
+    "cards": ("factCards", "advisories", "askGrounding"),
+    "upgrades": ("topNodes", "topGems", "socketSummary", "nearbySockets", "rankErrors"),
+}
+
+
+def _slice_diagnose_json(res: dict[str, Any], section: str) -> dict[str, Any]:
+    if section == "all" or not isinstance(res, dict):
+        return res
+    if res.get("mode") == "compare":
+        out_cmp = dict(res)
+        out_cmp["section"] = section
+        if isinstance(res.get("buildA"), dict):
+            out_cmp["buildA"] = _slice_diagnose_json(res["buildA"], section)
+        if isinstance(res.get("buildB"), dict):
+            out_cmp["buildB"] = _slice_diagnose_json(res["buildB"], section)
+        return out_cmp
+    out: dict[str, Any] = {"section": section}
+    for meta_k in ("env", "buildInfo", "mainGroup", "targetSlot", "rev", "sourceHash", "cached", "loopGuardWarning", "updateWarning", "restoreCheck"):
+        if meta_k in res:
+            out[meta_k] = res[meta_k]
+    for k in _DIAGNOSE_JSON_KEYS.get(section, ()):
+        if k in res:
+            out[k] = res[k]
+    return out
+
+
+def _slice_diagnose_markdown(full_md: str, section: str) -> str:
+    if section == "all":
+        return full_md
+    parts = full_md.split("\n#### ")
+    if len(parts) <= 1:
+        return full_md
+    preamble = parts[0]
+    if section == "summary":
+        header = preamble
+    else:
+        hdr_lines = [
+            ln
+            for ln in preamble.splitlines()
+            if ln.startswith(("[Env:", "### Build Diagnosis:", "> "))
+        ]
+        header = "\n".join(hdr_lines) if hdr_lines else preamble
+
+    matched: list[str] = []
+    for raw_sec in parts[1:]:
+        title = raw_sec.split("\n", 1)[0].strip()
+        keep_sec = (
+            (section == "summary" and title.startswith("1."))
+            or (section == "gaps" and title.startswith(("2.", "2b.", "2c. Build-Specific")))
+            or (section == "skills" and title.startswith("2c. All Skill Groups"))
+            or (section == "items" and title.startswith("2d."))
+            or (section == "cards" and title.startswith("3."))
+            or (section == "upgrades" and title.startswith("4."))
+        )
+        if keep_sec:
+            matched.append("#### " + raw_sec)
+    if not matched:
+        return f"{header}\n\n_(no {section} entries)_"
+    return header + "\n\n" + "\n\n".join(matched)
+
+
+def _slice_diagnose_compare_markdown(res: dict[str, Any], section: str) -> str:
+    """One section of a dual-build diagnosis, each build's part under its own heading."""
+    from .formatters import format_diagnose_markdown
+
+    head = format_diagnose_markdown(res).split("\n## Build A Diagnosis", 1)[0].rstrip()
+    if section != "summary":
+        kept = [ln for ln in head.split("\n## ", 1)[0].splitlines() if ln.startswith(("[Env:", "> "))]
+        head = "\n".join(kept) if kept else head.split("\n", 1)[0]
+    parts = [head]
+    for label, key, slot in (
+        ("A", "buildA", res.get("target") or "main"),
+        ("B", "buildB", res.get("refTarget") or "ref"),
+    ):
+        build = res.get(key)
+        if isinstance(build, dict) and build:
+            parts.append(f"\n## Build {label} Diagnosis (`{slot}`)")
+            parts.append(_slice_diagnose_markdown(format_diagnose_markdown(build, compact=True), section))
+    return "\n".join(parts)
 
 
 def register_inspect_part_commands(group: click.Group) -> None:

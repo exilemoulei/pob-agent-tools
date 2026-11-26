@@ -236,8 +236,10 @@ def _render_single_price_markdown(res: dict[str, Any], query: str) -> str:
     div_rate = res.get("divineChaosRate")
     rate_str = f" | 1 Divine = `{fmt_num(div_rate, 1)}` Chaos" if div_rate else ""
     det_tag = " [Detailed]" if is_det else ""
+    alias = res.get("resolvedAlias")
+    alias_note = f" -> `{alias['to']}`" if isinstance(alias, dict) and alias.get("to") else ""
     lines = [
-        f"### poe.ninja Price Search{det_tag}: `{query}` (League: `{res.get('league')}`{rate_str}, {res.get('totalMatches', len(matches))} matches)"
+        f"### poe.ninja Price Search{det_tag}: `{query}`{alias_note} (League: `{res.get('league')}`{rate_str}, {res.get('totalMatches', len(matches))} matches)"
     ]
     if res.get("stale"):
         lines.append("> [WARN] Serving stale cached poe.ninja price data due to network error.")

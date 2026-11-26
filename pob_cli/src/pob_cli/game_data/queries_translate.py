@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from .apt_non_gear import search_apt_non_gear
 from .constants import _CJK_PARTICLE_RE, _CJK_RE
 from .queries_core import _build_fts_match, _fts_phrase, _pool_limit_clause, _slice_limit
 from .tw_norm import _fold_search_text, normalize_tw_query
@@ -311,7 +312,18 @@ def _query_translate(
     if not q_lower:
         return []
     if not zh_available:
-        return _query_translate_no_zh(conn, q_lower, limit)
+        base_rows = _query_translate_no_zh(conn, q_lower, limit)
+        apt_rows = search_apt_non_gear(unfolded, limit=limit)
+        if not apt_rows:
+            return base_rows
+        merged = list(apt_rows)
+        seen_no_zh = {(_fold_search_text(r["en"]), r.get("zh")) for r in merged}
+        for r in base_rows:
+            k = (_fold_search_text(r["en"]), r.get("zh"))
+            if k not in seen_no_zh:
+                seen_no_zh.add(k)
+                merged.append(r)
+        return _slice_limit(merged, limit)
 
     candidates = _query_translate_candidates(conn, q_lower, limit)
     scored: list[tuple[tuple[int, int, int, str], dict[str, Any]]] = []
@@ -348,6 +360,21 @@ def _query_translate(
         ) or resolve_zh_entity_across_locales(q_lower, pob_dir=pob_dir, runtime_dir=runtime_dir)
         if sibling_en:
             scored.extend(_lookup_canonical_en_in_conn(conn, sibling_en))
+
+    if not has_exact:
+        apt_hits = search_apt_non_gear(unfolded, limit=limit)
+        if not apt_hits and q_lower != unfolded:
+            apt_hits = search_apt_non_gear(q_lower, limit=limit)
+        # When SQLite already has candidates, only elevate exact APT matches so non-gear
+        # prefix hits never hijack engine gem/unique/base substring lookups.
+        if scored:
+            apt_hits = [item for item in apt_hits if item.get("match_type") == "exact"]
+        for item in apt_hits:
+            mt = item.get("match_type")
+            tier = 0 if mt == "exact" else (1 if mt == "prefix" else 2)
+            scored.append(((tier, 1, len(item["en"]), _fold_search_text(item["en"])), item))
+            if tier == 0:
+                has_exact = True
 
     if not scored:
         scored = _query_translate_entity_fallback(conn, q_lower)

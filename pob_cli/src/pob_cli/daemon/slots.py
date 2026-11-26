@@ -466,6 +466,8 @@ class DaemonManager:
             return build_status_payload(self)
 
         if action in ("compare", "borrow") or (
+            action == "tree_diff" and not (params.get("spec_a") or params.get("spec_b"))
+        ) or (
             action == "diagnose" and (params.get("compare_source") or params.get("compare_xml_code"))
         ):
             main_slot = normalize_slot_name(params.get("main_target") or params.get("target") or "main")
@@ -507,7 +509,7 @@ class DaemonManager:
                 drift_warn: str | None = None
                 if (
                     target == "main"
-                    and action not in ("load", "new_build", "diagnose")
+                    and action not in ("load", "new_build", "diagnose", "map_regex")
                     and not getattr(worker, "last_good_code", None)
                 ):
                     with self._lock:

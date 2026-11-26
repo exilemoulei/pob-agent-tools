@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from ..formatters import fmt_num, render_table
+from ..locale_cfg import current_lang
 from ..trade_item import Item, sanitize_text
 from .evaluator import (
     Candidate,
@@ -40,6 +41,72 @@ def _vs_market_text(candidate: Candidate) -> str:
         return "-"
     pct = round(candidate.vs_market_pct)
     return f"{pct:+d}%" + (" BARGAIN" if candidate.bargain else "")
+
+
+def _buyout_tag(candidate: Candidate, lang: str) -> str:
+    if candidate.trade_mode == "securable":
+        label = "一口价" if lang == "zh-CN" else ("一口價" if lang == "zh-TW" else "Instant")
+        if candidate.gold_fee is not None and candidate.gold_fee > 0:
+            return f"[{label} · {candidate.gold_fee:,}G]"
+        return f"[{label}]"
+    label = "私聊" if lang in ("zh-CN", "zh-TW") else "Whisper"
+    return f"[{label}]"
+
+
+def _format_price_with_mode(candidate: Candidate, lang: str) -> str:
+    if candidate.price_amount is None or not candidate.price_currency or not math.isfinite(candidate.price_amount):
+        base = "no price"
+    else:
+        cur = candidate.price_currency.strip().lower()
+        if cur == "chaos":
+            base = f"{candidate.price_amount:g}c"
+        elif cur == "divine":
+            base = f"{candidate.price_amount:g}d"
+        else:
+            base = f"{candidate.price_amount:g} {candidate.price_currency}"
+    if base == "no price" and candidate.trade_mode != "securable" and not candidate.raw.get("listing"):
+        return base
+    return f"{base} {_buyout_tag(candidate, lang)}"
+
+
+def _seller_text(candidate: Candidate) -> str:
+    base = candidate.seller or "-"
+    if candidate.seller_duplicates_collapsed > 0:
+        return f"{base} (+{candidate.seller_duplicates_collapsed} dup)"
+    return base
+
+
+def _candidate_chaos_floor(candidate: Candidate) -> float | None:
+    val = candidate.price_chaos
+    if val is None and (candidate.price_currency or "").strip().lower() == "chaos":
+        val = candidate.price_amount
+    if val is None or not math.isfinite(val) or val <= 0:
+        return None
+    return float(val)
+
+
+def compute_price_floor_note(candidates: list[Candidate], *, status: str) -> str | None:
+    """Summarize price-floor divergence on ``available`` searches when whisper floor < 70% of instant floor."""
+    if status != "available":
+        return None
+    securable = [
+        (chaos, cand)
+        for cand in candidates
+        if cand.trade_mode == "securable" and (chaos := _candidate_chaos_floor(cand)) is not None
+    ]
+    in_person = [
+        (chaos, cand)
+        for cand in candidates
+        if cand.trade_mode == "in_person" and (chaos := _candidate_chaos_floor(cand)) is not None
+    ]
+    if not securable or not in_person:
+        return None
+    min_sec_chaos, min_sec_cand = min(securable, key=lambda pair: pair[0])
+    min_inp_chaos, _ = min(in_person, key=lambda pair: pair[0])
+    if min_inp_chaos < 0.7 * min_sec_chaos:
+        fee_part = f" (+{min_sec_cand.gold_fee:,}G)" if (min_sec_cand.gold_fee and min_sec_cand.gold_fee > 0) else ""
+        return f"Instant Buyout floor: {min_sec_chaos:g}c{fee_part} vs Whisper-only floor: {min_inp_chaos:g}c"
+    return None
 
 
 def sort_candidates(candidates: list[Candidate], sort: str = "score") -> list[Candidate]:
@@ -116,6 +183,9 @@ def _format_report_header(
     open_affixes: dict[str, bool] | None,
     listed_note: str = "",
     market_note: str = "",
+    price_floor_note: str = "",
+    seller_capped_dropped: int = 0,
+    max_per_seller: int | None = None,
 ) -> list[str]:
     lines: list[str] = ["# Gear upgrade candidates (PoE1 official trade)", ""]
     lines.append(f"- Build: {sanitize_text(build_label) or 'unknown'}")
@@ -135,6 +205,15 @@ def _format_report_header(
         lines.append(f"- Listed: {sanitize_text(listed_note)}")
     if market_note:
         lines.append(f"- Market: {sanitize_text(market_note)}")
+    if price_floor_note:
+        lines.append(f"- Price floor: {sanitize_text(price_floor_note)}")
+    if seller_capped_dropped > 0:
+        cap_hint = (
+            f" (cap: {max_per_seller}/seller; pass --max-per-seller 0 for unlimited)"
+            if max_per_seller and max_per_seller > 0
+            else ""
+        )
+        lines.append(f"- Seller cap: {seller_capped_dropped} additional listing(s) hidden{cap_hint}")
     if open_affixes and any(open_affixes.values()):
         wanted = [key for key, enabled in open_affixes.items() if enabled]
         lines.append(
@@ -148,7 +227,7 @@ def _format_report_header(
     return lines
 
 
-def _format_candidates_table(candidates: list[Candidate], *, has_listing: bool) -> list[str]:
+def _format_candidates_table(candidates: list[Candidate], *, has_listing: bool, lang: str) -> list[str]:
     has_pob = any(candidate.pob is not None for candidate in candidates)
     has_sum = any(
         candidate.weighted_sum is not None and math.isfinite(candidate.weighted_sum)
@@ -176,6 +255,8 @@ def _format_candidates_table(candidates: list[Candidate], *, has_listing: bool) 
             or "-"
         )
         item_label = candidate.display_name
+        if candidate.pob is not None and candidate.pob.quality_normalized:
+            item_label += " [+20%Q]"
         if candidate.bench_craft:
             craft = candidate.bench_craft
             item_label += f" [bench: {' / '.join(craft['lines'])}; +{craft['cost']}]"
@@ -183,12 +264,12 @@ def _format_candidates_table(candidates: list[Candidate], *, has_listing: bool) 
         row_cells: list[Any] = [
             index,
             _escape(item_label),
-            _escape(candidate.price_text),
+            _escape(_format_price_with_mode(candidate, lang)),
         ]
         if has_market:
             row_cells.append(_vs_market_text(candidate))
         if has_listing:
-            row_cells.extend([_escape(candidate.seller or "-"), _age_text(candidate.age_hours)])
+            row_cells.extend([_escape(_seller_text(candidate)), _age_text(candidate.age_hours)])
         if has_sum:
             sum_str = (
                 f"{candidate.weighted_sum:g}"
@@ -258,14 +339,20 @@ def _format_bench_options(slot: str, bench_options: list[dict[str, Any]]) -> lis
     return lines
 
 
-def _format_candidate_detail(index: int, candidate: Candidate, *, has_listing: bool = False) -> list[str]:
+def _format_candidate_detail(
+    index: int,
+    candidate: Candidate,
+    *,
+    has_listing: bool = False,
+    lang: str = "zh-CN",
+) -> list[str]:
     lines: list[str] = [
-        f"## {index}. {sanitize_text(candidate.display_name)} - {sanitize_text(candidate.price_text)}"
+        f"## {index}. {sanitize_text(candidate.display_name)} - {sanitize_text(_format_price_with_mode(candidate, lang))}"
     ]
     if candidate.url:
         lines.append(f"[Trade listing]({candidate.url})")
     if has_listing:
-        lines.append(f"Seller: {_escape(candidate.seller or '-')} | Listed: {_age_text(candidate.age_hours)} ago")
+        lines.append(f"Seller: {_escape(_seller_text(candidate))} | Listed: {_age_text(candidate.age_hours)} ago")
     if candidate.vs_market_pct is not None:
         lines.append(f"Price vs market: {_vs_market_text(candidate)}")
     if candidate.bench_craft:
@@ -280,8 +367,9 @@ def _format_candidate_detail(index: int, candidate: Candidate, *, has_listing: b
     lines.append("")
     if candidate.pob is not None:
         pob = candidate.pob
+        q_tag = " [+20%Q]" if pob.quality_normalized else ""
         lines.append(
-            f"PoB: {pob.dps_key} {fmt_num(pob.dps_before)} -> {fmt_num(pob.dps_after)} "
+            f"PoB{q_tag}: {pob.dps_key} {fmt_num(pob.dps_before)} -> {fmt_num(pob.dps_after)} "
             f"({pob.dps_pct_str}), EHP {fmt_num(pob.ehp_before)} -> {fmt_num(pob.ehp_after)} "
             f"({pob.ehp_pct_str}), life {pob.life_delta:+g}"
         )
@@ -351,8 +439,17 @@ def format_report(
     bench_options: list[dict[str, Any]] | None = None,
     listed_note: str = "",
     market_note: str = "",
+    price_floor_note: str | None = None,
+    seller_capped_dropped: int = 0,
+    max_per_seller: int | None = None,
 ) -> str:
     """Render a high-SNR GitHub-flavored Markdown report for trade upgrade candidates."""
+    lang = current_lang()
+    resolved_floor = (
+        price_floor_note
+        if price_floor_note is not None
+        else (compute_price_floor_note(candidates, status=status) or "")
+    )
     lines = _format_report_header(
         build_label=build_label,
         slot=slot,
@@ -368,6 +465,9 @@ def format_report(
         open_affixes=open_affixes,
         listed_note=listed_note,
         market_note=market_note,
+        price_floor_note=resolved_floor,
+        seller_capped_dropped=seller_capped_dropped,
+        max_per_seller=max_per_seller,
     )
 
     if not candidates:
@@ -375,13 +475,13 @@ def format_report(
         return "\n".join(lines)
 
     has_listing = any(candidate.seller or candidate.age_hours is not None for candidate in candidates)
-    lines.extend(_format_candidates_table(candidates, has_listing=has_listing))
+    lines.extend(_format_candidates_table(candidates, has_listing=has_listing, lang=lang))
 
     if bench_options:
         lines.extend(_format_bench_options(slot, bench_options))
 
     for index, candidate in enumerate(candidates[:3], start=1):
-        lines.extend(_format_candidate_detail(index, candidate, has_listing=has_listing))
+        lines.extend(_format_candidate_detail(index, candidate, has_listing=has_listing, lang=lang))
 
     lines.append(
         "> Mod score is a weighted template delta, not PoB DPS. `-` means the candidate "
@@ -404,6 +504,10 @@ def report_json(candidates: list[Candidate]) -> list[dict[str, Any]]:
                 "currency": candidate.price_currency,
                 "chaos": _json_safe_optional_float(candidate.price_chaos),
             },
+            "tradeMode": candidate.trade_mode,
+            "goldFee": candidate.gold_fee,
+            "priceType": candidate.price_type,
+            "sellerDuplicatesCollapsed": candidate.seller_duplicates_collapsed,
             "vs_market_pct": _json_safe_optional_float(candidate.vs_market_pct),
             "bargain": candidate.bargain,
             "seller": candidate.seller,

@@ -14,7 +14,7 @@ from typing import Any
 from ..snapshot import history_of
 
 READ_CACHE_ACTIONS: frozenset[str] = frozenset(
-    {"summary", "items", "skills", "audit", "calc", "diagnose"}
+    {"summary", "items", "skills", "audit", "calc", "diagnose", "map_regex"}
 )
 
 LOOP_GUARD_WARNING = (
@@ -102,6 +102,13 @@ def compute_source_hash(params: dict[str, Any]) -> str | None:
 
     if not canonical:
         return None
+    stage_bits = [
+        f"{k}={str(params.get(k)).strip()}"
+        for k in ("stage", "spec", "item_set", "skill_set")
+        if params.get(k) is not None and str(params.get(k)).strip()
+    ]
+    if stage_bits:
+        canonical = canonical + "|" + "|".join(stage_bits)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
@@ -110,7 +117,7 @@ def _canonicalize_params(action: str, params: dict[str, Any], *, include_section
     for k, v in params.items():
         if k in _COMMON_SKIP_KEYS:
             continue
-        if action == "diagnose" and k in _DIAGNOSE_LOAD_KEYS:
+        if action in ("diagnose", "map_regex") and k in _DIAGNOSE_LOAD_KEYS:
             continue
         if action == "compare" and k in _COMPARE_SKIP_KEYS:
             continue
@@ -407,7 +414,7 @@ class SlotReadCache:
         hist = history_of(worker)
         if _is_hist_unsettled(hist):
             return cache_lang, None
-        if action == "diagnose":
+        if action in ("diagnose", "map_regex"):
             has_load_arg = bool(
                 params.get("source")
                 or params.get("xml_code")

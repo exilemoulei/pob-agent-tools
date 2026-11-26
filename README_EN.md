@@ -14,7 +14,7 @@ Just import your build through a normal chat and let your agent actually run it 
 
 When it runs into a mechanic it isn't sure about, it checks [PoEDB](https://poedb.tw) and [PoE Wiki](https://www.poewiki.net) instead of making things up.
 
-It gives real upgrade suggestions, automatically builds trade queries around your build's gaps with direct trade links, and hunts Timeless Jewel seeds (including Abyss jewels) in seconds!
+It gives real upgrade suggestions, automatically builds trade queries around your build's gaps (with instant Gold buyout `--securable` filtering, seller deduplication, and lossless `+20%` quality normalization in PoB) with direct trade links, hunts Timeless Jewel seeds (including Abyss jewels) in seconds, generates build-aware 0-false-positive T16/T17 map regexes (`pob map-regex` — outputs passive text for manual copy-paste into the stash search box and never interacts with the game client, files, or overlays), and supports zero-engine boss/fragment drop lookup plus bilingual currency/divcard price queries (`pob data drop`, `pob price`)!
 
 ---
 
@@ -76,7 +76,7 @@ Paste it directly to your agent and ask it to save it to your local `POESESSID` 
 
 ## Credits and License
 
-- **Upstream & Inspiration**: [**ianderse/pob-mcp**](https://github.com/ianderse/pob-mcp) (GPL-3.0), [**shalayiding/POEMCP**](https://github.com/shalayiding/POEMCP), [**Hsiung-Shao/PobTools-zh**](https://github.com/Hsiung-Shao/PobTools-zh) (Chinese translation data & early headless bridge), and [**PathOfBuildingCommunity/PathOfBuilding**](https://github.com/PathOfBuildingCommunity/PathOfBuilding).
+- **Upstream & Inspiration**: [**ianderse/pob-mcp**](https://github.com/ianderse/pob-mcp) (GPL-3.0), [**shalayiding/POEMCP**](https://github.com/shalayiding/POEMCP), [**Hsiung-Shao/PobTools-zh**](https://github.com/Hsiung-Shao/PobTools-zh) (Chinese translation data & early headless bridge), [**PathOfBuildingCommunity/PathOfBuilding**](https://github.com/PathOfBuildingCommunity/PathOfBuilding), and [**SnosMe/awakened-poe-trade**](https://github.com/SnosMe/awakened-poe-trade) (MIT; trimmed offline map mods, boss drop pools, non-gear currency/divcard bilingual dictionary, and trade stat polarity/Chinese supplements — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
 - **Community Contributors**:
   - [**@ChangMenQAQ**](https://github.com/ChangMenQAQ) ([PR #1](https://github.com/exilemoulei/pob4agents/pull/1)): official trade search, Harvest resistance swap, and crafting bench evaluation.
   - [**@restartgr**](https://github.com/restartgr) ([PR #2](https://github.com/exilemoulei/pob4agents/pull/2), [PR #4](https://github.com/exilemoulei/pob4agents/pull/4), [PR #6](https://github.com/exilemoulei/pob4agents/pull/6)): PoB inflation audit, `--keep` condition retention, restore verification, exit codes, and bilingual doc polish.

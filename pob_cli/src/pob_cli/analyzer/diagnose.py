@@ -24,6 +24,7 @@ from .diagnose_probes import (
     _extract_trigger_attack_aps,
     _gaps_from_agent_probe,
     _probe_agent_build,
+    detect_volatile_vaal_opportunity,
 )
 from .inspectors import inspect_items
 from .pitfalls_core import _detect_build_mechanics_and_pitfalls
@@ -195,6 +196,7 @@ def _assemble_diagnose_mechanics(
     alloc_node_stats: list[tuple[str, list[str]]],
     gaps: list[dict[str, str]],
     tree_state_diag: Any = None,
+    ascendancy_nodes: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[str], list[str], dict[str, Any]]:
     stats_full: dict[str, Any] = {}
     stats_full.update(summary.get("offence") or {})
@@ -242,6 +244,19 @@ def _assemble_diagnose_mechanics(
     probe_gaps = _gaps_from_agent_probe(agent_probe)
     if agent_probe is not None:
         build_mechanics["agentProbe"] = agent_probe
+    from .threshold_probes import compute_threshold_probes
+
+    build_mechanics["_thresholdProbes"] = compute_threshold_probes(
+        stats_full, skills_res=all_skills_res, items_res=items_raw_res, agent_probe=agent_probe
+    )
+    vv_hint = detect_volatile_vaal_opportunity(
+        equipped_slots_raw=items_info.get("equippedSlots") or [],
+        build_info=info,
+        ascendancy_nodes=ascendancy_nodes,
+        alloc_node_stats=alloc_node_stats,
+    )
+    if vv_hint is not None:
+        build_mechanics["volatileVaal"] = vv_hint
     diag_mech_gaps = deduplicate_trigger_gaps(diag_mech_gaps, agent_probe)
 
     core_synergies: list[str] = []
@@ -305,6 +320,9 @@ def _attach_diagnose_socket_fields(
         out_diag["socketSummary"] = sock_summary
     if isinstance(nearby_socks, list):
         out_diag["nearbySockets"] = nearby_socks
+    bm = out_diag.get("buildMechanics")
+    if isinstance(bm, dict) and "_thresholdProbes" in bm:
+        out_diag["thresholdProbes"] = bm.pop("_thresholdProbes")
 
 
 def diagnose_build(
@@ -411,6 +429,7 @@ def diagnose_build(
         alloc_node_stats=alloc_node_stats,
         gaps=gaps,
         tree_state_diag=tree_state_diag,
+        ascendancy_nodes=ascendancy_nodes_compact,
     )
 
     keystone_names = [
