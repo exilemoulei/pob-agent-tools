@@ -365,3 +365,16 @@ def test_import_tree_version_follows_engine_and_ruthless(tmp_path: Path) -> None
         pob_root=tmp_path,
     )
     assert 'treeVersion="3_30_ruthless"' in xml_text
+
+
+def test_ruthless_tree_is_named_when_the_engine_can_stage_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    poe1 = tmp_path / "PoE1"
+    (poe1 / "TreeData" / "3_30").mkdir(parents=True)
+    (poe1 / "TreeData" / "3_30" / "tree.lua").write_text("return {}", encoding="utf-8")
+    monkeypatch.delenv("POB_OFFLINE", raising=False)
+    assert resolve_import_tree_version(tmp_path, "Ruthless Keepers") == "3_30"  # the engine does not know it
+    (poe1 / "GameVersions.lua").write_text('treeVersionList = { "3_29", "3_30_ruthless", "3_30" }', encoding="utf-8")
+    assert resolve_import_tree_version(tmp_path, "Ruthless Keepers") == "3_30_ruthless"
+    assert resolve_import_tree_version(tmp_path, "Keepers") == "3_30"
+    monkeypatch.setenv("POB_OFFLINE", "1")
+    assert resolve_import_tree_version(tmp_path, "Ruthless Keepers") == "3_30"  # nothing can be downloaded

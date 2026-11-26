@@ -7,6 +7,7 @@ international private-profile JSON without patching upstream `bridge.lua`.
 
 from __future__ import annotations
 
+import os
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -102,9 +103,24 @@ def resolve_import_tree_version(pob_root: Path | None, league: Any = None) -> st
             pass
         if "ruthless" in str(league or "").lower():
             ruthless = f"{version}_ruthless"
-            if (Path(pob_root) / "PoE1" / "TreeData" / ruthless / "tree.lua").is_file():
+            poe1 = Path(pob_root) / "PoE1"
+            if (poe1 / "TreeData" / ruthless / "tree.lua").is_file() or _engine_can_stage_tree(poe1, ruthless):
                 version = ruthless
     return version
+
+
+def _engine_can_stage_tree(poe1: Path, tree_version: str) -> bool:
+    """Whether the engine knows a tree it does not have on disk and may download it.
+
+    The slim engine ships the plain trees only; `import_code` stages a version a build names on demand.
+    """
+    if os.environ.get("POB_OFFLINE") == "1":
+        return False
+    try:
+        text = (poe1 / "GameVersions.lua").read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    return f'"{tree_version}"' in text
 
 
 def _load_jewel_slots(pob_root: Path | None, tree_version: str) -> list[int]:
