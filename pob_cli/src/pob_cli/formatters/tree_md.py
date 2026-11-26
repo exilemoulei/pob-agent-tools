@@ -51,7 +51,40 @@ def _format_node_stats(node: dict[str, Any], *, max_len: int | None = None) -> s
     if not stats_list and node.get("overrideWhy") == "conquered":
         return "_(0 stats — conquered)_"
     text = "; ".join(str(s) for s in stats_list[:2])
+    if node.get("overrideWhy") == "tattoo" and node.get("baseTargetType"):
+        base_tag = f"[base: {node['baseTargetType']}]"
+        text = f"{text} {base_tag}" if text else base_tag
     return text[:max_len] if max_len is not None else text
+
+
+def format_tattoo_slots_summary_line(tattoo_slots: Any) -> str | None:
+    if not isinstance(tattoo_slots, dict) or not tattoo_slots.get("buildLoaded"):
+        return None
+    buckets = tattoo_slots.get("buckets")
+    if not isinstance(buckets, dict):
+        return None
+
+    def _fmt_bucket(label: str, key: str) -> str:
+        b = buckets.get(key) if isinstance(buckets.get(key), dict) else {}
+        free_n = int(b.get("free") or 0)
+        tat_n = int(b.get("tattooed") or 0)
+        return f"{label} {free_n} free ({tat_n} tattooed)" if tat_n else f"{label} {free_n} free"
+
+    notable_keys = ("Notable: +30 to Strength", "Notable: +30 to Dexterity", "Notable: +30 to Intelligence")
+    not_free = sum(int((buckets.get(k) or {}).get("free") or 0) for k in notable_keys)
+    not_tat = sum(int((buckets.get(k) or {}).get("tattooed") or 0) for k in notable_keys)
+    not_part = f"+30 Notable {not_free} free ({not_tat} tattooed)" if not_tat else f"+30 Notable {not_free} free"
+    used = int(tattoo_slots.get("tattoosUsed") or 0)
+    limit = int(tattoo_slots.get("tattooLimit") or 50)
+    rg_used = int(tattoo_slots.get("runegraftsUsed") or 0)
+    parts = [
+        _fmt_bucket("Small Str", "Small Strength"),
+        _fmt_bucket("Small Dex", "Small Dexterity"),
+        _fmt_bucket("Small Int", "Small Intelligence"),
+        not_part,
+        f"Used: {used}/{limit}" + (f" (+{rg_used} Runegrafts)" if rg_used else ""),
+    ]
+    return f"- **Tattoo Slots**: {' | '.join(parts)}"
 
 
 def _tier_exceeds_equipped_radius(
@@ -173,6 +206,9 @@ def format_tree_markdown(
     lines = [
         f"### Passive Tree Summary: `{pts.get('used', 0)}/{pts.get('usedMax', 0)}` points | Ascendancy `{pts.get('ascUsed', 0)}/{pts.get('ascMax', 0)}`",
     ]
+    ts_line = format_tattoo_slots_summary_line(res.get("tattooSlots"))
+    if ts_line:
+        lines.append(ts_line)
     conquered_zero_normals = [
         n
         for n in (res.get("conqueredSmallPassives") or [])

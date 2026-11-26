@@ -26,6 +26,7 @@ from .primitives import (
     restore_warning,
     strip_pob_escapes,
 )
+from .tree_md import format_tattoo_slots_summary_line
 
 
 def _fmt_diagnose_header(res: dict[str, Any], *, compact: bool) -> list[str]:
@@ -88,6 +89,9 @@ def _fmt_diagnose_header(res: dict[str, Any], *, compact: bool) -> list[str]:
             nh = f" ({panth['minorHint']})" if panth.get("minorHint") else ""
             p_parts.append(f"Minor `{panth['minor']}`{nh}")
         lines.append(f"- **Pantheon**: {' | '.join(p_parts)}")
+    ts_line = format_tattoo_slots_summary_line(res.get("tattooSlots"))
+    if ts_line:
+        lines.append(ts_line)
 
     asc_nodes = res.get("ascendancyNodes") or []
     if asc_nodes:

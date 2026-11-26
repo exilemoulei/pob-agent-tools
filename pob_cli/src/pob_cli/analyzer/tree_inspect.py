@@ -403,11 +403,13 @@ def inspect_tree(
                     {k: meta[k] for k in ("id", "name", "nameZh", "stats", "statsZh", "overrideWhy") if k in meta}
                 )
 
+        from .tattoo_slots import analyze_tattoo_slots
         from .tree_sockets import enrich_tree_sockets
 
         jewel_sockets, socket_summary, nearby_sockets = enrich_tree_sockets(
             tree_state, items_res, nodes_db, dynamic_map, allocated_set
         )
+        tattoo_slots = analyze_tattoo_slots(tree_state, nodes_db if isinstance(nodes_db, dict) else {})
 
         return {
             "treeVersion": tree_version,
@@ -420,6 +422,7 @@ def inspect_tree(
             "masteries": masteries_list,
             "notables": notables,
             "conqueredSmallPassives": conquered_smalls,
+            "tattooSlots": tattoo_slots,
             "jewelSockets": jewel_sockets,
             "socketSummary": socket_summary,
             "nearbySockets": nearby_sockets,

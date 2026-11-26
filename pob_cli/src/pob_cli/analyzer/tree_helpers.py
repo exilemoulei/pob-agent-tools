@@ -9,6 +9,26 @@ from typing import Any
 
 from ..formatters import strip_pob_escapes
 from .constants import JEWEL_RADII_315, JEWEL_RADII_316
+from .tattoo_slots import _classify_raw_base_bucket
+
+_HYBRID_ATTR_RE = re.compile(r"\b(?:strength|dexterity|intelligence|all attributes)\b", re.IGNORECASE)
+
+
+def classify_base_target_type(raw_base: dict[str, Any] | None) -> str | None:
+    """Classify un-overridden `nodes_db` entry into its readable base target type."""
+    if not isinstance(raw_base, dict) or not raw_base:
+        return None
+    bucket = _classify_raw_base_bucket(raw_base)
+    if bucket is not None:
+        return bucket
+    ntype = str(raw_base.get("type") or "Normal")
+    if ntype in ("Notable", "Keystone", "Mastery", "Socket"):
+        return ntype
+    if ntype == "Normal":
+        stats_blob = " ".join(str(s) for s in (raw_base.get("stats") or ()) if s)
+        if _HYBRID_ATTR_RE.search(stats_blob):
+            return "Small Attribute"
+    return ntype
 
 _TREE_TYPE_RANK = {"Keystone": 0, "Notable": 1, "Mastery": 2, "Socket": 3, "Normal": 4}
 
@@ -35,7 +55,14 @@ def apply_node_override(
     ov: dict[str, Any],
     raw_base: dict[str, Any] | None = None,
 ) -> None:
-    """Apply PoB node override without leaking pre-conquered `nodes_db` stats when `stats == []`."""
+    """Apply PoB node override while preserving underlying base identity and zeroing conquered stats."""
+    orig_src = raw_base if isinstance(raw_base, dict) and raw_base else base
+    if "baseNodeName" not in base and orig_src.get("name") is not None:
+        base["baseNodeName"] = orig_src.get("name")
+    if "baseTargetType" not in base:
+        btype = classify_base_target_type(orig_src)
+        if btype is not None:
+            base["baseTargetType"] = btype
     base["overrideWhy"] = ov.get("why")
     for fld in ("name", "nameZh", "stats", "statsZh"):
         if fld in ov and ov[fld] is not None:
