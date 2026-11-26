@@ -6,7 +6,15 @@ from typing import Any
 
 import click
 
-from .cli_common import _call_with_supported_kwargs, _emit_json, _emit_text, _output_options
+from .cli_common import (
+    _call_with_supported_kwargs,
+    _emit_json,
+    _emit_text,
+    _output_options,
+    _prepend_warning,
+    _target_option,
+    invoke_daemon,
+)
 from .cli_data_render import (
     _render_gem_quality_breakpoints_markdown,
     _render_single_data_markdown,
@@ -15,6 +23,73 @@ from .cli_data_render import (
     _render_tree_data_markdown,
 )
 from .cli_research import cmd_poedb, cmd_research, cmd_wiki
+
+
+def _run_local_data_query(
+    gd: Any,
+    kind: str,
+    q_list: list[str],
+    *,
+    slot: str | None,
+    ilvl: int | None,
+    mod_filter: str | None,
+    extra_kw: dict[str, Any],
+    for_build: bool,
+    target: str,
+    limit: int,
+    as_json: bool,
+    compact: bool,
+    out_path: str | None,
+) -> None:
+    warn_meta: dict[str, Any] = {}
+    build_slots = invoke_daemon("tree_tattoo_slots", {"target": target}) if for_build else None
+    if isinstance(build_slots, dict):
+        for wk in ("slotDriftWarning", "updateWarning", "persistWarning"):
+            val = build_slots.pop(wk, None)
+            if val:
+                warn_meta[wk] = val
+    if len(q_list) <= 1:
+        q_str = q_list[0] if q_list else ""
+        res = gd.query_local_data(kind, q_str, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw)
+        if build_slots is not None:
+            from .analyzer.tattoo_slots import annotate_data_response_for_build
+
+            annotate_data_response_for_build(res, build_slots)
+        if as_json:
+            if warn_meta:
+                res.update(warn_meta)
+            _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
+            return
+        lbl = (f"{q_str} (--mod {mod_filter})" if mod_filter else q_str) if q_str else (f"--mod {mod_filter}" if mod_filter else (slot or str(extra_kw.get("tattoo_kind") or kind)))
+        md = _render_single_data_markdown(res, kind, lbl)
+        _emit_text(_prepend_warning(md, warn_meta) if warn_meta else md, out_path=out_path)
+        return
+
+    if hasattr(gd, "query_local_data_multi"):
+        multi_res = _call_with_supported_kwargs(gd.query_local_data_multi, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw)
+    elif hasattr(gd, "query_multi"):
+        import inspect
+
+        first_param = next(iter(inspect.signature(gd.query_multi).parameters.keys()), "")
+        args = (gd.ensure_gamedata_index(), kind, q_list) if first_param in ("db", "conn", "db_path") else (kind, q_list)
+        multi_res = _call_with_supported_kwargs(gd.query_multi, *args, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw)
+    else:
+        grouped = {q: gd.query_local_data(kind, q, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw) for q in q_list}
+        multi_res = {"kind": kind.lower(), "queries": q_list, "results": grouped}
+
+    if build_slots is not None:
+        from .analyzer.tattoo_slots import annotate_data_response_for_build
+
+        annotate_data_response_for_build(multi_res, build_slots)
+    if as_json:
+        if warn_meta:
+            multi_res.update(warn_meta)
+        _emit_json(multi_res, compact=compact, out_path=out_path, sanitize=False)
+        return
+    from .formatters.gamedata_md import format_multi_game_data
+
+    md = format_multi_game_data(multi_res, kind, q_list)
+    _emit_text(_prepend_warning(md, warn_meta) if warn_meta else md, out_path=out_path)
 
 
 @click.command("data")
@@ -38,6 +113,13 @@ from .cli_research import cmd_poedb, cmd_research, cmd_wiki
     help="[tattoo] Filter passive overrides by kind (all, tattoo, runegraft).",
 )
 @click.option("--legacy", "include_legacy", is_flag=True, help="[tattoo, runegraft] Include retired 3.22 legacy tattoos.")
+@click.option(
+    "--for-build",
+    "for_build",
+    is_flag=True,
+    help="[tattoo, runegraft] Annotate availability against the loaded build's passive tree base slots (uses daemon).",
+)
+@_target_option(allow_slot_alias=False)
 @click.option("--type", "node_type", type=str, default=None, help="[tree only] Filter passive tree nodes by type (Keystone, Notable, Mastery, Ascendancy, Bloodline, Socket).")
 @click.option("--asc", "asc_filter", type=str, default=None, help="[tree only] Filter passive tree nodes by Ascendancy or Bloodline name (EN or ZH, e.g. Warden, Trickster, 守望者).")
 @click.option("--cdr", "cdr_pct", type=float, default=0.0, show_default=True, help="[tick only] Total Cooldown Recovery Rate % (e.g. 14, 52).")
@@ -58,6 +140,8 @@ def cmd_data(
     mod_filter: str | None,
     tattoo_kind: str,
     include_legacy: bool,
+    for_build: bool,
+    target: str,
     node_type: str | None,
     asc_filter: str | None,
     cdr_pct: float,
@@ -72,7 +156,7 @@ def cmd_data(
     compact: bool,
     out_path: str | None,
 ) -> None:
-    """Query local 0ms PoB Lua game/tree data, boss drops & 0.033s tick calculator (`gem|unique|mod|base|translate|tattoo|runegraft|tree|tick|drop`, daemon-free)."""
+    """Query local 0ms PoB Lua game/tree data, boss drops & 0.033s tick calculator (`gem|unique|mod|base|translate|tattoo|runegraft|tree|tick|drop`, daemon-free unless `--for-build`)."""
     from . import game_data as gd
 
     kind_low = kind.lower()
@@ -83,6 +167,11 @@ def cmd_data(
             gd.ensure_gamedata_index(force_rebuild=True)
 
     q_list = [q.strip() for q in queries if q and q.strip()]
+    if for_build and kind_low not in ("tattoo", "runegraft"):
+        raise click.UsageError("--for-build is only supported for `pob data tattoo` and `pob data runegraft`.")
+    ctx = click.get_current_context(silent=True)
+    if not for_build and ctx is not None and ctx.get_parameter_source("target") == click.core.ParameterSource.COMMANDLINE:
+        raise click.UsageError("--target on `pob data` requires `--for-build` (e.g. `pob data tattoo ... --for-build --target <slot>`).")
 
     if kind_low == "drop":
         if not q_list:
@@ -159,81 +248,24 @@ def cmd_data(
     extra_kw: dict[str, Any] = {}
     if kind_low in ("tattoo", "runegraft"):
         extra_kw = {"tattoo_kind": tattoo_kind.lower(), "include_legacy": include_legacy}
-
-    if not q_list:
-        if kind_low in ("tattoo", "runegraft"):
-            res = gd.query_local_data(kind, "", slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw)
-            if as_json:
-                _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
-                return
-            lbl = f"--mod {mod_filter}" if mod_filter else (slot or tattoo_kind)
-            _emit_text(_render_single_data_markdown(res, kind, lbl), out_path=out_path)
-            return
-        if kind_low == "unique" and mod_filter and mod_filter.strip():
-            res = gd.query_local_data(kind, "", slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit)
-            if as_json:
-                _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
-                return
-            _emit_text(_render_single_data_markdown(res, kind, f"--mod {mod_filter}"), out_path=out_path)
-            return
+    elif not q_list and not (kind_low == "unique" and mod_filter and mod_filter.strip()):
         raise click.UsageError("Provide at least one non-empty query.")
-    if len(q_list) == 1:
-        res = gd.query_local_data(kind, q_list[0], slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw)
-        if as_json:
-            _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
-            return
-        q_disp = f"{q_list[0]} (--mod {mod_filter})" if mod_filter else q_list[0]
-        _emit_text(_render_single_data_markdown(res, kind, q_disp), out_path=out_path)
-        return
 
-    multi_res: dict[str, Any]
-    if hasattr(gd, "query_local_data_multi"):
-        multi_res = _call_with_supported_kwargs(
-            gd.query_local_data_multi, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw
-        )
-    elif hasattr(gd, "query_multi"):
-        import inspect
-
-        sig = inspect.signature(gd.query_multi)
-        first_param = next(iter(sig.parameters.keys()), "")
-        if first_param in ("db", "conn", "db_path"):
-            db_path = gd.ensure_gamedata_index()
-            multi_res = _call_with_supported_kwargs(
-                gd.query_multi, db_path, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw
-            )
-        else:
-            multi_res = _call_with_supported_kwargs(
-                gd.query_multi, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw
-            )
-    else:
-        grouped = {
-            q: gd.query_local_data(kind, q, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw)
-            for q in q_list
-        }
-        multi_res = {"kind": kind.lower(), "queries": q_list, "results": grouped}
-
-    if as_json:
-        _emit_json(multi_res, compact=compact, out_path=out_path, sanitize=False)
-        return
-
-    sections: list[str] = []
-    res_map = multi_res.get("results")
-    resp_queries = (
-        [str(x) for x in multi_res["queries"]]
-        if isinstance(multi_res, dict) and isinstance(multi_res.get("queries"), list)
-        else q_list
+    _run_local_data_query(
+        gd,
+        kind,
+        q_list,
+        slot=slot,
+        ilvl=ilvl,
+        mod_filter=mod_filter,
+        extra_kw=extra_kw,
+        for_build=for_build,
+        target=target,
+        limit=limit,
+        as_json=as_json,
+        compact=compact,
+        out_path=out_path,
     )
-    if isinstance(res_map, dict):
-        for q in resp_queries:
-            q_key = q.strip()
-            sub = res_map[q] if q in res_map else (res_map[q_key] if q_key in res_map else {})
-            sections.append(_render_single_data_markdown(sub or {}, kind, q_key))
-    elif isinstance(res_map, list):
-        for idx, sub in enumerate(res_map):
-            sub_dict = sub if isinstance(sub, dict) else {}
-            lbl = str(sub_dict.get("query") or (resp_queries[idx] if idx < len(resp_queries) else "-"))
-            sections.append(_render_single_data_markdown(sub_dict, kind, lbl))
-    _emit_text("\n\n".join(sections), out_path=out_path)
 
 
 @click.command("price")

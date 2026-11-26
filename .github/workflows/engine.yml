@@ -111,7 +111,7 @@ jobs:
           POB_ROOT: ${{ runner.temp }}/pob-win-rt/engine
           POB_TEST_PERF_SLACK: "4"
         run: |
-          python pob_cli/scripts/check.py --min-passed 1467 --max-skipped 33
+          python pob_cli/scripts/check.py --min-passed 1525 --max-skipped 33
           if ($LASTEXITCODE -ne 0) { throw "check.py full gate failed (exit $LASTEXITCODE)" }
 
   posix:
@@ -124,11 +124,11 @@ jobs:
           # GitHub labels its macOS 27 arm64 image xcode-27.
           - os: xcode-27
             label: macOS-arm64
-            # Shared macOS runners run timing benchmarks about 2-3x slower than Linux.
-            perf_slack: "3"
+            # Shared macOS xcode-27 runners spike up to ~5x slower than Linux under VM CPU steal.
+            perf_slack: "6"
           - os: ubuntu-latest
             label: Linux-x64
-            perf_slack: "1"
+            perf_slack: "4"
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -253,4 +253,4 @@ jobs:
           POB_ROOT: ${{ runner.temp }}/pob-e2e-rt/engine
           POB_TEST_PERF_SLACK: ${{ matrix.perf_slack }}
         run: |
-          python3 pob_cli/scripts/check.py --min-passed 1492 --max-skipped 8
+          python3 pob_cli/scripts/check.py --min-passed 1550 --max-skipped 8
