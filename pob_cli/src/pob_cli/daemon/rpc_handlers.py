@@ -11,6 +11,15 @@ from ..errors import CrossGameHallucinationError, DaemonRequestError
 from ..snapshot import history_of
 from .read_cache import compute_source_hash, is_live_source
 from .rpc_mutate import MUTATE_ACTION_HANDLERS, norm_keep
+from .rpc_tree import (
+    TREE_ACTION_HANDLERS,
+)
+from .rpc_tree import (
+    _h_tree as _h_tree,
+)
+from .rpc_tree import (
+    _h_tree_prune as _h_tree_prune,
+)
 from .runtime import normalize_slot_name
 
 if TYPE_CHECKING:
@@ -325,30 +334,6 @@ def _h_skills(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dic
     return inspect_skills(w, group_selector=params.get("group"))
 
 
-def _h_tree(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
-    from ..analyzer import inspect_tree
-
-    limit_raw = params.get("limit")
-    return inspect_tree(
-        w,
-        search=params.get("search"),
-        queries=params.get("queries"),
-        node_types=params.get("node_types") or params.get("nodeTypes") or params.get("types"),
-        allocated=params.get("allocated"),
-        max_cost=(
-            int(params["max_cost"])
-            if params.get("max_cost") is not None
-            else (int(params["maxCost"]) if params.get("maxCost") is not None else None)
-        ),
-        show_path=bool(params.get("show_path", params.get("showPath", False))),
-        masteries=bool(params.get("masteries", False)),
-        socket_radius=(
-            params.get("socket_radius") if params.get("socket_radius") is not None else params.get("socketRadius")
-        ),
-        limit=int(limit_raw) if limit_raw is not None else 100,
-    )
-
-
 def _h_config_list(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from ..analyzer import inspect_config
 
@@ -540,7 +525,6 @@ _SLOT_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "diagnose": _h_diagnose,
     "items": _h_items,
     "skills": _h_skills,
-    "tree": _h_tree,
     "config_list": _h_config_list,
     "calc": _h_calc,
     "matrix": _h_matrix,
@@ -551,6 +535,7 @@ _SLOT_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "trade_generate_query": _h_trade_generate_query,
     "compute_grad_build": _h_compute_grad_build,
     "map_regex": _h_map_regex,
+    **TREE_ACTION_HANDLERS,
     **MUTATE_ACTION_HANDLERS,
 }
 

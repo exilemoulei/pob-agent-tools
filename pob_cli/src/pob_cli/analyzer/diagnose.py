@@ -242,6 +242,11 @@ def _assemble_diagnose_mechanics(
     probe_gaps = _gaps_from_agent_probe(agent_probe)
     if agent_probe is not None:
         build_mechanics["agentProbe"] = agent_probe
+    from .threshold_probes import compute_threshold_probes
+
+    build_mechanics["_thresholdProbes"] = compute_threshold_probes(
+        stats_full, skills_res=all_skills_res, items_res=items_raw_res, agent_probe=agent_probe
+    )
     diag_mech_gaps = deduplicate_trigger_gaps(diag_mech_gaps, agent_probe)
 
     core_synergies: list[str] = []
@@ -305,6 +310,9 @@ def _attach_diagnose_socket_fields(
         out_diag["socketSummary"] = sock_summary
     if isinstance(nearby_socks, list):
         out_diag["nearbySockets"] = nearby_socks
+    bm = out_diag.get("buildMechanics")
+    if isinstance(bm, dict) and "_thresholdProbes" in bm:
+        out_diag["thresholdProbes"] = bm.pop("_thresholdProbes")
 
 
 def diagnose_build(

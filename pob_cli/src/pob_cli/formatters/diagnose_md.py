@@ -184,6 +184,15 @@ def _fmt_diagnose_gaps_and_mechanics(res: dict[str, Any], *, compact: bool) -> l
     else:
         lines.append("- No critical resistance, attribute, accuracy, mana, or point gaps detected.")
 
+    probes = res.get("thresholdProbes")
+    if isinstance(probes, dict) and probes:
+        from .tree_prune_md import format_threshold_probes_markdown
+
+        p_lines = format_threshold_probes_markdown(probes, compact=compact)
+        if p_lines:
+            lines.append("\n**Threshold Gap Probes**:")
+            lines.extend(p_lines)
+
     bm = res.get("buildMechanics") or {}
     core_syn = list(
         res.get("core_synergies")

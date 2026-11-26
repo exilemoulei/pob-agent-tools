@@ -313,6 +313,19 @@ def rank_nodes(
                 for s in res["nearbySockets"]
                 if isinstance(s, dict) and (bool(s.get("allocated")) or _safe_dist(s.get("cost")) <= max_dist)
             ]
+        try:
+            st_res = worker.call("get_stats", {})
+            if isinstance(st_res, dict) and isinstance(st_res.get("stats"), dict) and st_res["stats"]:
+                from ..analyzer.threshold_probes import compute_threshold_probes
+
+                out["thresholdProbes"] = compute_threshold_probes(
+                    st_res["stats"],
+                    mana_reservations=st_res.get("manaReservations")
+                    if isinstance(st_res.get("manaReservations"), list)
+                    else None,
+                )
+        except Exception:
+            pass
         return out
 
 

@@ -33,7 +33,7 @@ _DIAGNOSE_JSON_KEYS: dict[str, tuple[str, ...]] = {
         "inflationStripped",
         "topWaterSources",
     ),
-    "gaps": ("healthGaps", "core_synergies", "buildMechanics", "agentProbe", "socketSummary"),
+    "gaps": ("healthGaps", "thresholdProbes", "core_synergies", "buildMechanics", "agentProbe", "socketSummary"),
     "items": ("equippedItems",),
     "skills": ("mainGroup", "amulet_7th_link", "skillGroups"),
     "cards": ("factCards", "advisories", "askGrounding"),
@@ -449,6 +449,15 @@ def cmd_audit(
         lines.append(render_table(["Severity", "Category", "Finding"], i_rows))
     else:
         lines.append("\n#### 1. Health & Hard Gaps\n- No critical resistance, attribute, or sustain gaps detected.")
+
+    probes = res.get("thresholdProbes")
+    if isinstance(probes, dict) and probes:
+        from .formatters.tree_prune_md import format_threshold_probes_markdown
+
+        p_lines = format_threshold_probes_markdown(probes, compact=True)
+        if p_lines:
+            lines.append("\n#### 1b. Threshold Gap Probes")
+            lines.extend(p_lines)
 
     stripped = res.get("inflationStripped", {})
     lines.append("\n#### 2. Inflation ('Water') Stripped for Pinnacle Boss Baseline")

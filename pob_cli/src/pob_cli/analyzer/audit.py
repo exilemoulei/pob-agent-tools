@@ -31,6 +31,7 @@ from .dewater_steps import _same_state
 from .eb_sustain import collect_dewatered_eb_flask_note, collect_mana_sustain_issues
 from .pitfalls_core import _detect_build_mechanics_and_pitfalls
 from .summary import _has_doryanis_prototype_equipped
+from .threshold_probes import compute_threshold_probes
 
 
 def _prepare_attribution_probes(
@@ -571,6 +572,9 @@ def audit_build(
         out_audit: dict[str, Any] = {
             "healthIssues": health_issues,
             "core_synergies": audit_core_synergies,
+            "thresholdProbes": compute_threshold_probes(
+                stats, skills_res=skills_res_audit, items_res=items_res, agent_probe=agent_probe_res
+            ),
             "inflationStripped": stripped,
             "waterAttribution": water_attribution,
             "restoreCheck": restore_check,

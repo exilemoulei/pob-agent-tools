@@ -326,6 +326,13 @@ def cmd_rank_nodes(
                 "\n\n### Nearby Unallocated Jewel & Cluster Sockets (Unranked — no synthetic DPS)\n"
                 + render_table(["Node ID", "Kind / Sector", "Cost", "Travel Stats"], s_rows)
             )
+    probes = res.get("thresholdProbes")
+    if isinstance(probes, dict) and probes:
+        from .formatters.tree_prune_md import format_threshold_probes_markdown
+
+        p_lines = format_threshold_probes_markdown(probes, compact=True)
+        if p_lines:
+            body += "\n\n### Threshold Gap Probes\n" + "\n".join(p_lines)
     _emit_text(body, out_path=out_path)
 
 

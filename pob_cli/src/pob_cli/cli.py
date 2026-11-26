@@ -148,9 +148,9 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "Modify, add, or replace skill groups and support/active gems.",
     ),
     "tree": (
-        ".cli_mutate",
+        ".cli_tree",
         "grp_tree",
-        "Inspect passive tree (`pob tree [--search ...]`), mutate nodes (`change`), or switch class/ascendancy (`set-class`).",
+        "Inspect passive tree (`pob tree [slot] [--search ...]`), prune branches (`prune`), mutate nodes (`change`), or switch class (`set-class`).",
     ),
     "config": (
         ".cli_mutate",
