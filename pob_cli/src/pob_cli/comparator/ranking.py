@@ -307,7 +307,11 @@ def rank_nodes(
         if isinstance(res.get("socketSummary"), dict):
             out["socketSummary"] = res["socketSummary"]
         if isinstance(res.get("nearbySockets"), list):
-            out["nearbySockets"] = res["nearbySockets"]
+            out["nearbySockets"] = [
+                s
+                for s in res["nearbySockets"]
+                if isinstance(s, dict) and (bool(s.get("allocated")) or _safe_dist(s.get("cost")) <= max_dist)
+            ]
         return out
 
 

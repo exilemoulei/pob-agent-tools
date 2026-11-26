@@ -137,6 +137,11 @@ def resolve_meta_filter(
     except Exception:
         pass
 
+    if norm_tw and not _CJK_RE.search(norm_tw):
+        en_tw = norm_tw.strip()
+        if en_tw:
+            return en_tw.lower(), en_tw
+
     return cleaned.lower(), None
 
 

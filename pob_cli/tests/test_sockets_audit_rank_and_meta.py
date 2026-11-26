@@ -65,6 +65,9 @@ def test_rank_nodes_and_cli_render_nearby_sockets_without_synthetic_dps(monkeypa
     res = rank_nodes(_FakeWorker(), stat="CombinedDPS", max_dist=5, top=5)  # type: ignore[arg-type]
     assert res["socketSummary"]["allocatedEmptyIds"] == [26725]
     assert len(res["nearbySockets"]) == 2
+    # R5 guard: socket candidates must never carry synthetic DPS/power fields
+    for sock in res["nearbySockets"]:
+        assert not ({"power", "pathPower", "dps", "gain"} & set(sock))
 
     monkeypatch.setattr("pob_cli.cli_optimize.invoke_daemon", lambda *_a, **_k: res)
     out = CliRunner().invoke(cmd_rank_nodes, [])
@@ -72,6 +75,16 @@ def test_rank_nodes_and_cli_render_nearby_sockets_without_synthetic_dps(monkeypa
     assert "[EMPTY-ALLOCATED-SOCKET]" in out.output
     assert "Nearby Unallocated Jewel & Cluster Sockets" in out.output
     assert "Outer Large Cluster (NE (Witch/Shadow))" in out.output
+
+    # max_dist=1 filters unallocated sockets costing >1 while keeping cost=0 allocated empty socket and full socketSummary
+    res_d1 = rank_nodes(_FakeWorker(), stat="CombinedDPS", max_dist=1, top=5)  # type: ignore[arg-type]
+    assert res_d1["socketSummary"] == res["socketSummary"]
+    assert [s["nodeId"] for s in res_d1["nearbySockets"]] == [26725]
+    monkeypatch.setattr("pob_cli.cli_optimize.invoke_daemon", lambda *_a, **_k: res_d1)
+    out_d1 = CliRunner().invoke(cmd_rank_nodes, ["--max-dist", "1"])
+    assert out_d1.exit_code == 0, out_d1.output
+    assert "[EMPTY-ALLOCATED-SOCKET]" in out_d1.output
+    assert "7960" not in out_d1.output
 
 
 def test_diagnose_markdown_renders_nearby_sockets_and_applies_n1_fold() -> None:
@@ -138,9 +151,24 @@ def test_query_meta_bilingual_zh_tw_slang_and_en_substring(monkeypatch: Any) -> 
     assert "Chieftain (酋长)" in cli_out.output
     assert "Righteous Fire (正火)" in cli_out.output
 
+    # Offline TW alias returning English via normalize_tw_query without PoEDB or local engine dict
+    monkeypatch.setattr("pob_cli.game_data.zh_match.english_for_zh", lambda _q: None)
+    monkeypatch.setattr("pob_cli.external_data.meta_wiki._lookup_poedb_local_en", lambda _cands: None)
+    res_tw_skill = ext.query_meta(skill="喚醒幽魂")
+    assert res_tw_skill["filters"]["resolvedSkill"] == "Raise Spectre"
+    assert [r["skill"] for r in res_tw_skill["topSkills"]] == ["Raise Spectre"]
+
+    # Negative case: unknown CJK skill safely falls back without crashing or fabricating a resolvedSkill
+    res_unknown = ext.query_meta(skill="不存在的神秘技能")
+    assert "resolvedSkill" not in res_unknown["filters"]
+    assert res_unknown["topSkills"] == []
+    assert res_unknown["ascendancies"] == []
+
 
 def test_skill_md_includes_meta_and_new_within_line_budget() -> None:
     skill_md = (Path(__file__).resolve().parents[2] / "skills" / "pob" / "SKILL.md").read_text(encoding="utf-8")
     assert len(skill_md.splitlines()) <= 85
     assert "pob meta" in skill_md
     assert "pob new" in skill_md
+    assert "| pob batch" not in skill_md
+    assert "; pob batch" in skill_md
