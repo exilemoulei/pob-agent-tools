@@ -171,17 +171,19 @@ def test_tag_prefilter_reduces_candidates_keeps_universal_and_all_tags_restores(
     )
     assert "lightning" in profile.tags and "spell" in profile.tags and "crit" in profile.tags
 
-    pkgs_filtered, total_w, filt_w = build_wheel_packages(graph, {1, 2, 90}, {9001}, profile, all_tags=False)
+    pkgs_filtered, total_w, filt_w, capped_filt = build_wheel_packages(graph, {1, 2, 90}, {9001}, profile, all_tags=False)
     wheel_ids_filt = {p["wheelId"] for p in pkgs_filtered}
     assert total_w == 4
     assert filt_w < total_w  # Bow wheel (g:20) filtered out!
+    assert capped_filt is False
     assert "g:10" in wheel_ids_filt  # Lightning Spell wheel kept
     assert "g:30" in wheel_ids_filt  # Universal Life wheel kept
     assert "g:20" not in wheel_ids_filt  # Bow wheel filtered out
 
-    pkgs_all, total_all, filt_all = build_wheel_packages(graph, {1, 2, 90}, {9001}, profile, all_tags=True)
+    pkgs_all, total_all, filt_all, capped_all = build_wheel_packages(graph, {1, 2, 90}, {9001}, profile, all_tags=True)
     wheel_ids_all = {p["wheelId"] for p in pkgs_all}
     assert filt_all == total_all == 4
+    assert capped_all is False
     assert "g:20" in wheel_ids_all
 
 
@@ -228,7 +230,7 @@ def test_mastery_uniqueness_invariant_and_best_roi_package_selection() -> None:
         assert forbidden_score_keys.isdisjoint(rec.keys())
 
 
-def test_hard_veto_coc_overspeed_and_agnostic_es() -> None:
+def test_hard_veto_coc_overspeed_negative_dps_split_and_agnostic_es() -> None:
     graph = build_passive_graph(_synthetic_nodes_db(), [], {})
     prof_std = BuildProfile(is_spell=True, is_trigger=True)
     # CoC overspeed cliff (trigger rate dropped >10% or source rate > cap)
@@ -241,7 +243,21 @@ def test_hard_veto_coc_overspeed_and_agnostic_es() -> None:
         dps_pct=-15.0,
         sort_by="dps",
     )
-    assert veto_coc is not None and "CoC overspeed / negative DPS" in veto_coc
+    assert veto_coc is not None and "overspeed" in veto_coc and "7.90/7.57/s" in veto_coc
+
+    # Pure negative DPS on a non-trigger Direct Hit build must NOT mention CoC or overspeed!
+    prof_direct = BuildProfile(is_attack=True, is_trigger=False)
+    veto_neg, _ = check_wheel_veto_and_notes(
+        {"ManaUnreserved": 200.0},
+        {"ManaUnreserved": 200.0},
+        {"nodeIds": [101, 102]},
+        graph,
+        prof_direct,
+        dps_pct=-12.4,
+        sort_by="dps",
+    )
+    assert veto_neg == "[VETO: negative DPS (-12.40%)]"
+    assert "CoC" not in veto_neg and "overspeed" not in veto_neg
 
     # Agnostic ES-only wheel
     nodes_es = _synthetic_nodes_db()
@@ -258,6 +274,62 @@ def test_hard_veto_coc_overspeed_and_agnostic_es() -> None:
         sort_by="ehp",
     )
     assert veto_ag == "[VETO: Agnostic ES > 0]"
+
+
+def test_pre_rank_candidate_cap_prioritizes_direct_near_and_all_tags_uncapped() -> None:
+    nodes: dict[str, Any] = {
+        "1": {"name": "Witch", "type": "ClassStart", "group": 1, "out": [2], "in": [], "stats": []},
+        "2": {"name": "Hub", "type": "Normal", "group": 1, "out": [1], "in": [], "stats": ["+10 to Intelligence"]},
+    }
+    prev = 2
+    for step in range(3, 9):
+        nodes[str(step)] = {"name": f"T{step}", "type": "Normal", "group": 1, "out": [prev], "in": [], "stats": ["+10 to Intelligence"]}
+        nodes[str(prev)]["out"].append(step)
+        prev = step
+
+    def _add_wheel(gid: int, attach: int, stat: str) -> None:
+        nid, mid = gid * 10 + 1, gid * 10 + 2
+        nodes[str(nid)] = {"name": f"N_{gid}", "type": "Notable", "group": gid, "out": [attach], "in": [], "stats": [stat]}
+        nodes[str(attach)]["out"].append(nid)
+        nodes[str(mid)] = {
+            "name": f"M_{gid}", "type": "Mastery", "group": gid, "out": [], "in": [],
+            "masteryEffects": [
+                {"effect": gid * 100 + 1, "stats": ["10% increased Lightning Damage"]},
+                {"effect": gid * 100 + 2, "stats": ["8% increased maximum Life"]},
+            ],
+        }
+
+    for i in range(10):
+        _add_wheel(100 + i, 2, "25% increased Lightning Damage with Spells")
+    for i, stat in enumerate((
+        "12% increased Mana Reservation Efficiency of Skills", "+12% chance to Suppress Spell Damage",
+        "10% increased maximum Life", "8% increased Aura Effect",
+    )):
+        _add_wheel(200 + i, 2, stat)
+    for i in range(50):
+        _add_wheel(300 + i, 8, "10% increased Flask Effect Duration")
+
+    graph = build_passive_graph(nodes, [], {})
+    profile = BuildProfile(is_spell=True, is_crit=True, damage_types={"lightning"})
+
+    pkgs_cap, total_w, filt_w, cap_applied = build_wheel_packages(graph, {1, 2}, set(), profile, max_dist=12, max_pts=10, all_tags=False)
+    kept_wids = {p["wheelId"] for p in pkgs_cap}
+    assert total_w == 64 and filt_w == 64 and cap_applied is True
+    assert len(kept_wids) <= 36 and len(pkgs_cap) <= 56
+    assert all(f"g:{100 + i}" in kept_wids for i in range(10))
+    assert all(f"g:{200 + i}" in kept_wids for i in range(4))
+
+    pkgs_all, _, _, cap_all = build_wheel_packages(graph, {1, 2}, set(), profile, max_dist=12, max_pts=10, all_tags=True)
+    assert cap_all is False and len(pkgs_all) == 64 * 3
+
+    worker = _FakeWheelWorker({})
+    worker._nodes, worker._alloc = nodes, [1, 2]
+    res_def = rank_wheels(worker, top=12, include_proxy_sockets=False)  # type: ignore[arg-type]
+    assert res_def["candidateCapApplied"] is True and res_def["evaluatedPackages"] <= 56
+    res_big = rank_wheels(worker, top=30, include_proxy_sockets=False)  # type: ignore[arg-type]
+    assert 56 < res_big["evaluatedPackages"] <= 90
+    res_all = rank_wheels(worker, top=12, all_tags=True, include_proxy_sockets=False)  # type: ignore[arg-type]
+    assert res_all["candidateCapApplied"] is False and res_all["evaluatedPackages"] == 64 * 3
 
 
 def test_proxy_benchmark_strict_isolation_and_cli_flags(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -513,7 +585,7 @@ Implicits: 0
         prof_b = extract_build_profile(st_b, skills_res=sk_b, items_res=it_b)
         assert "bow" in prof_b.weapon_types
         g_b = build_passive_graph(nodes_db, ts_b.get("dynamicNodes"), ts_b.get("overrides"))
-        pkgs_b, _, _ = build_wheel_packages(
+        pkgs_b, _, _, _ = build_wheel_packages(
             g_b, {int(x) for x in ts_b.get("allocatedNodes", [])}, set(), prof_b, max_dist=18, max_pts=12
         )
         es_kept = [
@@ -536,7 +608,7 @@ Implicits: 0
         prof_m = extract_build_profile(st_m, skills_res=sk_m, items_res=it_m)
         assert prof_m.is_minion is True and prof_m.is_attack is False
         g_m = build_passive_graph(nodes_db, ts_m.get("dynamicNodes"), ts_m.get("overrides"))
-        pkgs_m, _, _ = build_wheel_packages(
+        pkgs_m, _, _, _ = build_wheel_packages(
             g_m, {int(x) for x in ts_m.get("allocatedNodes", [])}, set(), prof_m, max_dist=18, max_pts=12
         )
         minion_atk_kept = [

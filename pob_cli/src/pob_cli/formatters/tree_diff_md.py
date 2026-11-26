@@ -46,22 +46,26 @@ def format_tree_diff_markdown(res: dict[str, Any]) -> str:
         else:
             lines.append(f"- **Estimated Respec Cost** (Lv.{lv}): `0 Gold` (no nodes refunded)")
 
-    # 1. Ascendancy / Bloodline summary
+    sec_no = 0
+
+    # Ascendancy / Bloodline summary
     asc_add = s.get("ascendancyAdded") or []
     asc_rm = s.get("ascendancyRemoved") or []
     if asc_add or asc_rm:
-        lines.append("\n#### 1. Ascendancy & Bloodline Diff")
+        sec_no += 1
+        lines.append(f"\n#### {sec_no}. Ascendancy & Bloodline Diff")
         if asc_add:
             lines.append("- **Added (+ in Ref)**: " + ", ".join(_disp_name(x) for x in asc_add))
         if asc_rm:
             lines.append("- **Removed (- only in Current)**: " + ", ".join(_disp_name(x) for x in asc_rm))
 
-    # 2. Keystones
+    # Keystones
     ks = res.get("keystones") or {}
     ks_ref = ks.get("onlyInRef") or []
     ks_cur = ks.get("onlyInCurrent") or []
     if ks_ref or ks_cur:
-        lines.append("\n#### 2. Keystones")
+        sec_no += 1
+        lines.append(f"\n#### {sec_no}. Keystones")
         k_rows: list[list[Any]] = []
         for x in ks_ref:
             st = "; ".join((x.get("statsZh") or x.get("stats") or [])[:2])[:80]
@@ -71,13 +75,14 @@ def format_tree_diff_markdown(res: dict[str, Any]) -> str:
             k_rows.append(["- Only in Current", _disp_name(x), st or "-"])
         lines.append(render_table(["Diff", "Keystone", "Summary"], k_rows))
 
-    # 3. Core Wheels & Highway Travel
+    # Core Wheels & Highway Travel
     wh = res.get("wheels") or {}
     w_ref = wh.get("onlyInRef") or []
     w_cur = wh.get("onlyInCurrent") or []
     w_part = wh.get("partialDeltas") or []
     hw = wh.get("highwayTravel") or {}
-    lines.append("\n#### 3. Core Wheels & Highway Travel")
+    sec_no += 1
+    lines.append(f"\n#### {sec_no}. Core Wheels & Highway Travel")
     if w_ref:
         lines.append("\n**Only in Ref / Missing Wheels**:")
         rows_r = [
@@ -115,13 +120,14 @@ def format_tree_diff_markdown(res: dict[str, Any]) -> str:
         f"- **Highway Travel Points**: `{hw.get('currentPoints', 0)}` -> `{hw.get('refPoints', 0)}` (`{int(hw.get('delta') or 0):+d}` pts)"
     )
 
-    # 4. Masteries
+    # Masteries
     mast = res.get("masteries") or {}
     m_ref = mast.get("onlyInRef") or []
     m_cur = mast.get("onlyInCurrent") or []
     m_chg = mast.get("changedEffect") or []
     if m_ref or m_cur or m_chg:
-        lines.append("\n#### 4. Masteries")
+        sec_no += 1
+        lines.append(f"\n#### {sec_no}. Masteries")
         m_rows: list[list[Any]] = []
         for m in m_ref:
             st = "; ".join((m.get("statsZh") or m.get("stats") or [])[:2])
@@ -143,9 +149,10 @@ def format_tree_diff_markdown(res: dict[str, Any]) -> str:
             )
         lines.append(render_table(["Diff", "Mastery Spec", "Wheel", "Effect"], m_rows))
 
-    # 5. Cluster Jewels & Jewel Sockets
+    # Cluster Jewels & Jewel Sockets
     sk = res.get("sockets") or {}
-    lines.append("\n#### 5. Cluster Jewels & Jewel Sockets")
+    sec_no += 1
+    lines.append(f"\n#### {sec_no}. Cluster Jewels & Jewel Sockets")
     if res.get("mode") == "specs" or res.get("socketsNote"):
         note = str(
             res.get("socketsNote")

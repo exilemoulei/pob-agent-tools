@@ -284,87 +284,97 @@ def _wheel_text_blob(graph: PassiveGraph, wheel: WheelInfo, *, exclude_minion_li
     return " | ".join(parts)
 
 
-def is_wheel_relevant_for_build(graph: PassiveGraph, wheel: WheelInfo, profile: BuildProfile) -> bool:
-    """Return True if wheel matches build tags or is a universal utility/defense wheel."""
+_HIGH_PRIO_UNIV: tuple[str, ...] = (
+    "reservation efficiency", "aura", "spell suppression",
+    "maximum fire resistance", "maximum cold resistance", "maximum lightning resistance", "maximum chaos resistance",
+)
+_DEFENSE_PRIO: tuple[str, ...] = (
+    *_HIGH_PRIO_UNIV, "maximum life", "maximum energy shield", "chance to block", "armour", "evasion",
+)
+_FALLBACK_GEN: tuple[str, ...] = (
+    "elemental damage", "critical strike", "accuracy", "armour", "evasion", "chance to block",
+    "strength", "dexterity", "intelligence", "movement speed", "skill effect duration", "area of effect", "projectile",
+)
+
+
+def score_wheel_relevance(
+    graph: PassiveGraph, wheel: WheelInfo, profile: BuildProfile, *, sort_by: str = "dps"
+) -> int:
+    """Return static wheel relevance score (`0` = filtered out; higher = stronger match to active build tags)."""
     blob = _wheel_text_blob(graph, wheel)
-
-    # 1. Hard defense paradigm incompatibilities (CI vs Life-only; Agnostic vs ES-only).
     if profile.is_ci and "maximum life" in blob and "energy shield" not in blob and "reservation" not in blob:
-        return False
+        return 0
     if profile.is_agnostic and "energy shield" in blob and "maximum life" not in blob and "mana" not in blob:
-        return False
+        return 0
 
-    # 2. Archetype-specific wheels: matching active archetype keeps the wheel immediately;
-    # non-matching archetype rejects it BEFORE player weapon/attack/spell checks.
     for arch_key, prof_flag in (
-        ("minion", profile.is_minion),
-        ("totem", profile.is_totem),
-        ("trap", profile.is_trap),
-        ("mine", profile.is_mine),
-        ("brand", profile.is_brand),
+        ("minion", profile.is_minion), ("totem", profile.is_totem), ("trap", profile.is_trap),
+        ("mine", profile.is_mine), ("brand", profile.is_brand),
     ):
         if any(k in blob for k in _ARCHETYPE_KEYWORDS[arch_key]):
-            return bool(prof_flag)
+            return 30 if prof_flag else 0
 
-    # Strip minion-scoped stat lines before evaluating player weapon/attack/spell filters.
     p_blob = _wheel_text_blob(graph, wheel, exclude_minion_lines=True)
-
-    # 3. Weapon-restricted wheels: reject mismatched weapon classes BEFORE universal keyword checks.
+    score = 0
     weapon_hits = {wt for wt, kws in _WEAPON_KEYWORDS.items() if any(k in p_blob for k in kws)}
     if weapon_hits:
         if "shield" in weapon_hits and "shield" in profile.weapon_types:
-            return True
+            return 32 if sort_by == "ehp" else 22
         if profile.weapon_types and not (weapon_hits & profile.weapon_types):
-            return False
-        if not profile.is_attack and "shield" not in weapon_hits and "staff" not in weapon_hits and "wand" not in weapon_hits:
-            return False
+            return 0
+        if not profile.is_attack and not (weapon_hits & {"shield", "staff", "wand"}):
+            return 0
+        if weapon_hits & profile.weapon_types:
+            score += 20
 
-    # 4. Secondary archetype filters (warcry / bleed / poison / ignite / spell-vs-attack).
     if any(k in p_blob for k in _ARCHETYPE_KEYWORDS["warcry"]) and not profile.is_attack:
-        return False
-    if any(k in p_blob for k in _ARCHETYPE_KEYWORDS["bleed"]) and "bleed" not in profile.dot_types:
-        return False
-    if any(k in p_blob for k in _ARCHETYPE_KEYWORDS["poison"]) and "poison" not in profile.dot_types:
-        return False
-    if any(k in p_blob for k in _ARCHETYPE_KEYWORDS["ignite"]) and "ignite" not in profile.dot_types and "fire" not in profile.damage_types:
-        return False
+        return 0
+    has_bleed = any(k in p_blob for k in _ARCHETYPE_KEYWORDS["bleed"])
+    has_poison = any(k in p_blob for k in _ARCHETYPE_KEYWORDS["poison"])
+    has_ignite = any(k in p_blob for k in _ARCHETYPE_KEYWORDS["ignite"])
+    if (has_bleed and "bleed" not in profile.dot_types) or (has_poison and "poison" not in profile.dot_types):
+        return 0
+    if has_ignite and "ignite" not in profile.dot_types and "fire" not in profile.damage_types:
+        return 0
 
     is_spell_w = any(k in p_blob for k in _ARCHETYPE_KEYWORDS["spell"])
     is_atk_w = any(k in p_blob for k in _ARCHETYPE_KEYWORDS["attack"]) or any(k in p_blob for k in _ARCHETYPE_KEYWORDS["melee"])
-    if is_spell_w and not is_atk_w and not profile.is_spell:
-        return False
-    if is_atk_w and not is_spell_w and not profile.is_attack:
-        return False
+    if (is_spell_w and not is_atk_w and not profile.is_spell) or (is_atk_w and not is_spell_w and not profile.is_attack):
+        return 0
 
-    # 5. Single-element / damage-type wheels: filter unrelated elements unless carrying core universal defense/aura.
     is_core_univ = any(k in blob for k in _CORE_UNIVERSAL_KEYWORDS)
     dmg_hits = {dt for dt, kws in _DAMAGE_KEYWORDS.items() if any(k in p_blob for k in kws)}
     if dmg_hits and profile.damage_types and not (dmg_hits & profile.damage_types) and not is_core_univ:
-        return False
+        return 0
 
-    if is_core_univ:
-        return True
-    if dmg_hits or is_spell_w or is_atk_w:
-        return True
-    # Keep general crit / elemental / accuracy / armour / evasion / block / attribute wheels.
-    return any(
-        k in blob
-        for k in (
-            "elemental damage",
-            "critical strike",
-            "accuracy",
-            "armour",
-            "evasion",
-            "chance to block",
-            "strength",
-            "dexterity",
-            "intelligence",
-            "movement speed",
-            "skill effect duration",
-            "area of effect",
-            "projectile",
-        )
+    if has_bleed or has_poison or (has_ignite and "ignite" in profile.dot_types):
+        score += 20
+    score += (16 if (is_spell_w and profile.is_spell) else 0) + (16 if (is_atk_w and profile.is_attack) else 0)
+    if dmg_hits:
+        score += 18 if (dmg_hits & profile.damage_types) else (12 if not profile.damage_types else 0)
+    score += (14 if (profile.is_crit and "critical strike" in p_blob) else 0)
+    score += (10 if (profile.is_projectile and "projectile" in p_blob) else 0)
+    score += (10 if (profile.is_melee and "melee " in p_blob) else 0)
+    score += (10 if ("elemental damage" in p_blob and (profile.damage_types & {"fire", "cold", "lightning"})) else 0)
+    score += (8 if ("accuracy" in p_blob and profile.is_attack) else 0)
+
+    is_primary_pool = (
+        ("maximum energy shield" in blob and profile.is_es_primary)
+        or ("maximum life" in blob and not profile.is_ci and not profile.is_es_primary)
     )
+    if sort_by == "ehp" and any(k in blob for k in _DEFENSE_PRIO):
+        score += 20
+    elif any(k in blob for k in _HIGH_PRIO_UNIV) or is_primary_pool:
+        score += 12
+    elif is_core_univ:
+        score += 6
+
+    return score if score > 0 else (3 if (is_spell_w or is_atk_w or any(k in blob for k in _FALLBACK_GEN)) else 0)
+
+
+def is_wheel_relevant_for_build(graph: PassiveGraph, wheel: WheelInfo, profile: BuildProfile) -> bool:
+    """Return True if wheel matches build tags or is a universal utility/defense wheel."""
+    return score_wheel_relevance(graph, wheel, profile) > 0
 
 
 def pick_best_mastery_effects(

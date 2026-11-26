@@ -11,7 +11,50 @@ from ..game_data.tree_graph import PrunableBranch, build_passive_graph, find_pru
 from ..snapshot import _call_batch
 from .tree_sockets import enrich_tree_sockets
 
-_MAX_EVAL_CANDIDATES = 80
+_DEFAULT_MIN_EVAL_CANDIDATES = 36
+
+
+def _prioritize_prune_branches(branches: list[PrunableBranch], limit: int) -> list[PrunableBranch]:
+    """Prioritize empty sockets, leaf masteries, distinct dead-end wheels, and short 1-3pt twigs within `limit`."""
+    if len(branches) <= limit:
+        return branches
+
+    empty_socks: list[PrunableBranch] = []
+    masteries: list[PrunableBranch] = []
+    wheel_cands: list[PrunableBranch] = []
+    multi_pt_twigs: list[PrunableBranch] = []
+    one_pt_leaves: list[PrunableBranch] = []
+    rest: list[PrunableBranch] = []
+
+    for br in branches:
+        if br.kind == "empty_socket" or br.includes_empty_socket_ids:
+            empty_socks.append(br)
+        elif br.kind == "mastery":
+            masteries.append(br)
+        elif br.kind in ("wheel", "wheel_spur"):
+            wheel_cands.append(br)
+        elif br.kind == "twig" and 2 <= br.points <= 3:
+            multi_pt_twigs.append(br)
+        elif br.kind in ("twig", "leaf") and br.points <= 3:
+            one_pt_leaves.append(br)
+        else:
+            rest.append(br)
+
+    # Pick one representative (fewest points) per distinct dead-end wheel before secondary sub-branches.
+    wheel_cands.sort(key=lambda b: (0 if b.kind == "wheel" else 1, b.points, b.node_ids))
+    distinct_wheels: list[PrunableBranch] = []
+    extra_wheels: list[PrunableBranch] = []
+    seen_wheels: set[str] = set()
+    for br in wheel_cands:
+        wkey = br.wheel_name or br.key
+        if wkey not in seen_wheels:
+            seen_wheels.add(wkey)
+            distinct_wheels.append(br)
+        else:
+            extra_wheels.append(br)
+
+    ordered = empty_socks + masteries + distinct_wheels + multi_pt_twigs + one_pt_leaves + extra_wheels + rest
+    return ordered[:limit]
 
 
 def _num(val: Any) -> float | None:
@@ -204,8 +247,9 @@ def prune_tree(
             include_occupied_sockets=include_occupied_sockets,
         )
 
-        # Bound batch size to keep total latency well under 0.5s while prioritizing high-value prune shapes.
-        eval_branches = branches[:_MAX_EVAL_CANDIDATES]
+        # Bound batch size to keep 123pt trees under <0.9s while scaling automatically with `--top`.
+        eval_cap = max(_DEFAULT_MIN_EVAL_CANDIDATES, top_n * 2)
+        eval_branches = _prioritize_prune_branches(branches, eval_cap)
         eval_payload = [
             {"key": br.key, "mode": "remove", "nodeIds": list(br.node_ids)}
             for br in eval_branches

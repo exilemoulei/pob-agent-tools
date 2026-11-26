@@ -251,6 +251,48 @@ def test_prune_tree_sorts_net_gain_and_empty_socket_first_and_separates_unsafe()
     assert "[UNSAFE: Dex -12 deficit]" in md_unsafe
 
 
+def test_prune_tree_dynamic_candidate_cap_prioritizes_and_scales_with_top() -> None:
+    nodes_db: dict[str, Any] = {
+        "1": {"id": 1, "type": "ClassStart", "name": "Witch", "links": [2]},
+        "2": {"id": 2, "type": "Normal", "name": "Hub", "links": [1, 20, 30, 40]},
+        "20": {"id": 20, "type": "Socket", "name": "Empty Socket", "links": [2]},
+        "30": {"id": 30, "type": "Notable", "name": "Wheel Notable", "group": 300, "links": [2]},
+        "31": {"id": 31, "type": "Mastery", "name": "Caster Mastery", "group": 300, "links": []},
+        "40": {"id": 40, "type": "Normal", "name": "Twig1", "links": [2, 41]},
+        "41": {"id": 41, "type": "Normal", "name": "Twig2", "links": [40]},
+    }
+    alloc = [1, 2, 20, 30, 31, 40, 41]
+    for i in range(50):
+        nid = 500 + i
+        nodes_db[str(nid)] = {"id": nid, "type": "Normal", "name": f"Leaf{i}", "links": [2]}
+        nodes_db["2"]["links"].append(nid)
+        alloc.append(nid)
+
+    class _FakeCapPruneWorker:
+        def __init__(self) -> None:
+            self.lock = threading.RLock()
+            self.last_keys: list[str] = []
+
+        def get_cached_tree_data(self, _ver: Any = None) -> dict[str, Any]:
+            return {"nodes": nodes_db}
+
+        def call(self, method: str, params: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+            if method == "get_tree_state":
+                return {"treeVersion": "3_30", "allocatedNodes": alloc, "dynamicNodes": [], "overrides": {}, "sockets": [{"nodeId": 20, "expansion": False}]}
+            if method == "list_items":
+                return {"slots": [{"nodeId": 20, "socketIndex": 1, "selItemId": 0}], "items": []}
+            base = {"CombinedDPS": 1000.0, "TotalEHP": 10000.0}
+            self.last_keys = [c["key"] for c in params["candidates"]]
+            return {"useFullDPS": False, "baseStats": base, "results": [{"key": c["key"], "mode": "remove", "outputStats": base} for c in params["candidates"]], "elapsedMs": 1.0}
+
+    w = _FakeCapPruneWorker()
+    res_def = prune_tree(w, top=15, max_branch_pts=5)  # type: ignore[arg-type]
+    assert res_def["totalFound"] > 50 and res_def["evaluatedCount"] == 36
+    assert {"rm:20", "rm:31", "rm:40,41", "rm:30,31"}.issubset(w.last_keys)
+    res_big = prune_tree(w, top=50, max_branch_pts=5)  # type: ignore[arg-type]
+    assert res_big["evaluatedCount"] == res_big["totalFound"]
+
+
 def test_threshold_probes_mre_coc_suppression_accuracy_and_speed() -> None:
     # 1. Exact MRE 25% & 50% aura math with PoE1 integer rounding.
     # 1000 Mana, currently 65% reserved (650 mana, 0% MRE), ManaCost 20 -> need >=20 unreserved.

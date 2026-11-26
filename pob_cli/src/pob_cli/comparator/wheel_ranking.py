@@ -40,7 +40,7 @@ def check_wheel_veto_and_notes(
     dps_pct: float,
     sort_by: str,
 ) -> tuple[str | None, list[str]]:
-    """Apply hard vetoes (`CoC overspeed / negative DPS`, `ManaUnreserved < 0`, `Agnostic ES > 0`) and threshold notes."""
+    """Apply hard vetoes (`CoC/trigger overspeed cliff`, `negative DPS`, `ManaUnreserved < 0`, `Agnostic ES > 0`) and threshold notes."""
     notes: list[str] = []
 
     base_mu = _num(base_stats.get("ManaUnreserved"))
@@ -61,7 +61,12 @@ def check_wheel_veto_and_notes(
         and new_src > new_cap * 1.01
         and (base_src is None or base_cap is None or base_src <= base_cap * 1.01)
     ):
-        return "[VETO: CoC overspeed / negative DPS]", notes
+        rate_detail = (
+            f", {new_src:.2f}/{new_cap:.2f}/s"
+            if (new_src is not None and new_cap is not None and new_cap > 0)
+            else ""
+        )
+        return f"[VETO: CoC/trigger overspeed cliff ({dps_pct:+.2f}%{rate_detail})]", notes
 
     if profile.is_agnostic:
         stat_blob = " ".join(
@@ -72,7 +77,7 @@ def check_wheel_veto_and_notes(
             return "[VETO: Agnostic ES > 0]", notes
 
     if dps_pct < -0.5 and sort_by == "dps":
-        return f"[VETO: CoC overspeed / negative DPS ({dps_pct:+.2f}%)]", notes
+        return f"[VETO: negative DPS ({dps_pct:+.2f}%)]", notes
 
     base_supp = _num(base_stats.get("SpellSuppressionChance")) or 0.0
     new_supp = _num(cand_stats.get("SpellSuppressionChance")) or 0.0
@@ -319,7 +324,9 @@ def rank_wheels(
         )
 
         t_agg0 = time.perf_counter()
-        packages, total_wheels, filtered_wheels = build_wheel_packages(
+        eff_max_wheels = None if all_tags else max(36, top_n * 2)
+        eff_max_packages = None if all_tags else max(56, top_n * 3)
+        packages, total_wheels, filtered_wheels, cap_applied = build_wheel_packages(
             graph,
             alloc_set,
             used_mastery_effects,
@@ -327,6 +334,9 @@ def rank_wheels(
             max_dist=eff_max_dist,
             max_pts=eff_max_pts,
             all_tags=all_tags,
+            sort_by=sort_norm,
+            max_wheels=eff_max_wheels,
+            max_packages=eff_max_packages,
         )
         agg_ms = round((time.perf_counter() - t_agg0) * 1000.0, 2)
 
@@ -379,6 +389,7 @@ def rank_wheels(
         "maxDist": eff_max_dist,
         "maxPts": eff_max_pts,
         "allTags": bool(all_tags),
+        "candidateCapApplied": bool(cap_applied),
         "buildTags": sorted(profile.tags),
         "totalWheelsScanned": total_wheels,
         "tagFilteredWheels": filtered_wheels,

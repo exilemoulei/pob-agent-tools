@@ -29,9 +29,10 @@ def format_wheel_rank_markdown(res: dict[str, Any]) -> str:
         else f"`{res.get('tagFilteredWheels', 0)}/{res.get('totalWheelsScanned', 0)}` tag-matched wheels (tags: `{tags_str}`)"
     )
 
+    cap_note = " (priority cap; `--all-tags` for all)" if res.get("candidateCapApplied") else ""
     lines: list[str] = [
         f"### Real Build Wheel Ranking (`{dps_key}` base `{fmt_num(res.get('baseDps'))}`, EHP `{fmt_num(res.get('baseEhp'))}`, sort: `{sort_by}`{time_tag})",
-        f"- **Scope**: {filter_note} | evaluated `{res.get('evaluatedPackages', 0)}` packages (`max-dist={res.get('maxDist')}`, `max-pts={res.get('maxPts')}`)",
+        f"- **Scope**: {filter_note} | evaluated `{res.get('evaluatedPackages', 0)}` packages{cap_note} (`max-dist={res.get('maxDist')}`, `max-pts={res.get('maxPts')}`)",
     ]
 
     wheels = res.get("wheels") or []

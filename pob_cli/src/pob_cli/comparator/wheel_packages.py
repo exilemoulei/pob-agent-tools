@@ -10,7 +10,10 @@ from typing import Any
 from ..bridge_client import BridgeWorker
 from ..game_data.tree_graph import PassiveGraph
 from ..importers import share_code_to_xml
-from .wheel_tags import BuildProfile, is_wheel_relevant_for_build, pick_best_mastery_effects
+from .wheel_tags import BuildProfile, pick_best_mastery_effects, score_wheel_relevance
+
+_DEFAULT_MAX_WHEELS = 36
+_DEFAULT_MAX_PACKAGES = 56
 
 
 def extract_used_mastery_effect_ids(
@@ -149,6 +152,52 @@ def _shortest_path_in_wheel(
     return None
 
 
+def _select_wheel_packages(
+    entries: list[tuple[tuple[int, int, int, int, int, str], dict[str, Any] | None, list[dict[str, Any]]]],
+    *,
+    all_tags: bool,
+    max_wheels: int | None,
+    max_packages: int | None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Apply relevance+distance pre-rank budget when `not all_tags`; `--all-tags` stays 100% uncapped."""
+    if all_tags or (max_wheels is None and max_packages is None):
+        all_pkgs: list[dict[str, Any]] = []
+        for _, base_pkg, mastery_pkgs in entries:
+            if base_pkg is not None:
+                all_pkgs.append(base_pkg)
+            all_pkgs.extend(mastery_pkgs)
+        return all_pkgs, False
+
+    total_pkgs = sum((1 if bp is not None else 0) + len(mp) for _, bp, mp in entries)
+    ranked_entries = sorted(entries, key=lambda item: item[0])
+    cap_applied = False
+    if max_wheels is not None and len(ranked_entries) > max_wheels:
+        ranked_entries = ranked_entries[:max_wheels]
+        cap_applied = True
+
+    packages: list[dict[str, Any]] = []
+    extras_per_wheel: list[list[dict[str, Any]]] = []
+    for _, base_pkg, mastery_pkgs in ranked_entries:
+        primary = base_pkg if base_pkg is not None else mastery_pkgs[0]
+        extras = mastery_pkgs if base_pkg is not None else mastery_pkgs[1:]
+        if max_packages is not None and len(packages) >= max_packages:
+            cap_applied = True
+            break
+        packages.append(primary)
+        extras_per_wheel.append(extras)
+
+    for m_idx in (0, 1):
+        for extras in extras_per_wheel:
+            if m_idx >= len(extras):
+                continue
+            if max_packages is not None and len(packages) >= max_packages:
+                cap_applied = True
+                break
+            packages.append(extras[m_idx])
+
+    return packages, cap_applied or (len(packages) < total_pkgs)
+
+
 def build_wheel_packages(
     graph: PassiveGraph,
     alloc_set: set[int],
@@ -158,12 +207,15 @@ def build_wheel_packages(
     max_dist: int = 12,
     max_pts: int = 10,
     all_tags: bool = False,
-) -> tuple[list[dict[str, Any]], int, int]:
-    """Bundle reachable unallocated/partial wheels into `(packages, total_wheels, filtered_wheels)` (<5ms)."""
+    sort_by: str = "dps",
+    max_wheels: int | None = _DEFAULT_MAX_WHEELS,
+    max_packages: int | None = _DEFAULT_MAX_PACKAGES,
+) -> tuple[list[dict[str, Any]], int, int, bool]:
+    """Bundle reachable unallocated/partial wheels into `(packages, total_wheels, filtered_wheels, cap_applied)` (<5ms)."""
     dist, parent = _bfs_from_connected_alloc(graph, alloc_set, max_dist=max_dist)
     total_wheels = 0
     filtered_wheels = 0
-    packages: list[dict[str, Any]] = []
+    wheel_entries: list[tuple[tuple[int, int, int, int, int, str], dict[str, Any] | None, list[dict[str, Any]]]] = []
 
     for wid, winfo in sorted(graph.wheels.items()):
         if winfo.is_cluster:
@@ -190,7 +242,8 @@ def build_wheel_packages(
             seeds = {entry}
 
         total_wheels += 1
-        if not all_tags and not is_wheel_relevant_for_build(graph, winfo, profile):
+        rel_score = 1 if all_tags else score_wheel_relevance(graph, winfo, profile, sort_by=sort_by)
+        if not all_tags and rel_score <= 0:
             continue
         filtered_wheels += 1
 
@@ -227,30 +280,30 @@ def build_wheel_packages(
         covered_notables = [n for n in base_node_ids if graph.node_type(n) in ("Notable", "Keystone")]
         has_notable_after = bool(covered_notables) or any(n in alloc_set for n in winfo.notable_ids)
 
+        base_pkg: dict[str, Any] | None = None
         if base_node_ids:
-            packages.append(
-                {
-                    "wheelId": wid,
-                    "wheel": winfo,
-                    "key": f"wheel:{wid}:base",
-                    "travelIds": list(travel_ids),
-                    "wheelNodeIds": [n for n in chosen_wheel_nodes if n not in alloc_set],
-                    "nodeIds": list(base_node_ids),
-                    "masteryId": None,
-                    "masteryEffect": None,
-                    "travelCost": len(travel_ids),
-                    "wheelCost": len(base_node_ids) - len(travel_ids),
-                    "totalPoints": len(base_node_ids),
-                }
-            )
+            base_pkg = {
+                "wheelId": wid,
+                "wheel": winfo,
+                "key": f"wheel:{wid}:base",
+                "travelIds": list(travel_ids),
+                "wheelNodeIds": [n for n in chosen_wheel_nodes if n not in alloc_set],
+                "nodeIds": list(base_node_ids),
+                "masteryId": None,
+                "masteryEffect": None,
+                "travelCost": len(travel_ids),
+                "wheelCost": len(base_node_ids) - len(travel_ids),
+                "totalPoints": len(base_node_ids),
+            }
 
+        mastery_pkgs: list[dict[str, Any]] = []
         if unalloc_masteries and has_notable_after and (len(base_node_ids) + 1) <= max_pts:
             mid = unalloc_masteries[0]
             m_node = graph.nodes.get(mid) or {}
             best_effs = pick_best_mastery_effects(m_node, used_mastery_effects, profile, max_effects=2)
             for eff in best_effs:
                 eid = int(eff["effectId"])
-                packages.append(
+                mastery_pkgs.append(
                     {
                         "wheelId": wid,
                         "wheel": winfo,
@@ -267,4 +320,19 @@ def build_wheel_packages(
                     }
                 )
 
-    return packages, total_wheels, filtered_wheels
+        if base_pkg is None and not mastery_pkgs:
+            continue
+
+        travel_cost = len(travel_ids)
+        priority_score = rel_score - travel_cost * 3
+        near_tier = 0 if travel_cost <= 4 else 1
+        priority_key = (-priority_score, near_tier, travel_cost, -rel_score, len(base_node_ids) or 1, wid)
+        wheel_entries.append((priority_key, base_pkg, mastery_pkgs))
+
+    packages, cap_applied = _select_wheel_packages(
+        wheel_entries,
+        all_tags=all_tags,
+        max_wheels=max_wheels,
+        max_packages=max_packages,
+    )
+    return packages, total_wheels, filtered_wheels, cap_applied

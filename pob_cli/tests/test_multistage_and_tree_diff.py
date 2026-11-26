@@ -318,6 +318,30 @@ def test_tree_diff_aggregates_all_five_sections_including_mastery_effect_change(
     assert by_sock[200] == ["Prismatic Heart"]
 
 
+def test_tree_diff_markdown_sequential_section_numbering_without_keystones() -> None:
+    import re
+
+    diff_no_ks = {
+        "mode": "specs",
+        "summary": {"labelA": "Early", "labelB": "Endgame", "pointsA": 80, "pointsB": 115, "pointsDelta": 35, "sharedPoints": 70, "ascendancyAdded": [{"id": 60, "name": "Shaper of Storms"}], "ascendancyRemoved": []},
+        "respecGold": {"characterLevel": 90, "goldPerPoint": 8450, "ascendancyMultiplier": 5, "deallocatedRegularCount": 10, "deallocatedAscendancyCount": 0, "estimatedGoldRespecTotal": 84500},
+        "keystones": {"onlyInRef": [], "onlyInCurrent": [], "shared": []},
+        "wheels": {"onlyInRef": [], "onlyInCurrent": [], "partialDeltas": [], "highwayTravel": {"currentPoints": 10, "refPoints": 12, "delta": 2}},
+        "masteries": {"onlyInRef": [{"allocSpec": "4:1001", "wheel": "Caster", "stats": ["+1 Spell"]}], "onlyInCurrent": [], "changedEffect": []},
+        "sockets": {"allocatedCountA": 2, "allocatedCountB": 3, "delta": 1, "onlyInRef": [6230], "onlyInCurrent": [], "outerClustersA": [], "outerClustersB": []},
+    }
+    md = format_tree_diff_markdown(diff_no_ks)
+    assert "Estimated Respec Cost" in md and "84,500 Gold" in md
+    assert re.findall(r"^#### (\d+)\. (.+)$", md, flags=re.MULTILINE) == [
+        ("1", "Ascendancy & Bloodline Diff"), ("2", "Core Wheels & Highway Travel"),
+        ("3", "Masteries"), ("4", "Cluster Jewels & Jewel Sockets"),
+    ]
+    diff_min = {**diff_no_ks, "summary": {**diff_no_ks["summary"], "ascendancyAdded": []}, "masteries": {"onlyInRef": [], "onlyInCurrent": [], "changedEffect": []}}
+    assert re.findall(r"^#### (\d+)\. (.+)$", format_tree_diff_markdown(diff_min), flags=re.MULTILINE) == [
+        ("1", "Core Wheels & Highway Travel"), ("2", "Cluster Jewels & Jewel Sockets"),
+    ]
+
+
 @pytest.mark.skipif(_ENGINE_DIR is None, reason="No runnable PoB engine found")
 def test_real_engine_multistage_switching_and_spec_tree_diff() -> None:
     assert _ENGINE_DIR is not None
