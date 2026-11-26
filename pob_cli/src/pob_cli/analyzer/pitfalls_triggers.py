@@ -38,7 +38,8 @@ def canonical_trigger_key(name: str) -> str:
 
 
 # Python-table trigger caps (base cooldowns, gem CDR, CwC intervals) are estimates until the Lua
-# agentProbes trigger cliffs confirm them; `deduplicate_trigger_gaps` upgrades confirmed ones.
+# agentProbes trigger cliffs confirm them: `pob diagnose` then reports the cliff itself
+# (`deduplicate_trigger_gaps` drops the estimate) and `pob audit` lifts it (`confirm_trigger_estimates`).
 ESTIMATE_SUFFIX = " [estimate, not engine-verified]"
 ESTIMATE_SEVERITY = "MEDIUM"
 
@@ -123,6 +124,29 @@ def deduplicate_trigger_gaps(
         seen_trig_idx[tkey] = len(out)
         out.append(gap)
     return out
+
+
+def confirm_trigger_estimates(gaps: list[dict[str, str]], agent_probe: dict[str, Any] | None) -> None:
+    """Lift an overspeed estimate back to HIGH, in place, when an engine trigger cliff agrees with it.
+
+    `pob audit` reports the estimates beside the raw probe and does not replace them with
+    `TriggerCliff` gaps as `pob diagnose` does, so a confirmed one must not stay labelled a guess.
+    """
+    if not isinstance(agent_probe, dict):
+        return
+    exceeded = {
+        canonical_trigger_key(str(c.get("triggerName") or ""))
+        for c in agent_probe.get("triggerCliffs") or []
+        if isinstance(c, dict) and c.get("overspeedCliffExceeded")
+    } - NON_APS_TRIGGER_KEYS - {""}
+    for gap in gaps:
+        msg = str(gap.get("message") or "")
+        if gap.get("category") != "TriggerOverspeed" or not msg.endswith(ESTIMATE_SUFFIX):
+            continue
+        m_trig = _OVERSPEED_TRIG_RE.match(msg)
+        if m_trig and canonical_trigger_key(m_trig.group(1)) in exceeded:
+            gap["severity"] = "HIGH"
+            gap["message"] = msg[: -len(ESTIMATE_SUFFIX)]
 
 
 def _check_sword_of_ages_and_triggers(

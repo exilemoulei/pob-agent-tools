@@ -252,6 +252,40 @@ def test_trigger_overspeed_without_probe_is_medium_estimate() -> None:
     assert eng["severity"] == "HIGH" and ESTIMATE_SUFFIX not in eng["message"]
 
 
+def test_engine_confirmed_overspeed_estimate_is_high_again() -> None:
+    from pob_cli.analyzer.pitfalls_triggers import (
+        ESTIMATE_SUFFIX,
+        _fmt_overspeed_gap,
+        confirm_trigger_estimates,
+    )
+
+    tick = {"effectiveCapPerSec": 6.06, "ticks": 5, "effectiveCdMs": 165}
+
+    def gaps() -> list[dict[str, str]]:
+        return [
+            _fmt_overspeed_gap("Cast On Critical Strike", "Group #1", 8.34, 0.0, tick, estimate=True),
+            _fmt_overspeed_gap("Cospri's Malice", "Weapon 1", 8.34, 0.0, tick, estimate=True),
+            {"category": "Equipment", "severity": "MEDIUM", "message": "Equipment slot 'Helmet' is empty"},
+        ]
+
+    probe = {
+        "triggerCliffs": [
+            {"triggerName": "Cast On Critical Strike", "overspeedCliffExceeded": True},
+            {"triggerName": "Cospri's Malice", "overspeedCliffExceeded": False},
+        ]
+    }
+    confirmed = gaps()
+    confirm_trigger_estimates(confirmed, probe)
+    assert confirmed[0]["severity"] == "HIGH" and ESTIMATE_SUFFIX not in confirmed[0]["message"]
+    assert confirmed[0]["message"].endswith(".")
+    assert confirmed[1]["severity"] == "MEDIUM" and confirmed[1]["message"].endswith(ESTIMATE_SUFFIX)
+    assert confirmed[2] == gaps()[2]
+
+    untouched = gaps()
+    confirm_trigger_estimates(untouched, None)
+    assert untouched == gaps()
+
+
 def _aura_skills() -> dict[str, Any]:
     return {
         "mainSocketGroup": 1,

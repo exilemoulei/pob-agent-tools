@@ -30,6 +30,7 @@ from .dewater_auto import (
 from .dewater_steps import _same_state
 from .eb_sustain import collect_dewatered_eb_flask_note, collect_mana_sustain_issues
 from .pitfalls_core import _detect_build_mechanics_and_pitfalls
+from .pitfalls_triggers import confirm_trigger_estimates
 from .static_checks import _has_hollow_palm_keystone, _resist_cap_and_gap
 from .summary import _has_doryanis_prototype_equipped
 from .threshold_probes import compute_threshold_probes
@@ -571,6 +572,7 @@ def audit_build(
                     agent_probe_res = p_res
             except Exception:
                 pass
+            confirm_trigger_estimates(health_issues, agent_probe_res)
             if include_envelope:
                 try:
                     env_res = worker.call("eval_scenario_envelope", {})
