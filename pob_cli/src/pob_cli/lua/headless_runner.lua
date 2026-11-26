@@ -341,6 +341,7 @@ function PobToolsLogError(tag, msg) log_stderr("[" .. tostring(tag) .. "] " .. t
 
 -- Pre-launch hooks -> Launch.lua -> post-launch hooks -> bridge.lua
 local lazy_hooks_mod = nil
+local tek_mod = nil
 do
 	local lh = load_ext("lazy_hooks.lua")
 	if type(lh) == "table" and type(lh.install_pre_launch) == "function" then
@@ -435,6 +436,15 @@ do
 		register_handlers(mp.rpc_handlers)
 		if mp.rpc_handlers.map_regex_probe then CAPS.mapRegexProbe = true end
 	end
+
+	local tek = load_ext("tree_eval_kernel.lua")
+	if type(tek) == "table" and type(tek.rpc_handlers) == "table" then
+		tek_mod = tek
+		register_handlers(tek.rpc_handlers)
+		if tek.rpc_handlers.eval_node_paths then
+			CAPS.evalNodePaths = true
+		end
+	end
 end
 
 -- Blocking NDJSON stdin/stdout RPC loop
@@ -457,11 +467,19 @@ while true do
 						lazy_hooks_mod.ensure_item_dbs()
 					end
 					local fn = EXTRA_HANDLERS[method]
-					if fn then return fn(params, bridge_dispatcher) end
+					if fn then
+						local out = fn(params, bridge_dispatcher)
+						if method == "agent_probe_build" and tek_mod and type(tek_mod.enrich_agent_probe) == "function" then
+							pcall(tek_mod.enrich_agent_probe, out)
+						end
+						return out
+					end
 					local out = bridge_dispatcher(method, params)
 					if method == "version" and type(out) == "table" then
 						if type(out.caps) ~= "table" then out.caps = {} end
 						for k, v in pairs(CAPS) do out.caps[k] = v end
+					elseif method == "get_stats" and tek_mod and type(tek_mod.enrich_stats) == "function" then
+						pcall(tek_mod.enrich_stats, out)
 					end
 					return out
 				end, debug.traceback)

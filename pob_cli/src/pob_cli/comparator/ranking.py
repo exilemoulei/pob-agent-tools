@@ -248,8 +248,9 @@ def rank_nodes(
                 if wm_kind is not None and wm_kind not in equipped_weapons:
                     filtered_masteries.append(strip_pob_escapes(str(r.get("name") or r.get("nameZh") or wm_kind)))
                     continue
-            if r.get("effectId") is not None and not r.get("allocSpec"):
-                r = {**r, "allocSpec": f"{r['id']}:{r['effectId']}"}
+            if not r.get("allocSpec") and r.get("id") is not None:
+                eff = r.get("effectId")
+                r = {**r, "allocSpec": f"{r['id']}:{eff}" if eff is not None else str(r["id"])}
             raw_candidates.append(r)
 
         best_by_effect: dict[Any, dict[str, Any]] = {}

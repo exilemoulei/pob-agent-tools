@@ -282,10 +282,13 @@ def cmd_rank_nodes(
 
     rows = []
     for idx, r in enumerate(res.get("byPerPoint", []), start=1):
+        node_spec = r.get("allocSpec") or (
+            f"{r.get('id')}:{r.get('effectId')}" if r.get("effectId") is not None else r.get("id")
+        )
         rows.append(
             [
                 idx,
-                r.get("id"),
+                node_spec,
                 strip_pob_escapes(r.get("nameZh") or r.get("name")),
                 r.get("type"),
                 r.get("pathDist"),
