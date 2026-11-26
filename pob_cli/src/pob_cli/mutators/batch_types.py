@@ -8,7 +8,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from .strict_args import check_int_or_str, parse_bool, parse_int, parse_replace_mods, parse_token_list
+from .strict_args import (
+    check_int_or_str,
+    parse_bool,
+    parse_gem_list,
+    parse_int,
+    parse_replace_mods,
+    parse_str_list,
+    parse_token_list,
+)
 
 _BOOL_KEYS: frozenset[str] = frozenset(
     {
@@ -115,6 +123,11 @@ def normalize_batch_op_types(idx: int, kind: str, op: dict[str, Any]) -> dict[st
             for key in ("replaceMods", "replace_mods"):
                 if op.get(key) is not None:
                     out[key] = [list(p) for p in parse_replace_mods(op[key], key)]
+            for key in ("addMods", "add_mods", "removeMods", "remove_mods"):
+                if op.get(key) is not None:
+                    out[key] = parse_str_list(op[key], key)
+        if op.get("gems") is not None:
+            out["gems"] = parse_gem_list(op["gems"])
     except ValueError as exc:
         raise ValueError(f"{prefix}: {exc}") from None
     return out

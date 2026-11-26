@@ -6,7 +6,15 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from ..bridge_client import BridgeWorker
-from ..mutators.strict_args import opt_bool, parse_bool, parse_int, parse_replace_mods, parse_token_list
+from ..mutators.strict_args import (
+    opt_bool,
+    parse_bool,
+    parse_gem_list,
+    parse_int,
+    parse_replace_mods,
+    parse_str_list,
+    parse_token_list,
+)
 
 if TYPE_CHECKING:
     from .slots import DaemonManager
@@ -78,8 +86,8 @@ def _h_item_edit(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> 
         w,
         slot_name=str(params.get("slot") or params.get("slotName") or ""),
         replace_mods=rep_tuples or None,
-        add_mods=params.get("add_mods") or params.get("addMods"),
-        remove_mods=params.get("remove_mods") or params.get("removeMods"),
+        add_mods=parse_str_list(params.get("add_mods") or params.get("addMods"), "add_mods"),
+        remove_mods=parse_str_list(params.get("remove_mods") or params.get("removeMods"), "remove_mods"),
         allow_illegal_affixes=opt_bool(params, "allow_illegal_affixes", "allowIllegalAffixes", default=False),
         apply=opt_bool(params, "apply", default=False),
     )
@@ -193,7 +201,7 @@ def _h_skill_new_group(_m: DaemonManager, params: dict[str, Any], w: BridgeWorke
 
     return mutators.add_skill_group(
         w,
-        gems=params.get("gems"),
+        gems=parse_gem_list(params.get("gems")),
         label=params.get("label"),
         slot=params.get("slot"),
         enabled=opt_bool(params, "enabled", default=True),
@@ -216,7 +224,7 @@ def _h_skill_replace_group(_m: DaemonManager, params: dict[str, Any], w: BridgeW
     return mutators.replace_skill_group(
         w,
         group=grp_val,
-        gems=params.get("gems") or [],
+        gems=parse_gem_list(params.get("gems")) or [],
         label=params.get("label"),
         slot=params.get("slot"),
         enabled=params.get("enabled"),

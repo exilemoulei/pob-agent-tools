@@ -6,10 +6,13 @@ Each raises `ValueError` (exit 1) on a wrong type instead of coercing it: `bool(
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 _TRUE_WORDS = frozenset({"true", "on", "yes", "1"})
 _FALSE_WORDS = frozenset({"false", "off", "no", "0"})
+# Node ids, each optionally `id:masteryEffect`, separated by commas.
+_NODE_ID_CSV_RE = re.compile(r"\d+(?::\d+)?(?:\s*,\s*\d+(?::\d+)?)+")
 
 
 def parse_bool(value: Any, field: str) -> bool:
@@ -28,10 +31,14 @@ def parse_bool(value: Any, field: str) -> bool:
 
 
 def opt_bool(src: dict[str, Any], *keys: str, default: bool) -> bool:
-    """The first of `keys` present and not null in `src`, parsed strictly; `default` when none is."""
+    """The first of `keys` present in `src`, parsed strictly; `default` when none is.
+
+    A key sent as null reads as false, as `bool(None)` always did here: `{"apply": null}` on a
+    handler that applies by default must stay a what-if.
+    """
     for key in keys:
-        if src.get(key) is not None:
-            return parse_bool(src[key], key)
+        if key in src:
+            return False if src[key] is None else parse_bool(src[key], key)
     return default
 
 
@@ -62,6 +69,9 @@ def parse_token_list(value: Any, field: str) -> list[str]:
     """A list of node ids/names (a single string or integer is one token); never iterated character by character."""
     if value is None:
         return []
+    if isinstance(value, str) and _NODE_ID_CSV_RE.fullmatch(value.strip()):
+        # `pob tree prune` / `rank-wheels` print ids as CSV for `pob tree change`; a name is never split.
+        value = [part.strip() for part in value.split(",")]
     items = [value] if isinstance(value, (str, int)) and not isinstance(value, bool) else value
     if not isinstance(items, list):
         raise ValueError(f"'{field}' must be a list of node ids or names, got {value!r}.")
@@ -88,3 +98,23 @@ def parse_replace_mods(value: Any, field: str = "replaceMods") -> list[tuple[str
             raise ValueError(f"'{field}' entries must be [old, new] string pairs, got {entry!r}.")
         pairs.append((entry[0], entry[1]))
     return pairs
+
+
+def parse_str_list(value: Any, field: str) -> list[str] | None:
+    """A list of text lines (a single string is one line, never its characters); None when absent."""
+    if value is None:
+        return None
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, list) or not all(isinstance(x, str) for x in items):
+        raise ValueError(f"'{field}' must be a string or a list of strings, got {value!r}.")
+    return list(items)
+
+
+def parse_gem_list(value: Any, field: str = "gems") -> list[Any] | None:
+    """A list of gem specs (`"Name[:level[:quality]]"` or an object); a single spec is a list of one."""
+    if value is None:
+        return None
+    items = [value] if isinstance(value, (str, dict)) else value
+    if not isinstance(items, list) or not all(isinstance(x, (str, dict)) for x in items):
+        raise ValueError(f"'{field}' must be a list of gem names or gem objects, got {value!r}.")
+    return list(items)

@@ -78,6 +78,58 @@ def test_validate_batch_op_rejects_bad_types_and_empty_steps(kind: str, op: dict
         validate_batch_op(1, kind, op)
 
 
+def test_a_single_string_is_one_mod_line_or_one_gem_never_its_characters() -> None:
+    norm = validate_batch_op(1, "item_edit", {"op": "item_edit", "slot": "Helmet", "addMods": "+50 to maximum Life"})
+    assert norm["addMods"] == ["+50 to maximum Life"]
+    norm = validate_batch_op(1, "item_edit", {"op": "item_edit", "slot": "Helmet", "remove_mods": "Rarity"})
+    assert norm["remove_mods"] == ["Rarity"]
+    norm = validate_batch_op(1, "add_group", {"op": "add_group", "gems": "Arc:20:20"})
+    assert norm["gems"] == ["Arc:20:20"]
+    norm = validate_batch_op(1, "replace_group", {"op": "replace_group", "group": "main", "gems": {"name": "Arc"}})
+    assert norm["gems"] == [{"name": "Arc"}]
+    for kind, op, match in (
+        ("item_edit", {"op": "item_edit", "slot": "Helmet", "addMods": ["a", 1]}, "addMods"),
+        ("item_edit", {"op": "item_edit", "slot": "Helmet", "removeMods": {"a": 1}}, "removeMods"),
+        ("add_group", {"op": "add_group", "gems": ["Arc", 3]}, "gems"),
+        ("add_group", {"op": "add_group", "gems": 3}, "gems"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            validate_batch_op(1, kind, op)
+
+
+def test_gem_objects_are_parsed_strictly(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pob_cli.mutators import skills_resolve
+
+    monkeypatch.setattr(skills_resolve, "_validate_gem_level", lambda _n, lvl, **_k: (lvl, []))
+    spec = skills_resolve._normalize_gem_spec({"name": "Arc", "level": "20", "quality": 0, "enabled": "false"})
+    assert (spec["level"], spec["quality"], spec["enabled"]) == (20, 0, False)
+    for bad, match in (
+        ({"name": "Arc", "level": True}, "level"),
+        ({"name": "Arc", "quality": [20]}, "quality"),
+        ({"name": "Arc", "enabled": "sometimes"}, "enabled"),
+        ({"name": "Arc", "count": 1.5}, "count"),
+        ({"name": "Arc", "enableGlobal1": "maybe"}, "enableGlobal1"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            skills_resolve._normalize_gem_spec(bad)
+
+
+def test_a_null_bool_reads_as_false_not_as_the_default() -> None:
+    from pob_cli.mutators.strict_args import opt_bool
+
+    assert opt_bool({"apply": None}, "apply", default=True) is False
+    assert opt_bool({}, "apply", default=True) is True
+    assert opt_bool({"allow_cascade": None, "allowCascade": True}, "allow_cascade", "allowCascade", default=True) is False
+    assert opt_bool({"allowCascade": "off"}, "allow_cascade", "allowCascade", default=True) is False
+
+
+def test_node_id_csv_is_split_but_a_name_with_a_comma_is_not() -> None:
+    assert parse_token_list("4397,27929", "allocate") == ["4397", "27929"]
+    assert parse_token_list(" 4397 , 27929:1234 ", "allocate") == ["4397", "27929:1234"]
+    assert parse_token_list("Heart, Soul and 123", "allocate") == ["Heart, Soul and 123"]
+    assert parse_token_list("4397", "allocate") == ["4397"]
+
+
 def test_validate_batch_op_canonicalizes_bool_and_int_strings() -> None:
     norm = validate_batch_op(1, "flask", {"op": "flask", "index": "all", "active": "false"})
     assert norm["active"] is False

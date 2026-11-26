@@ -10,6 +10,7 @@ from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
 from ..guardrails import GuardrailScope, check_input
 from .common import _call_batch, _fold_search_text, _is_batch_error, _merge_cautions, _validate_gem_level
+from .strict_args import opt_bool, parse_bool, parse_int
 
 
 def _resolve_gem_in_group(group: dict[str, Any], gem_selector: str | int) -> dict[str, Any]:
@@ -262,7 +263,7 @@ def _normalize_gem_spec(
             else (entry.get("stage_count") if "stage_count" in entry else entry.get("skillStageCount"))
         )
         stage_count = _parse_positive_int(raw_sc, "stageCount")
-        explicit_level = int(entry["level"]) if entry.get("level") is not None else None
+        explicit_level = parse_int(entry["level"], "level") if entry.get("level") is not None else None
         eff_allow_illegal = _gem_spec_allows_illegal_level(entry, allow_illegal_level)
         if name:
             eff_level, cautions = _validate_gem_level(name, explicit_level, allow_illegal_level=eff_allow_illegal)
@@ -273,9 +274,9 @@ def _normalize_gem_spec(
             "name": name,
             "gemId": str(gem_id) if gem_id else None,
             "level": eff_level if eff_level is not None else 20,
-            "quality": int(entry["quality"]) if entry.get("quality") is not None else 20,
-            "enabled": bool(entry.get("enabled", True)),
-            "count": int(entry["count"]) if entry.get("count") is not None else 1,
+            "quality": parse_int(entry["quality"], "quality") if entry.get("quality") is not None else 20,
+            "enabled": opt_bool(entry, "enabled", default=True),
+            "count": parse_int(entry["count"], "count") if entry.get("count") is not None else 1,
         }
         if skill_part is not None:
             out["skill_part"] = skill_part
@@ -283,7 +284,7 @@ def _normalize_gem_spec(
             out["stage_count"] = stage_count
         for flag in ("enableGlobal1", "enableGlobal2"):
             if entry.get(flag) is not None:
-                out[flag] = bool(entry[flag])
+                out[flag] = parse_bool(entry[flag], flag)
         if cautions:
             out["cautions"] = cautions
         return out
