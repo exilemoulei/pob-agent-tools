@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from ..formatters import strip_pob_escapes
-from ..snapshot import _finite_float
+from ..snapshot import _call_batch, _finite_float
+from .pitfalls_330_mechanics import _check_330_mechanics_and_underconfig
 from .pitfalls_ag import _check_animate_guardian_dependencies, fetch_minion_itemsets
 from .pitfalls_defence import (
     _check_defensive_and_reservation_synergies,
@@ -144,6 +145,7 @@ def _build_pitfall_context(
     build_info: dict[str, Any] | None,
     stripped_flasks: list[str] | None,
     minion_itemsets: dict[str, Any] | None = None,
+    party_res: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     groups = (skills_res or {}).get("groups") or []
     main_idx = (skills_res or {}).get("mainSocketGroup")
@@ -245,7 +247,20 @@ def _build_pitfall_context(
         "build_info": build_info,
         "stripped_flasks": stripped_flasks,
         "minion_itemsets": minion_itemsets or {},
+        "party_res": party_res or {},
     }
+
+
+def _fetch_party_best_effort(worker: Any) -> dict[str, Any]:
+    if worker is None or not callable(getattr(worker, "get_cached_tree_data", None)):
+        return {}
+    try:
+        res = _call_batch(worker, [("get_party", {})], raise_on_error=False)
+        if res and isinstance(res[0], dict) and not res[0].get("_error"):
+            return res[0]
+    except Exception:
+        pass
+    return {}
 
 
 def _detect_build_mechanics_and_pitfalls(
@@ -265,9 +280,11 @@ def _detect_build_mechanics_and_pitfalls(
     tree_state: dict[str, Any] | None = None,
     nodes_db: dict[str, Any] | None = None,
     minion_itemsets: dict[str, Any] | None = None,
+    party_res: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Detect high-impact PoE1 3.30 build mechanics, dead/anti-synergy links, triggers, & defensive bricks."""
     eff_minion_sets = minion_itemsets if minion_itemsets is not None else fetch_minion_itemsets(worker)
+    eff_party = party_res if party_res is not None else _fetch_party_best_effort(worker)
     ctx = _build_pitfall_context(
         stats=stats,
         skills_res=skills_res,
@@ -281,6 +298,7 @@ def _detect_build_mechanics_and_pitfalls(
         build_info=build_info,
         stripped_flasks=stripped_flasks,
         minion_itemsets=eff_minion_sets,
+        party_res=eff_party,
     )
     gaps: list[dict[str, str]] = []
     mechanics: dict[str, Any] = {}
@@ -292,6 +310,7 @@ def _detect_build_mechanics_and_pitfalls(
     _check_sword_of_ages_and_triggers(ctx, gaps, mechanics)
     _check_resistance_inversion(ctx, gaps, mechanics)
     _check_animate_guardian_dependencies(ctx, gaps, mechanics)
+    _check_330_mechanics_and_underconfig(ctx, gaps, mechanics)
     _check_tincture_setup(ctx, mechanics)
     _check_defensive_bricks(ctx, gaps, mechanics)
     _check_dark_pact_echo_and_crit_acc(ctx, gaps)
