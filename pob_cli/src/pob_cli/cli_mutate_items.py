@@ -11,6 +11,7 @@ from .cli_common import (
     _target_option,
     invoke_daemon,
 )
+from .cli_item_inspect import cmd_item_inspect
 
 
 def _format_mutation_report(title: str, res: dict[str, object]) -> str:
@@ -24,58 +25,7 @@ def grp_item() -> None:
     """Inspect, evaluate, edit, or mutate equipped items, flasks, and anoints."""
 
 
-@grp_item.command("inspect")
-@click.option("--slot", help="Equipped slot, or the item type for pasted text (e.g. 'Ring 1').")
-@click.option("--raw", "raw_text", help="Pasted PoE/PoB item text.")
-@click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False), help="File containing item text.")
-@click.option("--want", "wants", multiple=True, help="Bench target, e.g. 'Cold Resistance' (repeatable).")
-@click.option("--limit", type=click.IntRange(min=1), default=8, show_default=True)
-@_target_option(allow_slot_alias=False)
-@click.option("--json", "as_json", is_flag=True, help="Output structured JSON.")
-@_output_options
-def cmd_item_inspect(
-    slot: str | None,
-    raw_text: str | None,
-    file_path: str | None,
-    wants: tuple[str, ...],
-    limit: int,
-    target: str,
-    as_json: bool,
-    compact: bool,
-    out_path: str | None,
-) -> None:
-    """Classify item affixes and show compatible crafting-bench options (read-only)."""
-    from pathlib import Path
-
-    from .guardrails import GuardrailScope, check_input, check_input_item_raw, validate_url
-    from .item_inspect import format_inspection, inspect_item
-
-    if raw_text is not None and file_path is not None:
-        raise click.UsageError("Use either --raw or --file, not both.")
-    if slot:
-        check_input(slot, scope=GuardrailScope.SLOT, expected_game="poe1")
-    for w_val in wants:
-        validate_url(w_val, expected_game="poe1", cli_subcommand="item inspect")
-        check_input(w_val, scope=GuardrailScope.STAT_QUERY, expected_game="poe1")
-    if file_path is not None:
-        raw_text = Path(file_path).read_text(encoding="utf-8-sig", errors="replace")
-    if raw_text is None:
-        if not slot:
-            raise click.UsageError("Pass --slot, --raw, or --file.")
-        loaded = invoke_daemon("items", {"target": target, "slot": slot, "raw": True})
-        raw_text = loaded.get("raw")
-        if not raw_text:
-            raise click.ClickException(f"Slot {slot!r} is empty or its item text is unavailable.")
-        slot = (loaded.get("slot") or {}).get("name") or slot
-    check_input_item_raw(raw_text, expected_game="poe1")
-    try:
-        report = inspect_item(raw_text, slot=slot, wants=wants, limit=limit)
-    except (ValueError, FileNotFoundError) as exc:
-        raise click.ClickException(str(exc)) from exc
-    if as_json:
-        _emit_json(report, compact=compact, out_path=out_path)
-    else:
-        _emit_text(format_inspection(report), out_path=out_path)
+grp_item.add_command(cmd_item_inspect)
 
 
 @grp_item.command("try")

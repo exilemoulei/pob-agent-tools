@@ -230,6 +230,15 @@ def _h_items(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[
     )
 
 
+def _h_item_ablate(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    from ..item_ablate import ablate_item_mods
+
+    slot_val = str(params.get("slot") or params.get("slotName") or "").strip()
+    if not slot_val:
+        raise DaemonRequestError("Missing required parameter 'slot' for item_ablate.")
+    return m._attach_warning_if_degraded(ablate_item_mods(w, slot_val))
+
+
 def _h_skills(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from ..analyzer import inspect_skills
 
@@ -426,6 +435,7 @@ _SLOT_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "audit": _h_audit,
     "diagnose": _h_diagnose,
     "items": _h_items,
+    "item_ablate": _h_item_ablate,
     "skills": _h_skills,
     "config_list": _h_config_list,
     "calc": _h_calc,
