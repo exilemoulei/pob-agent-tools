@@ -12,7 +12,7 @@ Pipeline:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any
 
 from ..craft.price_book import PriceBook
@@ -25,162 +25,26 @@ from .net_gap import (
     analyze_live_net_gap,
     stat_snapshot_from_pob_stats,
 )
-from .spirit_knapsack import (
-    SpiritKnapsackPlan,
-    apply_spirit_plan_live,
-    solve_live_spirit_deficit,
+from .solver_models import (
+    FixGapsReport,
+    Stage5PurchaseFallback,
+    all_hard_met,
+    build_stage5_fallback,
+    solve_fix_gaps_offline,
 )
+from .spirit_knapsack import apply_spirit_plan_live, solve_live_spirit_deficit
 from .step_attributes import (
-    AttributeNodeInfo,
-    Stage1AttributePlan,
     apply_attribute_swaps_live,
     collect_live_attribute_nodes,
     solve_attribute_respec,
 )
-from .step_catalysts import (
-    Stage3CatalystPlan,
-    apply_catalyst_plan_live,
-    solve_catalyst_upgrades,
-)
+from .step_catalysts import apply_catalyst_plan_live, solve_catalyst_upgrades
 from .step_runes import (
     Stage2RunePlan,
     apply_rune_plan_live,
     format_max_res_drop_warning,
     solve_rune_allocation,
 )
-
-
-@dataclass(frozen=True)
-class Stage5PurchaseFallback:
-    """Fallback weakest single-slot Rare purchase spec emitted ONLY if Stages 1-4 leave hard deficits."""
-
-    needed: bool
-    target_slot: str | None
-    current_item: str | None
-    required_stats: dict[str, int]
-    overcap_bonus_stats: dict[str, int]
-    reason: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "stage": 5,
-            "name": "fallback_weakest_rare_slot",
-            "needed": self.needed,
-            "targetSlot": self.target_slot,
-            "currentItem": self.current_item,
-            "requiredStats": {k: v for k, v in self.required_stats.items() if v > 0},
-            "overcapBonusStats": {k: v for k, v in self.overcap_bonus_stats.items() if v > 0},
-            "reason": self.reason,
-        }
-
-
-@dataclass(frozen=True)
-class FixGapsReport:
-    """Complete 5-stage rebalance report with before/bare/after CoW-verified snapshots."""
-
-    before: StatSnapshot
-    bare_net: StatSnapshot
-    after_verified: StatSnapshot
-    stage1: Stage1AttributePlan
-    stage2: Stage2RunePlan
-    stage3: Stage3CatalystPlan
-    stage4: SpiritKnapsackPlan
-    stage5: Stage5PurchaseFallback
-    overcap_target: int
-    chaos_target: int
-    total_gold_cost: int
-    total_ex_cost: float
-    all_hard_floors_met: bool
-    cow_rollback_verified: bool | None
-    warnings: tuple[str, ...]
-    current_in_game: StatSnapshot | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        in_game = self.current_in_game or self.before
-        without_charm = self.before.to_dict(chaos_target=self.chaos_target, overcap_target=self.overcap_target)
-        return {
-            "game": "poe2",
-            "patch": "0.5.5",
-            "resistancePolicy": "cap_plus_overcap_buffer_never_equalize",
-            "overcapTarget": self.overcap_target,
-            "chaosTarget": self.chaos_target,
-            "allHardFloorsMet": self.all_hard_floors_met,
-            "totalGoldCost": self.total_gold_cost,
-            "totalExCost": round(self.total_ex_cost, 2),
-            "cowRollbackVerified": self.cow_rollback_verified,
-            "currentInGame": in_game.to_dict(chaos_target=self.chaos_target, overcap_target=self.overcap_target),
-            "withoutConditionalAndCharm": without_charm,
-            "before": without_charm,
-            "bareNet": self.bare_net.to_dict(chaos_target=self.chaos_target, overcap_target=self.overcap_target),
-            "afterVerified": self.after_verified.to_dict(chaos_target=self.chaos_target, overcap_target=self.overcap_target),
-            "snapshotNotes": {
-                "currentInGame": "Live in-game build stats as loaded (including active hit-triggered Charms and current socketed runes).",
-                "withoutConditionalAndCharm": "Permanent stats with hit-triggered Charms deactivated; keeps all equipped gear, socketed runes, passive tree, and permanent campaign quest rewards.",
-                "bareNet": "Equipped gear + passive tree + permanent campaign quest rewards + Mirrored/isSocketBound augments KEPT; only Charms deactivated and replaceable socket runes temporarily stripped to measure free socket capacity (NOT unequipped resistances).",
-            },
-            "stages": {
-                "stage1Attributes": self.stage1.to_dict(),
-                "stage2Runes": self.stage2.to_dict(),
-                "stage3Catalysts": self.stage3.to_dict(),
-                "stage4Spirit": self.stage4.to_dict(),
-                "stage5Fallback": self.stage5.to_dict(),
-            },
-            "warnings": list(self.warnings),
-        }
-
-
-def _pick_weakest_rare_slot(slots: tuple[EquippedSlotAudit, ...]) -> EquippedSlotAudit | None:
-    """Locate the lowest-utility replaceable non-weapon Rare armour/jewellery slot."""
-    rares = [
-        s
-        for s in slots
-        if s.rarity == "RARE"
-        and not s.is_weapon_slot
-        and not s.parity.is_mirrored
-    ]
-    if not rares:
-        return None
-    # Proxy utility: fewer mod lines / smaller slot priority (Gloves/Boots/Belt/Ring before Body Armour/Amulet)
-    slot_weight = {"Gloves": 1, "Boots": 1, "Ring 2": 2, "Ring 1": 2, "Belt": 2, "Helmet": 3, "Amulet": 4, "Body Armour": 5}
-    return min(rares, key=lambda s: (slot_weight.get(s.slot_name, 3), len(s.raw_text.splitlines())))
-
-
-def build_stage5_fallback(
-    slots: tuple[EquippedSlotAudit, ...],
-    remaining_hard: dict[str, int],
-    remaining_overcap: dict[str, int],
-) -> Stage5PurchaseFallback:
-    """Emit weakest single-slot Rare replacement spec ONLY if hard floor deficits remain > 0."""
-    unmet = {k: v for k, v in remaining_hard.items() if v > 0}
-    if not unmet:
-        return Stage5PurchaseFallback(
-            needed=False,
-            target_slot=None,
-            current_item=None,
-            required_stats={},
-            overcap_bonus_stats={},
-            reason="All hard floors satisfied zero-buy in Stages 1-4; no gear replacement required.",
-        )
-    weakest = _pick_weakest_rare_slot(slots)
-    over_clean = {k: v for k, v in remaining_overcap.items() if v > 0}
-    return Stage5PurchaseFallback(
-        needed=True,
-        target_slot=weakest.slot_name if weakest else "Ring 2",
-        current_item=weakest.name if weakest else None,
-        required_stats=unmet,
-        overcap_bonus_stats=over_clean,
-        reason=(
-            f"Hard deficits {unmet} remain after Stages 1-4; replace lowest-utility Rare slot "
-            f"`{weakest.slot_name if weakest else 'Ring 2'}` with merged cap + overcap targets."
-        ),
-    )
-
-
-def _all_hard_met(snap: StatSnapshot, *, chaos_target: int) -> bool:
-    attr_bad = any(v > 0 for v in snap.effective_attr_deficits().values())
-    res_bad = any(v > 0 for v in snap.resistance_hard_deficits(chaos_target=chaos_target).values())
-    sp_bad = snap.spirit_deficit() > 0
-    return not (attr_bad or res_bad or sp_bad)
 
 
 def _has_stage2_regression(baseline: StatSnapshot, after: StatSnapshot, *, chaos_target: int) -> bool:
@@ -191,7 +55,7 @@ def _has_stage2_regression(baseline: StatSnapshot, after: StatSnapshot, *, chaos
         or after.chaos_max < baseline.chaos_max - 1e-6
     ):
         return True
-    if _all_hard_met(baseline, chaos_target=chaos_target) and not _all_hard_met(after, chaos_target=chaos_target):
+    if all_hard_met(baseline, chaos_target=chaos_target) and not all_hard_met(after, chaos_target=chaos_target):
         return True
     base_attr = baseline.effective_attr_deficits()
     after_attr = after.effective_attr_deficits()
@@ -208,130 +72,100 @@ def _reset_stripped_slots_live(worker: Any, slots: tuple[EquippedSlotAudit, ...]
             worker.call("add_item", {"raw": sl.stripped_raw_text, "slotName": sl.slot_name})
 
 
-def solve_fix_gaps_offline(
+def _run_stage2_with_live_guard(
+    worker: Any,
     audit: NetGapAudit,
-    attr_nodes: list[AttributeNodeInfo],
+    snap_after_s1: StatSnapshot,
     *,
-    overcap_target: int = 20,
-    chaos_target: int = 0,
-    price_book: PriceBook | None = None,
-    catalog: RuneInstillCatalog | None = None,
-) -> FixGapsReport:
-    """Pure offline 5-stage solver (for deterministic unit testing without a live LuaJIT process)."""
-    cat = catalog or load_rune_instill_catalog()
-    bare = audit.bare_net
-    is_shaman = bare.ascendancy.lower() == "shaman"
-
-    # Stage 1: Gold respec attributes
-    s1 = solve_attribute_respec(bare, attr_nodes, catalog=cat)
-
-    # Combine remaining hard deficits for Stage 2
-    res_hard = bare.resistance_hard_deficits(chaos_target=chaos_target)
-    res_over = bare.resistance_overcap_needs(overcap_target=overcap_target)
+    overcap_target: int,
+    chaos_target: int,
+    is_shaman: bool,
+    price_book: PriceBook | None,
+    cat: RuneInstillCatalog,
+    read_verified_snap: Callable[[], StatSnapshot],
+) -> tuple[Stage2RunePlan, StatSnapshot]:
     hard_s2 = {
-        **s1.remaining_deficits,
-        **res_hard,
-        "spirit": bare.spirit_deficit(),
+        **snap_after_s1.effective_attr_deficits(),
+        **snap_after_s1.resistance_hard_deficits(chaos_target=chaos_target),
+        "spirit": snap_after_s1.spirit_deficit(),
     }
+    over_s2 = snap_after_s1.resistance_overcap_needs(overcap_target=overcap_target)
+    excluded_s2: set[str] = set()
+    extra_s2_warnings: list[str] = []
+    bare_level = audit.bare_net.level
+
     s2 = solve_rune_allocation(
         audit.slots,
         hard_s2,
-        res_over,
-        char_level=bare.level,
+        over_s2,
+        char_level=bare_level,
         is_shaman=is_shaman,
         price_book=price_book,
         crafted_slot_hints=audit.crafted_slot_hints,
         catalog=cat,
+        excluded_runes=excluded_s2,
     )
+    apply_rune_plan_live(worker, audit.slots, s2, char_level=bare_level, is_shaman=is_shaman, catalog=cat)
+    snap_after_s2 = read_verified_snap()
 
-    # Stage 3: Breach Catalysts on remaining hard/overcap gaps
-    s3 = solve_catalyst_upgrades(
-        audit.slots,
-        s2.remaining_hard,
-        s2.remaining_overcap,
-        price_book=price_book,
-    )
+    for _guard_iter in range(3):
+        if not s2.assignments or not _has_stage2_regression(snap_after_s1, snap_after_s2, chaos_target=chaos_target):
+            break
+        newly_rejected: list[str] = []
+        seen_probe: set[tuple[str, str]] = set()
+        for asgn in s2.assignments:
+            key_sr = (asgn.slot_name, asgn.rune_name)
+            if key_sr in seen_probe or asgn.rune_name in excluded_s2:
+                continue
+            seen_probe.add(key_sr)
+            _reset_stripped_slots_live(worker, audit.slots)
+            probe_plan = Stage2RunePlan(
+                assignments=(asgn,), total_cost_ex=asgn.price_ex, remaining_hard={}, remaining_overcap={}
+            )
+            apply_rune_plan_live(worker, audit.slots, probe_plan, char_level=bare_level, is_shaman=is_shaman, catalog=cat)
+            probe_snap = read_verified_snap()
+            mr_warn = format_max_res_drop_warning(asgn.rune_name, snap_after_s1, probe_snap, slot_name=asgn.slot_name)
+            if mr_warn:
+                extra_s2_warnings.append(mr_warn)
+                newly_rejected.append(asgn.rune_name)
+            elif _has_stage2_regression(snap_after_s1, probe_snap, chaos_target=chaos_target):
+                extra_s2_warnings.append(
+                    f"[rune-reduces-max-res] Rejected `{asgn.rune_name}` ({asgn.slot_name}): broke hard floor in afterVerified check."
+                )
+                newly_rejected.append(asgn.rune_name)
+        if not newly_rejected:
+            for asgn in s2.assignments:
+                mr_warn = format_max_res_drop_warning(asgn.rune_name, snap_after_s1, snap_after_s2, slot_name=asgn.slot_name)
+                if mr_warn and mr_warn not in extra_s2_warnings:
+                    extra_s2_warnings.append(mr_warn)
+                newly_rejected.append(asgn.rune_name)
+        excluded_s2.update(newly_rejected)
+        _reset_stripped_slots_live(worker, audit.slots)
+        s2 = solve_rune_allocation(
+            audit.slots,
+            hard_s2,
+            over_s2,
+            char_level=bare_level,
+            is_shaman=is_shaman,
+            price_book=price_book,
+            crafted_slot_hints=audit.crafted_slot_hints,
+            catalog=cat,
+            excluded_runes=excluded_s2,
+        )
+        apply_rune_plan_live(worker, audit.slots, s2, char_level=bare_level, is_shaman=is_shaman, catalog=cat)
+        snap_after_s2 = read_verified_snap()
 
-    # Stage 4: Spirit summary (offline placeholder when no live skill tree passed)
-    rem_spirit = s2.remaining_hard.get("spirit", 0)
-    s4 = SpiritKnapsackPlan(
-        mode="rescue",
-        target_spirit=rem_spirit,
-        achieved_spirit=0,
-        remaining_deficit=rem_spirit,
-        selected=(),
-        all_evaluated=(),
-    )
-
-    # Compute projected after snapshot from Stages 1-3 gains
-    d = {k: 0 for k in ("str", "dex", "int", "fire", "cold", "lightning", "chaos", "spirit")}
-    for sw in s1.swaps:
-        d[sw.from_attr] -= sw.delta
-        d[sw.to_attr] += sw.delta
-    for asgn in s2.assignments:
-        for k, v in asgn.gains.items():
-            d[k] += v
-    for act in s3.actions:
-        for k, v in act.gains.items():
-            d[k] += v
-
-    after = StatSnapshot(
-        level=bare.level,
-        ascendancy=bare.ascendancy,
-        str_val=bare.str_val + d["str"],
-        req_str=bare.req_str,
-        dex_val=bare.dex_val + d["dex"],
-        req_dex=bare.req_dex,
-        int_val=bare.int_val + d["int"],
-        req_int=bare.req_int,
-        fire_total=bare.fire_total + d["fire"],
-        fire_max=bare.fire_max,
-        cold_total=bare.cold_total + d["cold"],
-        cold_max=bare.cold_max,
-        lightning_total=bare.lightning_total + d["lightning"],
-        lightning_max=bare.lightning_max,
-        chaos_total=bare.chaos_total + d["chaos"],
-        chaos_max=bare.chaos_max,
-        spirit_total=bare.spirit_total + d["spirit"],
-        spirit_reserved=bare.spirit_reserved,
-        spirit_unreserved=bare.spirit_unreserved + d["spirit"],
-        combined_dps=bare.combined_dps,
-        total_ehp=bare.total_ehp,
-        giants_blood=bare.giants_blood,
-        ws2_req_str=bare.ws2_req_str,
-        ws2_req_dex=bare.ws2_req_dex,
-        ws2_req_int=bare.ws2_req_int,
-        ws2_str_val=(bare.ws2_str_val + d["str"]) if bare.ws2_str_val is not None else None,
-        ws2_dex_val=(bare.ws2_dex_val + d["dex"]) if bare.ws2_dex_val is not None else None,
-        ws2_int_val=(bare.ws2_int_val + d["int"]) if bare.ws2_int_val is not None else None,
-    )
-
-    final_hard = {
-        **after.effective_attr_deficits(),
-        **after.resistance_hard_deficits(chaos_target=chaos_target),
-        "spirit": after.spirit_deficit(),
-    }
-    s5 = build_stage5_fallback(audit.slots, final_hard, after.resistance_overcap_needs(overcap_target=overcap_target))
-    all_warnings = (*audit.warnings, *s1.warnings, *s2.warnings, *s3.warnings, *s4.warnings)
-
-    return FixGapsReport(
-        before=audit.current,
-        bare_net=bare,
-        after_verified=after,
-        stage1=s1,
-        stage2=s2,
-        stage3=s3,
-        stage4=s4,
-        stage5=s5,
-        overcap_target=overcap_target,
-        chaos_target=chaos_target,
-        total_gold_cost=s1.gold_cost,
-        total_ex_cost=s2.total_cost_ex + s3.total_cost_ex,
-        all_hard_floors_met=_all_hard_met(after, chaos_target=chaos_target),
-        cow_rollback_verified=None,
-        warnings=all_warnings,
-        current_in_game=audit.current_in_game or audit.current,
-    )
+    if extra_s2_warnings:
+        merged_w = list(dict.fromkeys([*extra_s2_warnings, *s2.warnings]))
+        s2 = Stage2RunePlan(
+            assignments=s2.assignments,
+            total_cost_ex=s2.total_cost_ex,
+            remaining_hard=s2.remaining_hard,
+            remaining_overcap=s2.remaining_overcap,
+            crafted_slot_hints=s2.crafted_slot_hints,
+            warnings=tuple(merged_w),
+        )
+    return s2, snap_after_s2
 
 
 def solve_fix_gaps_live(
@@ -347,7 +181,6 @@ def solve_fix_gaps_live(
     cat = catalog or load_rune_instill_catalog()
     before_digest = capture_digest(worker)
 
-    # Step 0: Bare net-gap analysis (rolls back cleanly inside analyze_live_net_gap)
     audit = analyze_live_net_gap(worker, catalog=cat)
     bare = audit.bare_net
     is_shaman = bare.ascendancy.lower() == "shaman"
@@ -367,103 +200,32 @@ def solve_fix_gaps_live(
 
     rollback_ok: bool | None = None
     with BuildTransaction(worker, scope=BuildScope.ACTIVE_SETS, will_commit=apply) as tx:
-        # Ensure Charms stay deactivated during verification so permanent stats never rely on Charms
         for cname in ("Charm 1", "Charm 2", "Charm 3"):
             try:
                 worker.call("set_slot_active", {"slotName": cname, "active": False})
             except Exception:
                 pass
 
-        # Strip replaceable runes before rebuilding sockets cleanly
         for sl in audit.slots:
             if sl.stripped_runes:
                 worker.call("add_item", {"raw": sl.stripped_raw_text, "slotName": sl.slot_name})
 
-        # Stage 1: Gold respec +5 Attribute nodes
         s1 = solve_attribute_respec(bare, attr_nodes, catalog=cat)
         apply_attribute_swaps_live(worker, s1)
         snap_after_s1 = _read_verified_snap()
 
-        # Stage 2: 287-augment allocation on real post-Stage-1 deficits + live afterVerified MaxRes/floor guard
-        hard_s2 = {
-            **snap_after_s1.effective_attr_deficits(),
-            **snap_after_s1.resistance_hard_deficits(chaos_target=chaos_target),
-            "spirit": snap_after_s1.spirit_deficit(),
-        }
-        over_s2 = snap_after_s1.resistance_overcap_needs(overcap_target=overcap_target)
-        excluded_s2: set[str] = set()
-        extra_s2_warnings: list[str] = []
-        s2 = solve_rune_allocation(
-            audit.slots,
-            hard_s2,
-            over_s2,
-            char_level=bare.level,
+        s2, snap_after_s2 = _run_stage2_with_live_guard(
+            worker,
+            audit,
+            snap_after_s1,
+            overcap_target=overcap_target,
+            chaos_target=chaos_target,
             is_shaman=is_shaman,
             price_book=price_book,
-            crafted_slot_hints=audit.crafted_slot_hints,
-            catalog=cat,
-            excluded_runes=excluded_s2,
+            cat=cat,
+            read_verified_snap=_read_verified_snap,
         )
-        apply_rune_plan_live(worker, audit.slots, s2, char_level=bare.level, is_shaman=is_shaman, catalog=cat)
-        snap_after_s2 = _read_verified_snap()
 
-        for _guard_iter in range(3):
-            if not s2.assignments or not _has_stage2_regression(snap_after_s1, snap_after_s2, chaos_target=chaos_target):
-                break
-            newly_rejected: list[str] = []
-            seen_probe: set[tuple[str, str]] = set()
-            for asgn in s2.assignments:
-                key_sr = (asgn.slot_name, asgn.rune_name)
-                if key_sr in seen_probe or asgn.rune_name in excluded_s2:
-                    continue
-                seen_probe.add(key_sr)
-                _reset_stripped_slots_live(worker, audit.slots)
-                probe_plan = Stage2RunePlan(assignments=(asgn,), total_cost_ex=asgn.price_ex, remaining_hard={}, remaining_overcap={})
-                apply_rune_plan_live(worker, audit.slots, probe_plan, char_level=bare.level, is_shaman=is_shaman, catalog=cat)
-                probe_snap = _read_verified_snap()
-                mr_warn = format_max_res_drop_warning(asgn.rune_name, snap_after_s1, probe_snap, slot_name=asgn.slot_name)
-                if mr_warn:
-                    extra_s2_warnings.append(mr_warn)
-                    newly_rejected.append(asgn.rune_name)
-                elif _has_stage2_regression(snap_after_s1, probe_snap, chaos_target=chaos_target):
-                    extra_s2_warnings.append(
-                        f"[rune-reduces-max-res] Rejected `{asgn.rune_name}` ({asgn.slot_name}): broke hard floor in afterVerified check."
-                    )
-                    newly_rejected.append(asgn.rune_name)
-            if not newly_rejected:
-                for asgn in s2.assignments:
-                    mr_warn = format_max_res_drop_warning(asgn.rune_name, snap_after_s1, snap_after_s2, slot_name=asgn.slot_name)
-                    if mr_warn and mr_warn not in extra_s2_warnings:
-                        extra_s2_warnings.append(mr_warn)
-                    newly_rejected.append(asgn.rune_name)
-            excluded_s2.update(newly_rejected)
-            _reset_stripped_slots_live(worker, audit.slots)
-            s2 = solve_rune_allocation(
-                audit.slots,
-                hard_s2,
-                over_s2,
-                char_level=bare.level,
-                is_shaman=is_shaman,
-                price_book=price_book,
-                crafted_slot_hints=audit.crafted_slot_hints,
-                catalog=cat,
-                excluded_runes=excluded_s2,
-            )
-            apply_rune_plan_live(worker, audit.slots, s2, char_level=bare.level, is_shaman=is_shaman, catalog=cat)
-            snap_after_s2 = _read_verified_snap()
-
-        if extra_s2_warnings:
-            merged_w = list(dict.fromkeys([*extra_s2_warnings, *s2.warnings]))
-            s2 = Stage2RunePlan(
-                assignments=s2.assignments,
-                total_cost_ex=s2.total_cost_ex,
-                remaining_hard=s2.remaining_hard,
-                remaining_overcap=s2.remaining_overcap,
-                crafted_slot_hints=s2.crafted_slot_hints,
-                warnings=tuple(merged_w),
-            )
-
-        # Stage 3: 13 Breach Catalysts on remaining hard/overcap gaps
         hard_s3 = {
             **snap_after_s2.effective_attr_deficits(),
             **snap_after_s2.resistance_hard_deficits(chaos_target=chaos_target),
@@ -473,12 +235,10 @@ def solve_fix_gaps_live(
         apply_catalyst_plan_live(worker, audit.slots, s3)
         snap_after_s3 = _read_verified_snap()
 
-        # Stage 4: Live CoW Spirit knapsack if SpiritUnreserved < 0
         s4 = solve_live_spirit_deficit(worker, deficit_override=snap_after_s3.spirit_deficit(), catalog=cat)
         apply_spirit_plan_live(worker, s4)
         after_verified = _read_verified_snap()
 
-        # Stage 5: Fallback weakest rare slot spec ONLY if hard floor still unmet
         final_hard = {
             **after_verified.effective_attr_deficits(),
             **after_verified.resistance_hard_deficits(chaos_target=chaos_target),
@@ -510,7 +270,7 @@ def solve_fix_gaps_live(
         chaos_target=chaos_target,
         total_gold_cost=s1.gold_cost,
         total_ex_cost=s2.total_cost_ex + s3.total_cost_ex,
-        all_hard_floors_met=_all_hard_met(after_verified, chaos_target=chaos_target),
+        all_hard_floors_met=all_hard_met(after_verified, chaos_target=chaos_target),
         cow_rollback_verified=rollback_ok,
         warnings=all_warnings,
         current_in_game=audit.current_in_game or audit.current,

@@ -26,13 +26,13 @@ from .instill_bridge import (
     resolve_emotion_price_ex,
     resolve_rune_price_ex,
 )
+from .instill_ranker import rank_instillations
 from .pareto_ranker import (
     ParetoRankingReport,
     RankedCandidate,
     compute_pareto_frontier,
-    rank_instillations,
-    rank_runes_for_slot,
 )
+from .rune_ranker import rank_runes_for_slot
 from .socket_rules import (
     VALID_MODRUNE_SLOT_KEYS,
     SocketParityResult,
