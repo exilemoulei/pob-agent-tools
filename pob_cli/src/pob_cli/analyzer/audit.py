@@ -270,6 +270,10 @@ def audit_build(
             dw_kw["flask_notes"] = flask_notes
         if "equipped_slots_raw" in dw_defs:
             dw_kw["equipped_slots_raw"] = eff_raw
+        if "tree_summary" in dw_defs:
+            dw_kw["tree_summary"] = eff_tree
+        if "alloc_node_stats" in dw_defs:
+            dw_kw["alloc_node_stats"] = alloc_st
         if "auto_keep_live" in dw_defs:
             dw_kw["auto_keep_live"] = auto_keep
         stripped, records = _analyzer.dewater_build_with_records(worker, keep=keep, **dw_kw)
@@ -333,6 +337,7 @@ def audit_build(
                 stats, skills_res=skills_res_audit, items_res=items_res, agent_probe=agent_probe_res
             ),
             "inflationStripped": stripped,
+            "pass2Applied": bool((stripped or {}).get("pass2Applied", True)),
             "waterAttribution": water_attribution,
             "restoreCheck": restore_check,
             "original": _build_audit_panel(digest_before),

@@ -181,6 +181,7 @@ local function probe_flags(env, mod_db, enemy_db, out)
 			name = (ms and ms.activeEffect and ms.activeEffect.grantedEffect and ms.activeEffect.grantedEffect.name) or "",
 			isProxy = (mf.totem or mf.trap or mf.mine or mf.minion) and true or false,
 			isMelee = (mf.melee and true) or false, isAttack = (mf.attack and true) or false, isSpell = (mf.spell and true) or false,
+			canFortify = (ms and ms.skillModList and (ms.skillModList:Flag(mc, "FortifyOnHit") or snum(ms.skillModList:Sum("BASE", mc, "FortifyOnHitChance"), 0) > 0)) and true or false,
 			speed = spd, hitChance = snum(out.HitChance, 100), critChance = snum(out.EffectiveCritChance or out.CritChance, 0),
 			averageHit = snum(out.AverageHit or out.AverageDamage, 0),
 			igniteChance = math.max(snum(out.IgniteChance, 0), snum(out.EnemyIgniteChance, 0)),
@@ -192,7 +193,52 @@ local function probe_flags(env, mod_db, enemy_db, out)
 	}
 end
 
-local function handle_get_dewater_provenance(_params)
+local function parse_ailment_tbl(tbl, boss_tag)
+	if type(tbl) ~= "table" or type(tbl.rowList) ~= "table" then return 0 end
+	local needle, best = "(" .. tostring(boss_tag or "None") .. ")", 0
+	for _, row in ipairs(tbl.rowList) do
+		if type(row) == "table" and type(row.thresh) == "string" and row.thresh:find(needle, 1, true) then
+			local num = tonumber(tostring(row.effect or ""):gsub("%^x%x%x%x%x%x%x", ""):gsub("%^%d", ""):match("^%s*([%d%.]+)"))
+			if num and num > best then best = num end
+		end
+	end
+	return best
+end
+
+local function probe_calcs_ailments(build, boss_tag)
+	local tab = build and build.calcsTab
+	if not tab or not tab.calcs or type(tab.calcs.buildOutput) ~= "function" then return nil end
+	local mg_idx = build.mainSocketGroup or 1
+	local mg = build.skillsTab and build.skillsTab.socketGroupList and build.skillsTab.socketGroupList[mg_idx]
+	local o_sn, o_sm, o_ma = tab.input and tab.input.skill_number, tab.input and tab.input.showMinion, mg and mg.mainActiveSkillCalcs
+	if tab.input then tab.input.skill_number, tab.input.showMinion = mg_idx, false end
+	if mg and mg.mainActiveSkill then mg.mainActiveSkillCalcs = mg.mainActiveSkill end
+	local ok, cenv = pcall(tab.calcs.buildOutput, build, "CALCS")
+	if tab.input then tab.input.skill_number, tab.input.showMinion = o_sn, o_sm end
+	if mg then mg.mainActiveSkillCalcs = o_ma end
+	if not ok or type(cenv) ~= "table" or type(cenv.player) ~= "table" then return nil end
+	local pl = cenv.player
+	local out, bd, flags, mdb = pl.output or {}, pl.breakdown or {}, (pl.mainSkill and pl.mainSkill.skillFlags) or {}, pl.modDB
+	local res = {}
+	for _, a in ipairs({ "Shock", "Chill", "Scorch", "Brittle", "Sap" }) do
+		local comp = parse_ailment_tbl(bd[a .. "DPS"], boss_tag)
+		if type(bd.MainHand) == "table" then comp = math.max(comp, parse_ailment_tbl(bd.MainHand[a .. "DPS"], boss_tag)) end
+		if type(bd.OffHand) == "table" then comp = math.max(comp, parse_ailment_tbl(bd.OffHand[a .. "DPS"], boss_tag)) end
+		if a == "Chill" then comp = math.max(comp, snum(out.ChillSourceEffect, 0)) end
+		local min_v = snum(out[a .. "Minimum"], 0); if min_v <= 0 and mdb then min_v = snum(mdb:Sum("BASE", nil, a .. "Minimum"), 0) end
+		local eff = math.max(comp, min_v)
+		local can = (flags[a:lower()] and true) or (eff >= ((a == "Brittle" and 0.5) or (a == "Sap" and 2) or 5))
+		res[a] = {
+			canInflict = can, computedPct = eff, minimumPct = min_v,
+			maxCap = snum(out["Maximum" .. a], (a == "Shock" and 50) or (a == "Chill" and 30) or (a == "Scorch" and 30) or (a == "Brittle" and 6) or 20),
+			chance = snum(out[a .. "Chance"], snum(out[a .. "ChanceOnHit"], 0)),
+			duration = snum(out[a .. "Duration"], 2),
+		}
+	end
+	return res
+end
+
+local function handle_get_dewater_provenance(params)
 	local ok, res = pcall(function()
 		local build, t0 = get_build(), now_ms()
 		local env = build.calcsTab and build.calcsTab.mainEnv
@@ -200,7 +246,10 @@ local function handle_get_dewater_provenance(_params)
 		local mod_db, out = env.player.modDB, env.player.output or {}
 		local mb, flasks = probe_flasks(build, mod_db)
 		local corpses, cd_skills = probe_corpses_and_cd(build, env, out)
-		return { ok = true, mageblood = mb, flasks = flasks, corpseSources = corpses, cooldownSkills = cd_skills, flags = probe_flags(env, mod_db, env.enemyDB, out), elapsedMs = now_ms() - t0 }
+		local fl = probe_flags(env, mod_db, env.enemyDB, out)
+		local out_p = { ok = true, mageblood = mb, flasks = flasks, corpseSources = corpses, cooldownSkills = cd_skills, flags = fl, elapsedMs = now_ms() - t0 }
+		if type(params) == "table" and params.includeAilments then out_p.ailments = probe_calcs_ailments(build, fl.enemyIsBoss) end
+		return out_p
 	end)
 	return ok and res or { ok = false, error = tostring(res) }
 end

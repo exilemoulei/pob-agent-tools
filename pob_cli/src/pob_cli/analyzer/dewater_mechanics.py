@@ -519,3 +519,12 @@ def refine_post_dewater_mechanics(
         is_proxy=is_proxy_main_skill(skills_res),
     )
     _maybe_clamp_boss_shock(worker, cfg_res, keep_set, stripped, records)
+
+
+AILMENT_CLAMP_SPECS: tuple[tuple[str, str, str, float, int], ...] = (
+    ("Shock", "conditionenemyshocked", "conditionshockeffect", 5.0, 50),
+    ("Chill", "conditionenemychilled", "conditionenemychilledeffect", 5.0, 30),
+    ("Scorch", "conditionenemyscorched", "conditionscorchedeffect", 5.0, 30),
+    ("Brittle", "conditionenemybrittle", "conditionbrittleeffect", 1.0, 6),
+    ("Sap", "conditionenemysapped", "conditionsapeffect", 2.0, 20),
+)

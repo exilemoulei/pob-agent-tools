@@ -6,7 +6,6 @@ import math
 import re
 from typing import Any
 
-from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
 from .constants import (
     _POB_TRUTHY_CONFIG_DEFAULTS,
@@ -17,7 +16,7 @@ from .constants import (
     POB_GEM_FLAG_DEFAULTS,
     TEMPORARY_SKILL_PATTERNS,
 )
-from .summary import _is_tincture_item
+from .dewater_provenance import _dewater_flasks as _dewater_flasks
 
 
 def _same_state(a: Any, b: Any) -> bool:
@@ -135,9 +134,15 @@ def _dewater_config_and_custom_mods(
     records: list[dict[str, Any]],
     *,
     auto_keep_reasons: dict[str, str] | None = None,
+    auto_keep_live: bool = True,
+    is_close_range: bool = False,
+    boss: str | None = None,
 ) -> None:
+    from .dewater_clamp import pass1_config_action
+
     current_boss = None
     had_preset_boss_skills = False
+    target_boss = boss if boss in ("Pinnacle", "Uber") else "Pinnacle"
 
     for sec in cfg_res.get("sections", []):
         for item in sec.get("items", []):
@@ -171,9 +176,31 @@ def _dewater_config_and_custom_mods(
             if var.lower() in keep_set:
                 stripped["kept"].append(f"{var}={val!r} (kept)")
                 continue
-            auto_reason = (auto_keep_reasons or {}).get(var.lower())
-            if auto_reason:
-                stripped.setdefault("autoKept", []).append(f"{var}={val!r} (auto-kept: {auto_reason})")
+            action, target_val, reason = pass1_config_action(
+                var,
+                val,
+                auto_keep_live=auto_keep_live,
+                is_close_range=is_close_range,
+                auto_keep_reasons=auto_keep_reasons,
+            )
+            if action == "keep":
+                stripped.setdefault("autoKept", []).append(f"{var}={val!r} (auto-kept: {reason})")
+                continue
+            if action == "clamp":
+                stripped.setdefault("autoClamped", []).append(f"{var}={val!r} -> {target_val!r} ({reason})")
+                stripped["config"].append(f"{var}={val!r} -> {target_val!r} ({reason})")
+                mutations.append(("set_config", {"var": var, "value": target_val}))
+                records.append(
+                    {
+                        "dimension": "config",
+                        "key": var,
+                        "label": f"{var}={val!r} -> {target_val!r} ({reason})",
+                        "restore": [("set_config", {"var": var, "value": val})],
+                        "revert": [("set_config", {"var": var, "value": target_val})],
+                        "probe": {"kind": "config", "var": var},
+                        "original": val,
+                    }
+                )
                 continue
             if var == "presetBossSkills":
                 had_preset_boss_skills = True
@@ -194,11 +221,11 @@ def _dewater_config_and_custom_mods(
     if "enemyisboss" in keep_set:
         stripped["kept"].append(f"enemyIsBoss={current_boss!r} (kept)")
     else:
-        if current_boss != "Pinnacle":
-            stripped["config"].append(f"enemyIsBoss={current_boss!r} -> 'Pinnacle'")
-        mutations.append(("set_config", {"var": "enemyIsBoss", "value": "Pinnacle"}))
+        if current_boss != target_boss:
+            stripped["config"].append(f"enemyIsBoss={current_boss!r} -> {target_boss!r}")
+        mutations.append(("set_config", {"var": "enemyIsBoss", "value": target_boss}))
         if had_preset_boss_skills:
-            mutations.append(("set_config", {"var": "enemyIsBoss", "value": "Pinnacle"}))
+            mutations.append(("set_config", {"var": "enemyIsBoss", "value": target_boss}))
 
     custom_mods = cfg_res.get("customMods", [])
     blocks = _normalize_custom_mod_blocks(custom_mods)
@@ -266,76 +293,6 @@ def _dewater_config_and_custom_mods(
             if note_330:
                 rec_entry["customMods330Notes"] = [note_330]
             records.append(rec_entry)
-
-
-def _dewater_flasks(
-    worker: BridgeWorker,
-    items_res: dict[str, Any],
-    keep_set: set[str],
-    known: dict[str, str],
-    stripped: dict[str, list[str]],
-    mutations: list[tuple[str, dict[str, Any]]],
-    records: list[dict[str, Any]],
-    *,
-    has_bloodsoaked_blade: bool | None,
-    flask_notes: dict[str, str] | None = None,
-    equipped_slots_raw: list[dict[str, Any]] | None = None,
-    flask_verdict: dict[str, Any] | None = None,
-) -> None:
-    from .dewater_provenance import evaluate_flask_provenance
-
-    verdict = flask_verdict or evaluate_flask_provenance(
-        worker,
-        items_res,
-        equipped_slots_raw=equipped_slots_raw,
-        has_bloodsoaked_blade=has_bloodsoaked_blade,
-    )
-    mb_exempt: set[str] = set(verdict.get("magebloodSlots") or ())
-    mb_spec = str(verdict.get("magebloodLabel") or "")
-    sustained_slots: dict[str, str] = dict(verdict.get("sustainedSlots") or {})
-    bloodsoaked_active = bool(verdict.get("bloodsoakedBlade"))
-    items_by_id = {it["id"]: it for it in items_res.get("items", [])}
-    for slot in items_res.get("slots", []):
-        if slot.get("isFlask") and slot.get("name"):
-            known[str(slot["name"]).lower()] = str(slot["name"])
-    for slot in items_res.get("slots", []):
-        if slot.get("isFlask") and slot.get("active"):
-            slot_name = slot["name"]
-            item = items_by_id.get(slot.get("selItemId") or 0, {})
-            item_title = strip_pob_escapes(item.get("titleZh") or item.get("title") or item.get("name") or slot_name)
-            if "flasks" in keep_set or slot_name.lower() in keep_set:
-                stripped["kept"].append(f"{slot_name} ({item_title}) (kept)")
-                continue
-            if slot_name in mb_exempt:
-                stripped.setdefault("autoKept", []).append(
-                    f"{slot_name} ({item_title}) (auto-kept: {mb_spec})"
-                )
-                continue
-            if slot_name in sustained_slots:
-                stripped.setdefault("autoKept", []).append(
-                    f"{slot_name} ({item_title}) (auto-kept: {sustained_slots[slot_name]})"
-                )
-                continue
-            if bloodsoaked_active and _is_tincture_item(item):
-                stripped["kept"].append(
-                    f"{slot_name} ({item_title}) (kept: Bloodsoaked Blade sustained Tincture; Tinctures != Flasks)"
-                )
-                continue
-            f_note = (flask_notes or {}).get(slot_name)
-            note_suffix = f" [{f_note}]" if f_note else ""
-            stripped["flasks"].append(f"{slot_name} ({item_title}) -> active=False{note_suffix}")
-            mutations.append(("set_slot_active", {"slotName": slot_name, "active": False}))
-            records.append(
-                {
-                    "dimension": "flasks",
-                    "key": slot_name,
-                    "label": f"{slot_name} ({item_title})",
-                    "restore": [("set_slot_active", {"slotName": slot_name, "active": True})],
-                    "revert": [("set_slot_active", {"slotName": slot_name, "active": False})],
-                    "probe": {"kind": "flask", "slot": slot_name},
-                    "original": True,
-                }
-            )
 
 
 def _dewater_skills(

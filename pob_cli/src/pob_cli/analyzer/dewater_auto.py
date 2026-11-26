@@ -260,6 +260,18 @@ def infer_auto_keep_and_flask_notes(
         auto_keep["usepowercharges"] = "Ralakesh's Impatience"
 
     from .dewater_mechanics import infer_on_hit_auto_keeps
+    from .dewater_provenance import infer_v2_static_auto_keeps
+
+    for k, reason in infer_v2_static_auto_keeps(
+        stats=st,
+        skills_res=skills_res,
+        node_names=node_names,
+        item_blob=item_blob,
+        mod_lines=tok["all_mod_lines"],
+        mods_low=mods_low,
+        endurance_duration=_finite_float(st.get("EnduranceChargesDuration"), default=10.0) or 10.0,
+    ).items():
+        auto_keep.setdefault(k, reason)
 
     eff_extra_lines = extra_mod_lines
     if eff_extra_lines is None:
@@ -470,5 +482,7 @@ def dewater_smart_in_place(
         auto_keep_reasons=ak_reasons,
         flask_notes=flask_notes,
         equipped_slots_raw=eff_raw,
+        tree_summary=eff_tree,
+        alloc_node_stats=alloc_st,
         auto_keep_live=True,
     )
