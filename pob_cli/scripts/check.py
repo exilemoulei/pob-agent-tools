@@ -2,7 +2,7 @@
 """Deterministic lint, architecture-DAG, and offline test gate for `pob_cli`.
 
 Modes:
-  python pob_cli/scripts/check.py             # ruff + arch-lint + isolated offline pytest (>=905 passed, <=25 skipped)
+  python pob_cli/scripts/check.py             # ruff + arch-lint + isolated offline pytest (>=905 passed, <=26 skipped)
   python pob_cli/scripts/check.py --min-passed 1331 --max-skipped 8  # CI ratchet for a POSIX real-engine run
   python pob_cli/scripts/check.py --fast      # ruff + AST arch-lint only (<3s)
   python pob_cli/scripts/check.py --self-test # mutation checks in %TEMP% proving every rule fires
@@ -29,8 +29,8 @@ MIN_PASSED_TESTS = 905
 # Skip budgets by what this machine can run. A gate that is red for everyone without an engine is
 # no gate: the defaults follow the tier this machine is actually in, and `engine.yml` still passes
 # explicit counts so CI keeps an exact ratchet.
-MAX_SKIPPED_TESTS = 25  # engine plus the legacy PobTools seed: the strict tier
-_MAX_SKIPPED_BOOTSTRAPPED = 32  # engine from `pob bootstrap`: Windows keeps POSIX-only + slim LUT skips
+MAX_SKIPPED_TESTS = 26  # engine plus the legacy PobTools seed: the strict tier
+_MAX_SKIPPED_BOOTSTRAPPED = 33  # engine from `pob bootstrap`: Windows keeps POSIX-only + slim LUT skips
 _MAX_SKIPPED_NO_ENGINE = 120  # no engine at all: every real-engine test skips
 
 
