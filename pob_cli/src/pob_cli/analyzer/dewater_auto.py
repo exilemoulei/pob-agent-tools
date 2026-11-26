@@ -256,6 +256,15 @@ def infer_auto_keep_and_flask_notes(
     elif has_ralakesh and ("maximum power charges" in mods_low or ("maximum endurance charges" not in mods_low and "maximum frenzy charges" not in mods_low)):
         auto_keep["usepowercharges"] = "Ralakesh's Impatience"
 
+    from .dewater_mechanics import infer_on_hit_auto_keeps
+
+    for k, reason in infer_on_hit_auto_keeps(
+        stats=st,
+        skills_res=skills_res,
+        mod_lines=tok["all_mod_lines"],
+    ).items():
+        auto_keep.setdefault(k, reason)
+
     flask_notes: dict[str, str] = {}
     if isinstance(items_res, dict):
         items_by_id = tok["items_by_id"]
@@ -391,7 +400,7 @@ def dewater_smart_in_place(
 ) -> dict[str, list[str]]:
     """Run build-mechanism-aware smart dewatering in place (or bare dewatering when `auto_keep=False`)."""
     if not auto_keep:
-        return dewater_build_in_place(worker, keep=keep)
+        return dewater_build_in_place(worker, keep=keep, auto_keep_live=False)
 
     missing_keys: list[str] = []
     missing_calls: list[tuple[str, dict[str, Any]]] = []
@@ -445,4 +454,5 @@ def dewater_smart_in_place(
         auto_keep_reasons=ak_reasons,
         flask_notes=flask_notes,
         equipped_slots_raw=eff_raw,
+        auto_keep_live=True,
     )

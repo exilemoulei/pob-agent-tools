@@ -468,3 +468,51 @@ def _dewater_skills(
                         "original": orig_state,
                     }
                 )
+
+
+def _extract_probe_state(probe: dict[str, Any], res: dict[str, Any]) -> Any:
+    kind = probe.get("kind")
+    if kind == "customMods":
+        return _normalize_custom_mod_blocks(res.get("customMods", []))
+    if kind == "config":
+        for sec in res.get("sections", []):
+            for item in sec.get("items", []):
+                if item.get("var") == probe["var"]:
+                    return item.get("value")
+        return None
+    if kind == "config_multi":
+        found: dict[str, Any] = {str(v): None for v in probe.get("vars", [])}
+        for sec in res.get("sections", []):
+            for item in sec.get("items", []):
+                v = item.get("var")
+                if v in found:
+                    found[v] = item.get("value")
+        return found
+    if kind == "flask":
+        for slot in res.get("slots", []):
+            if slot.get("name") == probe["slot"]:
+                return bool(slot.get("active"))
+        return None
+    if kind == "gem":
+        for group in res.get("groups", []):
+            if group.get("index") != probe["group"]:
+                continue
+            for gem in group.get("gems", []):
+                if gem.get("index") == probe["index"]:
+                    state: dict[str, Any] = {}
+                    for f in probe["fields"]:
+                        if f == "mainActiveSkill":
+                            state[f] = int(group.get("mainActiveSkill") or 1)
+                        else:
+                            state[f] = bool(gem.get(f, POB_GEM_FLAG_DEFAULTS.get(f, False)))
+                    return state
+        return None
+    raise ValueError(f"unknown probe kind {kind!r}")
+
+
+def _rpc_error_text(res: Any) -> str | None:
+    if not isinstance(res, dict):
+        return None
+    if res.get("ok") is False or res.get("_error"):
+        return str(res.get("error") or res.get("_error") or "RPC failed")
+    return None

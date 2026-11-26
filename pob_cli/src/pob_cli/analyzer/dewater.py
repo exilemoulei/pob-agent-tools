@@ -16,12 +16,17 @@ from ..snapshot import (
     _safe_min_ele_max_hit,
     verify_build,
 )
-from .constants import _KEEP_KEYWORDS, POB_GEM_FLAG_DEFAULTS
+from .constants import _KEEP_KEYWORDS
 from .dewater_steps import (
     _dewater_config_and_custom_mods,
     _dewater_flasks,
     _dewater_skills,
-    _normalize_custom_mod_blocks,
+)
+from .dewater_steps import (
+    _extract_probe_state as _extract_probe_state,
+)
+from .dewater_steps import (
+    _rpc_error_text as _rpc_error_text,
 )
 
 
@@ -67,6 +72,7 @@ def dewater_build_in_place(
     auto_keep_reasons: dict[str, str] | None = None,
     flask_notes: dict[str, str] | None = None,
     equipped_slots_raw: list[dict[str, Any]] | None = None,
+    auto_keep_live: bool = True,
 ) -> dict[str, list[str]]:
     """Strip PoB inflation ('water') in place and set enemyIsBoss='Pinnacle'."""
     stripped, _records = dewater_build_with_records(
@@ -75,6 +81,7 @@ def dewater_build_in_place(
         auto_keep_reasons=auto_keep_reasons,
         flask_notes=flask_notes,
         equipped_slots_raw=equipped_slots_raw,
+        auto_keep_live=auto_keep_live,
     )
     return stripped
 
@@ -87,6 +94,7 @@ def dewater_build_with_records(
     auto_keep_reasons: dict[str, str] | None = None,
     flask_notes: dict[str, str] | None = None,
     equipped_slots_raw: list[dict[str, Any]] | None = None,
+    auto_keep_live: bool = True,
 ) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
     """De-water in place (2 pipelined RPC batches) and return reversible per-item records."""
     keep_set = _normalize_keep(keep)
@@ -156,6 +164,11 @@ def dewater_build_with_records(
     ):
         _revoke_flask_inflated_ignite(worker, cfg_res, stripped, records)
 
+    if auto_keep_live:
+        from .dewater_mechanics import refine_post_dewater_mechanics
+
+        refine_post_dewater_mechanics(worker, cfg_res, keep_set, stripped, records, skills_res=skills_res)
+
     stripped["keepRejected"] = _unmatched_keep(keep_set, known)
     return stripped, records
 
@@ -219,46 +232,6 @@ def _probe_rpc_method(probe: dict[str, Any]) -> str:
     raise ValueError(f"unknown probe kind {kind!r}")
 
 
-def _extract_probe_state(probe: dict[str, Any], res: dict[str, Any]) -> Any:
-    kind = probe.get("kind")
-    if kind == "customMods":
-        return _normalize_custom_mod_blocks(res.get("customMods", []))
-    if kind == "config":
-        for sec in res.get("sections", []):
-            for item in sec.get("items", []):
-                if item.get("var") == probe["var"]:
-                    return item.get("value")
-        return None
-    if kind == "config_multi":
-        found: dict[str, Any] = {str(v): None for v in probe.get("vars", [])}
-        for sec in res.get("sections", []):
-            for item in sec.get("items", []):
-                v = item.get("var")
-                if v in found:
-                    found[v] = item.get("value")
-        return found
-    if kind == "flask":
-        for slot in res.get("slots", []):
-            if slot.get("name") == probe["slot"]:
-                return bool(slot.get("active"))
-        return None
-    if kind == "gem":
-        for group in res.get("groups", []):
-            if group.get("index") != probe["group"]:
-                continue
-            for gem in group.get("gems", []):
-                if gem.get("index") == probe["index"]:
-                    state: dict[str, Any] = {}
-                    for f in probe["fields"]:
-                        if f == "mainActiveSkill":
-                            state[f] = int(group.get("mainActiveSkill") or 1)
-                        else:
-                            state[f] = bool(gem.get(f, POB_GEM_FLAG_DEFAULTS.get(f, False)))
-                    return state
-        return None
-    raise ValueError(f"unknown probe kind {kind!r}")
-
-
 def _probe_state(worker: BridgeWorker, probe: dict[str, Any]) -> Any:
     """Read back from PoB the live state a record's restore/revert is meant to set."""
     method = _probe_rpc_method(probe)
@@ -293,11 +266,3 @@ def verify_restored(
 ) -> dict[str, Any]:
     """Check that rolling back to ``before_code`` really reproduced the original build."""
     return verify_build(worker, before_digest, code=before_code or "")
-
-
-def _rpc_error_text(res: Any) -> str | None:
-    if not isinstance(res, dict):
-        return None
-    if res.get("ok") is False or res.get("_error"):
-        return str(res.get("error") or res.get("_error") or "RPC failed")
-    return None

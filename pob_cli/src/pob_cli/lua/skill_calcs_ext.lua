@@ -186,9 +186,96 @@ local function handle_apply_group_gem_states(params)
 	return { ok = true, group = group_idx }
 end
 
+local function parse_shock_from_table(tbl, boss_tag)
+	if type(tbl) ~= "table" or type(tbl.rowList) ~= "table" then return 0 end
+	local needle = "(" .. tostring(boss_tag or "None") .. ")"
+	local best = 0
+	for _, row in ipairs(tbl.rowList) do
+		if type(row) == "table" and type(row.thresh) == "string" then
+			if row.thresh:find(needle, 1, true) then
+				local eff = tostring(row.effect or ""):gsub("%^x%x%x%x%x%x%x", ""):gsub("%^%d", "")
+				local num = tonumber(eff:match("^%s*([%d%.]+)"))
+				if num and num > best then best = num end
+			end
+		end
+	end
+	return best
+end
+
+local function handle_get_shock_probe(_params)
+	local b = host.get_build()
+	local tab = b and b.calcsTab
+	if not tab or not tab.calcs or type(tab.calcs.buildOutput) ~= "function" then
+		return { ok = false, error = "calcs builder unavailable" }
+	end
+	local mg_idx = b.mainSocketGroup or 1
+	local mg = b.skillsTab and b.skillsTab.socketGroupList and b.skillsTab.socketGroupList[mg_idx]
+	local orig_sn = tab.input and tab.input.skill_number
+	local orig_sm = tab.input and tab.input.showMinion
+	local orig_masc = mg and mg.mainActiveSkillCalcs
+	if tab.input then
+		tab.input.skill_number = mg_idx
+		tab.input.showMinion = false
+	end
+	if mg and mg.mainActiveSkill then
+		mg.mainActiveSkillCalcs = mg.mainActiveSkill
+	end
+	local ok, calcsEnv = pcall(tab.calcs.buildOutput, b, "CALCS")
+	if tab.input then
+		tab.input.skill_number = orig_sn
+		tab.input.showMinion = orig_sm
+	end
+	if mg then
+		mg.mainActiveSkillCalcs = orig_masc
+	end
+	if not ok or type(calcsEnv) ~= "table" or type(calcsEnv.player) ~= "table" then
+		return { ok = false, error = tostring(calcsEnv) }
+	end
+	local player = calcsEnv.player
+	local out = player.output or {}
+	local flags = (player.mainSkill and player.mainSkill.skillFlags) or {}
+	local cfg_in = calcsEnv.configInput or {}
+	local config_shocked = (cfg_in.conditionEnemyShocked and true) or false
+	local boss_tag = tostring(cfg_in.enemyIsBoss or "None")
+	local bd = player.breakdown or {}
+	local computed = parse_shock_from_table(bd.ShockDPS, boss_tag)
+	if type(bd.MainHand) == "table" then
+		computed = math.max(computed, parse_shock_from_table(bd.MainHand.ShockDPS, boss_tag))
+	end
+	if type(bd.OffHand) == "table" then
+		computed = math.max(computed, parse_shock_from_table(bd.OffHand.ShockDPS, boss_tag))
+	end
+	local cur_shock = tonumber(out.CurrentShock) or 0
+	local shock_min = tonumber(out.ShockMinimum) or 0
+	local non_cfg_floor = shock_min
+	if not config_shocked and cur_shock > non_cfg_floor then
+		non_cfg_floor = cur_shock
+	end
+	local can_shock = (flags.shock and true) or false
+	if non_cfg_floor > computed then
+		computed = non_cfg_floor
+		if non_cfg_floor >= 5 then can_shock = true end
+	end
+	return {
+		ok = true,
+		canShock = can_shock,
+		isProxy = (flags.totem or flags.trap or flags.mine or flags.minion) and true or false,
+		configDerived = config_shocked,
+		computedShockPct = computed,
+		maxShockCap = tonumber(out.MaximumShock) or 50,
+		currentShock = cur_shock,
+		shockChance = tonumber(out.ShockChance) or tonumber(out.ShockChanceOnHit) or 0,
+		critChance = tonumber(out.CritChance) or 0,
+		speed = tonumber(out.Speed) or 0,
+		hitChance = tonumber(out.HitChance) or 100,
+		enemyIsBoss = boss_tag,
+	}
+end
+
 return {
 	rpc_handlers = {
 		get_group_gem_states = handle_get_group_gem_states,
 		apply_group_gem_states = handle_apply_group_gem_states,
+		get_shock_probe = handle_get_shock_probe,
 	},
 }
