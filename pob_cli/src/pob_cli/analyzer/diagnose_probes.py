@@ -10,6 +10,7 @@ from ..snapshot import _call_batch, _finite_float
 from .constants import _DEAD_SUPPORT_EXEMPT_NAMES, _TRIGGER_ATTACK_HINTS
 from .pitfalls_triggers import NON_APS_TRIGGER_KEYS, canonical_trigger_key
 from .summary import _normalize_support_base_name
+from .volatile_vaal import detect_volatile_vaal_opportunity as detect_volatile_vaal_opportunity
 
 
 def _worker_caps(worker: Any) -> dict[str, Any]:

@@ -218,6 +218,7 @@ def _fmt_diagnose_gaps_and_mechanics(res: dict[str, Any], *, compact: bool) -> l
         or (bm.get("triggers") or [])
         or (isinstance(bm.get("tinctureSetup"), dict) and bm["tinctureSetup"].get("note"))
         or isinstance(bm.get("resistanceInversion"), dict)
+        or isinstance(bm.get("volatileVaal"), dict)
     )
     if has_bm_section:
         lines.append("\n#### 2c. Build-Specific Mechanics & PoB Modeling")
@@ -275,6 +276,9 @@ def _fmt_diagnose_gaps_and_mechanics(res: dict[str, Any], *, compact: bool) -> l
             lines.append(
                 f"- **Resistance Inversion**: {', '.join((inv.get('sources') or [])[:3])} — {inv.get('note') or ''}"
             )
+        vv = bm.get("volatileVaal")
+        if isinstance(vv, dict) and vv.get("message"):
+            lines.append(f"- **{vv.get('tag') or '[VOLATILE-VAAL]'}** {vv['message']}")
     return lines
 
 
