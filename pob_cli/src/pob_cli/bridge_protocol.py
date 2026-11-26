@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import collections
 import json
 import os
@@ -11,11 +10,11 @@ import re
 import subprocess
 import sys
 import time
-import zlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .importers_codec import share_code_to_xml
 from .json_io import read_json_dict as read_slot_state  # noqa: F401  (re-exported for bridge_client)
 
 MAX_UNDO_STEPS = 30
@@ -90,17 +89,9 @@ def _decode_share_code_xml(code: str) -> str | None:
     if text.startswith("<"):
         return text
     try:
-        cleaned = text.replace("-", "+").replace("_", "/")
-        pad = (-len(cleaned)) % 4
-        if pad:
-            cleaned += "=" * pad
-        raw = base64.b64decode(cleaned)
-        try:
-            xml_bytes = zlib.decompress(raw)
-        except zlib.error:
-            xml_bytes = zlib.decompress(raw, -15)
-        return xml_bytes.decode("utf-8", errors="replace")
-    except Exception:
+        # The capped decoder: the CLI and the tree-version peek read a code before the import does.
+        return share_code_to_xml(text)
+    except ValueError:
         return None
 
 

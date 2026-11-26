@@ -60,6 +60,18 @@ def test_share_code_bomb_is_refused_as_request_error(monkeypatch: pytest.MonkeyP
         importers.share_code_to_xml(base64.urlsafe_b64encode(good[:-6]).decode())
 
 
+def test_cli_side_decoder_is_capped_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pob_cli.bridge_protocol import _decode_share_code_xml
+
+    code = importers.xml_to_share_code(POE1_XML)
+    assert _decode_share_code_xml(code) == POE1_XML
+    assert _decode_share_code_xml(POE1_XML) == POE1_XML
+    assert _decode_share_code_xml("not a share code") is None
+    monkeypatch.setattr(importers_codec, "MAX_SHARE_XML_BYTES", 1024)
+    bomb = base64.urlsafe_b64encode(zlib.compress(b"<" + b"A" * 50_000)).decode()
+    assert _decode_share_code_xml(bomb) is None
+
+
 class _Lock:
     def __enter__(self) -> None:
         return None
