@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -15,7 +16,7 @@ import pob_cli.bridge_protocol as bp
 import pob_cli.snapshot.history as history_mod
 from pob_cli.bridge_boot import _persists
 from pob_cli.daemon.read_cache import _is_hist_unsettled
-from pob_cli.daemon.server import write_private_json
+from pob_cli.daemon.runtime import write_private_json
 from pob_cli.snapshot import BuildTransaction, SlotHistory, history_of, run_mutation
 
 _CAPS = {"cowSnapshot": True, "directCalc": True}
@@ -162,3 +163,20 @@ def test_write_private_json_is_owner_only(tmp_path: Path) -> None:
     assert not stale_tmp.exists()
     if os.name != "nt":
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_hot_reload_rewrite_keeps_daemon_json_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pob_cli.daemon import slot_updates
+
+    state = tmp_path / "daemon.json"
+    write_private_json(state, {"pid": os.getpid(), "token": "secret", "pob_dir": "old"})
+    monkeypatch.setattr(slot_updates, "_daemon_state_file", lambda _rt=None: state)
+    old_umask = os.umask(0o022)
+    try:
+        slot_updates.update_daemon_state_pob_dir(SimpleNamespace(runtime_dir=tmp_path, pob_dir=tmp_path / "new"))
+    finally:
+        os.umask(old_umask)
+    data = bp.json.loads(state.read_text(encoding="utf-8"))
+    assert data["token"] == "secret" and data["pob_dir"].endswith("new")
+    assert stat.S_IMODE(state.stat().st_mode) == 0o600

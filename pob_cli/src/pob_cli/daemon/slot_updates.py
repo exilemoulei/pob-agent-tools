@@ -14,7 +14,7 @@ from ..updater import (
     is_valid_engine_dir,
     resolve_engine_root,
 )
-from .runtime import GAME_ID, UPDATE_RECHECK_INTERVAL_SEC, _daemon_state_file
+from .runtime import GAME_ID, UPDATE_RECHECK_INTERVAL_SEC, _daemon_state_file, write_private_json
 
 if TYPE_CHECKING:
     from ..bridge_client import BridgeWorker
@@ -29,9 +29,7 @@ def update_daemon_state_pob_dir(manager: DaemonManager) -> None:
         data = json.loads(state_file.read_text(encoding="utf-8"))
         if isinstance(data, dict) and data.get("pid") == os.getpid():
             data["pob_dir"] = str(manager.pob_dir)
-            tmp = state_file.with_suffix(f".{os.getpid()}.tmp")
-            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            os.replace(tmp, state_file)
+            write_private_json(state_file, data)  # it holds the token: keep it 0600
     except Exception:
         pass
 

@@ -21,6 +21,7 @@ from .runtime import (
     _daemon_boot_error_file,
     _daemon_state_file,
     _get_runtime_dir,
+    write_private_json,
 )
 from .slots import DaemonManager
 
@@ -140,17 +141,6 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
                 )
 
     return RpcHandler
-
-
-def write_private_json(path: Path, payload: dict[str, Any]) -> None:
-    """Atomically write `payload` readable by the owner only (0600 on POSIX): daemon.json holds the token."""
-    tmp_path = path.with_suffix(f".{os.getpid()}.tmp")
-    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, indent=2))
-    if os.name != "nt":
-        os.chmod(tmp_path, 0o600)  # a stale tmp file of the same name keeps its old mode through O_CREAT
-    os.replace(tmp_path, path)
 
 
 def _serve_daemon(

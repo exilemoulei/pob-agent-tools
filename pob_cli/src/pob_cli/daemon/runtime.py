@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -62,6 +63,17 @@ def _build_daemon_spawn_cmd(runtime_dir: Path | None = None) -> list[str]:
 
 def _daemon_state_file(runtime_dir: Path | None = None) -> Path:
     return _get_runtime_dir(runtime_dir) / "daemon.json"
+
+
+def write_private_json(path: Path, payload: dict[str, Any]) -> None:
+    """Atomically write `payload` readable by the owner only (0600 on POSIX): daemon.json holds the token."""
+    tmp_path = path.with_suffix(f".{os.getpid()}.tmp")
+    # A leftover tmp file of the same name would keep its old mode through O_CREAT, so start from none.
+    tmp_path.unlink(missing_ok=True)
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, indent=2))
+    os.replace(tmp_path, path)
 
 
 def _daemon_lock_file(runtime_dir: Path | None = None) -> Path:
