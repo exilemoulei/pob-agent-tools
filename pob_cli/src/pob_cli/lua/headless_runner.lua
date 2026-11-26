@@ -347,6 +347,7 @@ do
 	if type(lh) == "table" and type(lh.install_pre_launch) == "function" then
 		local ok, res = pcall(lh.install_pre_launch, GAME_DIR)
 		if ok and res ~= false then lazy_hooks_mod = lh; CAPS.lazyHooks = true
+			if type(lh.call_item_db_with_target_slot) == "function" then CAPS.itemDbTargetSlot = true end
 		elseif not ok then log_stderr("[lazy_hooks] " .. tostring(res)) end
 	end
 end
@@ -463,7 +464,7 @@ while true do
 				if SetWorkDir then SetWorkDir(GAME_DIR) end
 				local params = type(req.params) == "table" and req.params or {}
 				local ok, res = xpcall(function()
-					if method == "item_db" and lazy_hooks_mod and type(lazy_hooks_mod.ensure_item_dbs) == "function" then
+					if (method == "item_db" or method == "item_db_options") and lazy_hooks_mod and type(lazy_hooks_mod.ensure_item_dbs) == "function" then
 						lazy_hooks_mod.ensure_item_dbs()
 					end
 					local fn = EXTRA_HANDLERS[method]
@@ -474,7 +475,12 @@ while true do
 						end
 						return out
 					end
-					local out = bridge_dispatcher(method, params)
+					local out
+					if method == "item_db" and lazy_hooks_mod and type(lazy_hooks_mod.call_item_db_with_target_slot) == "function" and type(params.targetSlot) == "string" and params.targetSlot ~= "" then
+						out = lazy_hooks_mod.call_item_db_with_target_slot(params.targetSlot, function() return bridge_dispatcher(method, params) end)
+					else
+						out = bridge_dispatcher(method, params)
+					end
 					if method == "version" and type(out) == "table" then
 						if type(out.caps) ~= "table" then out.caps = {} end
 						for k, v in pairs(CAPS) do out.caps[k] = v end

@@ -54,6 +54,27 @@ function M.ensure_item_dbs()
 	return true
 end
 
+function M.call_item_db_with_target_slot(target_slot, fn)
+	local b = main and main.modes and main.modes["BUILD"]
+	local tab = b and b.itemsTab
+	if type(target_slot) == "string" and target_slot ~= "" and tab and tab.slots and tab.slots[target_slot] and type(tab.IsItemValidForSlot) == "function" then
+		local orig = tab.IsItemValidForSlot
+		tab.IsItemValidForSlot = function(self, item, slotName, ...)
+			if slotName ~= target_slot then
+				return false
+			end
+			return orig(self, item, slotName, ...)
+		end
+		local ok, res = xpcall(fn, debug.traceback)
+		tab.IsItemValidForSlot = orig
+		if not ok then
+			error(res, 0)
+		end
+		return res
+	end
+	return fn()
+end
+
 function M.get_stats()
 	return M.stats
 end
