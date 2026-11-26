@@ -370,6 +370,105 @@ def cmd_calc(
     _emit_text(_apply_loop_guard(res, _prepend_active_guardrail_warnings("\n".join(lines))), out_path=out_path)
 
 
+_DIAGNOSE_SECTIONS = ("all", "summary", "gaps", "items", "skills", "cards", "upgrades")
+_DIAGNOSE_JSON_KEYS: dict[str, tuple[str, ...]] = {
+    "summary": (
+        "amulet_7th_link",
+        "keystones",
+        "pantheon",
+        "ascendancyNodes",
+        "offence",
+        "minionOffence",
+        "defence",
+        "original",
+        "dewateredPinnacle",
+        "inflationStripped",
+        "topWaterSources",
+    ),
+    "gaps": ("healthGaps", "thresholdProbes", "core_synergies", "buildMechanics", "agentProbe", "socketSummary"),
+    "items": ("equippedItems",),
+    "skills": ("mainGroup", "amulet_7th_link", "skillGroups"),
+    "cards": ("factCards", "advisories", "askGrounding"),
+    "upgrades": ("topNodes", "topGems", "socketSummary", "nearbySockets", "rankErrors"),
+}
+
+
+def _slice_diagnose_json(res: dict[str, Any], section: str) -> dict[str, Any]:
+    if section == "all" or not isinstance(res, dict):
+        return res
+    if res.get("mode") == "compare":
+        out_cmp = dict(res)
+        out_cmp["section"] = section
+        if isinstance(res.get("buildA"), dict):
+            out_cmp["buildA"] = _slice_diagnose_json(res["buildA"], section)
+        if isinstance(res.get("buildB"), dict):
+            out_cmp["buildB"] = _slice_diagnose_json(res["buildB"], section)
+        return out_cmp
+    out: dict[str, Any] = {"section": section}
+    for meta_k in ("env", "buildInfo", "mainGroup", "targetSlot", "rev", "sourceHash", "cached", "loopGuardWarning", "updateWarning", "restoreCheck"):
+        if meta_k in res:
+            out[meta_k] = res[meta_k]
+    for k in _DIAGNOSE_JSON_KEYS.get(section, ()):
+        if k in res:
+            out[k] = res[k]
+    return out
+
+
+def _slice_diagnose_markdown(full_md: str, section: str) -> str:
+    if section == "all":
+        return full_md
+    parts = full_md.split("\n#### ")
+    if len(parts) <= 1:
+        return full_md
+    preamble = parts[0]
+    if section == "summary":
+        header = preamble
+    else:
+        hdr_lines = [
+            ln
+            for ln in preamble.splitlines()
+            if ln.startswith(("[Env:", "### Build Diagnosis:", "> "))
+        ]
+        header = "\n".join(hdr_lines) if hdr_lines else preamble
+
+    matched: list[str] = []
+    for raw_sec in parts[1:]:
+        title = raw_sec.split("\n", 1)[0].strip()
+        keep_sec = (
+            (section == "summary" and title.startswith("1."))
+            or (section == "gaps" and title.startswith(("2.", "2b.", "2c. Build-Specific")))
+            or (section == "skills" and title.startswith("2c. All Skill Groups"))
+            or (section == "items" and title.startswith("2d."))
+            or (section == "cards" and title.startswith("3."))
+            or (section == "upgrades" and title.startswith("4."))
+        )
+        if keep_sec:
+            matched.append("#### " + raw_sec)
+    if not matched:
+        return f"{header}\n\n_(no {section} entries)_"
+    return header + "\n\n" + "\n\n".join(matched)
+
+
+def _slice_diagnose_compare_markdown(res: dict[str, Any], section: str) -> str:
+    """One section of a dual-build diagnosis, each build's part under its own heading."""
+    from .formatters import format_diagnose_markdown
+
+    head = format_diagnose_markdown(res).split("\n## Build A Diagnosis", 1)[0].rstrip()
+    if section != "summary":
+        kept = [ln for ln in head.split("\n## ", 1)[0].splitlines() if ln.startswith(("[Env:", "> "))]
+        head = "\n".join(kept) if kept else head.split("\n", 1)[0]
+    parts = [head]
+    for label, key, slot in (
+        ("A", "buildA", res.get("target") or "main"),
+        ("B", "buildB", res.get("refTarget") or "ref"),
+    ):
+        build = res.get(key)
+        if isinstance(build, dict) and build:
+            parts.append(f"\n## Build {label} Diagnosis (`{slot}`)")
+            parts.append(_slice_diagnose_markdown(format_diagnose_markdown(build, compact=True), section))
+    return "\n".join(parts)
+
+
 def register_inspect_part_commands(group: click.Group) -> None:
     for cmd in (cmd_items, cmd_skills, cmd_calc):
         group.add_command(cmd)

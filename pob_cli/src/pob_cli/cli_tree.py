@@ -442,3 +442,58 @@ def cmd_tree_set_class(
     changes = detail.get("changes") or []
     title = f"Set Class / Ascendancy ({'; '.join(changes) or 'no-op'})"
     _emit_text(_format_mutation_report(title, res), out_path=out_path)
+
+
+@grp_tree.command("diff")
+@click.option(
+    "--slot",
+    "--target",
+    "slot",
+    default=None,
+    help="Base build slot slug (`current`/`main` by default).",
+)
+@click.option(
+    "--against",
+    "against",
+    type=_SLOT_SLUG_TYPE,
+    default="ref",
+    show_default=True,
+    help="Reference build slot slug to diff against (ignored when --spec-a/--spec-b are passed).",
+)
+@click.option("--spec-a", "spec_a", default=None, help="First `<Spec>` index or title within `--slot` for intra-build diff.")
+@click.option("--spec-b", "spec_b", default=None, help="Second `<Spec>` index or title within `--slot` for intra-build diff.")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
+@_output_options
+@click.pass_context
+def cmd_tree_diff(
+    ctx: click.Context,
+    slot: str | None,
+    against: str,
+    spec_a: str | None,
+    spec_b: str | None,
+    as_json: bool,
+    compact: bool,
+    out_path: str | None,
+) -> None:
+    """Structured passive tree diff (points, ascendancy, keystones, wheels, masteries, clusters & sockets)."""
+    from .formatters.tree_diff_md import format_tree_diff_markdown
+
+    base_slot = _normalize_positional_slot(slot, _default_target(), False) if slot else _default_target()
+    base_slot, as_json, compact, out_path = _resolve_tree_subcommand_opts(
+        ctx, target=base_slot, as_json=as_json, compact=compact, out_path=out_path
+    )
+    if bool(spec_a) != bool(spec_b):
+        raise click.UsageError("Provide both `--spec-a` and `--spec-b` together for multi-spec diff.")
+
+    params: dict[str, Any] = {"target": base_slot}
+    if spec_a and spec_b:
+        params["spec_a"] = spec_a.strip()
+        params["spec_b"] = spec_b.strip()
+    else:
+        params["ref_target"] = against
+
+    res = invoke_daemon("tree_diff", params, timeout=90.0)
+    if as_json:
+        _emit_json(res, compact=compact, out_path=out_path)
+        return
+    _emit_text(format_tree_diff_markdown(res), out_path=out_path)

@@ -343,6 +343,14 @@ def diagnose_compare_builds(
     xml_code: str | None = None,
     compare_source: str | None = None,
     compare_xml_code: str | None = None,
+    stage: str | None = None,
+    spec: str | None = None,
+    item_set: str | None = None,
+    skill_set: str | None = None,
+    ref_stage: str | None = None,
+    ref_spec: str | None = None,
+    ref_item_set: str | None = None,
+    ref_skill_set: str | None = None,
     char_name: str | None = None,
     league: str | None = None,
     realm: str | None = None,
@@ -370,6 +378,10 @@ def diagnose_compare_builds(
         c_name: str | None = None,
         c_league: str | None = None,
         c_realm: str | None = None,
+        c_stage: str | None = None,
+        c_spec: str | None = None,
+        c_item_set: str | None = None,
+        c_skill_set: str | None = None,
     ) -> None:
         if src or code:
             load_build(
@@ -379,6 +391,10 @@ def diagnose_compare_builds(
                 char_name=c_name,
                 league=c_league,
                 realm=c_realm,
+                stage=c_stage,
+                spec=c_spec,
+                item_set=c_item_set,
+                skill_set=c_skill_set,
             )
 
     _run_worker_pair(
@@ -391,8 +407,20 @@ def diagnose_compare_builds(
             c_name=char_name,
             c_league=league,
             c_realm=realm,
+            c_stage=stage,
+            c_spec=spec,
+            c_item_set=item_set,
+            c_skill_set=skill_set,
         ),
-        lambda: _load_into(ref_worker, compare_source, compare_xml_code),
+        lambda: _load_into(
+            ref_worker,
+            compare_source,
+            compare_xml_code,
+            c_stage=ref_stage,
+            c_spec=ref_spec,
+            c_item_set=ref_item_set,
+            c_skill_set=ref_skill_set,
+        ),
     )
     cmp_defs = getattr(compare_builds, "__kwdefaults__", None) or {}
     cmp_kw: dict[str, Any] = {}

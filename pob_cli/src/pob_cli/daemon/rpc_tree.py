@@ -1,4 +1,4 @@
-"""Passive tree RPC dispatch handlers for `DaemonManager` (`tree`, `tree_prune`)."""
+"""Passive tree RPC dispatch handlers for `DaemonManager` (`tree`, `tree_prune`, `tree_diff`)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from ..bridge_client import BridgeWorker
+from ..errors import DaemonRequestError
 
 if TYPE_CHECKING:
     from .slots import DaemonManager
@@ -52,7 +53,18 @@ def _h_tree_prune(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) ->
     )
 
 
+def _h_tree_diff(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    from ..analyzer.tree_diff import diff_tree_specs
+
+    spec_a = str(params.get("spec_a") or "").strip()
+    spec_b = str(params.get("spec_b") or "").strip()
+    if not spec_a or not spec_b:
+        raise DaemonRequestError("Both --spec-a and --spec-b are required for single-slot spec diff.")
+    return diff_tree_specs(w, spec_a=spec_a, spec_b=spec_b)
+
+
 TREE_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "tree": _h_tree,
     "tree_prune": _h_tree_prune,
+    "tree_diff": _h_tree_diff,
 }

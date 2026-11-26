@@ -107,13 +107,26 @@ def load_build(
     char_name: str | None = None,
     league: str | None = None,
     realm: str | None = None,
+    stage: str | None = None,
+    spec: str | None = None,
+    item_set: str | None = None,
+    skill_set: str | None = None,
 ) -> dict[str, Any]:
     """Load a build into the slot (`importers.load_build_into_worker`) and commit it with an empty history."""
     from ..importers import load_build_into_worker, load_source_label
 
     with BuildTransaction(worker, scope=BuildScope.REPLACES_BUILD, will_commit=True) as tx:
         out = load_build_into_worker(
-            worker, source=source, xml_code=xml_code, char_name=char_name, league=league, realm=realm
+            worker,
+            source=source,
+            xml_code=xml_code,
+            char_name=char_name,
+            league=league,
+            realm=realm,
+            stage=stage,
+            spec=spec,
+            item_set=item_set,
+            skill_set=skill_set,
         )
         tx.commit_load(load_source_label(source, out.get("character")))
         return out

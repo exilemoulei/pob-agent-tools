@@ -466,6 +466,8 @@ class DaemonManager:
             return build_status_payload(self)
 
         if action in ("compare", "borrow") or (
+            action == "tree_diff" and not (params.get("spec_a") or params.get("spec_b"))
+        ) or (
             action == "diagnose" and (params.get("compare_source") or params.get("compare_xml_code"))
         ):
             main_slot = normalize_slot_name(params.get("main_target") or params.get("target") or "main")

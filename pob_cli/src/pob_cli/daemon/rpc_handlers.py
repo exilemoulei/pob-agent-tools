@@ -10,12 +10,16 @@ from ..bridge_protocol import get_worker_caps
 from ..errors import CrossGameHallucinationError, DaemonRequestError
 from ..snapshot import history_of
 from .read_cache import compute_source_hash, is_live_source
+from .rpc_dual import dispatch_dual_slot_action as dispatch_dual_slot_action
 from .rpc_mutate import MUTATE_ACTION_HANDLERS, norm_keep
 from .rpc_tree import (
     TREE_ACTION_HANDLERS,
 )
 from .rpc_tree import (
     _h_tree as _h_tree,
+)
+from .rpc_tree import (
+    _h_tree_diff as _h_tree_diff,
 )
 from .rpc_tree import (
     _h_tree_prune as _h_tree_prune,
@@ -61,119 +65,6 @@ def dispatch_game_data(manager: DaemonManager, params: dict[str, Any]) -> dict[s
     )
 
 
-def dispatch_dual_slot_action(
-    manager: DaemonManager,
-    action: str,
-    params: dict[str, Any],
-    mw: BridgeWorker,
-    rw: BridgeWorker,
-) -> dict[str, Any]:
-    from ..comparator import borrow_from_ref, compare_builds
-
-    if action == "compare":
-        cmp_res = compare_builds(
-            mw,
-            rw,
-            ref_source=params.get("ref_source"),
-            ref_xml_code=params.get("ref_xml_code"),
-            keep=norm_keep(params),
-            auto_keep=not bool(params.get("no_auto_keep", params.get("noAutoKeep", False))),
-        )
-        return manager._attach_state_meta(cmp_res, mw)
-
-    if action == "borrow":
-        if not rw.last_good_code:
-            ref_slot = getattr(rw, "slot_name", None) or "ref"
-            raise DaemonRequestError(
-                f"No reference build loaded in '{ref_slot}' slot. "
-                f"Run `pob load <source> --target {ref_slot}` or `pob compare <source>` first."
-            )
-        b_res = borrow_from_ref(
-            mw,
-            rw,
-            item_slots=params.get("item_slots"),
-            skill_group=params.get("skill_group"),
-            apply=bool(params.get("apply", False)),
-        )
-        return manager._attach_state_meta(b_res, mw)
-
-    if action == "diagnose":
-        from ..analyzer import diagnose_compare_builds
-
-        top_val = int(params["top"]) if params.get("top") is not None else 5
-        main_slot_name = normalize_slot_name(
-            params.get("main_target") or params.get("target") or getattr(mw, "slot_name", None)
-        )
-        default_ref_name = "ref" if main_slot_name == "main" else f"{main_slot_name}_ref"
-        ref_slot_name = normalize_slot_name(
-            params.get("ref_target") or getattr(rw, "slot_name", None) or default_ref_name
-        )
-        read_cache = getattr(manager, "_read_cache", None)
-        main_load_params = {
-            "source": params.get("source"),
-            "xml_code": params.get("xml_code"),
-            "char_name": params.get("char_name"),
-            "league": params.get("league"),
-            "realm": params.get("realm"),
-            "source_hash": params.get("source_hash"),
-        }
-        ref_load_params = {
-            "source": params.get("compare_source"),
-            "xml_code": params.get("compare_xml_code"),
-            "source_hash": params.get("compare_source_hash"),
-        }
-        main_hash = compute_source_hash(main_load_params)
-        ref_hash = compute_source_hash(ref_load_params)
-        skip_main = bool(
-            read_cache is not None
-            and main_hash
-            and read_cache.matching_slot_load(
-                main_slot_name, history_of(mw).rev, bool(getattr(mw, "last_good_code", None)), main_hash
-            )
-            is not None
-        )
-        skip_ref = bool(
-            read_cache is not None
-            and ref_hash
-            and read_cache.matching_slot_load(
-                ref_slot_name, history_of(rw).rev, bool(getattr(rw, "last_good_code", None)), ref_hash
-            )
-            is not None
-        )
-        diag_cmp = diagnose_compare_builds(
-            mw,
-            rw,
-            source=None if skip_main else params.get("source"),
-            xml_code=None if skip_main else params.get("xml_code"),
-            compare_source=None if skip_ref else params.get("compare_source"),
-            compare_xml_code=None if skip_ref else params.get("compare_xml_code"),
-            char_name=params.get("char_name"),
-            league=params.get("league"),
-            realm=None if skip_main else params.get("realm"),
-            keep=norm_keep(params),
-            auto_keep=not bool(params.get("no_auto_keep", params.get("noAutoKeep", False))),
-            top=top_val,
-            no_rank=bool(params.get("no_rank", params.get("noRank", True))),
-            ask=params.get("ask"),
-            pob_dir=manager.pob_dir,
-            runtime_dir=manager.runtime_dir,
-            target=main_slot_name,
-            ref_target=ref_slot_name,
-        )
-        if read_cache is not None:
-            if main_hash and not skip_main:
-                read_cache.record_slot_load(
-                    main_slot_name, history_of(mw).rev, main_hash, live=is_live_source(main_load_params)
-                )
-            if ref_hash and not skip_ref:
-                read_cache.record_slot_load(
-                    ref_slot_name, history_of(rw).rev, ref_hash, live=is_live_source(ref_load_params)
-                )
-        return manager._attach_warning_if_degraded(diag_cmp)
-
-    raise ValueError(f"Unknown dual-slot daemon action '{action}'.")
-
-
 def _h_load(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from ..snapshot import load_build
 
@@ -185,6 +76,10 @@ def _h_load(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[s
             char_name=params.get("char_name"),
             league=params.get("league"),
             realm=params.get("realm"),
+            stage=params.get("stage"),
+            spec=params.get("spec"),
+            item_set=params.get("item_set"),
+            skill_set=params.get("skill_set"),
         )
     except CrossGameHallucinationError:
         raise
@@ -286,6 +181,10 @@ def _h_diagnose(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> di
                 char_name=params.get("char_name"),
                 league=params.get("league"),
                 realm=params.get("realm"),
+                stage=params.get("stage"),
+                spec=params.get("spec"),
+                item_set=params.get("item_set"),
+                skill_set=params.get("skill_set"),
             )
             if read_cache is not None:
                 read_cache.record_slot_load(

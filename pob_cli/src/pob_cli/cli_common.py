@@ -405,13 +405,24 @@ def _prepend_active_guardrail_warnings(body: str) -> str:
     return "\n".join(lines) + "\n\n" + body
 
 
-def _prepare_load_source(source: str) -> tuple[str | None, str | None]:
-    """Resolve a user build source string (`@path`, `.xml` file, share-code `.txt` file, URL, or Base64 code)."""
+def _ref_stage_options(fn: Any) -> Any:
+    """Attach `--ref-stage`, `--ref-spec`, `--ref-item-set`, `--ref-skill-set` options for compare commands."""
+    fn = click.option("--ref-skill-set", "ref_skill_set", default=None, help="SkillSet ID/index/title for reference build.")(fn)
+    fn = click.option("--ref-item-set", "ref_item_set", default=None, help="ItemSet ID/index/title for reference build.")(fn)
+    fn = click.option("--ref-spec", "ref_spec", default=None, help="Tree Spec index/title for reference build.")(fn)
+    fn = click.option("--ref-stage", "ref_stage", default=None, help="Unified stage index or title substring for reference build.")(fn)
+    return fn
+
+
+def _prepare_load_source_with_stage(source: str) -> tuple[str | None, str | None, dict[str, str | None]]:
+    """Resolve a user build source string plus any `#stage=` / `#spec=` / `#item-set=` / `#skill-set=` fragment."""
     from pathlib import Path
 
     from .guardrails import validate_build_xml, validate_url
+    from .importers_stages import split_source_stage_fragment
 
-    raw = source.lstrip("\ufeff").strip()
+    raw_full = source.lstrip("\ufeff").strip()
+    raw, stage_hints = split_source_stage_fragment(raw_full)
     candidate_path = raw[1:].lstrip("\ufeff").strip() if raw.startswith("@") else raw
     is_local_file = False
     if len(candidate_path) <= 260 and not candidate_path.startswith(("http://", "https://")):
@@ -427,14 +438,14 @@ def _prepare_load_source(source: str) -> tuple[str | None, str | None]:
             validate_build_xml(text, expected_game="poe1", source_hint=candidate_path)
             from .importers import xml_to_share_code
 
-            return None, xml_to_share_code(text)
+            return None, xml_to_share_code(text), stage_hints
         validate_url(text, expected_game="poe1", cli_subcommand="load")
         from .bridge_protocol import _decode_share_code_xml
 
         decoded_file_xml = _decode_share_code_xml(text)
         if decoded_file_xml:
             validate_build_xml(decoded_file_xml, expected_game="poe1", source_hint=candidate_path)
-        return text, None
+        return text, None, stage_hints
 
     if raw.startswith("@"):
         raise click.ClickException(f"Build file not found: {candidate_path or raw}")
@@ -443,7 +454,7 @@ def _prepare_load_source(source: str) -> tuple[str | None, str | None]:
         validate_build_xml(raw, expected_game="poe1")
         from .importers import xml_to_share_code
 
-        return None, xml_to_share_code(raw)
+        return None, xml_to_share_code(raw), stage_hints
 
     validate_url(raw, expected_game="poe1", cli_subcommand="load")
     if not raw.startswith(("http://", "https://")):
@@ -453,4 +464,10 @@ def _prepare_load_source(source: str) -> tuple[str | None, str | None]:
         if decoded_xml:
             validate_build_xml(decoded_xml, expected_game="poe1")
 
-    return raw, None
+    return raw, None, stage_hints
+
+
+def _prepare_load_source(source: str) -> tuple[str | None, str | None]:
+    """Resolve a user build source string (`@path`, `.xml` file, share-code `.txt` file, URL, or Base64 code)."""
+    resolved_src, resolved_xml, _ = _prepare_load_source_with_stage(source)
+    return resolved_src, resolved_xml

@@ -150,7 +150,7 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
     "tree": (
         ".cli_tree",
         "grp_tree",
-        "Inspect passive tree (`pob tree [slot] [--search ...]`), prune branches (`prune`), mutate nodes (`change`), or switch class (`set-class`).",
+        "Inspect passive tree (`pob tree [slot]`), prune (`prune`), diff (`diff`), mutate (`change`), or switch class (`set-class`).",
     ),
     "config": (
         ".cli_mutate",

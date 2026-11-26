@@ -281,6 +281,10 @@ def compare_builds(
     *,
     ref_source: str | None = None,
     ref_xml_code: str | None = None,
+    ref_stage: str | None = None,
+    ref_spec: str | None = None,
+    ref_item_set: str | None = None,
+    ref_skill_set: str | None = None,
     keep: Iterable[str] | str | None = None,
     auto_keep: bool = True,
     budget_s: float = COMPARE_BUDGET_S,
@@ -288,7 +292,15 @@ def compare_builds(
     """Compare `main` build vs `ref` build across 3 baselines + tree, skill, and item diffs."""
     started = time.monotonic()
     if ref_source or ref_xml_code:
-        load_build(ref_worker, source=ref_source, xml_code=ref_xml_code)
+        load_build(
+            ref_worker,
+            source=ref_source,
+            xml_code=ref_xml_code,
+            stage=ref_stage,
+            spec=ref_spec,
+            item_set=ref_item_set,
+            skill_set=ref_skill_set,
+        )
 
     def _capture_main_phase1() -> dict[str, Any]:
         with main_worker.lock:

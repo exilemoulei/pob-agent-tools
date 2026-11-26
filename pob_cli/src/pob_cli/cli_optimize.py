@@ -12,8 +12,9 @@ from .cli_common import (
     _emit_text,
     _merge_keep_tokens,
     _output_options,
-    _prepare_load_source,
+    _prepare_load_source_with_stage,
     _read_json_input,
+    _ref_stage_options,
     _target_option,
     invoke_daemon,
 )
@@ -443,6 +444,7 @@ def cmd_rank_gems(
     show_default=True,
     help="Reference build slot slug (default: 'ref').",
 )
+@_ref_stage_options
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @_output_options
 def cmd_compare(
@@ -451,6 +453,10 @@ def cmd_compare(
     no_auto_keep: bool,
     target: str,
     ref_target: str,
+    ref_stage: str | None,
+    ref_spec: str | None,
+    ref_item_set: str | None,
+    ref_skill_set: str | None,
     as_json: bool,
     compact: bool,
     out_path: str | None,
@@ -463,12 +469,22 @@ def cmd_compare(
         params["keep"] = list(keep)
     if no_auto_keep:
         params["no_auto_keep"] = True
+    ref_frag: dict[str, str | None] = {}
     if ref_source:
-        resolved_src, resolved_xml_code = _prepare_load_source(ref_source)
+        resolved_src, resolved_xml_code, ref_frag = _prepare_load_source_with_stage(ref_source)
         if resolved_xml_code is not None:
             params["ref_xml_code"] = resolved_xml_code
         else:
             params["ref_source"] = resolved_src
+    for pkey, fkey, cli_val in (
+        ("ref_stage", "stage", ref_stage),
+        ("ref_spec", "spec", ref_spec),
+        ("ref_item_set", "item_set", ref_item_set),
+        ("ref_skill_set", "skill_set", ref_skill_set),
+    ):
+        eff = cli_val if (cli_val is not None and cli_val.strip()) else ref_frag.get(fkey)
+        if eff and eff.strip():
+            params[pkey] = eff.strip()
 
     res = invoke_daemon("compare", params)
     if as_json:

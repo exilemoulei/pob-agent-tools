@@ -10,7 +10,7 @@ from .cli_common import (
     _emit_json,
     _emit_text,
     _output_options,
-    _prepare_load_source,
+    _prepare_load_source_with_stage,
     _prepend_warning,
     _target_option,
     invoke_daemon,
@@ -127,6 +127,10 @@ def cmd_profile(
     default=None,
     help="Official profile realm (`pc`, `xbox`, `sony`, or `cn` for poe.game.qq.com).",
 )
+@click.option("--stage", "stage", default=None, help="Unified progression stage (1-based index or title substring across Spec/ItemSet/SkillSet).")
+@click.option("--spec", "spec", default=None, help="Passive tree Spec 1-based index or title substring.")
+@click.option("--item-set", "item_set", default=None, help="ItemSet ID, 1-based index, or title substring.")
+@click.option("--skill-set", "skill_set", default=None, help="SkillSet ID, 1-based index, or title substring.")
 @_target_option(allow_slot_alias=True)
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @_output_options
@@ -135,6 +139,10 @@ def cmd_load(
     char_name: str | None,
     league: str | None,
     realm: str | None,
+    stage: str | None,
+    spec: str | None,
+    item_set: str | None,
+    skill_set: str | None,
     target: str,
     as_json: bool,
     compact: bool,
@@ -144,6 +152,7 @@ def cmd_load(
     from .daemon import emit_stderr_update_alert
     from .errors import CrossGameHallucinationError
     from .formatters import render_table, strip_pob_escapes
+    from .formatters.tree_diff_md import format_progression_stages_markdown
     from .updater import load_update_state
 
     if not source and (realm or "").lower() != "cn":
@@ -156,12 +165,17 @@ def cmd_load(
         params["league"] = league.strip()
     if realm and realm.strip():
         params["realm"] = realm.strip().lower()
+    frag_stages: dict[str, str | None] = {}
     if source:
-        resolved_src, resolved_xml_code = _prepare_load_source(source)
+        resolved_src, resolved_xml_code, frag_stages = _prepare_load_source_with_stage(source)
         if resolved_xml_code is not None:
             params["xml_code"] = resolved_xml_code
         else:
             params["source"] = resolved_src
+    for key, cli_val in (("stage", stage), ("spec", spec), ("item_set", item_set), ("skill_set", skill_set)):
+        eff = cli_val if (cli_val is not None and cli_val.strip()) else frag_stages.get(key)
+        if eff and eff.strip():
+            params[key] = eff.strip()
 
     try:
         res = invoke_daemon("load", params)
@@ -217,6 +231,11 @@ def cmd_load(
         ["Active Skill", _dd_label(main_sk)],
     ]
     body = render_table(["Field", "Value"], rows)
+    stages_md = format_progression_stages_markdown(
+        res.get("availableStages") or {}, res.get("selectedStage")
+    )
+    if stages_md:
+        body = body + "\n" + stages_md
     extra_notes = [str(n) for n in (res.get("importNotes") or []) if n]
     extra_warns = [str(w) for w in (res.get("translateWarnings") or []) if w]
     if extra_notes or extra_warns:

@@ -102,6 +102,13 @@ def compute_source_hash(params: dict[str, Any]) -> str | None:
 
     if not canonical:
         return None
+    stage_bits = [
+        f"{k}={str(params.get(k)).strip()}"
+        for k in ("stage", "spec", "item_set", "skill_set")
+        if params.get(k) is not None and str(params.get(k)).strip()
+    ]
+    if stage_bits:
+        canonical = canonical + "|" + "|".join(stage_bits)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 

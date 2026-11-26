@@ -461,13 +461,31 @@ def load_build_into_worker(
     char_name: str | None = None,
     league: str | None = None,
     realm: str | None = None,
+    stage: str | None = None,
+    spec: str | None = None,
+    item_set: str | None = None,
+    skill_set: str | None = None,
 ) -> dict[str, Any]:
-    """Load a build into `worker` from XML, share URL, official profile, or Base64 code (R11).
-
-    Only the engine changes here; `snapshot.load_build` commits the loaded build to the slot.
-    """
+    """Load a build into `worker` from XML, share URL, official profile, or Base64 code (R11)."""
     from .guardrails import validate_build_xml, validate_url
+    from .importers_stages import prepare_code_with_stages, split_source_stage_fragment
     from .profile_import import load_official_profile_into_worker, should_route_official_profile
+
+    if source:
+        source, frag = split_source_stage_fragment(source)
+        stage = stage if stage is not None else frag.get("stage")
+        spec = spec if spec is not None else frag.get("spec")
+        item_set = item_set if item_set is not None else frag.get("item_set")
+        skill_set = skill_set if skill_set is not None else frag.get("skill_set")
+
+    st_kw = {"decode_fn": share_code_to_xml, "encode_fn": xml_to_share_code, "stage": stage, "spec": spec, "item_set": item_set, "skill_set": skill_set}
+    avail_stages: dict[str, Any] | None = None
+    sel_stage: dict[str, Any] | None = None
+
+    def _import_staged(raw_payload: str) -> dict[str, Any]:
+        nonlocal avail_stages, sel_stage
+        eff_code, avail_stages, sel_stage = prepare_code_with_stages(raw_payload, **st_kw)
+        return worker.call("import_code", {"code": eff_code, "mode": "replace"})
 
     with worker.lock:
         import_method = "code"
@@ -476,7 +494,6 @@ def load_build_into_worker(
             clean_xml_code = xml_code.lstrip("\ufeff").strip()
             if clean_xml_code.startswith("<"):
                 validate_build_xml(clean_xml_code, expected_game="poe1")
-                clean_xml_code = xml_to_share_code(clean_xml_code)
             else:
                 try:
                     decoded_xml = share_code_to_xml(clean_xml_code)
@@ -484,13 +501,13 @@ def load_build_into_worker(
                     decoded_xml = ""
                 if decoded_xml:
                     validate_build_xml(decoded_xml, expected_game="poe1")
-            res = worker.call("import_code", {"code": clean_xml_code, "mode": "replace"})
+            res = _import_staged(clean_xml_code)
             import_method = "xml_file"
         elif source or (realm and realm.strip().lower() == "cn"):
             src = (source or "").lstrip("\ufeff").strip()
             if src.startswith("<"):
                 validate_build_xml(src, expected_game="poe1")
-                res = worker.call("import_code", {"code": xml_to_share_code(src), "mode": "replace"})
+                res = _import_staged(src)
                 import_method = "xml_file"
             elif should_route_official_profile(src, char_name=char_name, realm=realm):
                 prof_extra = load_official_profile_into_worker(
@@ -503,7 +520,7 @@ def load_build_into_worker(
                 if POE_NINJA_CHAR_RE.match(src):
                     code = fetch_poe_ninja_character_code(src)
                     validate_build_xml(share_code_to_xml(code), expected_game="poe1", source_hint=src)
-                    res = worker.call("import_code", {"code": code, "mode": "replace"})
+                    res = _import_staged(code)
                     import_method = "poe_ninja_character"
                 elif src.startswith(("http://", "https://")):
                     try:
@@ -517,16 +534,16 @@ def load_build_into_worker(
                             decoded_xml = ""
                         if decoded_xml:
                             validate_build_xml(decoded_xml, expected_game="poe1", source_hint=src)
-                        res = worker.call("import_code", {"code": code, "mode": "replace"})
+                        res = _import_staged(code)
                         import_method = "url_native"
                     except BridgeError:
                         code = fetch_share_url_code_fallback(src)
-                        res = worker.call("import_code", {"code": code, "mode": "replace"})
+                        res = _import_staged(code)
                         import_method = "url_fallback"
                 else:
                     decoded_xml = share_code_to_xml(src)
                     validate_build_xml(decoded_xml, expected_game="poe1")
-                    res = worker.call("import_code", {"code": src, "mode": "replace"})
+                    res = _import_staged(src)
                     import_method = "share_code"
         else:
             raise ValueError("Either 'source' or 'xml_code' must be provided.")
@@ -537,6 +554,12 @@ def load_build_into_worker(
             "buildInfo": worker.call("get_build_info", {}),
             "buildHeader": worker.call("get_build_header", {}),
         }
+        if avail_stages and (avail_stages.get("hasMultipleStages") or sel_stage):
+            out["availableStages"] = avail_stages
+        if sel_stage:
+            out["selectedStage"] = sel_stage
+            if sel_stage.get("stageNotes"):
+                prof_extra.setdefault("importNotes", []).extend(sel_stage["stageNotes"])
         for k in ("character", "importNotes", "translateWarnings"):
             if prof_extra.get(k):
                 out[k] = prof_extra[k]
