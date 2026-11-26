@@ -15,6 +15,13 @@ if len(sys.argv) > 1 and sys.argv[1] == "_lua-host":
 
     raise SystemExit(_lua_host_main(sys.argv[2:]))
 
+if len(sys.argv) > 1 and sys.argv[1] == "_daemon":
+    from .daemon.client import main as _daemon_main
+
+    sys.argv = [sys.argv[0], *sys.argv[2:]]
+    _daemon_main()
+    raise SystemExit(0)
+
 import click
 
 from . import __version__
