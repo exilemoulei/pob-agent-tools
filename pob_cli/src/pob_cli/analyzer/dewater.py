@@ -34,7 +34,14 @@ def _normalize_keep(keep: Iterable[str] | str | None) -> set[str]:
     for tok in tokens:
         for part in str(tok).split(","):
             p = part.strip().lower()
-            if p:
+            if not p:
+                continue
+            if "+" in p:
+                for sub in p.split("+"):
+                    s = sub.strip()
+                    if s:
+                        out.add(s)
+            else:
                 out.add(p)
     return out
 
@@ -199,7 +206,7 @@ def _revoke_flask_inflated_ignite(
 
 def _probe_rpc_method(probe: dict[str, Any]) -> str:
     kind = probe.get("kind")
-    if kind in ("config", "customMods"):
+    if kind in ("config", "config_multi", "customMods"):
         return "list_config"
     if kind == "flask":
         return "list_items"
@@ -218,6 +225,14 @@ def _extract_probe_state(probe: dict[str, Any], res: dict[str, Any]) -> Any:
                 if item.get("var") == probe["var"]:
                     return item.get("value")
         return None
+    if kind == "config_multi":
+        found: dict[str, Any] = {str(v): None for v in probe.get("vars", [])}
+        for sec in res.get("sections", []):
+            for item in sec.get("items", []):
+                v = item.get("var")
+                if v in found:
+                    found[v] = item.get("value")
+        return found
     if kind == "flask":
         for slot in res.get("slots", []):
             if slot.get("name") == probe["slot"]:
