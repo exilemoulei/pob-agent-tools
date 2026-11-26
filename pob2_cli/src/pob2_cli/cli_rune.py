@@ -15,6 +15,7 @@ from .guardrails import GuardrailScope, check_input, normalize_poe2_equipment_sl
 from .rune import (
     load_rune_instill_catalog,
     normalize_emotion_name,
+    normalize_emotion_with_warning,
     price_instill_recipe,
     rank_instillations,
     rank_runes_for_slot,
@@ -222,38 +223,76 @@ def cmd_instill_lookup(
 ) -> None:
     """Lookup ordered `[Slot 1 -> Slot 2 -> Slot 3]` amulet instillation recipe and live emotion cost."""
     cat = load_rune_instill_catalog()
+    warnings: list[str] = []
+    reason: str | None = None
     if emotions_csv:
         parts = [p.strip() for p in emotions_csv.split(",") if p.strip()]
         if len(parts) != 3:
             raise DaemonRequestError("`--emotions` requires exactly 3 comma-separated emotions in Slot1,Slot2,Slot3 order.")
         try:
-            e1, e2, e3 = (normalize_emotion_name(p, catalog=cat) for p in parts)
+            normed = [normalize_emotion_with_warning(p, catalog=cat) for p in parts]
         except ValueError as exc:
             raise DaemonRequestError(str(exc)) from exc
+        for _em, warn in normed:
+            if warn:
+                warnings.append(warn)
+        e1, e2, e3 = (item[0] for item in normed)
         rec = cat.lookup_instill_by_recipe(e1.short, e2.short, e3.short)
         matches = [rec] if rec is not None else []
+        if not matches:
+            target_bag = sorted((e1.short, e2.short, e3.short))
+            perm_hits = [ins for ins in cat.instills if sorted(ins.recipe) == target_bag]
+            if perm_hits:
+                alts = "; ".join(
+                    f"{ins.name} ({ins.recipe[0]},{ins.recipe[1]},{ins.recipe[2]})" for ins in perm_hits[:3]
+                )
+                reason = (
+                    f"No PoE2 0.5.5 amulet instillation matches exact slot order [{e1.short} -> {e2.short} -> {e3.short}]. "
+                    f"Instillation order is permutation-sensitive; valid order(s) using these emotions: {alts}."
+                )
+            else:
+                reason = (
+                    f"No PoE2 0.5.5 amulet instillation recipe is assigned to ordered triplet "
+                    f"[{e1.short} -> {e2.short} -> {e3.short}]."
+                )
     else:
         if query:
             check_input(query, GuardrailScope.NOTABLE_OR_OIL, expected_game="poe2")
         matches = cat.search_instills(query, limit=limit)
+        if not matches:
+            reason = (
+                f"No PoE2 0.5.5 amulet instillation notable name, node ID, or modifier text matched {query!r}. "
+                "Use `--emotions Slot1,Slot2,Slot3` to look up by Liquid Emotions."
+            )
 
     priced = [
         {**price_instill_recipe(inst, catalog=cat), "stats": list(inst.stats)}
         for inst in matches
     ]
-    payload = {"ok": True, "patch": cat.version, "count": len(priced), "instills": priced}
+    if not priced and reason:
+        warnings.append(f"[no-match] {reason}")
+    payload: dict[str, Any] = {
+        "ok": True,
+        "patch": cat.version,
+        "count": len(priced),
+        "instills": priced,
+        "warnings": warnings,
+    }
+    if reason is not None:
+        payload["reason"] = reason
     if not priced:
-        md = "No matching PoE2 amulet instillation found."
+        md_lines = [reason or "No matching PoE2 amulet instillation found."]
     else:
-        lines = []
-        for item in priced:
-            lines.append(
-                f"{item['name']} ({item['zhCn']}) [node={item['nodeId']}] | ~{item['totalCostEx']:.1f} Ex\n"
-                f"  Order: {item['orderedDisplayEn']}\n"
-                f"  Stats: {'; '.join(item['stats'])}"
-            )
-        md = "\n".join(lines)
-    emit_output(ctx, stamp_game(payload), as_json=as_json, markdown_text=md)
+        md_lines = [
+            f"{item['name']} ({item['zhCn']}) [node={item['nodeId']}] | ~{item['totalCostEx']:.1f} Ex\n"
+            f"  Order: {item['orderedDisplayEn']}\n"
+            f"  Stats: {'; '.join(item['stats'])}"
+            for item in priced
+        ]
+    for w in warnings:
+        if not (reason and w.startswith("[no-match]")):
+            md_lines.append(f"Warning: {w}")
+    emit_output(ctx, stamp_game(payload), as_json=as_json, markdown_text="\n".join(md_lines))
 
 
 @instill_group.command("bridge")

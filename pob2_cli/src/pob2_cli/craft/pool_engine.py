@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import difflib
 import random
 import re
 from pathlib import Path
@@ -32,6 +31,7 @@ from .pool_actions import (
     exact_three_choice_unveil_prob,
     sample_transition_impl,
 )
+from .pool_outcomes import filter_pool_with_family_exemption, rank_target_suggestions
 from .weights_loader import CraftDataBundle, load_craft_data, norm_key, resolve_base_entry
 
 __all__ = [
@@ -185,12 +185,16 @@ class ModPoolEngine:
         explicit_tier = False
         pool_filter: str | None = None
         if isinstance(target, dict):
-            query = str(target.get("query") or target.get("mod") or target.get("mod_id") or "").strip()
+            raw_query = str(target.get("query") or target.get("mod") or target.get("mod_id") or "").strip()
+            query = raw_query
             explicit_tier = "max_display_tier" in target or "tier" in target
             max_tier = target.get("max_display_tier", target.get("tier", 1))
             pool_filter = target.get("source_pool")
+            if explicit_tier and max_tier is not None and not re.match(r"^[Tt](?:ier\s*)?\d+", raw_query):
+                raw_query = f"T{max_tier} {raw_query}".strip()
         else:
-            query = _translate_zh_target(target.strip())
+            raw_query = target.strip()
+            query = _translate_zh_target(raw_query)
             tm = re.match(r"^[Tt](?:ier\s*)?(\d+)\+?\s+(.+)$", query)
             if tm:
                 explicit_tier = True
@@ -250,17 +254,17 @@ class ModPoolEngine:
                 first_t = normal_only[0].mod_type
                 by_type = [m for m in normal_only if m.mod_type == first_t]
         else:
-            by_type = self._fuzzy_match_ladder(candidates, q_low, requested_val, base_slug, query)
+            by_type = self._fuzzy_match_ladder(candidates, q_low, requested_val, base_slug, raw_query)
 
         ilvl_ok = [m for m in by_type if m.required_level <= ilvl]
         if not ilvl_ok:
-            sugs = tuple(self.suggest_targets(base_slug, query, ilvl=ilvl, limit=6))
+            sugs = tuple(self.suggest_targets(base_slug, raw_query, ilvl=ilvl, limit=6))
             min_req = min(m.required_level for m in by_type)
             raise UnknownTargetError(
-                query,
+                raw_query,
                 base_slug,
                 sugs,
-                detail=f"Target {query!r} on `{base_slug}` requires ilvl >= {min_req} (got ilvl={ilvl}).",
+                detail=f"Target {raw_query!r} on `{base_slug}` requires ilvl >= {min_req} (got ilvl={ilvl}).",
             )
         ilvl_ok.sort(key=lambda m: m.display_tier)
         eff_max_t = max(ilvl_ok[0].display_tier, max_tier) if max_tier is not None else ilvl_ok[-1].display_tier
@@ -362,31 +366,7 @@ class ModPoolEngine:
             cands = [
                 m for m in self.get_mod_tiers(base_slug) if m.affix_side in (AffixSide.PREFIX, AffixSide.SUFFIX)
             ]
-        # Deduplicate to one clean representative phrase per (source_pool, mod_type)
-        reps: dict[str, tuple[int, str]] = {}
-        for m in cands:
-            first_ln = (m.stat_text.splitlines()[0] if m.stat_text else m.mod_type).strip()
-            clean = re.sub(r"[+-]?\([^)]*\)\s*%?\s*(?:to\s+)?", "", first_ln).strip()
-            clean = re.sub(r"^[+-]?\d+(?:\.\d+)?%?\s*(?:to\s+)?", "", clean).strip()
-            clean = re.sub(r"\s+", " ", clean)
-            if not clean:
-                clean = m.mod_type
-            label = f"T1 {clean}"
-            pool_prio = 2 if m.source_pool == "normal" else (1 if m.source_pool == "desecrated" else 0)
-            prev = reps.get(label.lower())
-            score_w = pool_prio * 100000 + m.weight
-            if prev is None or score_w > prev[0]:
-                reps[label.lower()] = (score_w, label)
-
-        q_low = _translate_zh_target(query or "").lower()
-        q_toks = [t for t in re.split(r"[^a-z0-9]+", q_low) if len(t) >= 2]
-        ranked: list[tuple[float, int, str]] = []
-        for low_lbl, (w_prio, lbl) in reps.items():
-            tok_hits = sum(1 for t in q_toks if t in low_lbl)
-            sim = difflib.SequenceMatcher(None, q_low, low_lbl).ratio() if q_low else 0.0
-            ranked.append((tok_hits * 2.0 + sim, w_prio, lbl))
-        ranked.sort(key=lambda x: (-x[0], -x[1], x[2]))
-        return [lbl for _, _, lbl in ranked[:limit]]
+        return rank_target_suggestions(cands, _translate_zh_target(query or ""), limit=limit)
 
     def _is_tag_eligible(self, mod: ModEntry, effective_tags: set[str]) -> bool:
         if "caster" in mod.mod_tags or "Spell" in mod.stat_text:
@@ -421,6 +401,7 @@ class ModPoolEngine:
         pools = ["normal", "desecrated"] if source_pool == "desecrated_combined" else [source_pool]
         out: list[tuple[ModEntry, int]] = []
         for pname in pools:
+            pre_filtered: list[ModEntry] = []
             for mod in self.get_mod_tiers(state.base.poe2db_slug, pname):
                 if mod.affix_side == AffixSide.PREFIX and not open_p:
                     continue
@@ -428,17 +409,18 @@ class ModPoolEngine:
                     continue
                 if mod.affix_side not in (AffixSide.PREFIX, AffixSide.SUFFIX):
                     continue
-                if mod.required_level > state.ilvl or mod.required_level < min_mod_level:
-                    continue
                 if boss_tag is not None and mod.boss_tag != boss_tag:
                     continue
                 if any(f in blocked for f in mod.families):
                     continue
                 if not self._is_tag_eligible(mod, eff_tags):
                     continue
-                w = 1000 if (boss_tag is not None and pname == "desecrated") else mod.weight
-                if w <= 0:
+                w_base = 1000 if (boss_tag is not None and pname == "desecrated") else mod.weight
+                if w_base <= 0:
                     continue
+                pre_filtered.append(mod)
+            for mod in filter_pool_with_family_exemption(pre_filtered, ilvl=state.ilvl, min_mod_level=min_mod_level):
+                w = 1000 if (boss_tag is not None and pname == "desecrated") else mod.weight
                 if use_catalyst and state.catalyst_tag and state.quality > 0 and state.catalyst_tag in mod.mod_tags:
                     w = round(w * (1.0 + state.quality / 20.0))
                 out.append((mod, w))

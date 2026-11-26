@@ -17,6 +17,7 @@ from .models import (
 )
 from .pool_actions import exact_three_choice_unveil_prob
 from .pool_engine import ModPoolEngine
+from .pool_outcomes import filter_pool_with_family_exemption
 from .price_book import PriceBook
 
 
@@ -133,16 +134,15 @@ class PoolStatsCache:
             return self._normal_cache[key]
         blocked = {self.targets[i].family_id for i in range(len(self.targets)) if hit_mask & (1 << i)}
         eff_tags = set(self.base.tags) | {"default"}
-        mods = [
+        pre_mods = [
             m
             for m in self.engine.get_mod_tiers(self.base.poe2db_slug, "normal")
-            if m.required_level <= self.ilvl
-            and m.required_level >= floor
-            and ((m.affix_side == AffixSide.PREFIX and open_p) or (m.affix_side == AffixSide.SUFFIX and open_s))
+            if ((m.affix_side == AffixSide.PREFIX and open_p) or (m.affix_side == AffixSide.SUFFIX and open_s))
             and not any(f in blocked for f in m.families)
             and m.weight > 0
             and self.engine._is_tag_eligible(m, eff_tags)
         ]
+        mods = filter_pool_with_family_exemption(pre_mods, ilvl=self.ilvl, min_mod_level=floor)
         tot_w = sum(m.weight for m in mods)
         if tot_w <= 0:
             res: tuple[dict[int, float], float, float, WeightConfidence] = ({}, 0.0, 0.0, WeightConfidence.UNMEASURED)
@@ -174,18 +174,17 @@ class PoolStatsCache:
         pools = ["desecrated"] if boss_tag else ["normal", "desecrated"]
         elig = []
         for pname in pools:
-            for m in self.engine.get_mod_tiers(self.base.poe2db_slug, pname):
-                if m.required_level > self.ilvl or m.required_level < floor:
-                    continue
-                if boss_tag is not None and m.boss_tag != boss_tag:
-                    continue
-                if not ((m.affix_side == AffixSide.PREFIX and open_p) or (m.affix_side == AffixSide.SUFFIX and open_s)):
-                    continue
-                if any(f in blocked for f in m.families):
-                    continue
+            pre_des = [
+                m
+                for m in self.engine.get_mod_tiers(self.base.poe2db_slug, pname)
+                if (boss_tag is None or m.boss_tag == boss_tag)
+                and ((m.affix_side == AffixSide.PREFIX and open_p) or (m.affix_side == AffixSide.SUFFIX and open_s))
+                and not any(f in blocked for f in m.families)
+                and (1000 if (boss_tag and pname == "desecrated") else m.weight) > 0
+            ]
+            for m in filter_pool_with_family_exemption(pre_des, ilvl=self.ilvl, min_mod_level=floor):
                 w = 1000 if (boss_tag and pname == "desecrated") else m.weight
-                if w > 0:
-                    elig.append((m, w))
+                elig.append((m, w))
         conf = WeightConfidence.EXACT_DETERMINISTIC if boss_tag else WeightConfidence.EMPIRICAL_ESTIMATE
         if not elig:
             return {}, 0.0, 0.0, conf

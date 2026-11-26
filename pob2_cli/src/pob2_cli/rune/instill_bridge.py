@@ -143,6 +143,30 @@ def normalize_emotion_name(
     return found
 
 
+def normalize_emotion_with_warning(
+    raw: str,
+    *,
+    catalog: RuneInstillCatalog | None = None,
+) -> tuple[EmotionEntry, str | None]:
+    """Normalize an amulet emotion and emit `[tier-coerced]` if a mismatched or legacy tier prefix was coerced."""
+    cat = catalog or load_rune_instill_catalog()
+    found = normalize_emotion_name(raw, catalog=cat)
+    cleaned = fold_han((raw or "").strip()).lower()
+    exact_forms = {
+        found.short.lower(),
+        found.live_name.lower(),
+        fold_han(found.zh_cn).lower(),
+        fold_han(found.zh_tw).lower(),
+    }
+    if cleaned in exact_forms:
+        return found, None
+    return (
+        found,
+        f"[tier-coerced] Input `{(raw or '').strip()}` was coerced to PoE2 0.5.5 tier "
+        f"`{found.live_name}` (`{found.zh_cn}`, tierLevel={found.tier_level}).",
+    )
+
+
 def legacy_to_live_emotion(name: str, *, catalog: RuneInstillCatalog | None = None) -> str:
     """Convert `Distilled <X>` or short `<X>` to live 0.5.5 market name."""
     return normalize_emotion_name(name, catalog=catalog).live_name
@@ -269,6 +293,7 @@ __all__ = [
     "legacy_to_live_emotion",
     "live_to_legacy_emotion",
     "normalize_emotion_name",
+    "normalize_emotion_with_warning",
     "price_instill_recipe",
     "resolve_emotion_price_ex",
     "resolve_rune_price_ex",

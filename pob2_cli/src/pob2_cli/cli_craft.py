@@ -241,7 +241,8 @@ def cmd_craft_inspect(
 @craft_group.command("odds")
 @click.option("--base", required=True, help="底材名或类别 slug（如 Attuned Wand / Vile Robe / 项链）。")
 @click.option("--ilvl", type=int, default=82, show_default=True, help="物品等级。")
-@click.option("--target", "targets", multiple=True, required=True, help=_TARGET_HELP)
+@click.option("--target", "targets", multiple=True, required=False, help=_TARGET_HELP)
+@click.option("--outcomes", "show_outcomes", is_flag=True, default=False, help="输出下一步通货完整词缀族(ModFamily)权重与命中概率分布（无需 --target）。")
 @click.option("--lever", default=None, help="指定单个通货（如 Perfect Orb of Transmutation）。")
 @click.option("--omen", "omens", multiple=True, help="附加预兆（可重复指定）。")
 @click.option("--text", "item_text", default=None, help="可选当前装备 Ctrl+C 文本。")
@@ -254,6 +255,7 @@ def cmd_craft_odds(
     base: str,
     ilvl: int,
     targets: tuple[str, ...],
+    show_outcomes: bool,
     lever: str | None,
     omens: tuple[str, ...],
     item_text: str | None,
@@ -261,13 +263,18 @@ def cmd_craft_odds(
     excluded: tuple[str, ...],
     as_json: bool,
 ) -> None:
-    """计算单步通货 + 预兆精确命中率、误伤率与权重置信度。"""
+    """计算单步通货 + 预兆精确命中率、误伤率、置信度，或完整词缀族(`--outcomes`)概率分布。"""
     from .craft import CraftMdpSolver, ModPoolEngine, fetch_live_price_book
+    from .craft.pool_outcomes import (
+        compute_next_step_outcomes,
+        default_rarity_for_lever,
+        render_outcomes_md,
+    )
 
     eng = ModPoolEngine()
-    solver = CraftMdpSolver(eng)
-    pb = fetch_live_price_book(offline=offline, excluded=excluded)
     try:
+        if not targets and not show_outcomes:
+            raise ValueError("Specify at least one `--target <mod>` or pass `--outcomes` for the full ModFamily probability distribution.")
         if item_text:
             rep = inspect_item_text(item_text, eng, base_override=base, ilvl_override=ilvl)
             state = rep.state
@@ -276,28 +283,71 @@ def cmd_craft_odds(
             b = eng.resolve_base(base)
             from .craft.models import CraftingState, ItemRarity
 
-            state = CraftingState(base=b, ilvl=ilvl, rarity=ItemRarity.RARE if lever and ("Exalt" in lever or "Chaos" in lever or "Bone" in lever) else ItemRarity.NORMAL)
+            lv_entry = eng.resolve_lever(lever) if lever else None
+            def_rar = default_rarity_for_lever(lv_entry) if lv_entry is not None else ItemRarity.NORMAL
+            state = CraftingState(base=b, ilvl=ilvl, rarity=def_rar)
+
+        outcomes_payload = (
+            compute_next_step_outcomes(eng, state, lever_name=lever, omens=list(omens))
+            if show_outcomes
+            else None
+        )
+        if show_outcomes and not targets:
+            assert outcomes_payload is not None
+            if as_json:
+                _emit_json(ctx, outcomes_payload)
+                return
+            _echo(render_outcomes_md(outcomes_payload))
+            return
+
         t_specs = tuple(eng.resolve_target(state.base.poe2db_slug, t, ilvl=state.ilvl) for t in targets)
         t_ids = {mid for ts in t_specs for mid in ts.matching_mod_ids}
         if lever:
             res = eng.evaluate_action(state, t_ids, lever, list(omens))
-            payload = {"game": "poe2", "patch": eng.patch, "base": state.base.name, "ilvl": state.ilvl, "evaluation": res.to_dict()}
+            payload: dict[str, Any] = {
+                "game": "poe2",
+                "patch": eng.patch,
+                "base": state.base.name,
+                "ilvl": state.ilvl,
+                "evaluation": res.to_dict(),
+            }
+            if outcomes_payload is not None:
+                payload["totalPoolWeight"] = outcomes_payload["totalPoolWeight"]
+                payload["familyCount"] = outcomes_payload["familyCount"]
+                payload["outcomes"] = outcomes_payload["outcomes"]
             if as_json:
                 _emit_json(ctx, payload)
                 return
-            _echo(
+            msg = (
                 f"[{eng.patch}] {res.lever.name}"
                 + (f" + {', '.join(o.name for o in res.omens)}" if res.omens else "")
                 + f" -> 命中率 **{res.hit_probability * 100:.4f}%** ({res.target_weight}/{res.eligible_pool_weight}) | "
                 + f"误伤率 `{res.collateral_remove_probability * 100:.2f}%` | 置信度 `{res.weight_confidence.value}` | {res.notes}"
             )
+            if outcomes_payload is not None:
+                msg += "\n\n" + render_outcomes_md(outcomes_payload)
+            _echo(msg)
             return
+
+        solver = CraftMdpSolver(eng)
+        pb = fetch_live_price_book(offline=offline, excluded=excluded)
         actions = solver.evaluate_next_actions(state, t_specs, pb)
     except Exception as exc:
         _handle_craft_error(ctx, exc, as_json=as_json)
         return
     if as_json:
-        _emit_json(ctx, {"game": "poe2", "patch": eng.patch, "base": state.base.name, "ilvl": state.ilvl, "actions": [a.to_dict() for a in actions]})
+        out_json: dict[str, Any] = {
+            "game": "poe2",
+            "patch": eng.patch,
+            "base": state.base.name,
+            "ilvl": state.ilvl,
+            "actions": [a.to_dict() for a in actions],
+        }
+        if outcomes_payload is not None:
+            out_json["totalPoolWeight"] = outcomes_payload["totalPoolWeight"]
+            out_json["familyCount"] = outcomes_payload["familyCount"]
+            out_json["outcomes"] = outcomes_payload["outcomes"]
+        _emit_json(ctx, out_json)
         return
     from tabulate import tabulate
 
@@ -305,7 +355,10 @@ def cmd_craft_odds(
         [a.lever + (f" + {' + '.join(a.omens)}" if a.omens else ""), f"{a.step_cost_ex:.2f}", f"{a.hit_probability * 100:.3f}%", f"{a.collateral_risk * 100:.1f}%", a.weight_confidence.value, a.notes]
         for a in actions[:15]
     ]
-    _echo(tabulate(rows, headers=["通货 + 预兆", "成本(Ex)", "命中率", "误伤率", "置信度", "说明"], tablefmt="github"))
+    tbl = tabulate(rows, headers=["通货 + 预兆", "成本(Ex)", "命中率", "误伤率", "置信度", "说明"], tablefmt="github")
+    if outcomes_payload is not None:
+        tbl += "\n\n" + render_outcomes_md(outcomes_payload)
+    _echo(tbl)
 
 
 @craft_group.command("plan")

@@ -382,6 +382,11 @@ def inspect_item_text(
         quality=quality, catalyst_tag=catalyst_tag, corrupted=corrupted, sanctified=sanctified,
     )
     max_p, max_s = state.max_slots_for_rarity()
+    if rarity in (ItemRarity.MAGIC, ItemRarity.RARE) and not prefixes and not suffixes:
+        warnings.append(
+            f"[no-affix-lines] {rarity.value} item has header lines (`{base.name}`) but zero prefix/suffix affix lines; "
+            "paste full Ctrl+C item text including explicit modifiers."
+        )
     if state.crafted_mod_count > 1:
         legality_issues.append(
             f"[0.5.0+ 非法遗产/违例] 检测到 {state.crafted_mod_count} 条 Crafted 保底词缀"

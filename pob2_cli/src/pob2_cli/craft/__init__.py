@@ -26,6 +26,7 @@ from .models import (
     WhittlingTarget,
 )
 from .pool_engine import ModPoolEngine, exact_three_choice_unveil_prob
+from .pool_outcomes import compute_next_step_outcomes, filter_pool_with_family_exemption
 from .price_book import (
     DEFAULT_CRAFTING_PRICES_EX,
     PriceBook,
@@ -63,8 +64,10 @@ __all__ = [
     "WeightConfidence",
     "WhittlingReport",
     "WhittlingTarget",
+    "compute_next_step_outcomes",
     "exact_three_choice_unveil_prob",
     "fetch_live_price_book",
+    "filter_pool_with_family_exemption",
     "inspect_item_text",
     "load_craft_data",
     "parse_ggg_cx_snapshot",

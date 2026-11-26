@@ -45,6 +45,7 @@ from .step_catalysts import (
 from .step_runes import (
     Stage2RunePlan,
     apply_rune_plan_live,
+    format_max_res_drop_warning,
     solve_rune_allocation,
 )
 
@@ -180,6 +181,31 @@ def _all_hard_met(snap: StatSnapshot, *, chaos_target: int) -> bool:
     res_bad = any(v > 0 for v in snap.resistance_hard_deficits(chaos_target=chaos_target).values())
     sp_bad = snap.spirit_deficit() > 0
     return not (attr_bad or res_bad or sp_bad)
+
+
+def _has_stage2_regression(baseline: StatSnapshot, after: StatSnapshot, *, chaos_target: int) -> bool:
+    if (
+        after.fire_max < baseline.fire_max - 1e-6
+        or after.cold_max < baseline.cold_max - 1e-6
+        or after.lightning_max < baseline.lightning_max - 1e-6
+        or after.chaos_max < baseline.chaos_max - 1e-6
+    ):
+        return True
+    if _all_hard_met(baseline, chaos_target=chaos_target) and not _all_hard_met(after, chaos_target=chaos_target):
+        return True
+    base_attr = baseline.effective_attr_deficits()
+    after_attr = after.effective_attr_deficits()
+    if any(after_attr[k] > base_attr[k] for k in base_attr):
+        return True
+    base_res = baseline.resistance_hard_deficits(chaos_target=chaos_target)
+    after_res = after.resistance_hard_deficits(chaos_target=chaos_target)
+    return any(after_res[k] > base_res[k] for k in base_res) or after.spirit_deficit() > baseline.spirit_deficit()
+
+
+def _reset_stripped_slots_live(worker: Any, slots: tuple[EquippedSlotAudit, ...]) -> None:
+    for sl in slots:
+        if sl.stripped_runes or sl.editable_socket_count > 0:
+            worker.call("add_item", {"raw": sl.stripped_raw_text, "slotName": sl.slot_name})
 
 
 def solve_fix_gaps_offline(
@@ -358,13 +384,15 @@ def solve_fix_gaps_live(
         apply_attribute_swaps_live(worker, s1)
         snap_after_s1 = _read_verified_snap()
 
-        # Stage 2: 287-augment allocation on real post-Stage-1 deficits
+        # Stage 2: 287-augment allocation on real post-Stage-1 deficits + live afterVerified MaxRes/floor guard
         hard_s2 = {
             **snap_after_s1.effective_attr_deficits(),
             **snap_after_s1.resistance_hard_deficits(chaos_target=chaos_target),
             "spirit": snap_after_s1.spirit_deficit(),
         }
         over_s2 = snap_after_s1.resistance_overcap_needs(overcap_target=overcap_target)
+        excluded_s2: set[str] = set()
+        extra_s2_warnings: list[str] = []
         s2 = solve_rune_allocation(
             audit.slots,
             hard_s2,
@@ -374,9 +402,66 @@ def solve_fix_gaps_live(
             price_book=price_book,
             crafted_slot_hints=audit.crafted_slot_hints,
             catalog=cat,
+            excluded_runes=excluded_s2,
         )
         apply_rune_plan_live(worker, audit.slots, s2, char_level=bare.level, is_shaman=is_shaman, catalog=cat)
         snap_after_s2 = _read_verified_snap()
+
+        for _guard_iter in range(3):
+            if not s2.assignments or not _has_stage2_regression(snap_after_s1, snap_after_s2, chaos_target=chaos_target):
+                break
+            newly_rejected: list[str] = []
+            seen_probe: set[tuple[str, str]] = set()
+            for asgn in s2.assignments:
+                key_sr = (asgn.slot_name, asgn.rune_name)
+                if key_sr in seen_probe or asgn.rune_name in excluded_s2:
+                    continue
+                seen_probe.add(key_sr)
+                _reset_stripped_slots_live(worker, audit.slots)
+                probe_plan = Stage2RunePlan(assignments=(asgn,), total_cost_ex=asgn.price_ex, remaining_hard={}, remaining_overcap={})
+                apply_rune_plan_live(worker, audit.slots, probe_plan, char_level=bare.level, is_shaman=is_shaman, catalog=cat)
+                probe_snap = _read_verified_snap()
+                mr_warn = format_max_res_drop_warning(asgn.rune_name, snap_after_s1, probe_snap, slot_name=asgn.slot_name)
+                if mr_warn:
+                    extra_s2_warnings.append(mr_warn)
+                    newly_rejected.append(asgn.rune_name)
+                elif _has_stage2_regression(snap_after_s1, probe_snap, chaos_target=chaos_target):
+                    extra_s2_warnings.append(
+                        f"[rune-reduces-max-res] Rejected `{asgn.rune_name}` ({asgn.slot_name}): broke hard floor in afterVerified check."
+                    )
+                    newly_rejected.append(asgn.rune_name)
+            if not newly_rejected:
+                for asgn in s2.assignments:
+                    mr_warn = format_max_res_drop_warning(asgn.rune_name, snap_after_s1, snap_after_s2, slot_name=asgn.slot_name)
+                    if mr_warn and mr_warn not in extra_s2_warnings:
+                        extra_s2_warnings.append(mr_warn)
+                    newly_rejected.append(asgn.rune_name)
+            excluded_s2.update(newly_rejected)
+            _reset_stripped_slots_live(worker, audit.slots)
+            s2 = solve_rune_allocation(
+                audit.slots,
+                hard_s2,
+                over_s2,
+                char_level=bare.level,
+                is_shaman=is_shaman,
+                price_book=price_book,
+                crafted_slot_hints=audit.crafted_slot_hints,
+                catalog=cat,
+                excluded_runes=excluded_s2,
+            )
+            apply_rune_plan_live(worker, audit.slots, s2, char_level=bare.level, is_shaman=is_shaman, catalog=cat)
+            snap_after_s2 = _read_verified_snap()
+
+        if extra_s2_warnings:
+            merged_w = list(dict.fromkeys([*extra_s2_warnings, *s2.warnings]))
+            s2 = Stage2RunePlan(
+                assignments=s2.assignments,
+                total_cost_ex=s2.total_cost_ex,
+                remaining_hard=s2.remaining_hard,
+                remaining_overcap=s2.remaining_overcap,
+                crafted_slot_hints=s2.crafted_slot_hints,
+                warnings=tuple(merged_w),
+            )
 
         # Stage 3: 13 Breach Catalysts on remaining hard/overcap gaps
         hard_s3 = {

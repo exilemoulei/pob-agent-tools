@@ -202,11 +202,15 @@ def _resolve_res_max(stats: dict[str, Any], elem: str, capped_res: float, overca
     if isinstance(explicit, (int, float)):
         return float(explicit)
     missing = stats.get(f"Missing{elem}Resist")
+    if isinstance(missing, (int, float)) and isinstance(stats.get(f"{elem}Resist"), (int, float)):
+        return float(capped_res) + float(missing)
     if isinstance(missing, (int, float)) and float(missing) > 0.0:
         return float(capped_res) + float(missing)
+    if overcap > 0.0 and isinstance(stats.get(f"{elem}Resist"), (int, float)):
+        return float(capped_res)
     over75 = stats.get(f"{elem}ResistOver75")
     over75_f = float(over75) if isinstance(over75, (int, float)) else 0.0
-    return max(75.0 + over75_f, float(capped_res) if overcap > 0.0 else 75.0)
+    return 75.0 + over75_f
 
 
 def stat_snapshot_from_pob_stats(

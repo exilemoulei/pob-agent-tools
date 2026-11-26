@@ -137,8 +137,8 @@ URL_GATE_RULES: tuple[UrlGateRule, ...] = (
     ),
     UrlGateRule(
         "URL_POE1_CN_PROFILE", "poe1",
-        re.compile(r"^(?:https?://)?poe\.game\.qq\.com/character-window(?=[/?#]|$)", re.IGNORECASE),
-        "poe.game.qq.com/character-window (PoE1 CN Cookie API)",
+        re.compile(r"^(?:https?://)?(?:[a-z0-9-]+\.)?poe\.game\.qq\.com(?=[/?#:]|$)", re.IGNORECASE),
+        "poe.game.qq.com (PoE1 CN Official Domain)",
         "PoE2 CN uses cookie-free WeGame share URLs `https://www.wegame.com.cn/helper/poe2/#/share/<code>` via `pob2 import`.",
         "wegame.com.cn/helper/poe2",
     ),

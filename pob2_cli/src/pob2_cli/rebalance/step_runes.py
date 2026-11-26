@@ -18,7 +18,7 @@ from ..craft.price_book import PriceBook
 from ..rune.catalog import RuneEntry, RuneInstillCatalog, load_rune_instill_catalog
 from ..rune.instill_bridge import resolve_rune_price_ex
 from ..rune.socket_rules import apply_runes_to_item_raw, eligible_runes_for_item
-from .net_gap import EquippedSlotAudit
+from .net_gap import EquippedSlotAudit, StatSnapshot
 
 _STAT_KEYS: tuple[str, ...] = ("str", "dex", "int", "fire", "cold", "lightning", "chaos", "spirit")
 
@@ -34,6 +34,62 @@ _PATTERNS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
     (re.compile(r"\+(\d+)\s+to\s+all\s+Attributes\b", re.IGNORECASE), ("str", "dex", "int")),
     (re.compile(r"\+(\d+)\s+to\s+Spirit\b", re.IGNORECASE), ("spirit",)),
 )
+
+_NEG_PATTERNS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    (re.compile(r"(?:^|:\s*)-(\d+)%\s+to\s+Fire\s+Resistance", re.IGNORECASE), ("fire",)),
+    (re.compile(r"(?:^|:\s*)-(\d+)%\s+to\s+Cold\s+Resistance", re.IGNORECASE), ("cold",)),
+    (re.compile(r"(?:^|:\s*)-(\d+)%\s+to\s+Lightning\s+Resistance", re.IGNORECASE), ("lightning",)),
+    (re.compile(r"(?:^|:\s*)-(\d+)%\s+to\s+Chaos\s+Resistance", re.IGNORECASE), ("chaos",)),
+    (re.compile(r"(?:^|:\s*)-(\d+)%\s+to\s+all\s+Elemental\s+Resistances", re.IGNORECASE), ("fire", "cold", "lightning")),
+    (re.compile(r"(?:^|:\s*)-(\d+)\s+to\s+Strength\b", re.IGNORECASE), ("str",)),
+    (re.compile(r"(?:^|:\s*)-(\d+)\s+to\s+Dexterity\b", re.IGNORECASE), ("dex",)),
+    (re.compile(r"(?:^|:\s*)-(\d+)\s+to\s+Intelligence\b", re.IGNORECASE), ("int",)),
+    (re.compile(r"(?:^|:\s*)-(\d+)\s+to\s+all\s+Attributes\b", re.IGNORECASE), ("str", "dex", "int")),
+    (re.compile(r"(?:^|:\s*)-(\d+)\s+to\s+Spirit\b(?!\s+per\b)", re.IGNORECASE), ("spirit",)),
+)
+
+_SPIRIT_PER_LEVEL_NEG_RE = re.compile(r"(?:^|:\s*)-(\d+)\s+to\s+Spirit\s+per\s+(\d+)\s+Levels\b", re.IGNORECASE)
+_NEG_MAX_RES_RE = re.compile(
+    r"(?:(?:^|:\s*)-\s*(\d+)%\s+to|(\d+)%\s+(?:reduced|less))\s+(?:all\s+)?Maximum\s+"
+    r"(Elemental|Fire|Cold|Lightning|Chaos)?\s*Resistances?\b",
+    re.IGNORECASE,
+)
+_INC_ATTR_REQ_RE = re.compile(
+    r"(\d+)%?\s+(?:increased|additional|to)\s+(?:all\s+)?(?:Attribute|Strength|Dexterity|Intelligence)\s+Requirements\b",
+    re.IGNORECASE,
+)
+_POOL_PENALTY_RE = re.compile(
+    r"(?:(\d+)%\s+(?:reduced|less)\s+maximum\s+(?:Life|Energy\s+Shield|Mana|Effective\s+Hit\s+Pool)\b"
+    r"|(?:^|:\s*)-\s*(\d+)\s+to\s+maximum\s+(?:Life|Energy\s+Shield|Mana)\b"
+    r"|Lose\s+(\d+)%\s+of\s+maximum\s+(?:Life|Energy\s+Shield|Mana)\b)",
+    re.IGNORECASE,
+)
+_SPIRIT_PENALTY_RE = re.compile(
+    r"(\d+)%\s+(?:reduced|less)\s+(?:Spirit\b|(?:[A-Za-z]+\s+){0,3}Reservation\s+Efficiency\b)",
+    re.IGNORECASE,
+)
+_DPS_PENALTY_RE = re.compile(
+    r"(?:(\d+)%\s+less\s+(?:(?:Attack|Spell|Elemental|Physical|Chaos|Global)\s+)?Damage\b"
+    r"|You\s+have\s+no\s+Critical\s+Damage\s+Bonus\b)",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class AugmentSideEffects:
+    """Negative side-effect profile for a candidate socketable augment."""
+
+    max_res_deltas: dict[str, int]
+    attr_req_increase: int
+    penalty_ex: float
+    penalty_notes: tuple[str, ...]
+
+    @property
+    def reduces_max_res(self) -> bool:
+        return any(v < 0 for v in self.max_res_deltas.values())
+
+    def format_max_res_deltas(self) -> str:
+        return ", ".join(f"{k}Max {v:+d}%" for k, v in self.max_res_deltas.items() if v < 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,14 +143,108 @@ class Stage2RunePlan:
         }
 
 
-def parse_augment_stat_vector(mods: tuple[str, ...], *, multiplier: float = 1.0) -> dict[str, int]:
-    """Extract numeric `(str, dex, int, fire, cold, lightning, chaos, spirit)` gains scaled by *multiplier*."""
+def inspect_augment_side_effects(mods: tuple[str, ...], *, multiplier: float = 1.0) -> AugmentSideEffects:
+    """Inspect candidate rune/soul core/idol modifier lines for negative maxRes, req, pool, or Spirit side effects."""
+    max_res_deltas: dict[str, int] = {}
+    attr_req_inc = 0
+    penalty_ex = 0.0
+    notes: list[str] = []
+
+    for ln in mods:
+        clean = ln.strip()
+        low = clean.lower()
+        for m_mr in _NEG_MAX_RES_RE.finditer(clean):
+            raw_v = int(m_mr.group(1) or m_mr.group(2) or 0)
+            if raw_v <= 0:
+                continue
+            drop = max(1, round(raw_v * multiplier))
+            elem_tok = (m_mr.group(3) or "elemental").lower()
+            targets = ("fire", "cold", "lightning") if elem_tok == "elemental" else (elem_tok,)
+            for tk in targets:
+                max_res_deltas[tk] = max_res_deltas.get(tk, 0) - drop
+            notes.append(clean)
+
+        # Skip beneficial defensive reductions on the player ("on you", "against you", "damage taken", "enemies")
+        is_beneficial_def = (
+            "on you" in low
+            or "against you" in low
+            or "damage taken" in low
+            or low.startswith("take ")
+            or "enemies " in low
+            or "delay" in low
+        )
+        if is_beneficial_def:
+            continue
+
+        m_req = _INC_ATTR_REQ_RE.search(clean)
+        if m_req and "reduced" not in low and "less" not in low:
+            attr_req_inc += max(1, round(int(m_req.group(1)) * multiplier))
+            penalty_ex += 150.0
+            notes.append(clean)
+        if _POOL_PENALTY_RE.search(clean):
+            penalty_ex += 180.0
+            notes.append(clean)
+        if _SPIRIT_PENALTY_RE.search(clean):
+            penalty_ex += 180.0
+            notes.append(clean)
+        if _DPS_PENALTY_RE.search(clean):
+            penalty_ex += 120.0
+            notes.append(clean)
+
+    return AugmentSideEffects(
+        max_res_deltas=max_res_deltas,
+        attr_req_increase=attr_req_inc,
+        penalty_ex=penalty_ex,
+        penalty_notes=tuple(notes),
+    )
+
+
+def format_max_res_drop_warning(
+    rune_name: str,
+    baseline: StatSnapshot,
+    after: StatSnapshot,
+    *,
+    slot_name: str = "",
+) -> str | None:
+    """Format `[rune-reduces-max-res]` warning if any elemental/chaos MaxRes dropped below *baseline*."""
+    drops: list[str] = []
+    for label, b_val, a_val in (
+        ("fireMax", baseline.fire_max, after.fire_max),
+        ("coldMax", baseline.cold_max, after.cold_max),
+        ("lightningMax", baseline.lightning_max, after.lightning_max),
+        ("chaosMax", baseline.chaos_max, after.chaos_max),
+    ):
+        if a_val < b_val - 1e-6:
+            drops.append(f"{label} {b_val:.0f}%->{a_val:.0f}% ({a_val - b_val:+.0f}%)")
+    if not drops:
+        return None
+    slot_tag = f" ({slot_name})" if slot_name else ""
+    return f"[rune-reduces-max-res] Rejected `{rune_name}`{slot_tag}: lowers maximum resistance ({', '.join(drops)})."
+
+
+def parse_augment_stat_vector(
+    mods: tuple[str, ...],
+    *,
+    multiplier: float = 1.0,
+    char_level: int = 90,
+) -> dict[str, int]:
+    """Extract net static `(str, dex, int, fire, cold, lightning, chaos, spirit)` gains scaled by *multiplier*."""
     vec = {k: 0 for k in _STAT_KEYS}
     for ln in mods:
-        # Ignore conditional or negative-tradeoff penalty lines when summing guaranteed static stats
         low = ln.lower()
         if "while " in low or "if you " in low or "enemies " in low or "minions " in low:
             continue
+        m_sp_lvl = _SPIRIT_PER_LEVEL_NEG_RE.search(ln)
+        if m_sp_lvl:
+            per_val = int(m_sp_lvl.group(1))
+            per_lvls = max(1, int(m_sp_lvl.group(2)))
+            vec["spirit"] -= int((max(1, char_level) // per_lvls) * per_val * multiplier)
+            continue
+        for pat, keys in _NEG_PATTERNS:
+            for m in pat.finditer(ln):
+                val = int(int(m.group(1)) * multiplier)
+                for k in keys:
+                    vec[k] -= val
         if ln.strip().startswith("-"):
             continue
         for pat, keys in _PATTERNS:
@@ -109,6 +259,7 @@ def parse_augment_stat_vector(mods: tuple[str, ...], *, multiplier: float = 1.0)
 class _AugmentOption:
     rune: RuneEntry
     price_ex: float
+    penalty_ex: float
     multiplier: float
     gains: dict[str, int]
 
@@ -121,6 +272,8 @@ def _slot_options(
     price_book: PriceBook | None,
     max_single_ex: float,
     catalog: RuneInstillCatalog,
+    excluded_runes: frozenset[str] | set[str] = frozenset(),
+    rejected_max_res: dict[str, str] | None = None,
 ) -> list[_AugmentOption]:
     elig = eligible_runes_for_item(
         slot.parity,
@@ -131,20 +284,31 @@ def _slot_options(
     )
     opts: list[_AugmentOption] = []
     for rune, mods in elig:
+        if rune.name in excluded_runes:
+            continue
         mult = slot.parity.effect_multiplier(rune.kind)
-        vec = parse_augment_stat_vector(mods, multiplier=mult)
-        if not any(vec.values()):
+        vec = parse_augment_stat_vector(mods, multiplier=mult, char_level=char_level)
+        fx = inspect_augment_side_effects(mods, multiplier=mult)
+        if fx.reduces_max_res:
+            if rejected_max_res is not None and any(v > 0 for v in vec.values()) and rune.name not in rejected_max_res:
+                rejected_max_res[rune.name] = (
+                    f"[rune-reduces-max-res] Rejected `{rune.name}` ({slot.slot_name}): "
+                    f"lowers maximum resistance ({fx.format_max_res_deltas()})."
+                )
+            continue
+        if not any(v > 0 for v in vec.values()):
             continue
         px, _ = resolve_rune_price_ex(rune, price_book=price_book)
         if px > max_single_ex:
             continue
-        opts.append(_AugmentOption(rune=rune, price_ex=px, multiplier=mult, gains=vec))
-    # Remove strictly dominated options (same or worse on every stat at >= price)
-    opts.sort(key=lambda o: (o.price_ex, -sum(o.gains.values()), o.rune.name))
+        opts.append(_AugmentOption(rune=rune, price_ex=px, penalty_ex=fx.penalty_ex, multiplier=mult, gains=vec))
+    # Remove strictly dominated options (same or better on every stat at <= price and <= side-effect penalty)
+    opts.sort(key=lambda o: (o.price_ex + o.penalty_ex, o.penalty_ex, -sum(o.gains.values()), o.rune.name))
     pruned: list[_AugmentOption] = []
     for cand in opts:
         dominated = any(
-            prev.price_ex <= cand.price_ex
+            (prev.price_ex + prev.penalty_ex) <= (cand.price_ex + cand.penalty_ex)
+            and prev.penalty_ex <= cand.penalty_ex
             and all(prev.gains[k] >= cand.gains[k] for k in _STAT_KEYS)
             for prev in pruned
         )
@@ -165,17 +329,20 @@ def solve_rune_allocation(
     price_book: PriceBook | None = None,
     crafted_slot_hints: tuple[dict[str, Any], ...] = (),
     catalog: RuneInstillCatalog | None = None,
+    excluded_runes: frozenset[str] | set[str] = frozenset(),
 ) -> Stage2RunePlan:
     """Solve minimum-cost rune/soul core allocation across editable sockets.
 
-    Phase A closes all Hard Floor deficits first (preferring armour/belt/shield sockets before weapon DPS sockets).
+    Phase A closes all Hard Floor deficits first (preferring armour/belt/shield sockets before weapon DPS sockets)
+    while rejecting any augment that lowers `maxRes` (`[rune-reduces-max-res]`) and penalizing negative side effects.
     Phase B optionally fills leftover inexpensive armour/utility sockets for `--overcap` buffer without touching
-    weapon DPS sockets or equalizing already-capped resistances.
+    weapon DPS sockets, negative-tradeoff runes, or equalizing already-capped resistances.
     """
     cat = catalog or load_rune_instill_catalog()
     rem_hard = {k: max(0, int(hard_deficits.get(k, 0))) for k in _STAT_KEYS}
     rem_over = {k: max(0, int(overcap_needs.get(k, 0))) for k in ("fire", "cold", "lightning")}
-    warnings: list[str] = []
+    has_active_need = any(rem_hard.values()) or any(rem_over.values())
+    rejected_max_res: dict[str, str] = {}
 
     # Order editable sockets: non-weapon highest-multiplier slots FIRST (Darkness Enthroned / Armour before Weapons!)
     open_sockets: list[tuple[EquippedSlotAudit, int]] = []
@@ -200,14 +367,17 @@ def solve_rune_allocation(
                 price_book=price_book,
                 max_single_ex=max_single_ex,
                 catalog=cat,
+                excluded_runes=excluded_runes,
+                rejected_max_res=rejected_max_res if has_active_need else None,
             )
+    warnings: list[str] = list(rejected_max_res.values())
 
     assignments: list[SocketAssignment] = []
     used_indices: set[int] = set()
     total_ex = 0.0
 
     # Phase A: Hard Floor feasibility-first selection (guarantee full hard closure when sockets are tight,
-    # while minimizing Exalted cost and preferring non-weapon armour/belt/shield sockets before weapons).
+    # while minimizing Exalted + side-effect cost and preferring non-weapon sockets before weapons).
     while any(rem_hard.values()):
         rem_sockets = len(open_sockets) - len(used_indices)
         if rem_sockets <= 0:
@@ -215,30 +385,33 @@ def solve_rune_allocation(
         total_rem_hard = sum(rem_hard.values())
         min_needed_per_socket = (total_rem_hard + rem_sockets - 1) // rem_sockets
 
-        # Collect candidates; prefer options that meet per-socket feasibility pace when tight
-        all_candidates: list[tuple[bool, float, int, int, _AugmentOption]] = []
+        all_candidates: list[tuple[bool, bool, float, int, int, _AugmentOption]] = []
         for idx, (sl, _sock_i) in enumerate(open_sockets):
             if idx in used_indices:
                 continue
             for opt in opts_cache.get(sl.slot_name, ()):
-                covered = sum(min(rem_hard[k], opt.gains[k]) for k in _STAT_KEYS)
+                pos_cov = sum(min(rem_hard[k], max(0, opt.gains[k])) for k in _STAT_KEYS)
+                neg_loss = sum(abs(opt.gains[k]) for k in _STAT_KEYS if opt.gains[k] < 0)
+                covered = pos_cov - neg_loss
                 if covered <= 0:
                     continue
                 over_bonus = sum(min(rem_over[k], max(0, opt.gains[k] - rem_hard[k])) for k in rem_over) * 0.15
                 wpn_pen = 50.0 if sl.is_weapon_slot else 0.0
-                score = (opt.price_ex + wpn_pen) / (covered + over_bonus)
+                score = (opt.price_ex + opt.penalty_ex + wpn_pen) / (covered + over_bonus)
                 meets_pace = covered >= min_needed_per_socket
-                all_candidates.append((meets_pace, score, -covered, idx, opt))
+                clean_no_pen = opt.penalty_ex <= 0.0 and neg_loss == 0
+                all_candidates.append((meets_pace, clean_no_pen, score, -covered, idx, opt))
 
         if not all_candidates:
             break
         feasible_pace = [c for c in all_candidates if c[0]]
         pool = feasible_pace if feasible_pace else all_candidates
-        # Among pace-feasible picks minimize cost/coverage; if none can close alone, maximize coverage first
+        clean_pool = [c for c in pool if c[1]]
+        eff_pool = clean_pool if clean_pool else pool
         if feasible_pace:
-            _ok, _score, _ncov, chosen_idx, opt = min(pool, key=lambda c: (c[1], c[2], c[3]))
+            _ok, _cln, _score, _ncov, chosen_idx, opt = min(eff_pool, key=lambda c: (c[2], c[3], c[4]))
         else:
-            _ok, _score, _ncov, chosen_idx, opt = min(pool, key=lambda c: (c[2], c[1], c[3]))
+            _ok, _cln, _score, _ncov, chosen_idx, opt = min(eff_pool, key=lambda c: (c[3], c[2], c[4]))
         sl, sock_i = open_sockets[chosen_idx]
         used_indices.add(chosen_idx)
         total_ex += opt.price_ex
@@ -259,14 +432,14 @@ def solve_rune_allocation(
         for k in ("fire", "cold", "lightning"):
             rem_over[k] = max(0, rem_over[k] - opt.gains[k])
 
-    # Phase B: Soft Overcap Buffer on remaining non-weapon sockets using cheap runes only (<= overcap_max_single_ex)
+    # Phase B: Soft Overcap Buffer on remaining non-weapon sockets using cheap zero-penalty runes only
     while any(rem_over.values()):
         best_over: tuple[float, int, _AugmentOption] | None = None
         for idx, (sl, _sock_i) in enumerate(open_sockets):
             if idx in used_indices or sl.is_weapon_slot:
                 continue
             for opt in opts_cache.get(sl.slot_name, ()):
-                if opt.price_ex > overcap_max_single_ex:
+                if opt.price_ex > overcap_max_single_ex or opt.penalty_ex > 0.0 or any(v < 0 for v in opt.gains.values()):
                     continue
                 covered = sum(min(rem_over[k], opt.gains[k]) for k in rem_over)
                 if covered <= 0:
@@ -338,9 +511,12 @@ def apply_rune_plan_live(
 
 
 __all__ = [
+    "AugmentSideEffects",
     "SocketAssignment",
     "Stage2RunePlan",
     "apply_rune_plan_live",
+    "format_max_res_drop_warning",
+    "inspect_augment_side_effects",
     "parse_augment_stat_vector",
     "solve_rune_allocation",
 ]
