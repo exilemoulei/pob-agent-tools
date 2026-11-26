@@ -9,52 +9,18 @@ from ..analyzer.version_stamp import attach_version_stamp
 from ..bridge_protocol import encode_xml_share_code
 from ..errors import DaemonRequestError
 from ..game_profile import GAME_ID
-from ..guardrails import GuardrailScope, check_input, check_input_item_raw
+from ..guardrails import (
+    GuardrailScope,
+    check_input,
+    check_input_item_raw,
+    normalize_poe2_equipment_slot,
+)
 from ..importers.share_urls import resolve_poe2_build_source
 from ..snapshot import BuildScope, BuildTransaction, capture_digest, diff_digest, run_mutation
 
-_SLOT_ALIASES: dict[str, str] = {
-    "weapon1": "Weapon 1",
-    "weapon 1": "Weapon 1",
-    "weapon2": "Weapon 2",
-    "weapon 2": "Weapon 2",
-    "weapon1swap": "Weapon 1 Swap",
-    "weapon 1 swap": "Weapon 1 Swap",
-    "weapon2swap": "Weapon 2 Swap",
-    "weapon 2 swap": "Weapon 2 Swap",
-    "helmet": "Helmet",
-    "helm": "Helmet",
-    "body": "Body Armour",
-    "bodyarmour": "Body Armour",
-    "body armour": "Body Armour",
-    "body_armour": "Body Armour",
-    "gloves": "Gloves",
-    "boots": "Boots",
-    "amulet": "Amulet",
-    "ring1": "Ring 1",
-    "ring 1": "Ring 1",
-    "ring2": "Ring 2",
-    "ring 2": "Ring 2",
-    "belt": "Belt",
-    "flask1": "Flask 1",
-    "flask 1": "Flask 1",
-    "flask2": "Flask 2",
-    "flask 2": "Flask 2",
-    "charm1": "Charm 1",
-    "charm 1": "Charm 1",
-    "charm2": "Charm 2",
-    "charm 2": "Charm 2",
-    "charm3": "Charm 3",
-    "charm 3": "Charm 3",
-}
-
 
 def _normalize_slot_name(raw_slot: str | None) -> str:
-    s = str(raw_slot or "").strip()
-    if not s:
-        return ""
-    key = s.lower().replace("-", " ")
-    return _SLOT_ALIASES.get(key) or _SLOT_ALIASES.get(key.replace(" ", "")) or s
+    return normalize_poe2_equipment_slot(raw_slot, command="what-if", allow_empty=True)
 
 
 def _slot_equipped_id(slots: Any, slot_name: str) -> int | None:

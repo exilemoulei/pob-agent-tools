@@ -6,66 +6,34 @@ from __future__ import annotations
 
 import gzip
 import json
-import os
-import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from ..han_fold import fold_han
 from .base_catalog import (
-    ELEMENT_LOCK_MAP,
     SPECIAL_BASE_SPECS,
     ZH_BASE_ALIASES,
     build_static_levers,
 )
-from .models import AffixSide, BaseItemEntry, LeverEntry, ModEntry, UnknownBaseError, WeightConfidence
-from .zh_lookup import check_poe1_base_hallucination, load_craft_l10n
+from .en_bases import (
+    check_poe1_base_hallucination,
+    has_cjk,
+    load_en_base_whitelist,
+)
+from .models import AffixSide, BaseItemEntry, LeverEntry, ModEntry, UnknownBaseError
+from .slug_compiler import (
+    LazyModsBySlug,
+    collect_forced_levers_from_raw,
+    load_optional_pob2_bases,
+    norm_key,
+    strip_numbers_to_pattern,
+)
+from .zh_lookup import load_craft_l10n
 
 EXPECTED_GAME_PATCH = "0.5.5"
-
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-_GEN_TYPE_TO_SIDE: dict[int, AffixSide] = {
-    1: AffixSide.PREFIX,
-    2: AffixSide.SUFFIX,
-    3: AffixSide.IMPLICIT,
-    5: AffixSide.NONE,
-}
-_CASTER_WEAPON_SLUGS: frozenset[str] = frozenset({"Wands", "Staves"})
-
-
-def norm_key(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", text.strip().lower()).strip("_")
-
-
-def strip_numbers_to_pattern(text: str) -> str:
-    s = re.sub(r"[+-]?\([^)]*\)", "#", text)
-    s = re.sub(r"[+-]?\d+(?:\.\d+)?", "#", s)
-    return re.sub(r"\s+", " ", s).strip().lower()
-
-
-def _infer_adds_tags(
-    slug: str, mod_id: str, tags: tuple[str, ...], stat_text: str
-) -> tuple[str, ...]:
-    """Infer PoE2 caster-weapon single-element lock tags (`no_*_spell_mods`)."""
-    if slug not in _CASTER_WEAPON_SLUGS:
-        return ()
-    if "caster" not in tags and "Spell" not in stat_text:
-        return ()
-    low_id = mod_id.lower()
-    low_txt = stat_text.lower()
-    if not (
-        "spell" in low_txt
-        or "damageprefixonweapon" in low_id
-        or "damageprefixontwohandweapon" in low_id
-        or "spellgemslevel" in low_id
-    ):
-        return ()
-    present = [el for el in ELEMENT_LOCK_MAP if el in tags]
-    if len(present) == 1:
-        return ELEMENT_LOCK_MAP[present[0]]
-    return ()
 
 
 def _slot_limits_for_slug(slug: str) -> tuple[int, int]:
@@ -83,168 +51,135 @@ class CraftDataBundle:
     overrides: dict[str, Any]
     mods_by_slug: dict[str, tuple[ModEntry, ...]]
     measured_slugs: frozenset[str]
-    levers: tuple[LeverEntry, ...]
-    levers_by_key: dict[str, LeverEntry]
     removed_levers: frozenset[str]
     dormant_poe1_orbs: frozenset[str]
-    base_name_to_slug: dict[str, str]
+    data_dir: Path | None = None
+    _raw_classes: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
+    _slug_low_map: dict[str, str] = field(default_factory=dict, repr=False)
+    _levers_cache: tuple[LeverEntry, ...] | None = field(default=None, repr=False)
+    _levers_by_key_cache: dict[str, LeverEntry] | None = field(default=None, repr=False)
+    _base_name_to_slug_cache: dict[str, str] | None = field(default=None, repr=False)
+    _global_pat_cache: frozenset[str] | None = field(default=None, repr=False)
+    _inspector_slug_cache: dict[str, tuple[dict[str, tuple[ModEntry, ...]], frozenset[str]]] = field(
+        default_factory=dict, repr=False
+    )
 
-
-def _load_optional_pob2_bases(base_map: dict[str, str]) -> None:
-    """Optionally enrich base_name -> slug from PoB2 `Data/Bases/*.lua` via env var."""
-    env_dir = os.environ.get("POB2_ENGINE_DIR") or os.environ.get("POB2_DATA_DIR")
-    if not env_dir:
-        return
-    bases_dir = Path(env_dir) / "Data" / "Bases"
-    if not bases_dir.is_dir():
-        bases_dir = Path(env_dir) / "PoE2" / "Data" / "Bases"
-    if not bases_dir.is_dir():
-        return
-    file_to_slug = {
-        "wand.lua": "Wands",
-        "sceptre.lua": "Sceptres",
-        "staff.lua": "Staves",
-        "bow.lua": "Bows",
-        "crossbow.lua": "Crossbows",
-        "quiver.lua": "Quivers",
-        "amulet.lua": "Amulets",
-        "ring.lua": "Rings",
-        "belt.lua": "Belts",
-        "spear.lua": "Spears",
-        "flail.lua": "Flails",
-        "dagger.lua": "Daggers",
-        "claw.lua": "Claws",
-    }
-    name_re = re.compile(r'itemBases\["([^"]+)"\]\s*=')
-    for fname, slug in file_to_slug.items():
-        fp = bases_dir / fname
-        if not fp.is_file():
-            continue
-        try:
-            txt = fp.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for m in name_re.finditer(txt):
-            base_map.setdefault(m.group(1).lower(), slug)
-
-
-def _compile_slug_mods(
-    slug: str,
-    info: dict[str, Any],
-    overrides: dict[str, Any],
-    forced_by_lever: dict[str, tuple[str, dict[str, str]]],
-) -> tuple[ModEntry, ...]:
-    has_measured = bool(info.get("has_measured_normal_weights", False))
-    defaults = overrides.get("defaults", {})
-    desec_default_w = int(defaults.get("desecrated_unomen_weight", 2500))
-    unmeasured_default_w = int(defaults.get("unmeasured_normal_pool_weight", 1000))
-    mod_overrides: dict[str, Any] = overrides.get("mod_weight_overrides", {})
-    pools = info.get("pools", {})
-
-    ladders: dict[tuple[str, AffixSide, str, str], list[tuple[int, dict[str, Any]]]] = {}
-    for pname in ("normal", "desecrated", "essence", "perfect_essence", "liquid"):
-        for idx, item in enumerate(pools.get(pname, [])):
-            side = _GEN_TYPE_TO_SIDE.get(int(item.get("gen_type_id") or 0), AffixSide.NONE)
-            if side not in (AffixSide.PREFIX, AffixSide.SUFFIX):
+    def _ensure_levers(self) -> None:
+        if self._levers_cache is not None and self._levers_by_key_cache is not None:
+            return
+        forced_by_lever = collect_forced_levers_from_raw(self._raw_classes)
+        levers = build_static_levers()
+        seen_ids = {lv.lever_id for lv in levers}
+        for lname, (cat, forced_map) in sorted(forced_by_lever.items()):
+            lid = norm_key(lname)
+            if lid in seen_ids:
                 continue
-            fams = tuple(str(f) for f in (item.get("families") or []) if f) or ("Unknown",)
-            pat = strip_numbers_to_pattern(str(item.get("stat_text") or ""))
-            eff_pool = "alloy" if (pname == "perfect_essence" and item.get("is_alloy")) else pname
-            ladders.setdefault((eff_pool, side, fams[0], pat), []).append((idx, item))
-
-    entries: list[ModEntry] = []
-    for (eff_pool, side, fam0, _pat), members in ladders.items():
-        members.sort(key=lambda x: (int(x[1].get("level") or 1), str(x[1].get("mod_id") or ""), x[0]))
-        total_t = len(members)
-        for rank0, (idx, item) in enumerate(members):
-            level = int(item.get("level") or 1)
-            raw_id = item.get("mod_id")
-            mod_id = str(raw_id) if raw_id else f"{slug}_{eff_pool}_{fam0}_{side.value}_L{level}_{idx}"
-            fams = tuple(str(f) for f in (item.get("families") or []) if f) or (fam0,)
-            tags = tuple(str(t) for t in (item.get("tags") or []) if t)
-            stat_text = str(item.get("stat_text") or "")
-            raw_w = int(item.get("drop_chance") or 0)
-            boss_tag = str(item["boss_tag"]) if item.get("boss_tag") else None
-            name_field = str(item.get("name") or "")
-            is_alloy = bool(item.get("is_alloy")) or eff_pool == "alloy"
-            removes_mod = bool(item.get("removes_mod")) or eff_pool in (
-                "perfect_essence",
-                "alloy",
-                "liquid",
-            )
-            currency_name: str | None = None
-
-            if eff_pool in ("essence", "perfect_essence", "alloy", "liquid"):
-                currency_name = name_field
-                weight = 0
-                confidence = WeightConfidence.EXACT_DETERMINISTIC
-                cat = (
-                    "alloy"
-                    if is_alloy
-                    else (
-                        "liquid_emotion"
-                        if eff_pool == "liquid"
-                        else (
-                            "perfect_or_corrupted_essence"
-                            if eff_pool == "perfect_essence"
-                            else "essence"
-                        )
-                    )
-                )
-                if currency_name:
-                    _, fdict = forced_by_lever.setdefault(currency_name, (cat, {}))
-                    fdict.setdefault(slug, mod_id)
-            elif eff_pool == "desecrated":
-                weight = raw_w if raw_w > 1 else desec_default_w
-                confidence = WeightConfidence.EMPIRICAL_ESTIMATE
-            else:
-                ov = mod_overrides.get(f"{slug}:{mod_id}")
-                if ov and isinstance(ov, dict):
-                    weight = int(ov.get("weight", unmeasured_default_w))
-                    confidence = WeightConfidence.EMPIRICAL_ESTIMATE
-                elif has_measured:
-                    weight = raw_w
-                    confidence = WeightConfidence.VERIFIED_COMMUNITY
-                else:
-                    weight = raw_w if raw_w > 1 else unmeasured_default_w
-                    confidence = WeightConfidence.UNMEASURED
-
-            mod_type = re.sub(r"\d+_?$", "", mod_id) or fam0
-            entries.append(
-                ModEntry(
-                    mod_id=mod_id,
-                    mod_type=mod_type,
-                    family_id=fam0,
-                    families=fams,
-                    base_group_slug=slug,
-                    source_pool=eff_pool,
-                    affix_side=side,
-                    affix_name="" if currency_name else name_field,
-                    internal_rank_asc=rank0 + 1,
-                    display_tier=total_t - rank0,
-                    required_level=level,
-                    weight=weight,
-                    weight_confidence=confidence,
-                    boss_tag=boss_tag,
-                    currency_name=currency_name,
-                    is_alloy=is_alloy,
-                    removes_mod=removes_mod,
-                    adds_tags=_infer_adds_tags(slug, mod_id, tags, stat_text),
-                    mod_tags=tags,
-                    stat_text=stat_text,
+            seen_ids.add(lid)
+            applies = (
+                "magic->rare"
+                if cat == "essence"
+                else (
+                    "rare_jewel->remove_1_add_1_forced"
+                    if cat == "liquid_emotion"
+                    else "rare->remove_1_add_1_forced"
                 )
             )
-    return tuple(entries)
+            levers.append(
+                LeverEntry(
+                    lever_id=lid,
+                    name=lname,
+                    category=cat,
+                    is_active_drop_in_patch=True,
+                    applies_to_rarities=applies,
+                    forced_mods=forced_map,
+                )
+            )
+        by_key: dict[str, LeverEntry] = {}
+        for lv in levers:
+            by_key[lv.lever_id] = lv
+            by_key[norm_key(lv.name)] = lv
+        self._levers_cache = tuple(levers)
+        self._levers_by_key_cache = by_key
+
+    @property
+    def levers(self) -> tuple[LeverEntry, ...]:
+        self._ensure_levers()
+        assert self._levers_cache is not None
+        return self._levers_cache
+
+    @property
+    def levers_by_key(self) -> dict[str, LeverEntry]:
+        self._ensure_levers()
+        assert self._levers_by_key_cache is not None
+        return self._levers_by_key_cache
+
+    @property
+    def base_name_to_slug(self) -> dict[str, str]:
+        if self._base_name_to_slug_cache is None:
+            base_map: dict[str, str] = {k: v[1] for k, v in SPECIAL_BASE_SPECS.items()}
+            load_optional_pob2_bases(base_map)
+            self._base_name_to_slug_cache = base_map
+        return self._base_name_to_slug_cache
+
+    def get_inspector_slug_index(
+        self, slug: str
+    ) -> tuple[dict[str, tuple[ModEntry, ...]], frozenset[str]]:
+        cached = self._inspector_slug_cache.get(slug)
+        if cached is not None:
+            return cached
+        all_tiers = self.mods_by_slug.get(slug, ())
+        buckets: dict[str, list[ModEntry]] = {}
+        hybrid_lines: set[str] = set()
+        for m in all_tiers:
+            if m.affix_side in (AffixSide.PREFIX, AffixSide.SUFFIX):
+                buckets.setdefault(strip_numbers_to_pattern(m.stat_text), []).append(m)
+                if "\n" in m.stat_text:
+                    for ln in m.stat_text.splitlines():
+                        ln = ln.strip()
+                        if ln:
+                            hybrid_lines.add(strip_numbers_to_pattern(ln))
+        pat_map = {k: tuple(v) for k, v in buckets.items()}
+        res = (pat_map, frozenset(hybrid_lines))
+        self._inspector_slug_cache[slug] = res
+        return res
+
+    def get_global_mod_patterns(self) -> frozenset[str]:
+        if self._global_pat_cache is not None:
+            return self._global_pat_cache
+        raw_texts: set[str] = set()
+        if self._raw_classes:
+            for info in self._raw_classes.values():
+                pools = info.get("pools") or {}
+                for pname in ("normal", "desecrated", "essence", "perfect_essence", "liquid"):
+                    for item in pools.get(pname) or ():
+                        if item.get("gen_type_id") in (1, 2):
+                            st = item.get("stat_text")
+                            if st:
+                                raw_texts.add(str(st))
+        else:
+            for mods in self.mods_by_slug.values():
+                for m in mods:
+                    if m.affix_side in (AffixSide.PREFIX, AffixSide.SUFFIX) and m.stat_text:
+                        raw_texts.add(m.stat_text)
+        pats: set[str] = set()
+        for st in raw_texts:
+            pats.add(strip_numbers_to_pattern(st))
+            if "\n" in st:
+                for ln in st.splitlines():
+                    ln = ln.strip()
+                    if ln:
+                        pats.add(strip_numbers_to_pattern(ln))
+        self._global_pat_cache = frozenset(pats)
+        return self._global_pat_cache
 
 
 @lru_cache(maxsize=2)
-def load_craft_data(data_dir: Path | None = None) -> CraftDataBundle:
-    """Load bundled ModsView weights & overrides once per process."""
-    d = data_dir or _DATA_DIR
-    with gzip.open(d / "modsview_weights.json.gz", "rt", encoding="utf-8") as fh:
-        mv = json.load(fh)
+def _load_craft_data_cached(resolved_dir: Path) -> CraftDataBundle:
+    """Load bundled ModsView weights & overrides once per process with lazy per-slug compilation."""
+    d = resolved_dir
+    mv = json.loads(gzip.decompress((d / "modsview_weights.json.gz").read_bytes()))
     ov_path = d / "weights_overrides.json"
-    overrides = json.loads(ov_path.read_text(encoding="utf-8")) if ov_path.is_file() else {}
+    overrides = json.loads(ov_path.read_bytes()) if ov_path.is_file() else {}
 
     patch = str(mv.get("patch") or overrides.get("patch") or "unknown")
     mismatch_warn: str | None = None
@@ -253,64 +188,35 @@ def load_craft_data(data_dir: Path | None = None) -> CraftDataBundle:
             f"[待复核] 词缀权重包补丁版本 ({patch}) 与预期 {EXPECTED_GAME_PATCH} 不一致，需复核。"
         )
 
-    mods_by_slug: dict[str, tuple[ModEntry, ...]] = {}
-    measured_slugs: set[str] = set()
-    forced_by_lever: dict[str, tuple[str, dict[str, str]]] = {}
-
-    for slug, info in mv.get("classes", {}).items():
-        if info.get("has_measured_normal_weights"):
-            measured_slugs.add(slug)
-        mods_by_slug[slug] = _compile_slug_mods(slug, info, overrides, forced_by_lever)
-
-    levers = build_static_levers()
-    seen_ids = {lv.lever_id for lv in levers}
-    for lname, (cat, forced_map) in sorted(forced_by_lever.items()):
-        lid = norm_key(lname)
-        if lid in seen_ids:
-            continue
-        seen_ids.add(lid)
-        applies = (
-            "magic->rare"
-            if cat == "essence"
-            else (
-                "rare_jewel->remove_1_add_1_forced"
-                if cat == "liquid_emotion"
-                else "rare->remove_1_add_1_forced"
-            )
-        )
-        levers.append(
-            LeverEntry(
-                lever_id=lid,
-                name=lname,
-                category=cat,
-                is_active_drop_in_patch=True,
-                applies_to_rarities=applies,
-                forced_mods=forced_map,
-            )
-        )
-
-    levers_by_key: dict[str, LeverEntry] = {}
-    for lv in levers:
-        levers_by_key[lv.lever_id] = lv
-        levers_by_key[norm_key(lv.name)] = lv
-
-    base_map: dict[str, str] = {k: v[1] for k, v in SPECIAL_BASE_SPECS.items()}
-    _load_optional_pob2_bases(base_map)
+    raw_classes: dict[str, dict[str, Any]] = mv.get("classes") or {}
+    measured_slugs = frozenset(
+        slug for slug, info in raw_classes.items() if info.get("has_measured_normal_weights")
+    )
+    slug_low_map = {slug.lower(): slug for slug in raw_classes}
 
     return CraftDataBundle(
         patch=patch,
         patch_mismatch_warning=mismatch_warn,
         overrides=overrides,
-        mods_by_slug=mods_by_slug,
-        measured_slugs=frozenset(measured_slugs),
-        levers=tuple(levers),
-        levers_by_key=levers_by_key,
+        mods_by_slug=LazyModsBySlug(raw_classes, overrides),
+        measured_slugs=measured_slugs,
         removed_levers=frozenset(norm_key(x) for x in overrides.get("removed_levers_in_patch", [])),
         dormant_poe1_orbs=frozenset(
             norm_key(x) for x in overrides.get("dormant_poe1_currencies_blacklist", [])
         ),
-        base_name_to_slug=base_map,
+        data_dir=d,
+        _raw_classes=raw_classes,
+        _slug_low_map=slug_low_map,
     )
+
+
+def load_craft_data(data_dir: Path | None = None) -> CraftDataBundle:
+    """Load bundled ModsView weights & overrides once per process with lazy per-slug compilation."""
+    return _load_craft_data_cached((data_dir or _DATA_DIR).resolve())
+
+
+load_craft_data.cache_clear = _load_craft_data_cached.cache_clear  # type: ignore[attr-defined]
+load_craft_data.cache_info = _load_craft_data_cached.cache_info  # type: ignore[attr-defined]
 
 
 def _make_base_entry(
@@ -336,36 +242,18 @@ def _make_base_entry(
     )
 
 
-def resolve_base_entry(bundle: CraftDataBundle, base_name_or_slug: str) -> BaseItemEntry:
-    """Resolve an EN/CN/TW PoE2 0.5.5 base item or class slug strictly against the 1,768-base whitelist."""
-    orig = (base_name_or_slug or "").strip()
-    if not orig:
-        l10n = load_craft_l10n()
-        raise UnknownBaseError(orig, tuple(l10n.suggest_bases("", limit=5)))
+def _resolve_canonical_or_special(
+    bundle: CraftDataBundle, canon: str, slug: str
+) -> BaseItemEntry:
+    low_c = canon.lower()
+    if low_c in SPECIAL_BASE_SPECS:
+        sname, sslug, dlvl, tags = SPECIAL_BASE_SPECS[low_c]
+        return _make_base_entry(bundle, name=sname, slug=sslug, drop_level=dlvl, tags=tags)
+    return _make_base_entry(bundle, name=canon, slug=slug)
 
-    # 1. Hard-block known PoE1-only bases/uniques before any lookup.
-    check_poe1_base_hallucination(orig)
 
-    l10n = load_craft_l10n()
-    raw = orig
-    folded = fold_han(raw)
-    if raw in ZH_BASE_ALIASES:
-        raw = ZH_BASE_ALIASES[raw]
-    elif folded in ZH_BASE_ALIASES:
-        raw = ZH_BASE_ALIASES[folded]
-
-    # 2. Exact match in bundled 1,768 PoE2 base whitelist (EN / CN / TW / quality-prefixed)
-    exact_wl = l10n.lookup_exact_base(raw)
-    if exact_wl is not None:
-        canon, slug = exact_wl
-        low_c = canon.lower()
-        if low_c in SPECIAL_BASE_SPECS:
-            sname, sslug, dlvl, tags = SPECIAL_BASE_SPECS[low_c]
-            return _make_base_entry(bundle, name=sname, slug=sslug, drop_level=dlvl, tags=tags)
-        return _make_base_entry(bundle, name=canon, slug=slug)
-
-    # 3. Special element-locked bases (with optional EN quality/tier prefix stripped)
-    stripped_en = raw
+def _resolve_ascii_fallbacks(bundle: CraftDataBundle, raw_en: str) -> BaseItemEntry | None:
+    stripped_en = raw_en
     for pref in ("Superior ", "Exceptional ", "Runeforged ", "Runemastered ", "Expert ", "Advanced "):
         if stripped_en.lower().startswith(pref.lower()):
             stripped_en = stripped_en[len(pref) :].strip()
@@ -373,25 +261,80 @@ def resolve_base_entry(bundle: CraftDataBundle, base_name_or_slug: str) -> BaseI
     if low in SPECIAL_BASE_SPECS:
         name, slug, dlvl, tags = SPECIAL_BASE_SPECS[low]
         return _make_base_entry(bundle, name=name, slug=slug, drop_level=dlvl, tags=tags)
-
-    # 4. Exact ModsView 81 class slugs (e.g. Wands, Body_Armours_int, Charms, Waystones_top_tier)
-    slug_probe = stripped_en.replace(" ", "_")
-    for slug in bundle.mods_by_slug:
-        if slug.lower() == slug_probe.lower():
-            return _make_base_entry(bundle, name=stripped_en, slug=slug, entry_id=f"Slug/{slug}")
-
-    # 5. Optional runtime PoB2 Data/Bases/*.lua exact match
+    slug_probe = stripped_en.replace(" ", "_").lower()
+    matched_slug = bundle._slug_low_map.get(slug_probe)
+    if matched_slug is None and not bundle._slug_low_map:
+        matched_slug = next((s for s in bundle.mods_by_slug if s.lower() == slug_probe), None)
+    if matched_slug is not None:
+        return _make_base_entry(bundle, name=stripped_en, slug=matched_slug, entry_id=f"Slug/{matched_slug}")
     if low in bundle.base_name_to_slug:
         return _make_base_entry(bundle, name=stripped_en, slug=bundle.base_name_to_slug[low])
+    return None
 
-    # 6. Magic item affix stripping around valid PoE2 bases (e.g. `Analyst's Grounding Charm of the Foliage`)
+
+def resolve_base_entry(bundle: CraftDataBundle, base_name_or_slug: str) -> BaseItemEntry:
+    """Resolve an EN/CN/TW PoE2 0.5.5 base item or class slug strictly against the 1,768-base whitelist."""
+    orig = (base_name_or_slug or "").strip()
+    if not orig:
+        en_wl = load_en_base_whitelist(bundle.data_dir)
+        raise UnknownBaseError(orig, tuple(en_wl.suggest_bases("", limit=5)))
+
+    # 1. Hard-block known PoE1-only bases/uniques before any lookup.
+    check_poe1_base_hallucination(orig)
+
+    # 2. Pure non-CJK path: never load poe2_craft_l10n.json.gz on English items.
+    if not has_cjk(orig):
+        en_wl = load_en_base_whitelist(bundle.data_dir)
+        exact_en = en_wl.lookup_exact_base(orig)
+        if exact_en is not None:
+            return _resolve_canonical_or_special(bundle, exact_en[0], exact_en[1])
+        fb = _resolve_ascii_fallbacks(bundle, orig)
+        if fb is not None:
+            return fb
+        magic_en = en_wl.extract_magic_base(orig)
+        if magic_en is not None:
+            return _resolve_canonical_or_special(bundle, magic_en[0], magic_en[1])
+        raise UnknownBaseError(base_name_or_slug, tuple(en_wl.suggest_bases(orig, limit=5)))
+
+    # 3. CJK path: check fast static ZH aliases first, then bundled CN/TW craft l10n.
+    raw = orig
+    folded = fold_han(raw)
+    if raw in ZH_BASE_ALIASES:
+        raw = ZH_BASE_ALIASES[raw]
+    elif folded in ZH_BASE_ALIASES:
+        raw = ZH_BASE_ALIASES[folded]
+
+    if not has_cjk(raw):
+        en_wl = load_en_base_whitelist(bundle.data_dir)
+        exact_alias = en_wl.lookup_exact_base(raw)
+        if exact_alias is not None:
+            return _resolve_canonical_or_special(bundle, exact_alias[0], exact_alias[1])
+        fb_alias = _resolve_ascii_fallbacks(bundle, raw)
+        if fb_alias is not None:
+            return fb_alias
+
+    l10n = load_craft_l10n(bundle.data_dir)
+    exact_wl = l10n.lookup_exact_base(raw)
+    if exact_wl is not None:
+        return _resolve_canonical_or_special(bundle, exact_wl[0], exact_wl[1])
+
+    fb_zh = _resolve_ascii_fallbacks(bundle, raw)
+    if fb_zh is not None:
+        return fb_zh
+
     magic_hit = l10n.extract_magic_base(orig)
     if magic_hit is not None:
-        canon, slug = magic_hit
-        low_c = canon.lower()
-        if low_c in SPECIAL_BASE_SPECS:
-            sname, sslug, dlvl, tags = SPECIAL_BASE_SPECS[low_c]
-            return _make_base_entry(bundle, name=sname, slug=sslug, drop_level=dlvl, tags=tags)
-        return _make_base_entry(bundle, name=canon, slug=slug)
+        return _resolve_canonical_or_special(bundle, magic_hit[0], magic_hit[1])
 
     raise UnknownBaseError(base_name_or_slug, tuple(l10n.suggest_bases(orig, limit=5)))
+
+
+__all__ = [
+    "EXPECTED_GAME_PATCH",
+    "CraftDataBundle",
+    "LazyModsBySlug",
+    "load_craft_data",
+    "norm_key",
+    "resolve_base_entry",
+    "strip_numbers_to_pattern",
+]

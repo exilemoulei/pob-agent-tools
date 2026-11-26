@@ -12,6 +12,7 @@ from .formatters import (
     format_summary_md,
     format_uniques_md,
 )
+from .guardrails import normalize_poe2_equipment_slot
 
 
 @click.command("summary")
@@ -78,11 +79,12 @@ def cmd_uniques(
     as_json: bool,
 ) -> None:
     """Keyword-free full-slot PoE2 unique ranking (including Flask/Charm) with 0.78x-1.22x Sanctified roll range."""
+    canon_slot = normalize_poe2_equipment_slot(slot, command="uniques")
     res = daemon_call_cli(
         "uniques",
         {
             "target": resolve_target_slot(target),
-            "slot": slot,
+            "slot": canon_slot,
             "stat": stat,
             "top": top,
             "eval_sanctified": not no_sanctified,
@@ -123,7 +125,8 @@ def cmd_compare(
 @click.pass_context
 def cmd_items(ctx: click.Context, slot: str | None, target: str | None, as_json: bool) -> None:
     """List equipped PoE2 items and slots."""
-    res = daemon_call_cli("items", {"target": resolve_target_slot(target), "slot": slot})
+    canon_slot = normalize_poe2_equipment_slot(slot, command="items") if (slot and slot.strip()) else None
+    res = daemon_call_cli("items", {"target": resolve_target_slot(target), "slot": canon_slot})
     emit_output(ctx, res, as_json=as_json)
 
 

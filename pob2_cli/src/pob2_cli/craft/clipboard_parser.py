@@ -7,10 +7,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
-from ..importers.wegame_translate import WeGameTranslator
 from .models import AffixSide, ItemRarity, ModDomain
-from .zh_lookup import load_craft_l10n
+from .zh_lookup import has_cjk, load_craft_l10n, load_en_base_whitelist
+
+if TYPE_CHECKING:
+    from ..importers.wegame_translate import WeGameTranslator
 
 _RICH_LINK_RE = re.compile(r"\[[^\]|]+\|([^\]]+)\]|\[([^\]]+)\]")
 _RANGE_OR_NUM_RE = re.compile(
@@ -98,7 +101,8 @@ def extract_values(text: str) -> list[float]:
     return vals
 
 
-def extract_bounds(stat_text: str) -> list[tuple[float, float]]:
+@lru_cache(maxsize=4096)
+def extract_bounds_tuple(stat_text: str) -> tuple[tuple[float, float], ...]:
     bounds: list[tuple[float, float]] = []
     for m in _RANGE_OR_NUM_RE.finditer(stat_text):
         if m.group("lo") is not None and m.group("hi") is not None:
@@ -107,7 +111,11 @@ def extract_bounds(stat_text: str) -> list[tuple[float, float]]:
         elif m.group("num") is not None:
             v = abs(float(m.group("num")))
             bounds.append((v, v))
-    return bounds
+    return tuple(bounds)
+
+
+def extract_bounds(stat_text: str) -> list[tuple[float, float]]:
+    return list(extract_bounds_tuple(stat_text))
 
 
 def detect_domain_and_strip(raw_line: str) -> tuple[str, ModDomain, bool, bool, bool]:
@@ -173,12 +181,14 @@ def looks_like_stat_line(clean_ln: str) -> bool:
 
 @lru_cache(maxsize=1)
 def _cached_wegame_translator() -> WeGameTranslator:
+    from ..importers.wegame_translate import WeGameTranslator
+
     return WeGameTranslator()
 
 
 def translate_mod_line(clean_mod: str) -> tuple[str, bool]:
     """Translate a CN/TW stat line into PoE2 EN via bundled+local stats.json templates and WeGameTranslator."""
-    if not _HAS_CJK_RE.search(clean_mod):
+    if not has_cjk(clean_mod):
         return clean_mod, True
     en, ok = load_craft_l10n().translate_zh_stat_line(clean_mod)
     if ok:
@@ -225,7 +235,6 @@ def parse_clipboard_sections(raw_text: str, ilvl_override: int | None) -> Parsed
     pending_tier: int | None = None
     in_pob_implicits = 0
     in_header = True
-    l10n = load_craft_l10n()
 
     for sec_idx, sec in enumerate(sections):
         if sec_idx > 0:
@@ -297,8 +306,14 @@ def parse_clipboard_sections(raw_text: str, ilvl_override: int | None) -> Parsed
                     max_hdr = 1 if rarity == ItemRarity.NORMAL else 2
                     if len(header_names) >= max_hdr:
                         in_header = False
-                    elif rarity == ItemRarity.MAGIC and len(header_names) == 1 and l10n.lookup_exact_base(clean_ln):
-                        in_header = False
+                    elif rarity == ItemRarity.MAGIC and len(header_names) == 1:
+                        matched = (
+                            load_craft_l10n().lookup_exact_base(clean_ln)
+                            if has_cjk(clean_ln)
+                            else load_en_base_whitelist().lookup_exact_base(clean_ln)
+                        )
+                        if matched is not None:
+                            in_header = False
                     continue
             if in_pob_implicits > 0:
                 in_pob_implicits -= 1
@@ -326,6 +341,7 @@ __all__ = [
     "clean_rich_markup",
     "detect_domain_and_strip",
     "extract_bounds",
+    "extract_bounds_tuple",
     "extract_values",
     "looks_like_stat_line",
     "parse_catalyst_tag",

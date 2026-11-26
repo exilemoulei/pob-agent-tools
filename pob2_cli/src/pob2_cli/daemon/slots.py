@@ -29,6 +29,7 @@ from .rpc_handlers import (
     dispatch_dual_slot_action,
     dispatch_slot_action,
     empty_slot_error,
+    prevalidate_slot_action_params,
     worker_has_loaded_build,
 )
 from .runtime import (
@@ -473,6 +474,7 @@ class DaemonManager:
                     return dispatch_dual_slot_action(self, action, params, mw, rw)
 
         target = normalize_slot_name(params.get("target"))
+        prevalidate_slot_action_params(action, params)
         with self._reader_barrier():
             with self._get_slot_lock(target):
                 if action_requires_loaded_build(action, params) and not self._slot_has_loaded_build(target):

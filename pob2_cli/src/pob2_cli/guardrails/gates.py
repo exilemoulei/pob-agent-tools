@@ -303,3 +303,128 @@ def validate_command(command_text: str, *, expected_game: str = "poe2") -> None:
                 error=err, remediation=f"Use the PoE2 workflow instead: `{equiv}`.",
                 equivalent_command=equiv, rule_id=rule_id,
             )
+
+
+VALID_POE2_EQUIPMENT_SLOTS: tuple[str, ...] = (
+    "Weapon 1",
+    "Weapon 2",
+    "Weapon 1 Swap",
+    "Weapon 2 Swap",
+    "Helmet",
+    "Body Armour",
+    "Gloves",
+    "Boots",
+    "Amulet",
+    "Ring 1",
+    "Ring 2",
+    "Ring 3",
+    "Belt",
+    "Flask 1",
+    "Flask 2",
+    "Charm 1",
+    "Charm 2",
+    "Charm 3",
+    "Arm 1",
+    "Arm 2",
+    "Leg 1",
+    "Leg 2",
+)
+
+_JEWEL_SOCKET_PARENTS: frozenset[str] = frozenset(
+    {
+        "Weapon 1",
+        "Weapon 2",
+        "Weapon 1 Swap",
+        "Weapon 2 Swap",
+        "Helmet",
+        "Gloves",
+        "Body Armour",
+        "Boots",
+        "Belt",
+        "Ring 1",
+        "Ring 2",
+        "Ring 3",
+    }
+)
+_PASSIVE_JEWEL_SLOT_RE = re.compile(r"^jewel\s+(\d+)$", re.IGNORECASE)
+_EQUIP_JEWEL_SOCKET_RE = re.compile(r"^(.+?)\s+jewel\s+socket\s+([1-6])$", re.IGNORECASE)
+
+_POE2_SLOT_LOOKUP: dict[str, str] = {
+    **{s.lower(): s for s in VALID_POE2_EQUIPMENT_SLOTS},
+    **{s.lower().replace(" ", ""): s for s in VALID_POE2_EQUIPMENT_SLOTS},
+    "weapon": "Weapon 1",
+    "mainhand": "Weapon 1",
+    "main hand": "Weapon 1",
+    "offhand": "Weapon 2",
+    "off hand": "Weapon 2",
+    "weapon swap 1": "Weapon 1 Swap",
+    "weaponswap1": "Weapon 1 Swap",
+    "weapon swap 2": "Weapon 2 Swap",
+    "weaponswap2": "Weapon 2 Swap",
+    "offhand swap": "Weapon 2 Swap",
+    "helm": "Helmet",
+    "body": "Body Armour",
+    "chest": "Body Armour",
+    "glove": "Gloves",
+    "boot": "Boots",
+    "ring": "Ring 1",
+    "flask": "Flask 1",
+    "charm": "Charm 1",
+    "主手": "Weapon 1",
+    "副手": "Weapon 2",
+    "头盔": "Helmet",
+    "胸甲": "Body Armour",
+    "手套": "Gloves",
+    "鞋子": "Boots",
+    "项链": "Amulet",
+    "护身符": "Amulet",
+    "戒指": "Ring 1",
+    "戒指1": "Ring 1",
+    "戒指 1": "Ring 1",
+    "戒指2": "Ring 2",
+    "戒指 2": "Ring 2",
+    "戒指3": "Ring 3",
+    "戒指 3": "Ring 3",
+    "腰带": "Belt",
+    "药剂": "Flask 1",
+    "药剂1": "Flask 1",
+    "药剂 1": "Flask 1",
+    "药剂2": "Flask 2",
+    "药剂 2": "Flask 2",
+    "护符": "Charm 1",
+    "咒符": "Charm 1",
+    "护符1": "Charm 1",
+    "护符 1": "Charm 1",
+    "咒符1": "Charm 1",
+    "咒符 1": "Charm 1",
+    "护符2": "Charm 2",
+    "护符 2": "Charm 2",
+    "咒符2": "Charm 2",
+    "咒符 2": "Charm 2",
+    "护符3": "Charm 3",
+    "护符 3": "Charm 3",
+    "咒符3": "Charm 3",
+    "咒符 3": "Charm 3",
+}
+
+
+def resolve_poe2_slot_name(raw_slot: str) -> str | None:
+    """Return canonical PoB2 slot name if *raw_slot* is a valid PoE2 slot or alias, else ``None``."""
+    s = (raw_slot or "").strip()
+    if not s:
+        return None
+    norm = re.sub(r"\s+", " ", s.lower().replace("-", " ").replace("_", " ")).strip()
+    hit = _POE2_SLOT_LOOKUP.get(norm) or _POE2_SLOT_LOOKUP.get(norm.replace(" ", ""))
+    if hit is not None:
+        return hit
+    jm = _PASSIVE_JEWEL_SLOT_RE.match(norm)
+    if jm and int(jm.group(1)) >= 100:
+        return f"Jewel {int(jm.group(1))}"
+    em = _EQUIP_JEWEL_SOCKET_RE.match(norm)
+    if em:
+        parent = _POE2_SLOT_LOOKUP.get(em.group(1).strip()) or _POE2_SLOT_LOOKUP.get(
+            em.group(1).replace(" ", "")
+        )
+        if parent in _JEWEL_SOCKET_PARENTS:
+            return f"{parent} Jewel Socket {em.group(2)}"
+    return None

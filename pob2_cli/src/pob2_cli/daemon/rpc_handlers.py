@@ -21,6 +21,7 @@ from ..bridge_protocol import decode_share_code_xml, validate_rpc_method
 from ..comparator import compare_builds, rank_uniques
 from ..errors import CrossGameHallucinationError, DaemonRequestError
 from ..game_profile import GAME_ID
+from ..guardrails import normalize_poe2_equipment_slot
 from ..mutators import diff_against_source, run_what_if
 from ..snapshot import history_of, load_build, redo_build, undo_build
 from .read_cache import compute_source_hash, is_live_source
@@ -343,6 +344,21 @@ def register_slot_handler(action: str, handler: SlotHandler) -> None:
     _SLOT_ACTION_HANDLERS[action] = handler
 
 
+def prevalidate_slot_action_params(action: str, params: dict[str, Any] | None) -> None:
+    """Validate equipment `--slot` arguments before checking whether the target build slot is loaded."""
+    if not params:
+        return
+    if action in ("uniques", "what_if", "items", "rune_rank"):
+        raw_slot = params.get("slot")
+        if raw_slot is not None and str(raw_slot).strip():
+            cmd_label = "what-if" if action == "what_if" else action.replace("_", " ")
+            params["slot"] = normalize_poe2_equipment_slot(str(raw_slot), command=cmd_label)
+    if action == "what_if":
+        raw_unequip = params.get("unequip_slot")
+        if raw_unequip is not None and str(raw_unequip).strip():
+            params["unequip_slot"] = normalize_poe2_equipment_slot(str(raw_unequip), command="what-if")
+
+
 def dispatch_slot_action(
     manager: DaemonManager,
     action: str,
@@ -352,6 +368,7 @@ def dispatch_slot_action(
     handler = _SLOT_ACTION_HANDLERS.get(action)
     if handler is None:
         raise ValueError(f"Unknown PoE2 daemon action '{action}'.")
+    prevalidate_slot_action_params(action, params)
     if action_requires_loaded_build(action, params) and not worker_has_loaded_build(w):
         slot_nm = normalize_slot_name(params.get("target") or getattr(w, "slot_name", None))
         raise empty_slot_error(slot_nm)

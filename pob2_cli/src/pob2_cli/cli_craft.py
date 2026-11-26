@@ -9,18 +9,10 @@ from pathlib import Path
 from typing import Any
 
 import click
-from tabulate import tabulate
 
 from .compat import ensure_utf8
-from .craft import (
-    CraftMdpSolver,
-    ModPoolEngine,
-    RemovedLeverError,
-    UnknownBaseError,
-    UnknownTargetError,
-    fetch_live_price_book,
-    inspect_item_text,
-)
+from .craft.item_inspector import inspect_item_text
+from .craft.models import RemovedLeverError, UnknownBaseError, UnknownTargetError
 from .errors import CrossGameHallucinationError, DaemonRequestError, LegacyPatchTrapError
 
 _TARGET_HELP = (
@@ -93,6 +85,8 @@ def _render_inspect_md(rep: Any) -> str:
                 m.raw_text.replace("\n", " / "),
             ])
     if rows:
+        from tabulate import tabulate
+
         lines.append("")
         lines.append(
             tabulate(
@@ -111,6 +105,8 @@ def _render_inspect_md(rep: Any) -> str:
 
 
 def _render_plan_md(plan: Any, *, title: str) -> str:
+    from tabulate import tabulate
+
     div_str = f" (~{plan.expected_cost_div:.2f} Div)" if plan.expected_cost_div is not None else ""
     lines = [
         f"### {title} [PoE2 {plan.patch}] — {plan.base_type} (`{plan.base_slug}`, ilvl {plan.ilvl})",
@@ -266,6 +262,8 @@ def cmd_craft_odds(
     as_json: bool,
 ) -> None:
     """计算单步通货 + 预兆精确命中率、误伤率与权重置信度。"""
+    from .craft import CraftMdpSolver, ModPoolEngine, fetch_live_price_book
+
     eng = ModPoolEngine()
     solver = CraftMdpSolver(eng)
     pb = fetch_live_price_book(offline=offline, excluded=excluded)
@@ -301,6 +299,8 @@ def cmd_craft_odds(
     if as_json:
         _emit_json(ctx, {"game": "poe2", "patch": eng.patch, "base": state.base.name, "ilvl": state.ilvl, "actions": [a.to_dict() for a in actions]})
         return
+    from tabulate import tabulate
+
     rows = [
         [a.lever + (f" + {' + '.join(a.omens)}" if a.omens else ""), f"{a.step_cost_ex:.2f}", f"{a.hit_probability * 100:.3f}%", f"{a.collateral_risk * 100:.1f}%", a.weight_confidence.value, a.notes]
         for a in actions[:15]
@@ -334,6 +334,8 @@ def cmd_craft_plan(
     as_json: bool,
 ) -> None:
     """运行压缩状态 MDP 策略迭代 + 具体物品回放，输出分步中文剧本与 P50/P80/P95 造价。"""
+    from .craft import CraftMdpSolver, fetch_live_price_book
+
     solver = CraftMdpSolver()
     pb = fetch_live_price_book(offline=offline, excluded=excluded)
     try:
@@ -378,6 +380,8 @@ def cmd_craft_next(
     as_json: bool,
 ) -> None:
     """半成品接力：评估当前半成品下一手最优操作、削切误伤风险与止损判定。"""
+    from .craft import CraftMdpSolver, ModPoolEngine, fetch_live_price_book
+
     raw = _read_item_source(item_text, file_path)
     eng = ModPoolEngine()
     solver = CraftMdpSolver(eng)

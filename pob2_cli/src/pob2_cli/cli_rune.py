@@ -11,7 +11,7 @@ from .cli_common import emit_output, resolve_target_slot
 from .daemon import call_daemon, read_daemon_state
 from .errors import CrossGameHallucinationError, DaemonRequestError, LegacyPatchTrapError
 from .game_profile import stamp_game
-from .guardrails import GuardrailScope, check_input
+from .guardrails import GuardrailScope, check_input, normalize_poe2_equipment_slot
 from .rune import (
     load_rune_instill_catalog,
     normalize_emotion_name,
@@ -141,6 +141,7 @@ def cmd_rune_rank(
     as_json: bool,
 ) -> None:
     """Rank legal runes/soul cores/idols for a slot (live daemon CoW by default, offline fallback with `--type`)."""
+    slot_name = normalize_poe2_equipment_slot(slot_name, command="rune rank")
     if item_type:
         check_input(item_type, GuardrailScope.CATEGORY, expected_game="poe2")
 

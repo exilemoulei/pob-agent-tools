@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..game_profile import GAME_ID
+from ..guardrails import normalize_poe2_equipment_slot
 from ..importers.post_load_fixups import fetch_clean_notes
 from ..snapshot import capture_digest, compact_digest_summary
 from .deep_audit import DEFAULT_OVERCAP_TARGET, run_deep_audit
@@ -97,11 +98,12 @@ def diagnose_build(
 
 
 def inspect_items(worker: Any, *, slot: str | None = None) -> dict[str, Any]:
+    canon_slot = normalize_poe2_equipment_slot(slot, command="items") if (slot and slot.strip()) else None
     res = worker.call("list_items", {}) or {}
     items = res.get("items") or []
     slots = res.get("slots") or []
-    if slot:
-        sl_low = slot.strip().lower()
+    if canon_slot:
+        sl_low = canon_slot.lower()
         slots = [s for s in slots if str(s.get("name") or "").lower() == sl_low]
         slot_ids = {s.get("itemId") for s in slots if s.get("itemId")}
         items = [it for it in items if it.get("id") in slot_ids]

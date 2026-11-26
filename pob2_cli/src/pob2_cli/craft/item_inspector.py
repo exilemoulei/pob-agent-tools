@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 from .clipboard_parser import (
     detect_domain_and_strip,
     extract_bounds,
+    extract_bounds_tuple,
     extract_values,
     parse_clipboard_sections,
     translate_mod_line,
@@ -27,7 +29,7 @@ from .models import (
 )
 from .pool_engine import ModPoolEngine
 from .weights_loader import strip_numbers_to_pattern
-from .zh_lookup import load_craft_l10n
+from .zh_lookup import load_en_base_whitelist
 
 # Backwards-compatible internal aliases
 _extract_values = extract_values
@@ -144,7 +146,7 @@ class ItemInspectionReport:
 
 
 def _pick_best_entry(
-    candidates: list[ModEntry],
+    candidates: list[ModEntry] | tuple[ModEntry, ...],
     *,
     ilvl: int,
     side_hint: AffixSide | None,
@@ -160,6 +162,7 @@ def _pick_best_entry(
         return None
     best: ModEntry | None = None
     best_key: tuple[float, float, int] | None = None
+    name_low = name_hint.lower() if name_hint else None
     for m in filtered:
         score = 0.0
         if is_desecrated:
@@ -169,11 +172,11 @@ def _pick_best_entry(
         else:
             score += 100.0 if m.source_pool == "normal" else (35.0 if m.is_crafted_pool else 15.0)
         score += 30.0 if m.required_level <= ilvl else -180.0
-        if name_hint and m.affix_name and m.affix_name.lower() == name_hint.lower():
+        if name_low and m.affix_name and m.affix_name.lower() == name_low:
             score += 400.0
         if tier_hint is not None:
             score += 300.0 if m.display_tier == tier_hint else -100.0 * abs(m.display_tier - tier_hint)
-        bounds = extract_bounds(m.stat_text)
+        bounds = extract_bounds_tuple(m.stat_text)
         dist = 0.0
         if vals and bounds:
             all_in = True
@@ -196,31 +199,24 @@ def _pick_best_entry(
     return best
 
 
+@lru_cache(maxsize=1)
+def _default_engine() -> ModPoolEngine:
+    return ModPoolEngine()
+
+
 def _global_mod_patterns(eng: ModPoolEngine) -> frozenset[str]:
-    cached = getattr(eng, "_global_pat_cache", None)
-    if cached is not None:
-        return cached
-    pats: set[str] = set()
-    for mods in eng.bundle.mods_by_slug.values():
-        for m in mods:
-            if m.affix_side in (AffixSide.PREFIX, AffixSide.SUFFIX):
-                pats.add(strip_numbers_to_pattern(m.stat_text))
-                for ln in m.stat_text.splitlines():
-                    ln = ln.strip()
-                    if ln:
-                        pats.add(strip_numbers_to_pattern(ln))
-    out = frozenset(pats)
-    eng._global_pat_cache = out  # type: ignore[attr-defined]
-    return out
+    return eng.bundle.get_global_mod_patterns()
 
 
-def _hybrid_vals_plausible(cands: list[ModEntry], vals: list[float], cat_scalar: float) -> bool:
+def _hybrid_vals_plausible(
+    cands: list[ModEntry] | tuple[ModEntry, ...], vals: list[float], cat_scalar: float
+) -> bool:
     """Return True if *vals* are within plausible (up to 1.25x sanctified) bounds of any candidate hybrid mod."""
     if not vals or not cands:
         return True
     max_per_pos: list[float] = []
     for m in cands:
-        for i, (_lo, hi) in enumerate(extract_bounds(m.stat_text)):
+        for i, (_lo, hi) in enumerate(extract_bounds_tuple(m.stat_text)):
             if i >= len(max_per_pos):
                 max_per_pos.append(hi)
             elif hi > max_per_pos[i]:
@@ -232,27 +228,23 @@ def _hybrid_vals_plausible(cands: list[ModEntry], vals: list[float], cat_scalar:
 
 def _check_out_of_range_warning(
     lookup_mod: str,
-    cands: list[ModEntry],
+    cands: list[ModEntry] | tuple[ModEntry, ...],
     vals: list[float],
     cat_scalar: float,
-    all_tiers: list[ModEntry],
+    hybrid_subline_pats: frozenset[str],
 ) -> str | None:
     if not vals or not cands:
         return None
     max_per_pos: list[float] = []
     for m in cands:
-        for i, (_lo, hi) in enumerate(extract_bounds(m.stat_text)):
+        for i, (_lo, hi) in enumerate(extract_bounds_tuple(m.stat_text)):
             if i >= len(max_per_pos):
                 max_per_pos.append(hi)
             elif hi > max_per_pos[i]:
                 max_per_pos[i] = hi
     for v, max_hi in zip(vals, max_per_pos, strict=False):
         if v > max_hi * cat_scalar + 1e-6:
-            pat = strip_numbers_to_pattern(lookup_mod)
-            has_hybrid = any(
-                "\n" in m.stat_text and any(strip_numbers_to_pattern(ln) == pat for ln in m.stat_text.splitlines())
-                for m in all_tiers
-            )
+            has_hybrid = strip_numbers_to_pattern(lookup_mod) in hybrid_subline_pats
             hint = "composite pure+hybrid prefix or sanctified roll" if has_hybrid else "sanctified/corrupted or stacked roll"
             return f"[out-of-range] `{lookup_mod}` exceeds single-mod max {max_hi:g} ({hint})."
     return None
@@ -266,7 +258,7 @@ def inspect_item_text(
     ilvl_override: int | None = None,
 ) -> ItemInspectionReport:
     """Parse PoE2 Ctrl+C / Ctrl+Alt+C / PoB2 item text and run full 0.5.5 affix & legality audit."""
-    eng = engine or ModPoolEngine()
+    eng = engine if engine is not None else _default_engine()
     clip = parse_clipboard_sections(raw_text, ilvl_override)
     rarity, ilvl, quality, catalyst_tag = clip.rarity, clip.ilvl, clip.quality, clip.catalyst_tag
     corrupted, sanctified = clip.corrupted, clip.sanctified
@@ -282,14 +274,10 @@ def inspect_item_text(
     elif header_names:
         item_name = base_str = header_names[0]
     else:
-        raise UnknownBaseError("", tuple(load_craft_l10n().suggest_bases("", limit=5)))
+        raise UnknownBaseError("", tuple(load_en_base_whitelist(eng.bundle.data_dir).suggest_bases("", limit=5)))
 
     base = eng.resolve_base(base_str)
-    all_tiers = eng.get_mod_tiers(base.poe2db_slug)
-    pat_map: dict[str, list[ModEntry]] = {}
-    for m in all_tiers:
-        if m.affix_side in (AffixSide.PREFIX, AffixSide.SUFFIX):
-            pat_map.setdefault(strip_numbers_to_pattern(m.stat_text), []).append(m)
+    pat_map, hybrid_subline_pats = eng.bundle.get_inspector_slug_index(base.poe2db_slug)
 
     cat_scalar = 1.0 + (quality / 100.0) if (catalyst_tag and quality > 0) else 1.0
     prefixes: list[InspectedMod] = []
@@ -306,7 +294,7 @@ def inspect_item_text(
             continue
         lookup_mod, zh_ok = translate_mod_line(clean_mod)
         chosen: ModEntry | None = None
-        matched_cands: list[ModEntry] = []
+        matched_cands: tuple[ModEntry, ...] = ()
         matched_vals: list[float] = []
         matched_lookup = lookup_mod
         consumed = 1
@@ -317,7 +305,7 @@ def inspect_item_text(
             if (nxt_dom, nxt_frac, nxt_cr, nxt_des) == (dom, frac, is_cr, is_des):
                 nxt_lookup, _ = translate_mod_line(nxt_clean)
                 combo_lookup = f"{lookup_mod}\n{nxt_lookup}"
-                cands = pat_map.get(strip_numbers_to_pattern(combo_lookup), [])
+                cands = pat_map.get(strip_numbers_to_pattern(combo_lookup), ())
                 if cands:
                     cvals = extract_values(combo_lookup)
                     both_standalone = bool(
@@ -335,7 +323,7 @@ def inspect_item_text(
                             matched_lookup, matched_cands, matched_vals, consumed = combo_lookup, cands, cvals, 2
 
         if chosen is None:
-            cands = pat_map.get(strip_numbers_to_pattern(lookup_mod), [])
+            cands = pat_map.get(strip_numbers_to_pattern(lookup_mod), ())
             cvals = extract_values(lookup_mod)
             chosen = _pick_best_entry(
                 cands, ilvl=ilvl, side_hint=s_hint, tier_hint=t_hint, name_hint=n_hint,
@@ -346,7 +334,9 @@ def inspect_item_text(
                 matched_cands, matched_vals = cands, cvals
 
         if chosen is not None:
-            oor_warn = _check_out_of_range_warning(matched_lookup, matched_cands, matched_vals, cat_scalar, all_tiers)
+            oor_warn = _check_out_of_range_warning(
+                matched_lookup, matched_cands, matched_vals, cat_scalar, hybrid_subline_pats
+            )
             if oor_warn:
                 warnings.append(oor_warn)
             eff_crafted = is_cr or chosen.is_crafted_pool

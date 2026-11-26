@@ -10,6 +10,7 @@ import click
 
 from .cli_common import daemon_call_cli, emit_output, resolve_target_slot
 from .formatters import format_what_if_md
+from .guardrails import normalize_poe2_equipment_slot
 
 
 def _parse_config_value(raw: str | None) -> Any:
@@ -123,14 +124,20 @@ def cmd_what_if(
     as_json: bool,
 ) -> None:
     """Test PoE2 gear, passive, gem, weapon-set, or config edits with 100% CoW rollback (or --apply)."""
+    canon_slot = normalize_poe2_equipment_slot(slot, command="what-if") if slot is not None else None
+    canon_unequip = (
+        normalize_poe2_equipment_slot(unequip_slot, command="what-if")
+        if unequip_slot is not None
+        else None
+    )
     raw_item = item_file.read_text(encoding="utf-8") if item_file is not None else item_text
     params: dict[str, Any] = {
         "target": resolve_target_slot(target),
         "apply": do_apply,
         "level": level,
-        "slot": slot,
+        "slot": canon_slot,
         "item_text": raw_item,
-        "unequip_slot": unequip_slot,
+        "unequip_slot": canon_unequip,
         "weapon_swap": weapon_swap,
         "alloc_mode": alloc_mode,
         "tree_node": tree_node,

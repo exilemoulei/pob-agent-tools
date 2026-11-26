@@ -5,7 +5,12 @@ from __future__ import annotations
 
 import re
 
-from ..errors import CrossGameHallucinationError, HallucinationWarning, LegacyPatchTrapError
+from ..errors import (
+    CrossGameHallucinationError,
+    DaemonRequestError,
+    HallucinationWarning,
+    LegacyPatchTrapError,
+)
 from .false_friends import (
     SAME_NAME_FALSE_FRIENDS_POE2,
     VERSION_DRIFT_BLOCKS_POE2,
@@ -16,6 +21,8 @@ from .gates import (
     POE1_ONLY_CLASSES,
     POE2_ONLY_CLASSES,
     URL_GATE_RULES,
+    VALID_POE2_EQUIPMENT_SLOTS,
+    resolve_poe2_slot_name,
     validate_build_xml,
     validate_command,
     validate_engine_root,
@@ -237,6 +244,30 @@ def check_input_item_raw(
     return check_input(scannable, GuardrailScope.ITEM_RAW, expected_game=expected_game, emit_stderr=emit_stderr)
 
 
+def normalize_poe2_equipment_slot(
+    raw_slot: str | None,
+    *,
+    command: str = "uniques",
+    allow_empty: bool = False,
+) -> str:
+    """Validate and canonicalize a PoE2 equipment slot name before daemon/build checks."""
+    raw = str(raw_slot or "").strip()
+    if not raw:
+        if allow_empty:
+            return ""
+        raise DaemonRequestError(
+            f"`{command}` requires `--slot <slot>` (e.g. Ring 1, Amulet, Body Armour, Flask 1, Charm 1)."
+        )
+    check_input(raw, GuardrailScope.SLOT, expected_game="poe2", emit_stderr=False)
+    canon = resolve_poe2_slot_name(raw)
+    if canon is None:
+        raise DaemonRequestError(
+            f"[POE2-INVALID-SLOT] Invalid PoE2 equipment slot {raw!r} for `{command}`. "
+            f"Valid slots: {', '.join(VALID_POE2_EQUIPMENT_SLOTS)}."
+        )
+    return canon
+
+
 __all__ = [
     "ALL_QUERY_SCOPES",
     "POE1_ONLY_CLASSES",
@@ -246,6 +277,7 @@ __all__ = [
     "POE2_ONLY_REVERSE_TRAPS_FOR_POB1",
     "SAME_NAME_FALSE_FRIENDS_POE2",
     "URL_GATE_RULES",
+    "VALID_POE2_EQUIPMENT_SLOTS",
     "VERSION_DRIFT_BLOCKS_POE2",
     "ZH_COLLISION_ADVISORIES",
     "ZH_MISTRANSLATION_TRAPS",
@@ -263,9 +295,11 @@ __all__ = [
     "match_phrase_zh",
     "match_word_en",
     "normalize_guardrail_text",
+    "normalize_poe2_equipment_slot",
     "normalize_zh_compact",
     "reset_cli_warnings",
     "resolve_poe1_zh_alias",
+    "resolve_poe2_slot_name",
     "validate_build_xml",
     "validate_command",
     "validate_engine_root",
