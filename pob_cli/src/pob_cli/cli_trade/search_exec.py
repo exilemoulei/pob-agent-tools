@@ -181,6 +181,7 @@ def _verify_candidates_with_pob(
     target: str,
     verification_limit: int,
     prefilter_k: int | None = None,
+    normalize_quality: bool = False,
 ) -> bool:
     import pob_cli.cli_trade as _ct
 
@@ -201,6 +202,7 @@ def _verify_candidates_with_pob(
             target=target,
             limit=verification_limit,
             prefilter_k=prefilter_k,
+            normalize_quality=normalize_quality,
             daemon_call=_ct._daemon_call_safe,
         )
     except CrossGameHallucinationError:

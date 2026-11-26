@@ -14,7 +14,7 @@ Just import your build through a normal chat and let your agent actually run it 
 
 When it runs into a mechanic it isn't sure about, it checks [PoEDB](https://poedb.tw) and [PoE Wiki](https://www.poewiki.net) instead of making things up.
 
-It gives real upgrade suggestions, automatically builds trade queries around your build's gaps with direct trade links, and hunts Timeless Jewel seeds (including Abyss jewels) in seconds!
+It gives real upgrade suggestions, automatically builds trade queries around your build's gaps (with instant Gold buyout `--securable` filtering, seller deduplication, and lossless `+20%` quality normalization in PoB) with direct trade links, and hunts Timeless Jewel seeds (including Abyss jewels) in seconds!
 
 ---
 

@@ -255,6 +255,8 @@ def _format_candidates_table(candidates: list[Candidate], *, has_listing: bool, 
             or "-"
         )
         item_label = candidate.display_name
+        if candidate.pob is not None and candidate.pob.quality_normalized:
+            item_label += " [+20%Q]"
         if candidate.bench_craft:
             craft = candidate.bench_craft
             item_label += f" [bench: {' / '.join(craft['lines'])}; +{craft['cost']}]"
@@ -365,8 +367,9 @@ def _format_candidate_detail(
     lines.append("")
     if candidate.pob is not None:
         pob = candidate.pob
+        q_tag = " [+20%Q]" if pob.quality_normalized else ""
         lines.append(
-            f"PoB: {pob.dps_key} {fmt_num(pob.dps_before)} -> {fmt_num(pob.dps_after)} "
+            f"PoB{q_tag}: {pob.dps_key} {fmt_num(pob.dps_before)} -> {fmt_num(pob.dps_after)} "
             f"({pob.dps_pct_str}), EHP {fmt_num(pob.ehp_before)} -> {fmt_num(pob.ehp_after)} "
             f"({pob.ehp_pct_str}), life {pob.life_delta:+g}"
         )

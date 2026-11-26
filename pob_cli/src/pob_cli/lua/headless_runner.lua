@@ -406,8 +406,14 @@ do
 		if type(uk.rpc_handlers) == "table" then
 			register_handlers(uk.rpc_handlers)
 			if uk.rpc_handlers.power_diff_attribution then CAPS.powerAttribution = true end
-			if uk.rpc_handlers.trade_generate_query then CAPS.tradeAutoQuery = true end
 		end
+	end
+
+	local tk = load_ext("trade_kernel.lua")
+	if type(tk) == "table" and type(tk.rpc_handlers) == "table" then
+		register_handlers(tk.rpc_handlers)
+		if tk.rpc_handlers.trade_generate_query then CAPS.tradeAutoQuery = true end
+		if tk.rpc_handlers.trade_add_item then CAPS.tradeQualityNormalize = true end
 	end
 
 	local ap = load_ext("agent_probes.lua")

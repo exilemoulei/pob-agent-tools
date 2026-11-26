@@ -432,12 +432,14 @@ def _h_trade_eval_items(_m: DaemonManager, params: dict[str, Any], w: BridgeWork
 
     raw_pk = params.get("prefilter_k") if params.get("prefilter_k") is not None else params.get("prefilterK")
     raw_pl = params.get("pob_limit") if params.get("pob_limit") is not None else params.get("pobLimit")
+    raw_nq = params.get("normalizeQuality") if "normalizeQuality" in params else params.get("normalize_quality")
     return trade_eval.eval_trade_items(
         w,
         slot_name=params.get("slot") or params.get("slotName"),
         items=list(params.get("items") or []),
         prefilter_k=int(raw_pk) if raw_pk is not None else None,
         pob_limit=int(raw_pl) if raw_pl is not None else None,
+        normalize_quality=bool(raw_nq),
     )
 
 

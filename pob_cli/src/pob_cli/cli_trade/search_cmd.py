@@ -110,6 +110,13 @@ __all__ = [
 @click.option("--pob", "pob_mode", type=click.Choice(["auto", "on", "off"]), default="auto", show_default=True)
 @click.option("--pob-limit", type=int, default=5, show_default=True, help="Candidates to PoB-verify.")
 @click.option(
+    "--normalize-quality",
+    type=click.Choice(["auto", "on", "off"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="Evaluate modifiable <20% quality items at +20% quality in PoB (auto: active when PoB runs).",
+)
+@click.option(
     "--surrogate-k",
     "surrogate_k",
     type=click.IntRange(min=0),
@@ -157,6 +164,7 @@ def cmd_trade_search(
     bench_hint: bool,
     pob_mode: str,
     pob_limit: int,
+    normalize_quality: str,
     surrogate_k: int | None,
     auto_query: bool,
     target: str,
@@ -261,9 +269,11 @@ def cmd_trade_search(
         candidates = selected + candidates[verification_limit:]
         verification_limit = len(selected)
 
+    eff_normalize_quality = (normalize_quality.lower() != "off") and (pob_mode != "off")
     if not _verify_candidates_with_pob(
         ctx, candidates, pob_mode=pob_mode, pob_slot=pob_slot, slot=slot,
         target=target, verification_limit=verification_limit, prefilter_k=eff_prefilter_k,
+        normalize_quality=eff_normalize_quality,
     ):
         return
 
