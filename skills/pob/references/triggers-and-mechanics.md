@@ -7,7 +7,7 @@ All values verified against live PoE1 3.30 `PoE1/Data/` (`Gems.lua`, `Uniques/`,
 - **CoC (`0.15s` base) Breakpoints** (single triggered spell; multiply APS cap by `N` for `N` distinct alternating spells):
   - `0%` CDR -> `5t` (`165ms`, cap **`6.06/s`**) | **`14%`** CDR -> `4t` (`132ms`, cap **`7.58/s`**) | **`52%`** CDR -> `3t` (`99ms`, cap **`10.10/s`**) | **`128%`** CDR -> `2t` (`66ms`, cap **`15.15/s`**).
 - **Awakened CoC Gem CDR (Legacy Standard Only — removed in 3.28)**: Legacy `Awakened CoC` granted `10 + 3 * (level - 1)%` spell CDR (`Lv5 = 22%`, `Lv6 = 25%`, `Lv8 = 31%`), additive with gear/belt/boots/abyss CDR. In **3.28+ leagues**, regular Awakened Support Gems are drop-disabled; reach CoC CDR breakpoints via belt/boots/abyss/tree CDR instead of recommending `Awakened CoC`.
-- **APS Overspeed Halving**: If trigger attack APS exceeds `max_triggers_per_sec * N` (even slightly, e.g., `8.5/s` vs `7.58/s` at 14% CDR), hits land inside cooldown and **HALVE** real trigger rate! Fix: drop APS `<= cap` OR hit the next CDR tick breakpoint (`52%`).
+- **APS Overspeed Halving**: If trigger attack APS exceeds `max_triggers_per_sec * N` (even slightly, e.g., `8.5/s` vs `7.58/s` at 14% CDR), hits land inside cooldown and **HALVE** real trigger rate! Fix: drop APS `<= cap` OR hit the next CDR tick breakpoint (`52%`). `pob audit`/`pob diagnose` report an overspeed gap as MEDIUM `[estimate, not engine-verified]` until the engine probes confirm it (then HIGH).
 
 ## 2. Fixed-Interval Channelling (`CwC`) vs Cooldown Triggers
 | Trigger Source | Mechanism | 3.30 Base Value | CDR Scales It? |

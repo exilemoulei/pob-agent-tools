@@ -57,7 +57,7 @@ Resolves English or Chinese modifier text to an official PoE1 trade stat ID with
 | `--status` | `available` | PoE1 3.30 trade status: `available` (instant buyout + online), `securable` (instant buyout only), `online`, `onlineleague`, `any`. |
 | `--max-age` | off | Only listings indexed within this many hours, e.g. `15`. Sends the smallest site "Listed" window that covers it, drops the rest (and any listing with no readable time) locally, and keeps fetching (up to 5 pages, or 10 with a `--fetch-limit` above 50) until `--fetch-limit` fresh listings are found. If nothing is that fresh, the older listings are shown instead and the report says so (`staleFallback` in `--json`). The report shows each listing's seller and how long ago it was listed. |
 | `--bargain` | off | Percent, e.g. `30`. Flags listings at least that far below the going price (median of the 10 cheapest listings of the same search, any age) and lists them first. A search that matches 10,000 or more listings (the site's cap) has no reliable floor, so nothing is flagged and the `Market:` line says to narrow it. Price only: judge the item itself by the PoB columns. Costs one more search, unless the main search already is cheapest-first with no `--max-age`. Pair with `--max-age` to catch underpriced fresh listings. |
-| `--league` | auto | Defaults to current softcore trade league via `poe.ninja` / trade API. |
+| `--league` | auto | Defaults to current softcore trade league via `poe.ninja` / trade API. A rate limit or cookie/Cloudflare block during that lookup exits `4` / `3`; any other lookup failure falls back to `Standard` with a warning (stderr, a Markdown banner, `leagueWarning` in JSON), so pass `--league` explicitly when you see it. |
 | `--rarity` / `--ilvl-min` | `nonunique` / `0` | Rarity (`nonunique`, `rare`, `unique`; `any` disables) and minimum item level. |
 | `--category` / `--no-category` | from `--slot` | Override trade category (e.g. `weapon.bow`, `armour.gloves`). |
 | `--allow-conversion` | off | Expand convertible single-element stats into a `count (min: 1)` group across `fire`/`cold`/`lightning` and auto-exclude `corrupted`/`mirrored` (unless `--allow-corrupted`). |
@@ -124,7 +124,7 @@ Enforced hard guards (`trade_item/`):
 | Exit Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | Usage / slot / stat-mapping / invalid flag combination error |
+| `1` | Usage / slot / stat-mapping / invalid flag combination error (including unknown options and bad values from the option parser, which exit `2` elsewhere in `pob`) |
 | `2` | No matching listings on trade |
 | `3` | HTTP 401/403 — `POESESSID` / `POE_COOKIE` or Cloudflare check required |
 | `4` | Rate limited (`Retry-After` / bucket exhausted) |

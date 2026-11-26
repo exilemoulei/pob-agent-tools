@@ -4,9 +4,9 @@ Every subcommand with its flags, in one place. For when to use which, start with
 
 ```powershell
 # Optimization flow: pob audit (dewater & gaps) -> rank-nodes / rank-gems / anoint / bench -> pob trade search (verified via PoB)
-# Global output & slot targeting: --target <slug> (alias --slot where non-conflicting; default POB_SLOT or main); --compact (1-line JSON); --out <file> (UTF-8 no-BOM).
+# Global output & slot targeting: --target <slug> (build slot; default POB_SLOT or main; a deprecated --slot alias exists only on commands without an equipment --slot and refuses equipment names such as `gloves`/`ring1` with exit 1); --compact (1-line JSON); --out <file> (UTF-8 no-BOM).
 # Before the subcommand: pob --offline <command> (no engine update check, same as POB_OFFLINE=1); pob -V | --version.
-# Exit codes: 0 ok; 1 bad request (bad arguments, PoE2 input, or a build code the engine rejects while it keeps running); 2 usage error from the option parser (unknown option, missing or out-of-range value); 5 daemon or engine fault (timeout, crash, any other engine error: `pob stop` and retry); `pob trade` uses 0..6 (docs/guides/trade.md).
+# Exit codes: 0 ok; 1 bad request (bad arguments, PoE2 input, a share code that does not decode, a poe.ninja character that is not found, or a build code the engine rejects while it keeps running) and no engine installed (stderr says to run `pob bootstrap`); 2 usage error from the option parser (unknown option, missing or out-of-range value) and malformed JSON in --json-ops / --json-variants / --base-ops / --file; 5 daemon or engine fault (timeout, crash, any other engine error: `pob stop` and retry); `pob trade` uses 0..6 and exits 1 (not 2) on option-parser errors (docs/guides/trade.md).
 
 # Lifecycle, Foreground Daemon, Engine Bootstrap/Update & Build I/O (127.0.0.1 + X-PoB-Token)
 pob help [--brief|-b] [COMMAND]... [--json]                                            # Compact 1-screen CLI cheat-sheet (`--brief`, <20ms) or subcommand help
@@ -18,14 +18,14 @@ pob lang [zh-CN|zh-TW|en] [--json]                                              
 pob self-update [--check] [--version X.Y.Z] [--proxy <url>] [--mirror <url>] [--json]  # Update pob itself (standalone builds; signed release only); --check reports latest + the update command for this install; network/disk/swap failure exits 5
 pob profile [ACCOUNT_OR_URL] [--realm pc|xbox|sony|cn] [--league L] [--proxy U] [--json] # 0-engine official profile character list (pathofexile.com public no-cookie, or poe.game.qq.com via env POE_CN_SESSID)
 pob new [--class C] [--asc A] [--secondary-asc S] [--level N] [--target <slug>] [--json]
-pob load [SOURCE] [--char "<name>"] [--league L] [--realm pc|xbox|sony|cn] [--target <slug>] [--json] # XML, Base64, 8 share sites, poe.ninja char URL, or official Intl/CN profile URL
+pob load [SOURCE] [--char "<name>"] [--league L] [--realm pc|xbox|sony|cn] [--target <slug>] [--json] # XML, Base64, 8 share sites, poe.ninja char URL, or official Intl/CN profile URL; any other URL must be https on a public host (no localhost/LAN); a private official character is retried with env POESESSID/POE_COOKIE; the tree version follows the engine's latest (Ruthless leagues get its _ruthless tree)
 pob save <out.xml> | pob export-code [--target <slug>] [--json]                        # Export XML (CLI disk write, R11) or Base64 code
 pob switch-main [--spec S] [--skill-group G] [--skill N] [--part N] [--item-set I] [--skill-set S] [--config-set C] [--loadout L]
 pob undo | pob redo | pob stop [--json]
 
 # Read-Only Inspection, Grounding & One-Shot Diagnosis
 pob ground "<prompt_text>" [--limit 8] [--json]                                        # <15ms daemon-free 3.30 entity cards + PoE2/patch trap alerts
-pob diagnose [SOURCE] [-c|--compare REF] [-q|--ask "<text>"] [--char "<name>"] [--league L] [--realm pc|xbox|sony|cn] [--keep <spec>]... [--no-auto-keep] [--rank|--no-rank] [--section all|summary|gaps|items|skills|cards|upgrades] [--top 5] [--target <slug>] [--ref-target <slug>] [--json] # One-shot: [Env (NOT PoE2) | rev=N] + Pinnacle audit + gaps/bricks/dead-supports/triggers + 3.30 cards + optional --rank upgrades (or dual-build 3-baseline compare)
+pob diagnose [SOURCE] [-c|--compare REF] [-q|--ask "<text>"] [--char "<name>"] [--league L] [--realm pc|xbox|sony|cn] [--keep <spec>]... [--no-auto-keep] [--rank|--no-rank] [--section all|summary|gaps|items|skills|cards|upgrades] [--top 5 (passing it enables ranking; slow)] [--target <slug>] [--ref-target <slug>] [--json] # One-shot: [Env (NOT PoE2) | rev=N] + Pinnacle audit + gaps/bricks/dead-supports/triggers + 3.30 cards + optional --rank upgrades (off by default; --rank, --top N or --section upgrades turn it on) (or dual-build 3-baseline compare)
 pob summary [--target <slug>] [--json]                                                 # [Env | rev=N] + Offence (Hit/DoT/FullDPS/Minion*), Defence (EHP/MaxHit/Res), Warnings
 pob audit [--keep <spec>]... [--no-auto-keep] [--no-attribution] [--target <slug>] [--json] # [Env | rev=N] + Hard gaps + 4-dim water audit -> Pinnacle (per-item PoB attribution; --keep var|Flask N|flasks|gem|customMods|party)
 pob config list [--all] [--search "<sub >"] [--with-options] [--target <slug>] [--json] # Active/filtered ConfigTab vars + raw customMods
@@ -51,21 +51,23 @@ pob tree change [--allocate id1,id2:effectId]... [--deallocate id3]... [--allow-
 pob tree set-class [Class] [Ascendancy] [--secondary-asc <Bloodline|None>] [--apply]
 pob config set [<var>=<val|reset> ...] [--custom-mods "<text|clear>"] [--append-mods "<text>"] [--apply]
 pob batch (--file <ops.json|-> | --json-ops '[...]') [--apply] [--no-undo] [--keep <spec>]... [--return summary,audit,audit:full,matrix,calc:DPS;Mana,export] [--compact] [--out f]
-# Batch ops: config, flask, item, item_db, item_edit, unequip, anoint, tree, tree_reset, import_tree_url, skill, add_group, delete_group, set_group, replace_group, new_build, set_level, set_class, switch_main
+# Batch ops (aliases in parentheses): config (config_set), flask (item_flask), item (item_try), item_db, item_edit, unequip (item_unequip, unequip_slot), anoint (item_anoint), tree (tree_change), tree_reset (reset_tree), import_tree_url, new_build, set_level, set_class (tree_set_class), switch_main, add_group (new_group, skill_new_group), delete_group (rm_group, remove_group), set_group, replace_group (skill_replace_group), skill, skill_set, skill_add, skill_rm
+# e.g. --json-ops '[{"op":"skill_add","group":"main","gem":"Controlled Destruction","level":20},{"op":"tree","allocate":["Elemental Equilibrium"]}]'
 # An op with a key it does not know is refused (a typo used to be ignored); remarks go in comment / note / why / desc / description / reason or any key starting with _. config variables go inside "set": {...}. A gem in "gems" is a 'Name[:level[:quality]]' string or an object (name | gemId, level, quality, enabled, count, skillPart, stageCount, enableGlobal1, enableGlobal2, allowIllegalLevel, allowLegacy); a gem object copied from `pob skills [--group G] --json` is accepted as is. replace_group keeps each kept gem's skill part, stage count and minion choice; skill / skill_add take skillPart and stageCount too.
+# Field types are strict (exit 1 on a wrong type): tree allocate/deallocate take a list of node names or ids (a single name or id counts as one token, never split into characters), a tree op needs at least one node and switch_main at least one field; integers reject booleans, lists and objects; booleans accept true/false, 0/1, on/off, yes/no; replaceMods is a list of [old, new] pairs. Results carry noopWarnings ("step N: ...") for nodes already in the asked state, and apply/undo/status carry persistWarning while the slot file cannot be saved.
 pob sweep (--file <vars.json|-> | --json-variants '[...]') [--base-ops '[...]'] [--calc K]... [--scenario Pinnacle] [--keep <spec>]... [--compact] [--out f] [--json]
 pob matrix [Original Pinnacle Uber FlasksOff "Label:Pinnacle,k=v"] [-s <spec>]... [--keep <spec>]... [--no-auto-keep] [--full] [--json]  # Compact default; --full for raw 200-key stats
 
 # ROI Ranking, 3-Baseline A/B Comparison & Transplant
 pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--max-dist 5] [--top 15] [--json]
 pob rank-gems [--group main] [--slot N | --add-link] [--field CombinedDPS|FullDPS] [--top 15] [--include-legacy] [--json]
-pob compare [<ref_source>] [--keep <spec>]... [--no-auto-keep] [--target <slug>] [--ref-target <slug>] [--json] # 3 baselines: Original / Target Env Aligned / Pinnacle Dewatered
-pob borrow [--item-slot "Weapon 1,Amulet"] [--skill-group main] [--ref-target ref] [--apply] [--json]
+pob compare [<ref_source>] [--keep <spec>]... [--no-auto-keep] [--target <slug>] [--ref-target <slug>] [--json] # 3 baselines: Original / Target Env Aligned / Pinnacle Dewatered; --ref-target must differ from the main slot (exit 1)
+pob borrow [--item-slot "Weapon 1,Amulet"] [--skill-group main] [--ref-target ref] [--apply] [--json] # --ref-target must differ from --target (exit 1)
 
 # Local 0ms Game Data (Daemon-Free, Variadic) & External Economy/PoEDB/Wiki (Cached, Variadic)
 pob data <gem|unique|mod|base|translate|tattoo|runegraft|tree|tick> ["<q1>" ...] [--slot S] [--ilvl N] [--mod "<stat>"] [--kind all|tattoo|runegraft] [--legacy] [--type T] [--asc A] [--cdr N] [--aps R] [--spells N] [--quality-breakpoints] [--search-quality Q] [--active-only] [--limit 25 (0 = all)] [--rebuild] [--json]
 # tattoo / runegraft: passive overrides from PoB's TattooPassives (runegraft lists runegrafts only; tattoo --kind narrows; --legacy adds retired tattoos; --slot is the passive it replaces, e.g. "Small Strength", Mastery, Keystone; --mod filters by stat). tree also takes a node id. mod lists Vestigial implicits (source Vestigial) with the donor unique; --slot follows PoB: only on a unique of the donor's item type (helmet, body armour, gloves, boots, shield)
-pob poedb "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us] [--proxy <url>] [--limit 150] [--json]
+pob poedb "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us|en] [--proxy <url>] [--limit 150] [--json]
 pob price "<q1>" ["<q2>" ...] [--league L] [--category all|unique|gem|imbuedgem|...] [--variant S] [--limit 20] [--detailed] [--proxy <url>] [--json]
 pob meta [--league L] [--skill "<EN|中文>"] [--class "<EN|中文>"] [--top 15] [--proxy <url>] [--json] # poe.ninja league meta share (accepts EN substring, ZH/TW names, and slang like 正火/酋长)
 pob research "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us|en] [--proxy <url>] [--limit 150] [--max-chars 12000] [--json] # Concurrent poedb.tw + poewiki.net dual-source research (--limit 0 = every mod row, --max-chars 0 = unlimited)

@@ -2,7 +2,8 @@
 
 Searches PoE1 Historic timeless jewels (`Lethal Pride`, `Brutal Restraint`, `Glorious Vanity`, `Militant Faith`, `Elegant Hubris`, `Heroic Tragedy`, etc.) using parallel throwaway headless PoB workers (other Historic jewels removed cleanly during simulation).
 
-> Never pass PoE2 timeless/radius jewels (`Undying Hate`/`不朽之恨`, `Against the Darkness`/`抗衡黑暗`, `Controlled Metamorphosis`, `Prism of Belief`, `From Nothing`, `英雄的悲歌`) — those are hard-blocked (`pob2 timeless`).
+> Never pass PoE2 timeless/radius jewels (`Undying Hate`/`不朽之恨`, `Against the Darkness`/`抗衡黑暗`, `Controlled Metamorphosis`, `Prism of Belief`, `From Nothing`) — those are hard-blocked (`pob2 timeless`).
+> `Heroic Tragedy` is a PoE1 jewel and works by its PoE1 Chinese names `英勇悲剧` (zh-CN) / `英勇的悲劇` (zh-TW); only the PoE2 localization `英雄的悲歌` is blocked.
 
 ## 1. List Supported PoE1 Timeless Jewels & Allocated Sockets
 ```powershell
