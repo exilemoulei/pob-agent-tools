@@ -193,7 +193,7 @@ def cmd_trade_stats(
 
 
 @trade_group.command("convert")
-@click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False), help="Item text file.")
+@click.option("--file", "file_path", type=str, help="Item text file.")
 @click.option("--text", "raw_text", help="Item text (PoB clipboard format).")
 @click.option(
     "--to",
@@ -227,7 +227,15 @@ def cmd_trade_convert(
     """Preview PoE1 3.30 Harvest same-tier element conversion on item text."""
     ctx = click.get_current_context()
     if file_path:
-        raw_text = Path(file_path).read_text(encoding="utf-8", errors="replace")
+        from ..cli_common import enforce_safe_input_path
+
+        enforce_safe_input_path(file_path)
+        p = Path(file_path)
+        if not p.is_file():
+            _err_utf8(f"Item file not found: {file_path}")
+            ctx.exit(1)
+            return
+        raw_text = p.read_text(encoding="utf-8", errors="replace")
     if not raw_text:
         _err_utf8("Provide --text or --file.")
         ctx.exit(1)

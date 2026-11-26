@@ -161,10 +161,21 @@ def translate_offline_fallback(
 ) -> tuple[list[dict[str, Any]], dict[str, str] | None]:
     """Engine-free `pob data translate` fallback using bundled APT non-gear + player slang."""
     from .slang import resolve_player_slang
+    from .tables_cn_tencent import search_tencent_cn_aliases
 
-    results = search_apt_non_gear(q_clean, limit=limit)
-    if not results and q_tw and q_tw != q_clean:
-        results = search_apt_non_gear(q_tw, limit=limit)
+    results = search_tencent_cn_aliases(q_clean, limit=limit)
+    if not any(r.get("match_type") == "exact" for r in results):
+        apt_res = search_apt_non_gear(q_clean, limit=limit)
+        if not apt_res and q_tw and q_tw != q_clean:
+            apt_res = search_apt_non_gear(q_tw, limit=limit)
+        seen_k = {(_fold_search_text(r["en"]), r.get("zh")) for r in results}
+        for r in apt_res:
+            k = (_fold_search_text(r["en"]), r.get("zh"))
+            if k not in seen_k:
+                seen_k.add(k)
+                results.append(r)
+        if limit > 0:
+            results = results[:limit]
 
     resolved_alias: dict[str, str] | None = None
     if not any(r.get("match_type") == "exact" for r in results):

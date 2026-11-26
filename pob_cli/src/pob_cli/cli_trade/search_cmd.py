@@ -54,6 +54,21 @@ __all__ = [
 ]
 
 
+def _enforce_current_item_file(ctx: click.Context, current_item_file: str | None) -> bool:
+    if not current_item_file:
+        return True
+    from pathlib import Path
+
+    from ..cli_common import enforce_safe_input_path
+
+    enforce_safe_input_path(current_item_file)
+    if not Path(current_item_file).is_file():
+        _err_utf8(f"Current item file not found: {current_item_file}")
+        ctx.exit(1)
+        return False
+    return True
+
+
 @trade_group.command("search")
 @click.option("--slot", help=f"Equipment slot ({SLOT_HINT}).")
 @click.option("--stat", "stats", multiple=True, help='Required stat, e.g. "maximum Life=80" (repeatable).')
@@ -141,7 +156,7 @@ __all__ = [
 )
 @click.option("--auto-query", is_flag=True, help="Generate weighted trade query via PoB TradeQueryGenerator.")
 @click.option("--target", type=_TARGET_SLOT_TYPE, default=_default_target_slot)
-@click.option("--current-item-file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--current-item-file", type=str)
 @click.option("--no-compare", is_flag=True, help="Skip reading the currently equipped item.")
 @click.option("--dump-query", is_flag=True, help="Print official trade query JSON offline and exit.")
 @click.option("--proxy", help="HTTP/SOCKS5 proxy URL (overrides POB_PROXY).")
@@ -199,6 +214,8 @@ def cmd_trade_search(
 ) -> None:
     """Search official PoE1 trade listings, compare against equipped gear, and verify in PoB."""
     ctx = click.get_current_context()
+    if not _enforce_current_item_file(ctx, current_item_file):
+        return
     validated = _validate_search_inputs(
         ctx, slot=slot, category=category, no_category=no_category, stats=stats,
         sum_groups=sum_groups, wants=wants, bench_crafts=bench_crafts, pob_mode=pob_mode,

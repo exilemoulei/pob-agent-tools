@@ -11,6 +11,12 @@ from .build_gate import (
     validate_engine_root,
     validate_url,
 )
+from .gates import (
+    NO_SECRET_ENV_DUMP_REMEDIATION,
+    NO_SECRET_ENV_DUMP_RULE_ID,
+    SecretGuardDecision,
+    check_secret_file_path,
+)
 from .redact import (
     get_auth_env_status,
     redact,
@@ -61,6 +67,8 @@ __all__ = [
     "EQUIPMENT_SLOT_ALIASES",
     "GAME_ID",
     "LEGACY_PATCH_TRAPS_POE1",
+    "NO_SECRET_ENV_DUMP_REMEDIATION",
+    "NO_SECRET_ENV_DUMP_RULE_ID",
     "POE1_ONLY_CLASSES",
     "POE2_ONLY_ASCENDANCIES_EN",
     "POE2_ONLY_ASCENDANCIES_ZH",
@@ -76,12 +84,14 @@ __all__ = [
     "GuardrailScope",
     "LegacyPatchTrapRule",
     "S",
+    "SecretGuardDecision",
     "TrapRule",
     "UrlGateRule",
     "check_input",
     "check_input_item_raw",
     "check_poe2_class_or_ascendancy",
     "check_poe2_timeless_jewel",
+    "check_secret_file_path",
     "emit_stderr_warnings_from_dicts",
     "extract_research_entities",
     "extract_scannable_item_parts",

@@ -9,6 +9,7 @@ from .cli_common import (
     _emit_text,
     _output_options,
     _target_option,
+    enforce_safe_input_path,
     invoke_daemon,
 )
 from .cli_item_db import cmd_item_db
@@ -33,7 +34,7 @@ grp_item.add_command(cmd_item_inspect)
 @grp_item.command("try")
 @click.option("--slot", help="Target equipment slot (e.g. 'Weapon 1', 'Ring 1', '#1').")
 @click.option("--raw", "raw_text", help="Raw PoE item text string.")
-@click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False), help="File containing raw PoE item text.")
+@click.option("--file", "file_path", type=str, help="File containing raw PoE item text.")
 @click.option("--tooltip-only", is_flag=True, help="Fast native tooltip preview only (skip snapshot secondary checks).")
 @click.option("--apply", is_flag=True, help="Persist equipped item into build and push undo snapshot.")
 @_target_option(allow_slot_alias=False)
@@ -56,7 +57,11 @@ def cmd_item_try(
     from .formatters import strip_pob_escapes
 
     if file_path:
-        raw_text = Path(file_path).read_text(encoding="utf-8-sig", errors="replace").lstrip("\ufeff")
+        enforce_safe_input_path(file_path)
+        p = Path(file_path)
+        if not p.is_file():
+            raise click.UsageError(f"Item file not found: {file_path}")
+        raw_text = p.read_text(encoding="utf-8-sig", errors="replace").lstrip("\ufeff")
     if not raw_text:
         raise click.UsageError('Provide either --raw "<item_text>" or --file <item.txt>.')
 

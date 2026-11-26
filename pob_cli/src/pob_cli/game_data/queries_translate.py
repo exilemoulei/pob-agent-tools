@@ -10,6 +10,7 @@ from typing import Any
 from .apt_non_gear import search_apt_non_gear
 from .constants import _CJK_PARTICLE_RE, _CJK_RE
 from .queries_core import _build_fts_match, _fts_phrase, _pool_limit_clause, _slice_limit
+from .tables_cn_tencent import search_tencent_cn_aliases
 from .tw_norm import _fold_search_text, normalize_tw_query
 from .zh_match import resolve_zh_entity_across_locales
 
@@ -313,7 +314,7 @@ def _query_translate(
         return []
     if not zh_available:
         base_rows = _query_translate_no_zh(conn, q_lower, limit)
-        apt_rows = search_apt_non_gear(unfolded, limit=limit)
+        apt_rows = search_tencent_cn_aliases(unfolded, limit=limit) + search_apt_non_gear(unfolded, limit=limit)
         if not apt_rows:
             return base_rows
         merged = list(apt_rows)
@@ -361,6 +362,14 @@ def _query_translate(
         if sibling_en:
             scored.extend(_lookup_canonical_en_in_conn(conn, sibling_en))
 
+    if not has_exact:
+        for item in search_tencent_cn_aliases(unfolded, limit=limit):
+            if scored and item.get("match_type") != "exact":
+                continue
+            tier = 0 if item.get("match_type") == "exact" else 1
+            scored.append(((tier, 1, len(item["en"]), _fold_search_text(item["en"])), item))
+            if tier == 0:
+                has_exact = True
     if not has_exact:
         apt_hits = search_apt_non_gear(unfolded, limit=limit)
         if not apt_hits and q_lower != unfolded:
