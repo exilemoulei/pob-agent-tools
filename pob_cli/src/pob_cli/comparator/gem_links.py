@@ -54,7 +54,11 @@ def _best_swap(worker: BridgeWorker, tx: BuildTransaction, g_idx: int, slot: dic
     try:
         for cand in cands[:_TRIES_PER_SLOT]:
             op = {"op": "skill", "group": str(g_idx), "gem": idx, "newGem": str(cand["name"])}
-            _execute_batch_ops(worker, [op], _BatchCache(worker))
+            try:
+                _execute_batch_ops(worker, [op], _BatchCache(worker))
+            except ValueError:
+                tx.restore(slot_cp)  # the skill op cannot place this gem: try the next candidate
+                continue
             now = _field_value(worker, field)
             if now is not None and now > prev:
                 return {"slot": idx, "from": current, "to": str(cand["name"]), "dpsBefore": prev, "dpsAfter": now, "op": op}
@@ -78,6 +82,8 @@ def optimize_links(
     with BuildTransaction(worker) as tx:
         g_idx = resolve_skill_group_index(worker.call("list_skills", {}), group_selector)
         orig_digest = capture_digest(worker)
+        if field.lower() == "primary":  # FullDPS / MinionCombinedDPS / CombinedDPS, as the build's digest picks
+            field = str(orig_digest.get("primaryDpsKey") or "CombinedDPS")
         before = _field_value(worker, field)
         for _ in range(max(1, passes)):
             changed = False

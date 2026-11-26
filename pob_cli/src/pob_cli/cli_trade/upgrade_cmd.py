@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import math
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -71,9 +72,9 @@ def _resolve_slots(requested: tuple[str, ...]) -> list[dict[str, Any]]:
 def _pick_slots(target: str, score: dict[str, float], top: int) -> list[dict[str, Any]]:
     items = invoke_daemon("items", {"target": target})
     losses: dict[str, float | None] = {}
-    for s in items.get("slots") or []:
-        name = s.get("name")
-        if name in UPGRADE_SLOTS and s.get("selItemId") and not s.get("inactive"):
+    for s in items.get("equippedSlots") or []:
+        name = s.get("slotName")
+        if name in UPGRADE_SLOTS and s.get("itemId") and not s.get("inactive"):
             try:
                 losses[name] = unequip_loss(invoke_daemon("item_unequip", {"target": target, "slot": name, "apply": False}), score)
             except click.ClickException:
@@ -85,7 +86,7 @@ def _free_moves(target: str, score: dict[str, float]) -> dict[str, Any]:
     summary_score = {_SUMMARY_STAT[k]: w for k, w in score.items()}
     calls = {
         "respec": ("respec", {"target": target, "score": summary_score, "floors": [], "rounds": 1, "max_dist": 5}, 900.0),
-        "gems": ("rank_gems", {"target": target, "group": "main", "field": "CombinedDPS", "include_legacy": False, "optimize": True, "passes": 1}, 600.0),
+        "gems": ("rank_gems", {"target": target, "group": "main", "field": "primary", "include_legacy": False, "optimize": True, "passes": 1}, 600.0),
     }
     out: dict[str, Any] = {}
     for key, (action, params, timeout) in calls.items():
@@ -140,7 +141,7 @@ def cmd_trade_upgrade(
 ) -> None:
     """Reference upgrade list: weakest slots -> live trade (PoB-verified) -> best combo within --budget, plus free moves."""
     ctx = click.get_current_context()
-    if budget < 0:
+    if not math.isfinite(budget) or budget < 0:
         raise click.ClickException("--budget must be a non-negative number of chaos.")
     try:
         parsed = parse_score(score_terms)

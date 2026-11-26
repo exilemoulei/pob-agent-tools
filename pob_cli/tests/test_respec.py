@@ -132,3 +132,23 @@ def test_cmd_respec_prints_batch_ops(monkeypatch: Any) -> None:
     assert r.exit_code == 0, r.output
     assert captured[-1][0] == "respec" and captured[-1][1]["rounds"] == 2
     assert "pob batch --json-ops" in r.output and "Dead (1)" in r.output and "1100 -> 1400" in r.output
+
+
+def test_rank_score_maps_summary_keys_to_pob_stats() -> None:
+    # node_power's stat lookup is case-sensitive and knows no `primaryDps`: summary keys must be translated.
+    assert respec._rank_score({"primaryDps": 1.0, "totalEhp": 0.5}, "FullDPS") == {"FullDPS": 1.0, "TotalEHP": 0.5}
+    assert respec._rank_score({"life": 1.0, "combinedDps": 2.0}, "CombinedDPS") == {"Life": 1.0, "CombinedDPS": 2.0}
+    # Terms PoB cannot rank only leave the ordering; an empty ordering falls back to the primary DPS.
+    assert respec._rank_score({"fireResist": 1.0, "physMaxHit": 1.0}, "MinionCombinedDPS") == {"MinionCombinedDPS": 1.0}
+
+
+def test_plan_respec_ranks_adds_by_pob_stat_names(build: _Build, monkeypatch: Any) -> None:
+    seen: list[dict[str, float]] = []
+
+    def _adds(w: _Build, *, score: dict[str, float], **_: Any) -> dict[str, Any]:
+        seen.append(dict(score))
+        return {"byPerPoint": []}
+
+    monkeypatch.setattr(respec, "rank_nodes_scored", _adds)
+    respec.plan_respec(build, rounds=1)  # type: ignore[arg-type]
+    assert seen and all(set(s) <= {"CombinedDPS", "FullDPS", "MinionCombinedDPS", "TotalEHP"} for s in seen)

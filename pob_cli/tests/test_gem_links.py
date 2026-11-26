@@ -93,3 +93,29 @@ def test_cmd_rank_gems_optimize(monkeypatch: Any) -> None:
     assert r.exit_code == 0, r.output
     assert captured[-1]["optimize"] is True and captured[-1]["passes"] == 3
     assert "+140.00%" in r.output and "pob batch --json-ops" in r.output
+
+
+def test_optimize_links_skips_a_gem_the_skill_op_rejects(group: _Group, monkeypatch: Any) -> None:
+    def _exec(w: _Group, ops: list[dict[str, Any]], _cache: Any) -> list[dict[str, Any]]:
+        for op in ops:
+            if op["newGem"] == "Bigger":
+                raise ValueError("gem not found")
+            w.gems[op["gem"] - 1] = op["newGem"]
+        return []
+
+    monkeypatch.setattr(gem_links, "_execute_batch_ops", _exec)
+    res = gem_links.optimize_links(group, passes=3)  # type: ignore[arg-type]
+    assert [s["to"] for s in res["swaps"]] == ["Big", "Mid"]
+    assert group.gems == ["Skill", "A", "B"]
+
+
+def test_optimize_links_primary_field_uses_digest_key(group: _Group, monkeypatch: Any) -> None:
+    monkeypatch.setattr(gem_links, "capture_digest", lambda w: {"primaryDpsKey": "CombinedDPS"})
+    assert gem_links.optimize_links(group, field="primary")["dpsField"] == "CombinedDPS"  # type: ignore[arg-type]
+
+
+def test_cmd_rank_gems_optimize_rejects_slot_and_top(monkeypatch: Any) -> None:
+    monkeypatch.setattr(cli_mod, "_daemon_call", lambda *_a, **_k: pytest.fail("no daemon call expected"))
+    for extra in (["--slot", "2"], ["--add-link"], ["--top", "3"]):
+        r = CliRunner().invoke(main, ["rank-gems", "--optimize", *extra])
+        assert r.exit_code == 2 and "--optimize" in r.output

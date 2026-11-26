@@ -252,6 +252,12 @@ def cmd_matrix(
     _emit_text(format_matrix_markdown(res, target=target), out_path=out_path)
 
 
+def _explicit(name: str) -> bool:
+    from click.core import ParameterSource
+
+    return click.get_current_context().get_parameter_source(name) == ParameterSource.COMMANDLINE
+
+
 @click.command("rank-gems")
 @click.option("--group", default="main", show_default=True, help="Skill group ('main', index, or label).")
 @click.option("--slot", "slot_idx", type=int, help="1-based gem slot index to replace.")
@@ -288,6 +294,8 @@ def cmd_rank_gems(
     from .formatters import fmt_num, render_table, strip_pob_escapes
 
     if optimize:
+        if slot_idx is not None or add_link or _explicit("top"):
+            raise click.UsageError("--optimize tunes every support slot; it does not take --slot, --add-link or --top.")
         opt = invoke_daemon(
             "rank_gems",
             {"target": target, "group": group, "field": field, "include_legacy": include_legacy, "optimize": True, "passes": passes},

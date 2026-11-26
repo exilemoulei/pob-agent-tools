@@ -18,6 +18,23 @@ from .rank_scored import rank_nodes_scored
 
 _REFUND_TRIES_PER_ROUND = 3
 _ADD_TRIES_PER_REFUND = 5
+# Sweep-summary keys whose PoB power-stat name is not the key with its first letter raised ("life" -> "Life").
+_POB_STAT = {"totalEhp": "TotalEHP", "fullDps": "FullDPS", "combinedDps": "CombinedDPS", "totalDps": "TotalDPS",
+             "totalDotDps": "TotalDotDPS", "minionCombinedDps": "MinionCombinedDPS"}
+
+
+def _rank_score(score: dict[str, float], primary_key: str) -> dict[str, float]:
+    """Translate a sweep-summary score to PoB `node_power` stat names, which only order the add candidates.
+
+    Every swap is still judged on the summary score by a real recalculation, so a term PoB cannot rank
+    (a max-hit or resistance key) is left out of the ordering, not out of the verdict.
+    """
+    out: dict[str, float] = {}
+    for k, wgt in score.items():
+        name = primary_key if k.lower() == "primarydps" else _POB_STAT.get(k, k[:1].upper() + k[1:])
+        if "MaxHit" not in name and "Resist" not in name and "Chance" not in name and name != "SpellSuppression":
+            out[name] = out.get(name, 0.0) + wgt
+    return out or {primary_key: 1.0}
 
 
 def _state(w: BridgeWorker) -> tuple[set[int], int]:
@@ -72,7 +89,9 @@ def _try_adds(
     max_dist: int,
 ) -> dict[str, Any] | None:
     rid = int(refund["id"])
-    adds = rank_nodes_scored(w, score=score, floors=floors, max_dist=max_dist, top=_ADD_TRIES_PER_REFUND * 3)["byPerPoint"]
+    rank_score = _rank_score(score, str(before_sum.get("primaryDpsKey") or "CombinedDPS"))
+    # Floors are checked on the applied swap below, not on the per-stat engine estimate.
+    adds = rank_nodes_scored(w, score=rank_score, floors=[], max_dist=max_dist, top=_ADD_TRIES_PER_REFUND * 3)["byPerPoint"]
     tried = 0
     for add in adds:
         aid = int(add["id"])

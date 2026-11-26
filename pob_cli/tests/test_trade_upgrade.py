@@ -23,10 +23,10 @@ def test_unequip_loss_weights_dps_and_ehp() -> None:
 
 
 def test_rank_weak_slots_empty_first() -> None:
-    items = {"slots": [
-        {"name": "Helmet", "selItemId": 3}, {"name": "Boots", "selItemId": 0},
-        {"name": "Amulet", "selItemId": 5}, {"name": "Weapon 2", "selItemId": 9},
-        {"name": "Belt", "selItemId": 7, "inactive": True},
+    items = {"equippedSlots": [
+        {"slotName": "Helmet", "itemId": 3}, {"slotName": "Boots", "itemId": 0},
+        {"slotName": "Amulet", "itemId": 5}, {"slotName": "Weapon 2", "itemId": 9},
+        {"slotName": "Belt", "itemId": 7, "inactive": True},
     ]}
     ranked = rank_weak_slots(items, {"Helmet": 4.0, "Amulet": 1.5}, top=2)
     assert [(r["slot"], r["tradeSlot"], r["reason"]) for r in ranked] == [
@@ -34,7 +34,7 @@ def test_rank_weak_slots_empty_first() -> None:
 
 
 def test_rank_weak_slots_unknown_loss_last() -> None:
-    items = {"slots": [{"name": "Helmet", "selItemId": 3}, {"name": "Gloves", "selItemId": 4}]}
+    items = {"equippedSlots": [{"slotName": "Helmet", "itemId": 3}, {"slotName": "Gloves", "itemId": 4}]}
     assert [r["slot"] for r in rank_weak_slots(items, {"Helmet": None, "Gloves": 2.0}, top=3)] == ["Gloves", "Helmet"]
 
 
@@ -45,7 +45,7 @@ def _cand(name: str, chaos: float, dps: float, ehp: float = 0.0) -> dict[str, An
 _AMU = {"slot": "amulet", "candidates": [_cand("A-mid", 50, 12.0), _cand("A-cheap", 5, 2.0)]}
 _HELM = {"slot": "helmet", "candidates": [_cand("H-big", 40, 8.0)]}
 _RING = {"slot": "ring1", "candidates": [_cand("R-cheap", 10, 5.0)]}
-_ITEMS = {"slots": [{"name": "Helmet", "selItemId": 3}, {"name": "Amulet", "selItemId": 5}, {"name": "Gloves", "selItemId": 4}]}
+_ITEMS = {"equippedSlots": [{"slotName": "Helmet", "itemId": 3}, {"slotName": "Amulet", "itemId": 5}, {"slotName": "Gloves", "itemId": 4}]}
 _LOSS_DPS = {"Amulet": 99.0, "Helmet": 95.0, "Gloves": 50.0}  # primaryDps left after unequipping from 100
 
 
@@ -120,6 +120,8 @@ def test_upgrade_budget_zero_and_negative(monkeypatch: Any) -> None:
     _patch(monkeypatch, search={"amulet": _AMU})
     assert json.loads(_run(["trade", "upgrade", "--budget", "0", "--slot", "amulet", "--json"]).output)["plan"]["picks"] == []
     assert _run(["trade", "upgrade", "--budget", "-5", "--slot", "amulet"]).exit_code == 1
+    for bad in ("nan", "inf"):
+        assert _run(["trade", "upgrade", "--budget", bad, "--slot", "amulet"]).exit_code == 1
 
 
 def test_upgrade_explicit_slots_skip_probe(monkeypatch: Any) -> None:

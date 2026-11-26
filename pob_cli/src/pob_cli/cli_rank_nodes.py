@@ -40,6 +40,10 @@ def cmd_rank_nodes(
     from .scoring import floor_to_json, parse_floors, parse_score, stat_keys
 
     if refund:
+        from .cli_optimize import _explicit
+
+        if _explicit("stat") or _explicit("max_dist"):
+            raise click.UsageError("--refund ranks by --score (default primaryDps=1,totalEhp=1); it does not take --stat or --max-dist.")
         _run_refund(score_terms, floor_terms, top=top, target=target, as_json=as_json, compact=compact, out_path=out_path)
         return
     try:

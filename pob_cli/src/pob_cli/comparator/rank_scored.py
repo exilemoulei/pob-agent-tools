@@ -1,4 +1,4 @@
-"""Multi-objective `rank-nodes --score/--floor`: one engine `node_power` pass per stat, merged by node id."""
+"""Multi-objective `rank-nodes --score/--floor`: one engine `node_power` pass per stat, merged by node and mastery effect."""
 
 from __future__ import annotations
 
@@ -43,15 +43,17 @@ def rank_nodes_scored(
         missing = [k for k in keys if base[k] is None or (score.get(k) and base[k] == 0)]
         if missing:
             raise ValueError(f"Baseline of {', '.join(missing)} is missing or 0; it cannot be scored by percent.")
-        reports = {k: {r.get("id"): r for r in _node_power(worker, k, max_dist)} for k in keys}
+        # A mastery reports one row per effect under the same node id, so rows are keyed by (id, effectId).
+        reports = {k: {(r.get("id"), r.get("effectId")): r for r in _node_power(worker, k, max_dist)} for k in keys}
         equipped_weapons = _detect_equipped_weapon_types(worker)
 
     ids = list(dict.fromkeys(i for rep in reports.values() for i in rep))
     candidates: list[dict[str, Any]] = []
     filtered_masteries: list[str] = []
     floor_excluded = 0
-    for node_id in ids:
-        meta = next(rep[node_id] for rep in reports.values() if node_id in rep)
+    for row_key in ids:
+        node_id, effect_id = row_key
+        meta = next(rep[row_key] for rep in reports.values() if row_key in rep)
         if meta.get("allocated") or _safe_dist(meta.get("pathDist")) > max_dist:
             continue
         if equipped_weapons is not None:
@@ -60,8 +62,8 @@ def rank_nodes_scored(
                 filtered_masteries.append(strip_pob_escapes(str(meta.get("name") or meta.get("nameZh") or wm_kind)))
                 continue
         # A node absent from one stat's report had no effect on that stat, so its delta is 0.
-        power = {k: _safe_float((reports[k].get(node_id) or {}).get("power")) for k in keys}
-        path_power = {k: _safe_float((reports[k].get(node_id) or {}).get("pathPower")) for k in keys}
+        power = {k: _safe_float((reports[k].get(row_key) or {}).get("power")) for k in keys}
+        path_power = {k: _safe_float((reports[k].get(row_key) or {}).get("pathPower")) for k in keys}
         pcts = {k: pct_change(base[k], power[k]) for k in keys}
         node_score = weighted_score(pcts, score)
         per_point = weighted_score({k: pct_change(base[k], path_power[k]) for k in keys}, score)
@@ -70,18 +72,28 @@ def rank_nodes_scored(
         if floor_failures({k: base[k] + power[k] for k in keys if base[k] is not None}, floors):
             floor_excluded += 1
             continue
-        candidates.append(
-            {
-                "id": node_id,
-                "name": meta.get("name"),
-                "nameZh": meta.get("nameZh"),
-                "type": meta.get("type"),
-                "pathDist": meta.get("pathDist"),
-                "score": node_score,
-                "scorePerPoint": per_point,
-                "pcts": {k: pcts[k] for k in score},
-            }
-        )
+        row: dict[str, Any] = {
+            "id": node_id,
+            "name": meta.get("name"),
+            "nameZh": meta.get("nameZh"),
+            "type": meta.get("type"),
+            "pathDist": meta.get("pathDist"),
+            "score": node_score,
+            "scorePerPoint": per_point,
+            "pcts": {k: pcts[k] for k in score},
+        }
+        if effect_id is not None:
+            row.update(effectId=effect_id, allocSpec=meta.get("allocSpec") or f"{node_id}:{effect_id}")
+        candidates.append(row)
+
+    # Keep each mastery effect once, at its best-scoring row (as `rank_nodes` does).
+    best: dict[Any, dict[str, Any]] = {}
+    for r in candidates:
+        eff = r.get("effectId")
+        if eff is not None and (eff not in best or (r["scorePerPoint"], r["score"], -_safe_dist(r["pathDist"]))
+                                > (best[eff]["scorePerPoint"], best[eff]["score"], -_safe_dist(best[eff]["pathDist"]))):
+            best[eff] = r
+    candidates = [r for r in candidates if r.get("effectId") is None or best[r["effectId"]] is r]
 
     out: dict[str, Any] = {
         "stat": "score",

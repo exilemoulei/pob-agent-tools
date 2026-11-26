@@ -37,12 +37,13 @@ def rank_weak_slots(items_res: dict[str, Any], losses: dict[str, float | None], 
     """Empty slots first, then the lowest-contribution slots; unverified losses last."""
     empty: list[dict[str, Any]] = []
     filled: list[dict[str, Any]] = []
-    for s in items_res.get("slots") or []:
-        name = s.get("name")
+    # The daemon's `items` RPC (inspect_items) shape: equippedSlots[].slotName / itemId.
+    for s in items_res.get("equippedSlots") or []:
+        name = s.get("slotName")
         if name not in UPGRADE_SLOTS or s.get("inactive"):
             continue
         row = {"slot": name, "tradeSlot": UPGRADE_SLOTS[name]}
-        if not s.get("selItemId"):
+        if not s.get("itemId"):
             empty.append({**row, "reason": "empty", "loss": None})
         else:
             filled.append({**row, "reason": "lowest contribution", "loss": losses.get(name)})

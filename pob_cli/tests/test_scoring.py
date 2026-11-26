@@ -222,3 +222,33 @@ def test_cmd_rank_nodes_refund(monkeypatch: Any) -> None:
     assert "Passive Refund Ranking" in r.output and "Dead" in r.output
     r2 = CliRunner().invoke(main, ["rank-nodes", "--refund", "--score", "Bogus=1"])
     assert r2.exit_code == 1 and len(captured) == 1
+
+
+class _MasteryWorker(_ScoredNodeWorker):
+    """One mastery (id 9) with two effects: effect 11 adds DPS, effect 12 adds EHP."""
+
+    def call(self, method: str, params: dict[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
+        if method == "node_power":
+            row = {"id": 9, "name": "Mastery", "type": "Mastery", "allocated": False, "pathDist": 1}
+            dps = {"CombinedDPS": 100.0, "TotalEHP": 0.0}[params["stat"]]
+            ehp = {"CombinedDPS": 0.0, "TotalEHP": 1000.0}[params["stat"]]
+            return {"report": [{**row, "effectId": 11, "power": dps, "pathPower": dps},
+                               {**row, "effectId": 12, "power": ehp, "pathPower": ehp}]}
+        return super().call(method, params, **kw)
+
+
+def test_rank_nodes_scored_keeps_mastery_effects_apart() -> None:
+    res = comparator.rank_nodes_scored(  # type: ignore[arg-type]
+        _MasteryWorker(), score={"CombinedDPS": 1.0, "TotalEHP": 1.0}, floors=[], top=10
+    )
+    rows = {r["effectId"]: r for r in res["byTotalGain"]}
+    # Each effect scores only its own stat (10% each), never the sum of both effects.
+    assert rows[11]["score"] == pytest.approx(10.0) and rows[12]["score"] == pytest.approx(10.0)
+    assert rows[11]["allocSpec"] == "9:11" and rows[12]["allocSpec"] == "9:12"
+
+
+def test_rank_nodes_refund_rejects_stat_and_max_dist(monkeypatch: Any) -> None:
+    monkeypatch.setattr(cli_mod, "_daemon_call", lambda *_a, **_k: pytest.fail("no daemon call expected"))
+    for extra in (["--stat", "Life"], ["--max-dist", "3"]):
+        r = CliRunner().invoke(main, ["rank-nodes", "--refund", *extra])
+        assert r.exit_code == 2 and "--refund" in r.output
