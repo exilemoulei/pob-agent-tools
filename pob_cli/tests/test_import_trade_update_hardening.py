@@ -256,7 +256,10 @@ def test_transport_error_releases_rate_limit_reservation(tmp_path: Path) -> None
 # --- updater -----------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["../evil.zip", "a/b.zip", "..\\evil.zip", "", "C:evil.zip", ".hidden.zip"])
+@pytest.mark.parametrize(
+    "name",
+    ["../evil.zip", "a/b.zip", "..\\evil.zip", "", "C:evil.zip", ".hidden.zip", "asset.zip\n", "NUL.zip", "com1.tar.gz", "aux"],
+)
 def test_release_asset_name_must_be_one_safe_component(name: str, tmp_path: Path) -> None:
     with pytest.raises(UpdateError, match="unsafe name"):
         remote._download_and_stage_release_zip("v1", {"name": name, "sha256": "0" * 64}, tmp_path)
@@ -265,6 +268,7 @@ def test_release_asset_name_must_be_one_safe_component(name: str, tmp_path: Path
 def test_release_asset_name_accepts_pobtools_names() -> None:
     assert remote._safe_asset_name("PobTools-DataV2-24.zip") == "PobTools-DataV2-24.zip"
     assert remote._safe_asset_name("PobTools[20261102].zip") == "PobTools[20261102].zip"
+    assert remote._safe_asset_name("console-1.0.zip") == "console-1.0.zip"  # only a whole device name is refused
 
 
 def test_network_error_detail_redacts_proxy_credentials() -> None:

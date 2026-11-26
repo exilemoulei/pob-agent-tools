@@ -48,13 +48,16 @@ POBTOOLS_DATA_ONLY_PREFIXES: tuple[str, ...] = (
 )
 _SAFE_TREE_VER_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # A release asset name becomes a file and directory name under staging: one plain component only.
-_SAFE_ASSET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+()\[\]-]{0,199}$")
+_SAFE_ASSET_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+()\[\]-]{0,199}")
+# Windows opens these as devices whatever the extension (`NUL.zip` is `NUL`), so they cannot be staged.
+_WINDOWS_DEVICE_RE = re.compile(r"(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\..*)?", re.IGNORECASE)
 
 
 def _safe_asset_name(raw: Any) -> str:
     """The manifest asset `name`, refused unless it is a single safe path component."""
     name = str(raw or "")
-    if Path(name).name != name or not _SAFE_ASSET_NAME_RE.match(name):
+    # fullmatch: `$` would let a trailing newline through.
+    if Path(name).name != name or not _SAFE_ASSET_NAME_RE.fullmatch(name) or _WINDOWS_DEVICE_RE.fullmatch(name):
         raise UpdateError(f"Refusing release asset with an unsafe name: {name[:80]!r}")
     return name
 
