@@ -15,7 +15,23 @@ from ..bridge_protocol import encode_xml_share_code
 from ..snapshot import history_of
 
 READ_CACHE_ACTIONS: frozenset[str] = frozenset(
-    {"summary", "stats", "build_info", "tree_state", "items", "skills", "weapon_set_state", "node_power", "probe"}
+    {
+        "summary",
+        "audit",
+        "diagnose",
+        "notes",
+        "uniques",
+        "stats",
+        "build_info",
+        "tree_state",
+        "tree",
+        "items",
+        "skills",
+        "config_list",
+        "weapon_set_state",
+        "node_power",
+        "probe",
+    }
 )
 
 LOOP_GUARD_WARNING = (

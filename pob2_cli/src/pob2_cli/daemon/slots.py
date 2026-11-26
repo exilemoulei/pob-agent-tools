@@ -24,7 +24,7 @@ from ..updater import (
     unrestored_swap,
 )
 from .read_cache import READ_CACHE_ACTIONS, SlotReadCache
-from .rpc_handlers import dispatch_slot_action
+from .rpc_handlers import dispatch_dual_slot_action, dispatch_slot_action
 from .runtime import (
     REF_IDLE_TIMEOUT_SEC,
     UPDATE_RECHECK_INTERVAL_SEC,
@@ -433,6 +433,20 @@ class DaemonManager:
             )
         if action == "status":
             return build_status_payload(self)
+
+        if action == "compare" and params.get("ref_target") and not (
+            params.get("ref_source") or params.get("source") or params.get("ref_xml_code") or params.get("xml_code")
+        ):
+            main_slot = normalize_slot_name(params.get("target") or "main")
+            ref_slot = normalize_slot_name(params.get("ref_target"))
+            with self._reader_barrier():
+                locks = [self._get_slot_lock(s) for s in sorted({main_slot, ref_slot})]
+                with contextlib.ExitStack() as stack:
+                    for lk in locks:
+                        stack.enter_context(lk)
+                    mw = self._get_worker_in_barrier(main_slot)
+                    rw = self._get_worker_in_barrier(ref_slot)
+                    return dispatch_dual_slot_action(self, action, params, mw, rw)
 
         target = normalize_slot_name(params.get("target"))
         with self._reader_barrier():

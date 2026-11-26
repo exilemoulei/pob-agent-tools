@@ -1,22 +1,28 @@
-"""Single-slot and extensible RPC action dispatchers for ``pob2_cli.daemon.DaemonManager``."""
+# SPDX-License-Identifier: GPL-3.0-only
+"""Single-slot, dual-slot, and extensible RPC action dispatchers for ``pob2_cli.daemon.DaemonManager``."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from ..analyzer import (
+    audit_build,
+    diagnose_build,
+    extract_notes,
+    extract_summary,
+    inspect_config,
+    inspect_items,
+    inspect_skills,
+    inspect_tree,
+)
 from ..bridge_client import BridgeWorker
 from ..bridge_protocol import decode_share_code_xml, validate_rpc_method
+from ..comparator import compare_builds, rank_uniques
 from ..errors import CrossGameHallucinationError, DaemonRequestError
 from ..game_profile import GAME_ID
-from ..snapshot import (
-    capture_digest,
-    compact_digest_summary,
-    history_of,
-    load_build,
-    redo_build,
-    undo_build,
-)
+from ..mutators import diff_against_source, run_what_if
+from ..snapshot import history_of, load_build, redo_build, undo_build
 from .read_cache import compute_source_hash, is_live_source
 from .runtime import normalize_slot_name
 
@@ -73,13 +79,62 @@ def _h_redo(_m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str,
 
 
 def _h_summary(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
-    digest = capture_digest(w)
-    out = compact_digest_summary(digest)
-    try:
-        out["engineDiagnostics"] = w.get_engine_diagnostics()
-    except Exception:
-        pass
-    return m._attach_warning_if_degraded(out)
+    return m._attach_warning_if_degraded(extract_summary(w))
+
+
+def _h_notes(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    return m._attach_warning_if_degraded(extract_notes(w))
+
+
+def _h_audit(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    overcap = int(params["overcap"]) if params.get("overcap") is not None else 15
+    chaos_floor = int(params["chaos_floor"]) if params.get("chaos_floor") is not None else 0
+    return m._attach_warning_if_degraded(audit_build(w, overcap_target=overcap, chaos_floor=chaos_floor))
+
+
+def _h_diagnose(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    overcap = int(params["overcap"]) if params.get("overcap") is not None else 15
+    chaos_floor = int(params["chaos_floor"]) if params.get("chaos_floor") is not None else 0
+    inc_np = bool(params.get("node_power", False))
+    max_depth = int(params["max_depth"]) if params.get("max_depth") is not None else 4
+    return m._attach_warning_if_degraded(
+        diagnose_build(w, overcap_target=overcap, chaos_floor=chaos_floor, include_node_power=inc_np, max_depth=max_depth)
+    )
+
+
+def _h_uniques(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    return m._attach_warning_if_degraded(
+        rank_uniques(
+            w,
+            slot=str(params.get("slot") or ""),
+            stat=params.get("stat"),
+            top=int(params["top"]) if params.get("top") is not None else 15,
+            eval_sanctified=bool(params.get("eval_sanctified", True)),
+            max_scan=int(params["max_scan"]) if params.get("max_scan") is not None else 300,
+        )
+    )
+
+
+def _h_compare(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    return m._attach_warning_if_degraded(
+        compare_builds(
+            w,
+            ref_source=params.get("ref_source") or params.get("source"),
+            ref_xml_code=params.get("ref_xml_code") or params.get("xml_code"),
+        )
+    )
+
+
+def _h_what_if(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    return m._attach_warning_if_degraded(
+        run_what_if(w, params, apply=bool(params.get("apply", False)))
+    )
+
+
+def _h_diff(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    return m._attach_warning_if_degraded(
+        diff_against_source(w, source=params.get("source"), xml_code=params.get("xml_code"))
+    )
 
 
 def _h_stats(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
@@ -100,16 +155,20 @@ def _h_tree_state(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict
     return m._attach_warning_if_degraded(res)
 
 
-def _h_items(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
-    res = dict(w.call("list_items", {}))
-    res["game"] = GAME_ID
-    return m._attach_warning_if_degraded(res)
+def _h_tree(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    return m._attach_warning_if_degraded(inspect_tree(w))
+
+
+def _h_items(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    return m._attach_warning_if_degraded(inspect_items(w, slot=params.get("slot")))
 
 
 def _h_skills(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
-    res = dict(w.call("list_skills", {}))
-    res["game"] = GAME_ID
-    return m._attach_warning_if_degraded(res)
+    return m._attach_warning_if_degraded(inspect_skills(w))
+
+
+def _h_config_list(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    return m._attach_warning_if_degraded(inspect_config(w))
 
 
 def _h_weapon_set_state(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
@@ -165,17 +224,46 @@ def _h_rpc(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[st
     return m._attach_warning_if_degraded(res)
 
 
+def dispatch_dual_slot_action(
+    manager: DaemonManager,
+    action: str,
+    params: dict[str, Any],
+    mw: BridgeWorker,
+    rw: BridgeWorker,
+) -> dict[str, Any]:
+    if action == "compare":
+        res = compare_builds(
+            mw,
+            ref_worker=rw,
+            ref_source=params.get("ref_source") or params.get("source"),
+            ref_xml_code=params.get("ref_xml_code") or params.get("xml_code"),
+        )
+        res.setdefault("rev", history_of(mw).rev)
+        res.setdefault("targetSlot", mw.slot_name)
+        return manager._attach_warning_if_degraded(res)
+    raise ValueError(f"Unknown PoE2 dual-slot action '{action}'.")
+
+
 _SLOT_ACTION_HANDLERS: dict[str, SlotHandler] = {
     "load": _h_load,
     "export": _h_export,
     "undo": _h_undo,
     "redo": _h_redo,
     "summary": _h_summary,
+    "notes": _h_notes,
+    "audit": _h_audit,
+    "diagnose": _h_diagnose,
+    "uniques": _h_uniques,
+    "compare": _h_compare,
+    "what_if": _h_what_if,
+    "diff": _h_diff,
     "stats": _h_stats,
     "build_info": _h_build_info,
     "tree_state": _h_tree_state,
+    "tree": _h_tree,
     "items": _h_items,
     "skills": _h_skills,
+    "config_list": _h_config_list,
     "weapon_set_state": _h_weapon_set_state,
     "node_power": _h_node_power,
     "probe": _h_probe,
@@ -196,7 +284,6 @@ def dispatch_slot_action(
     params: dict[str, Any],
     w: BridgeWorker,
 ) -> dict[str, Any]:
-    """Execute a single-slot RPC action under its per-slot lock and reader barrier."""
     handler = _SLOT_ACTION_HANDLERS.get(action)
     if handler is None:
         raise ValueError(f"Unknown PoE2 daemon action '{action}'.")
