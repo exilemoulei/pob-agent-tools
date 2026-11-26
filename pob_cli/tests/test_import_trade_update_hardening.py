@@ -35,6 +35,16 @@ def test_share_code_decoder_drops_non_alphabet_chars_like_pob() -> None:
     assert importers.share_code_to_xml(noisy) == POE1_XML
 
 
+@pytest.mark.parametrize("noise", ["\uff01", "!", " \u3002\n", "=\uff1d"])
+def test_share_code_decoder_pads_after_dropping_noise(noise: str) -> None:
+    # Every unpadded length mod 4, so the padding has to be counted on the cleaned code.
+    for filler in ("", "a", "ab", "abc"):
+        xml = POE1_XML.replace("Witch", "Witch" + filler)
+        code = importers.xml_to_share_code(xml).rstrip("=")
+        assert importers.share_code_to_xml(code + noise) == xml
+        assert importers.share_code_to_xml(code[:7] + noise + code[7:]) == xml
+
+
 def test_share_code_bomb_is_refused_as_request_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(importers_codec, "MAX_SHARE_XML_BYTES", 1024)
     bomb = base64.urlsafe_b64encode(zlib.compress(b"<" + b"A" * 50_000)).decode()

@@ -10,6 +10,8 @@ import zlib
 # A real build XML is a few MiB at most; anything past this is a decompression bomb.
 MAX_SHARE_XML_BYTES = 64 * 1024 * 1024
 
+_NOT_BASE64_RE = re.compile(r"[^A-Za-z0-9+/]")
+
 
 def _inflate_capped(raw_bytes: bytes, wbits: int) -> bytes:
     """`zlib.decompress` that stops at MAX_SHARE_XML_BYTES instead of filling memory."""
@@ -37,14 +39,14 @@ def share_code_to_xml(code: str) -> str:
     Characters outside the Base64 alphabet are dropped, as PoB's own decoder does, so every code
     the engine would accept decodes here too and the PoE2 guardrail sees what the engine gets.
     """
-    cleaned = re.sub(r"\s+", "", code.lstrip("\ufeff")).replace("-", "+").replace("_", "/")
+    # Drop them before padding: `b64decode` refuses a non-ASCII str outright, and padding counted
+    # over a stray character comes out wrong.
+    cleaned = _NOT_BASE64_RE.sub("", code.replace("-", "+").replace("_", "/"))
     if not cleaned:
         raise ValueError("Invalid PoB share code: empty share code.")
-    pad = (-len(cleaned)) % 4
-    if pad:
-        cleaned += "=" * pad
+    cleaned += "=" * ((-len(cleaned)) % 4)
     try:
-        raw_bytes = base64.b64decode(cleaned, validate=False)
+        raw_bytes = base64.b64decode(cleaned, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise ValueError(f"Invalid PoB share code: {exc}") from exc
     try:
