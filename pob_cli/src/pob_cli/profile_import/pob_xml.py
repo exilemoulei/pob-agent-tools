@@ -7,7 +7,6 @@ international private-profile JSON without patching upstream `bridge.lua`.
 
 from __future__ import annotations
 
-import os
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -104,23 +103,24 @@ def resolve_import_tree_version(pob_root: Path | None, league: Any = None) -> st
         if "ruthless" in str(league or "").lower():
             ruthless = f"{version}_ruthless"
             poe1 = Path(pob_root) / "PoE1"
-            if (poe1 / "TreeData" / ruthless / "tree.lua").is_file() or _engine_can_stage_tree(poe1, ruthless):
+            if (poe1 / "TreeData" / ruthless / "tree.lua").is_file() or _stage_tree(poe1, ruthless):
                 version = ruthless
     return version
 
 
-def _engine_can_stage_tree(poe1: Path, tree_version: str) -> bool:
-    """Whether the engine knows a tree it does not have on disk and may download it.
+def _stage_tree(poe1: Path, tree_version: str) -> bool:
+    """Fetch a tree the slim engine left out (it ships the plain trees only); False when that cannot be done.
 
-    The slim engine ships the plain trees only; `import_code` stages a version a build names on demand.
+    Staged here and not left to `import_code`, which fails the whole load when the download does:
+    an offline or blocked machine keeps importing the character on the plain tree.
     """
-    if os.environ.get("POB_OFFLINE") == "1":
-        return False
     try:
-        text = (poe1 / "GameVersions.lua").read_text(encoding="utf-8", errors="ignore")
-    except OSError:
+        from ..bridge_trees import stage_tree_versions
+
+        stage_tree_versions([tree_version], poe1)
+    except Exception:
         return False
-    return f'"{tree_version}"' in text
+    return (poe1 / "TreeData" / tree_version / "tree.lua").is_file()
 
 
 def _load_jewel_slots(pob_root: Path | None, tree_version: str) -> list[int]:

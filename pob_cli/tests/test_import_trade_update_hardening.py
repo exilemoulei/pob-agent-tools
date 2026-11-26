@@ -367,14 +367,33 @@ def test_import_tree_version_follows_engine_and_ruthless(tmp_path: Path) -> None
     assert 'treeVersion="3_30_ruthless"' in xml_text
 
 
-def test_ruthless_tree_is_named_when_the_engine_can_stage_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ruthless_tree_is_staged_or_the_plain_tree_is_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pob_cli import bridge_trees
+    from pob_cli.bridge_protocol import BridgeError
+
     poe1 = tmp_path / "PoE1"
     (poe1 / "TreeData" / "3_30").mkdir(parents=True)
     (poe1 / "TreeData" / "3_30" / "tree.lua").write_text("return {}", encoding="utf-8")
-    monkeypatch.delenv("POB_OFFLINE", raising=False)
-    assert resolve_import_tree_version(tmp_path, "Ruthless Keepers") == "3_30"  # the engine does not know it
-    (poe1 / "GameVersions.lua").write_text('treeVersionList = { "3_29", "3_30_ruthless", "3_30" }', encoding="utf-8")
+    asked: list[tuple[list[str], Path]] = []
+
+    def fetch(versions: list[str], game_dir: Path) -> list[str]:
+        asked.append((versions, game_dir))
+        d = Path(game_dir) / "TreeData" / versions[0]
+        d.mkdir(parents=True)
+        (d / "tree.lua").write_text("return {}", encoding="utf-8")
+        return versions
+
+    def blocked(versions: list[str], game_dir: Path) -> list[str]:
+        raise BridgeError("could not be fetched")
+
+    # A failed download, or a version the manifest does not know (nothing fetched), keeps the plain tree.
+    monkeypatch.setattr(bridge_trees, "stage_tree_versions", blocked)
+    assert resolve_import_tree_version(tmp_path, "Ruthless Keepers") == "3_30"
+    monkeypatch.setattr(bridge_trees, "stage_tree_versions", lambda versions, game_dir: [])
+    assert resolve_import_tree_version(tmp_path, "Ruthless Keepers") == "3_30"
+
+    monkeypatch.setattr(bridge_trees, "stage_tree_versions", fetch)
+    assert resolve_import_tree_version(tmp_path, "Keepers") == "3_30" and asked == []
     assert resolve_import_tree_version(tmp_path, "Ruthless Keepers") == "3_30_ruthless"
-    assert resolve_import_tree_version(tmp_path, "Keepers") == "3_30"
-    monkeypatch.setenv("POB_OFFLINE", "1")
-    assert resolve_import_tree_version(tmp_path, "Ruthless Keepers") == "3_30"  # nothing can be downloaded
+    assert asked == [(["3_30_ruthless"], poe1)]
+    assert resolve_import_tree_version(tmp_path, "Ruthless Keepers") == "3_30_ruthless" and len(asked) == 1  # on disk now
