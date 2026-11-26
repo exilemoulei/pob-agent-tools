@@ -103,16 +103,26 @@ def _h_item_unequip(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) 
 def _h_item_db(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from .. import mutators
 
+    db_type = str(params.get("db_type") or params.get("dbType") or "UNIQUE")
+    if opt_bool(params, "list_sorts", "listSorts", default=False):
+        return mutators.list_item_db_sorts(w, db_type=db_type)
     idx_val = params.get("index") if params.get("index") is not None else params.get("item_index")
     return mutators.search_and_try_item_db(
         w,
         query=str(params.get("query") or ""),
-        db_type=str(params.get("db_type") or params.get("dbType") or "UNIQUE"),
+        db_type=db_type,
         slot_name=params.get("slot") or params.get("slotName"),
+        item_type=params.get("item_type") or params.get("itemType"),
+        league=params.get("league"),
+        requirement=params.get("requirement"),
+        obtainable=params.get("obtainable"),
+        search_mode=params.get("search_mode") or params.get("searchMode"),
+        sort_mode=params.get("sort") or params.get("sort_mode") or params.get("sortMode"),
         item_index=parse_int(idx_val, "index") if idx_val is not None else None,
         equip=opt_bool(params, "equip", default=False),
         apply=opt_bool(params, "apply", default=False),
         limit=parse_int(params["limit"], "limit") if params.get("limit") is not None else 15,
+        page=parse_int(params["page"], "page") if params.get("page") is not None else 1,
         with_tooltips=opt_bool(params, "with_tooltips", "withTooltips", default=False),
         with_raw=opt_bool(params, "with_raw", "withRaw", default=False),
     )

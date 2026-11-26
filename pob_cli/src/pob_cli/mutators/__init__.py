@@ -46,7 +46,10 @@ from .config import (
     modify_config,
 )
 from .item_db import (
+    DB_STAT_SORT_MAX,
+    ITEM_DB_TEMPLATE_NOTE,
     _search_item_db_items,
+    list_item_db_sorts,
     query_item_db,
     search_and_try_item_db,
 )
@@ -96,6 +99,8 @@ from .tree import (
 )
 
 __all__ = [
+    "DB_STAT_SORT_MAX",
+    "ITEM_DB_TEMPLATE_NOTE",
     "LOADOUT_SENTINELS",
     "_ENEMY_IS_BOSS_ALIASES",
     "_BatchCache",
@@ -156,6 +161,7 @@ __all__ = [
     "change_tree",
     "create_new_build",
     "edit_item_mods",
+    "list_item_db_sorts",
     "modify_config",
     "modify_skill",
     "modify_tree",

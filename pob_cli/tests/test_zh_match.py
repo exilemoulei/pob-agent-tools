@@ -86,7 +86,7 @@ def test_item_db_retries_by_english_name(english_lookup: dict[str, str]) -> None
     kind, items, total = _search_item_db_items(worker, query="法师之血", db_type="UNIQUE", limit=5)
     assert (kind, total) == ("unique", 1)
     assert items[0]["title"] == "Mageblood"
-    assert worker.calls[:2] == [("item_db", "法师之血"), ("item_db", "Mageblood")]
+    assert [c for c in worker.calls if c[0] == "item_db"][:2] == [("item_db", "法师之血"), ("item_db", "Mageblood")]
 
 
 def test_item_db_native_hit_skips_english_lookup(english_lookup: dict[str, str]) -> None:
@@ -95,7 +95,7 @@ def test_item_db_native_hit_skips_english_lookup(english_lookup: dict[str, str])
     worker = _FakeWorker({("item_db", "魔血"): {"items": [mageblood], "total": 1}})
     _, items, _ = _search_item_db_items(worker, query="魔血", db_type="UNIQUE", limit=5)
     assert items[0]["title"] == "Mageblood"
-    assert worker.calls == [("item_db", "魔血")]
+    assert [c for c in worker.calls if c[0] == "item_db"] == [("item_db", "魔血")]
 
 
 def test_gem_resolution_retries_by_english_name(english_lookup: dict[str, str]) -> None:
