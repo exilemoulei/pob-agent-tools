@@ -86,9 +86,10 @@ class SlotHistory:
             rev=self.rev,
         )
         if ok is False:
+            # Worded for the slot, not for one edit: it is repeated on every result until a save succeeds.
             self.persist_warning = (
-                f"The change is live in the daemon but could not be saved to {self.path}; "
-                "it and its undo history will be lost when the daemon restarts."
+                f"This slot's build is live in the daemon but could not be saved to {self.path}; "
+                "the build and its undo history will be lost when the daemon restarts."
             )
         else:
             self.persist_warning = None

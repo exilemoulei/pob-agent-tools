@@ -482,6 +482,12 @@ def _prepend_warning(body: str, res: dict[str, Any]) -> str:
     drift = str(res.get("slotDriftWarning") or "").strip()
     if drift:
         parts.append(f"[WARN] {drift}\n\n")
+    # Top level on a load or an undo/redo, per slot on `pob status`.
+    slots = res.get("slots") if isinstance(res.get("slots"), dict) else {}
+    for unsaved in dict.fromkeys(
+        str(d["persistWarning"]) for d in (res, *slots.values()) if isinstance(d, dict) and d.get("persistWarning")
+    ):
+        parts.append(f"[WARN] {unsaved}\n\n")
     parts.append(body)
     return "".join(parts)
 

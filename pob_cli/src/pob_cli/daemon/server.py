@@ -109,7 +109,7 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
                     400,
                     {
                         "ok": False,
-                        "error": redact_secrets(str(exc)),
+                        "error": _error_text(exc),
                         "type": type(exc).__name__,
                         "errorKind": "request",
                     },
@@ -118,7 +118,7 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
                 # A healthy engine that refused bad input is a request error (exit 1); everything
                 # else, timeouts and crashes included, is a fault (exit 5). See ENGINE_ERROR_KINDS.
                 kind = exc.kind if isinstance(exc, BridgeRejectedError) else "daemon"
-                message = redact_secrets(str(exc))
+                message = _error_text(exc)
                 payload: dict[str, Any] = {
                     "ok": False,
                     "error": f"{message}\n{ENGINE_REJECTED_HINT}" if kind == "request" else message,
@@ -133,7 +133,7 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
                     400,
                     {
                         "ok": False,
-                        "error": redact_secrets(str(exc)),
+                        "error": _error_text(exc),
                         "type": exc.__class__.__name__,
                         "errorKind": "daemon",
                         "trace": redact_secrets(traceback.format_exc(limit=4)),
@@ -141,6 +141,12 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
                 )
 
     return RpcHandler
+
+
+def _error_text(exc: BaseException) -> str:
+    """The error line for the client, with any notes a failed rollback attached (`BaseException.add_note`)."""
+    notes = [str(n) for n in getattr(exc, "__notes__", ()) if str(n).strip()]
+    return redact_secrets("\n".join([str(exc), *notes]))
 
 
 def _serve_daemon(

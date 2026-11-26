@@ -130,4 +130,6 @@ def load_build(
             skill_set=skill_set,
         )
         tx.commit_load(load_source_label(source, out.get("character")))
+        if tx.history.persist_warning:
+            out["persistWarning"] = tx.history.persist_warning
         return out

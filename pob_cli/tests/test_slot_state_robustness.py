@@ -211,3 +211,31 @@ def test_hot_reload_rewrite_keeps_daemon_json_private(tmp_path: Path, monkeypatc
     data = bp.json.loads(state.read_text(encoding="utf-8"))
     assert data["token"] == "secret" and data["pob_dir"].endswith("new")
     assert stat.S_IMODE(state.stat().st_mode) == 0o600
+
+
+def test_rollback_notes_reach_the_client_error_line() -> None:
+    from pob_cli.daemon.server import _error_text
+
+    exc = ValueError("Batch step #2 (set_level): 'level' must be an integer")
+    assert _error_text(exc) == str(exc)
+    exc.add_note("Restoring the build afterwards could not be verified: Life drifted")
+    assert _error_text(exc).splitlines() == [str(exc), "Restoring the build afterwards could not be verified: Life drifted"]
+
+
+def test_persist_warning_is_shown_in_text_output_and_on_load(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from pob_cli.cli_common import _prepend_warning
+    from pob_cli.formatters.mutation_md import format_mutation_report
+
+    monkeypatch.setattr(history_mod, "write_slot_state", lambda *_a, **_k: False)
+    w = _CowFakeWorker(caps=_CAPS)
+    hist = SlotHistory("main", tmp_path)
+    hist.committed = w._serialize()
+    hist.bind(w)
+    res = run_mutation(w, _bump, apply=True)
+    assert "> [WARN] This slot's build is live in the daemon but could not be saved" in format_mutation_report("Batch", res)
+
+    warn = res["persistWarning"]
+    assert _prepend_warning("BODY", {"persistWarning": warn}).startswith(f"[WARN] {warn}")
+    status = {"slots": {"main": {"persistWarning": warn}, "ref": {"persistWarning": warn}, "x": {}}}
+    assert _prepend_warning("BODY", status).count("[WARN]") == 1  # one path, said once
+    assert _prepend_warning("BODY", {"slots": {"main": {}}}) == "BODY"

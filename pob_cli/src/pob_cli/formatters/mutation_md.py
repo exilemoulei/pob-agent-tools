@@ -140,6 +140,9 @@ def format_mutation_report(title: str, res: dict[str, Any], *, target: str | Non
     if cascade_warn:
         lines.append(f"\n> [WARN] {cascade_warn}")
 
+    if res.get("persistWarning"):
+        lines.append(f"\n> [WARN] {res['persistWarning']}")
+
     caution_lines = format_cautions(res)
     if caution_lines:
         lines.append("")

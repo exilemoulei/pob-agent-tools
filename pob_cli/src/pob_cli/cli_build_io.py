@@ -345,7 +345,7 @@ def _run_undo_redo(
         f"### {action} Applied (Undo depth: `{res.get('undoDepth')}`, Redo depth: `{res.get('redoDepth')}`)\n"
         + render_table(["Stat", f"Before {action}", f"After {action}", "Delta"], rows)
     )
-    _emit_text(body, out_path=out_path)
+    _emit_text(_prepend_warning(body, res), out_path=out_path)
 
 
 @click.command("undo")
