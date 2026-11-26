@@ -60,6 +60,19 @@ def test_slot_alias_still_selects_a_build_slot(monkeypatch: pytest.MonkeyPatch) 
     assert seen and seen[0].get("target") == "ref"
 
 
+def test_slot_alias_overrides_an_invalid_pob_slot_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict] = []
+    monkeypatch.setattr("pob_cli.cli._daemon_call", lambda action, params=None, **_: seen.append(dict(params or {})) or {})
+    monkeypatch.setenv("POB_SLOT", "bad/slot")
+    for flag in ("--slot", "--target"):
+        seen.clear()
+        res = CliRunner().invoke(cli, ["summary", flag, "ref", "--json"])
+        assert seen and seen[0].get("target") == "ref", (flag, res.output)
+    # With neither flag the bad default is still refused.
+    res = CliRunner().invoke(cli, ["summary", "--json"])
+    assert res.exit_code == 2 and "Invalid slot slug" in res.output
+
+
 def test_slot_alias_and_target_conflict_exits_1() -> None:
     res = CliRunner().invoke(cli, ["summary", "--target", "a", "--slot", "b"])
     assert res.exit_code == 1

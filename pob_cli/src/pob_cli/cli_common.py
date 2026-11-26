@@ -257,6 +257,16 @@ def _target_callback(ctx: click.Context, param: click.Parameter, value: Any) -> 
     return alias
 
 
+def _target_default_or_alias() -> str:
+    """`--target`'s default on a command with the alias: the alias wins, so a bad `POB_SLOT` cannot fail `--slot ref`.
+
+    Click converts a default before the option's callback runs, which is too late to swap it there.
+    """
+    ctx = click.get_current_context(silent=True)
+    alias = getattr(ctx, _SLOT_ALIAS_ATTR, None) if ctx is not None else None
+    return alias or _default_target()
+
+
 def _target_option(*, allow_slot_alias: bool = True) -> Any:
     """Attach named multi-slot `--target` (plus a `--slot` build-slot alias on commands without an equipment `--slot`).
 
@@ -267,7 +277,7 @@ def _target_option(*, allow_slot_alias: bool = True) -> Any:
         "--target",
         "target",
         type=_SLOT_SLUG_TYPE,
-        default=_default_target,
+        default=_target_default_or_alias if allow_slot_alias else _default_target,
         callback=_target_callback if allow_slot_alias else None,
         help="Target build slot slug (defaults to POB_SLOT or 'main').",
     )
