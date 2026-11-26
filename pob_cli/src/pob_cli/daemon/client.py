@@ -219,7 +219,7 @@ def _ensure_daemon(
 
     lock_file = _daemon_lock_file(rt_dir)
     boot_err_file = _daemon_boot_error_file(rt_dir)
-    rt_dir.mkdir(parents=True, exist_ok=True)
+    rt_dir.mkdir(mode=0o700, parents=True, exist_ok=True)  # private when created here (POSIX)
     log_path = rt_dir / "daemon.log"
 
     acquired_lock = False

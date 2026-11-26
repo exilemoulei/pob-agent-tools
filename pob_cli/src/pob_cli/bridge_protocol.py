@@ -9,6 +9,7 @@ import os
 import queue
 import re
 import subprocess
+import sys
 import time
 import zlib
 from collections.abc import Callable
@@ -235,8 +236,12 @@ def write_slot_state(
     redo_stack: list[str],
     source_label: str | None,
     rev: int,
-) -> None:
-    """Persist slot build code and undo/redo stacks to disk (best-effort)."""
+) -> bool:
+    """Persist slot build code and undo/redo stacks to disk; False (and a stderr line) when it failed.
+
+    A failed save never raises: the in-memory commit stands, and the caller reports the warning.
+    """
+    tmp_path = state_path.with_suffix(f".{os.getpid()}.tmp")
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -250,11 +255,20 @@ def write_slot_state(
         }
         # Temp file, then rename: a daemon killed mid-write would otherwise leave half a JSON, and
         # the slot would come back empty with its undo history gone.
-        tmp_path = state_path.with_suffix(f".{os.getpid()}.tmp")
         tmp_path.write_text(json.dumps(payload), encoding="utf-8")
         os.replace(tmp_path, state_path)
-    except Exception:
-        pass
+        return True
+    except Exception as exc:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            sys.stderr.write(f"[pob] WARN: could not save slot '{slot_name}' to {state_path}: {exc}\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+        return False
 
 
 def stdout_reader_loop(

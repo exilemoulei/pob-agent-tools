@@ -211,7 +211,18 @@ def test_status_reports_a_build_put_aside_at_boot(tmp_path: Path, monkeypatch: p
     assert mgr._slot_status_entry("main", mgr.main_worker)["restoreFailed"] == failed
 
 
+@pytest.fixture
+def fake_code_loads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let `load_build(xml_code=...)` take a fake worker's JSON: the importer decodes and guards real share codes."""
+    import pob_cli.guardrails as guardrails_mod
+    import pob_cli.importers as importers_mod
+
+    monkeypatch.setattr(importers_mod, "share_code_to_xml", lambda _code: "<PathOfBuilding/>")
+    monkeypatch.setattr(guardrails_mod, "validate_build_xml", lambda *_a, **_k: None)
+
+
 @pytest.mark.parametrize("commit", ["apply", "no_undo", "load", "undo"])
+@pytest.mark.usefixtures("fake_code_loads")
 def test_committing_a_new_build_ends_a_put_aside_restore(commit: str) -> None:
     w = _CowFakeWorker(caps=_CAPS)
     if commit == "undo":
@@ -244,9 +255,11 @@ def test_slot_history_survives_a_daemon_restart(tmp_path: Path) -> None:
     h.commit("CODE_A", "CODE_B")
     h2 = SlotHistory.load("boss", tmp_path)
     assert (h2.committed, h2.undo, h2.redo, h2.rev, h2.source_label) == ("CODE_B", ["CODE_A"], [], 2, "https://pobb.in/abc")
-    # The scratch "test" slot is never written.
-    SlotHistory("test", tmp_path).load_build("X", None)
-    assert not (tmp_path / "slot_test.json").exists()
+    # A throwaway history is never written; a user slot named "test" is saved like any other.
+    SlotHistory("scratch", tmp_path, persist=False).load_build("X", None)
+    assert not (tmp_path / "slot_scratch.json").exists()
+    SlotHistory("test", tmp_path).load_build("Y", None)
+    assert SlotHistory.load("test", tmp_path).committed == "Y"
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +466,7 @@ def saved_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[_CowFak
     return w, writes
 
 
+@pytest.mark.usefixtures("fake_code_loads")
 def test_apply_and_load_each_write_the_slot_once(saved_slot: tuple[_CowFakeWorker, list[dict[str, Any]]]) -> None:
     w, writes = saved_slot
     run_mutation(w, _set_dps(150000.0), apply=True)

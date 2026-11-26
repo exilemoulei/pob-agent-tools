@@ -471,6 +471,12 @@ class DaemonManager:
             main_slot = normalize_slot_name(params.get("main_target") or params.get("target") or "main")
             default_ref = "ref" if main_slot == "main" else f"{main_slot}_ref"
             ref_slot = normalize_slot_name(params.get("ref_target") or default_ref)
+            if ref_slot == main_slot:
+                raise DaemonRequestError(
+                    f"The reference slot must differ from the main slot (both are '{main_slot}'): "
+                    "loading the reference would overwrite the main build and clear its undo history. "
+                    f"Pass a different `--ref-target` (default '{default_ref}')."
+                )
             with self._reader_barrier():
                 locks = [self._get_slot_lock(s) for s in sorted({main_slot, ref_slot})]
                 with contextlib.ExitStack() as stack:

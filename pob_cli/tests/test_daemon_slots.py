@@ -11,6 +11,7 @@ import pytest
 
 import pob_cli.analyzer as analyzer_mod
 import pob_cli.daemon as daemon_mod
+from pob_cli.errors import DaemonRequestError
 
 
 class _StubSlotWorker:
@@ -128,18 +129,38 @@ def test_daemon_diagnose_normalizes_single_and_dual_slot_names(
     assert dual_main_default["target"] == "main"
     assert dual_main_default["refTarget"] == "ref"
 
-    dual_same_slot = mgr.dispatch(
-        "diagnose",
-        {"main_target": "Gamma", "ref_target": "gamma", "compare_source": "pob://ref"},
-    )
-    assert dual_same_slot["target"] == "gamma"
-    assert dual_same_slot["refTarget"] == "gamma"
+    with pytest.raises(DaemonRequestError, match="must differ"):
+        mgr.dispatch(
+            "diagnose",
+            {"main_target": "Gamma", "ref_target": "gamma", "compare_source": "pob://ref"},
+        )
 
     assert seen_dual == [
         ("alpha", "beta", "alpha", "beta"),
         ("main", "ref", "main", "ref"),
-        ("gamma", "gamma", "gamma", "gamma"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("action", "params"),
+    [
+        ("compare", {"source": "pob://x", "ref_target": "main"}),
+        ("compare", {"target": "Alpha", "ref_target": "alpha"}),
+        ("borrow", {"target": "main", "ref_target": "MAIN", "item_slots": ["Amulet"]}),
+        ("diagnose", {"target": "main", "ref_target": "main", "compare_source": "pob://ref"}),
+    ],
+)
+def test_daemon_dual_slot_rejects_ref_equal_to_main(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+    params: dict[str, Any],
+) -> None:
+    mgr = _make_manager(tmp_path, monkeypatch)
+    code_before = mgr.main_worker.last_good_code
+    with pytest.raises(DaemonRequestError, match="must differ"):
+        mgr.dispatch(action, params)
+    assert mgr.main_worker.last_good_code == code_before
 
 
 def test_cli_slot_slug_types_and_defaults_lowercase(monkeypatch: pytest.MonkeyPatch) -> None:

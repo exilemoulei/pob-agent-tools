@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from ..bridge_client import BridgeWorker
+from ..mutators.strict_args import opt_bool, parse_bool, parse_int, parse_replace_mods, parse_token_list
 
 if TYPE_CHECKING:
     from .slots import DaemonManager
@@ -35,7 +36,7 @@ def _h_switch_main(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -
         skill_set_id=params.get("skill_set_id"),
         config_set_id=params.get("config_set_id"),
         loadout_index=params.get("loadout_index"),
-        apply=bool(params.get("apply", True)),
+        apply=opt_bool(params, "apply", default=True),
     )
 
 
@@ -51,8 +52,8 @@ def _h_new_build(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> 
             or params.get("secondary_ascendancy_name")
             or params.get("secondaryAscendancy")
         ),
-        level=int(params["level"]) if params.get("level") is not None else None,
-        apply=bool(params.get("apply", True)),
+        level=parse_int(params["level"], "level") if params.get("level") is not None else None,
+        apply=opt_bool(params, "apply", default=True),
     )
 
 
@@ -63,24 +64,24 @@ def _h_item_try(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> d
         w,
         raw_text=str(params.get("raw") or ""),
         slot_name=params.get("slot"),
-        tooltip_only=bool(params.get("tooltip_only", False)),
-        apply=bool(params.get("apply", False)),
+        tooltip_only=opt_bool(params, "tooltip_only", default=False),
+        apply=opt_bool(params, "apply", default=False),
     )
 
 
 def _h_item_edit(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from .. import mutators
 
-    raw_reps = params.get("replace_mods") or params.get("replaceMods") or []
-    rep_tuples = [(str(p[0]), str(p[1])) for p in raw_reps if isinstance(p, (list, tuple)) and len(p) == 2]
+    rep_key = "replace_mods" if params.get("replace_mods") is not None else "replaceMods"
+    rep_tuples = parse_replace_mods(params.get(rep_key), rep_key)
     return mutators.edit_item_mods(
         w,
         slot_name=str(params.get("slot") or params.get("slotName") or ""),
         replace_mods=rep_tuples or None,
         add_mods=params.get("add_mods") or params.get("addMods"),
         remove_mods=params.get("remove_mods") or params.get("removeMods"),
-        allow_illegal_affixes=bool(params.get("allow_illegal_affixes", params.get("allowIllegalAffixes", False))),
-        apply=bool(params.get("apply", False)),
+        allow_illegal_affixes=opt_bool(params, "allow_illegal_affixes", "allowIllegalAffixes", default=False),
+        apply=opt_bool(params, "apply", default=False),
     )
 
 
@@ -88,7 +89,7 @@ def _h_item_unequip(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) 
     from .. import mutators
 
     slot_val = str(params.get("slot") or params.get("slotName") or "")
-    return mutators.unequip_item(w, slot=slot_val, apply=bool(params.get("apply", False)))
+    return mutators.unequip_item(w, slot=slot_val, apply=opt_bool(params, "apply", default=False))
 
 
 def _h_item_db(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
@@ -100,12 +101,12 @@ def _h_item_db(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> di
         query=str(params.get("query") or ""),
         db_type=str(params.get("db_type") or params.get("dbType") or "UNIQUE"),
         slot_name=params.get("slot") or params.get("slotName"),
-        item_index=int(idx_val) if idx_val is not None else None,
-        equip=bool(params.get("equip", False)),
-        apply=bool(params.get("apply", False)),
-        limit=int(params["limit"]) if params.get("limit") is not None else 15,
-        with_tooltips=bool(params.get("with_tooltips", params.get("withTooltips", False))),
-        with_raw=bool(params.get("with_raw", params.get("withRaw", False))),
+        item_index=parse_int(idx_val, "index") if idx_val is not None else None,
+        equip=opt_bool(params, "equip", default=False),
+        apply=opt_bool(params, "apply", default=False),
+        limit=parse_int(params["limit"], "limit") if params.get("limit") is not None else 15,
+        with_tooltips=opt_bool(params, "with_tooltips", "withTooltips", default=False),
+        with_raw=opt_bool(params, "with_raw", "withRaw", default=False),
     )
 
 
@@ -118,7 +119,10 @@ def _h_item_flask(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) ->
     if "active" not in params or params["active"] is None:
         raise ValueError("Missing required parameter 'active'.")
     return mutators.set_flask_active(
-        w, flask_index=flask_idx, active=bool(params["active"]), apply=bool(params.get("apply", False))
+        w,
+        flask_index=flask_idx,
+        active=parse_bool(params["active"], "active"),
+        apply=opt_bool(params, "apply", default=False),
     )
 
 
@@ -129,8 +133,8 @@ def _h_item_anoint(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -
         w,
         slot_name=str(params.get("slot") or "Amulet"),
         notable_query=str(params.get("notable") or ""),
-        anoint_index=int(params["index"]) if params.get("index") is not None else 1,
-        apply=bool(params.get("apply", False)),
+        anoint_index=parse_int(params["index"], "index") if params.get("index") is not None else 1,
+        apply=opt_bool(params, "apply", default=False),
     )
 
 
@@ -148,9 +152,9 @@ def _h_skill_set(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> 
         count=params.get("count"),
         include_in_full_dps=params.get("include_in_full_dps"),
         group_enabled=params.get("group_enabled"),
-        allow_legacy=bool(params.get("allow_legacy", params.get("allowLegacy", False))),
-        allow_illegal_level=bool(params.get("allow_illegal_level", params.get("allowIllegalLevel", False))),
-        apply=bool(params.get("apply", False)),
+        allow_legacy=opt_bool(params, "allow_legacy", "allowLegacy", default=False),
+        allow_illegal_level=opt_bool(params, "allow_illegal_level", "allowIllegalLevel", default=False),
+        apply=opt_bool(params, "apply", default=False),
     )
 
 
@@ -161,12 +165,12 @@ def _h_skill_add(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> 
         w,
         group_selector=str(params.get("group") or "main"),
         gem_name=str(params.get("gem") or ""),
-        level=int(params["level"]) if params.get("level") is not None else None,
-        quality=int(params["quality"]) if params.get("quality") is not None else 20,
-        enabled=bool(params.get("enabled", True)),
-        allow_legacy=bool(params.get("allow_legacy", params.get("allowLegacy", False))),
-        allow_illegal_level=bool(params.get("allow_illegal_level", params.get("allowIllegalLevel", False))),
-        apply=bool(params.get("apply", False)),
+        level=parse_int(params["level"], "level") if params.get("level") is not None else None,
+        quality=parse_int(params["quality"], "quality") if params.get("quality") is not None else 20,
+        enabled=opt_bool(params, "enabled", default=True),
+        allow_legacy=opt_bool(params, "allow_legacy", "allowLegacy", default=False),
+        allow_illegal_level=opt_bool(params, "allow_illegal_level", "allowIllegalLevel", default=False),
+        apply=opt_bool(params, "apply", default=False),
     )
 
 
@@ -177,7 +181,10 @@ def _h_skill_rm(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> d
     if gem_sel is None or (isinstance(gem_sel, str) and not gem_sel.strip()):
         raise ValueError("Missing required parameter 'gem'.")
     return mutators.remove_skill_gem(
-        w, group_selector=str(params.get("group") or "main"), gem_selector=gem_sel, apply=bool(params.get("apply", False))
+        w,
+        group_selector=str(params.get("group") or "main"),
+        gem_selector=gem_sel,
+        apply=opt_bool(params, "apply", default=False),
     )
 
 
@@ -189,16 +196,16 @@ def _h_skill_new_group(_m: DaemonManager, params: dict[str, Any], w: BridgeWorke
         gems=params.get("gems"),
         label=params.get("label"),
         slot=params.get("slot"),
-        enabled=bool(params.get("enabled", True)),
+        enabled=opt_bool(params, "enabled", default=True),
         include_in_full_dps=(
             params.get("include_in_full_dps")
             if params.get("include_in_full_dps") is not None
             else params.get("includeInFullDps")
         ),
-        make_main=bool(params.get("make_main", params.get("makeMain", False))),
-        allow_legacy=bool(params.get("allow_legacy", params.get("allowLegacy", False))),
-        allow_illegal_level=bool(params.get("allow_illegal_level", params.get("allowIllegalLevel", False))),
-        apply=bool(params.get("apply", False)),
+        make_main=opt_bool(params, "make_main", "makeMain", default=False),
+        allow_legacy=opt_bool(params, "allow_legacy", "allowLegacy", default=False),
+        allow_illegal_level=opt_bool(params, "allow_illegal_level", "allowIllegalLevel", default=False),
+        apply=opt_bool(params, "apply", default=False),
     )
 
 
@@ -218,9 +225,9 @@ def _h_skill_replace_group(_m: DaemonManager, params: dict[str, Any], w: BridgeW
             if params.get("include_in_full_dps") is not None
             else params.get("includeInFullDps")
         ),
-        allow_legacy=bool(params.get("allow_legacy", params.get("allowLegacy", False))),
-        allow_illegal_level=bool(params.get("allow_illegal_level", params.get("allowIllegalLevel", False))),
-        apply=bool(params.get("apply", False)),
+        allow_legacy=opt_bool(params, "allow_legacy", "allowLegacy", default=False),
+        allow_illegal_level=opt_bool(params, "allow_illegal_level", "allowIllegalLevel", default=False),
+        apply=opt_bool(params, "apply", default=False),
     )
 
 
@@ -229,10 +236,10 @@ def _h_tree_change(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -
 
     return mutators.change_tree(
         w,
-        allocate=params.get("allocate"),
-        deallocate=params.get("deallocate"),
-        apply=bool(params.get("apply", False)),
-        allow_cascade=bool(params.get("allow_cascade", params.get("allowCascade", True))),
+        allocate=parse_token_list(params.get("allocate"), "allocate"),
+        deallocate=parse_token_list(params.get("deallocate"), "deallocate"),
+        apply=opt_bool(params, "apply", default=False),
+        allow_cascade=opt_bool(params, "allow_cascade", "allowCascade", default=True),
     )
 
 
@@ -246,7 +253,7 @@ def _h_tree_set_class(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker
         secondary_ascendancy_name=(
             params.get("secondary_ascendancy_name") or params.get("secondaryAscendancyName")
         ),
-        apply=bool(params.get("apply", False)),
+        apply=opt_bool(params, "apply", default=False),
     )
 
 
@@ -263,7 +270,7 @@ def _h_config_set(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) ->
         assignments=params.get("assignments") or [],
         custom_mods=params.get("custom_mods"),
         append_custom_mods=append_val,
-        apply=bool(params.get("apply", False)),
+        apply=opt_bool(params, "apply", default=False),
     )
 
 
@@ -273,8 +280,8 @@ def _h_batch(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict
     return mutators.run_batch(
         w,
         ops=params.get("ops") or [],
-        apply=bool(params.get("apply", False)),
-        no_undo=bool(params.get("no_undo", params.get("noUndo", False))),
+        apply=opt_bool(params, "apply", default=False),
+        no_undo=opt_bool(params, "no_undo", "noUndo", default=False),
         return_sections=params.get("return_sections") or params.get("returnSections"),
         keep=norm_keep(params),
     )

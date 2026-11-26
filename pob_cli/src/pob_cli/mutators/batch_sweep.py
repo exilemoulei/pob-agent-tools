@@ -109,6 +109,16 @@ def _collect_return_sections(
     return out
 
 
+def _step_warnings(step_results: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+    """Merged cautions and step-prefixed no-op warnings over a batch's step results."""
+    cautions: list[str] = []
+    noops: list[str] = []
+    for st in step_results:
+        cautions = _merge_cautions(cautions, st.get("cautions"))
+        noops.extend(f"step {st.get('step')}: {msg}" for msg in st.get("noopWarnings") or [])
+    return cautions, noops
+
+
 def run_batch(
     worker: BridgeWorker,
     ops: list[dict[str, Any]],
@@ -135,9 +145,7 @@ def run_batch(
             exported = returns_map.get("export") if returns_map else None
             tx.commit(undoable=False, after_code=exported if isinstance(exported, str) and exported else None)
 
-            batch_cautions: list[str] = []
-            for st in step_results:
-                batch_cautions = _merge_cautions(batch_cautions, st.get("cautions"))
+            batch_cautions, batch_noops = _step_warnings(step_results)
             result: dict[str, Any] = {
                 "applied": True,
                 "noUndo": True,
@@ -156,6 +164,8 @@ def run_batch(
             }
             if batch_cautions:
                 result["cautions"] = batch_cautions
+            if batch_noops:
+                result["noopWarnings"] = batch_noops
             if returns_map is not None:
                 result["returns"] = returns_map
             return result
@@ -168,18 +178,21 @@ def run_batch(
         step_results = _execute_batch_ops(w, ops, cache)
         if sections:
             captured_returns = _collect_return_sections(w, sections, keep=keep)
-        batch_cautions: list[str] = []
-        for st in step_results:
-            batch_cautions = _merge_cautions(batch_cautions, st.get("cautions"))
+        batch_cautions, batch_noops = _step_warnings(step_results)
         detail: dict[str, Any] = {"steps": step_results}
         if batch_cautions:
             detail["cautions"] = batch_cautions
+        if batch_noops:
+            detail["noopWarnings"] = batch_noops
         return detail
 
     res = run_mutation(worker, _do_batch, apply=apply, scope=ops_scope(ops))
     cautions = (res.get("detail") or {}).get("cautions")
     if cautions:
         res["cautions"] = list(cautions)
+    noops = (res.get("detail") or {}).get("noopWarnings")
+    if noops:
+        res["noopWarnings"] = list(noops)
     if captured_returns is not None:
         res["returns"] = captured_returns
     return res
@@ -270,6 +283,7 @@ def run_sweep(
             orig_digest = (
                 capture_direct_digest(worker) if (use_direct and tx.base.kind == "cow") else _mut.capture_digest(worker)
             )
+            tx.verify_digest = orig_digest
         if base_ops:
             base_steps = _execute_batch_ops(worker, base_ops, _BatchCache(worker))
         if has_scenario:
@@ -282,6 +296,7 @@ def run_sweep(
         full_base = _mut.capture_digest(worker)
         if orig_digest is None:
             orig_digest = full_base
+            tx.verify_digest = orig_digest
         # Variants are measured by direct_calc, so their baseline must come from the same pass.
         base_digest = capture_direct_digest(worker, base_digest=full_base) if use_direct else full_base
         base_calcs = _extract_compact_calcs(worker, kw_list) if kw_list else None

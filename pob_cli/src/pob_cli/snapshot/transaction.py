@@ -61,6 +61,9 @@ class BuildTransaction:
         self.base: BuildSnapshot | None = None
         self.before_code: str | None = None
         self.stale = False
+        # The digest of the build at the base checkpoint, when the caller took one: a rollback on an
+        # exception then verifies a CoW restore against it and re-imports the code on drift.
+        self.verify_digest: dict[str, Any] | None = None
         self.notes: list[str] = []
         self._nested: list[BuildSnapshot] = []
         self._entry_code: str | None = None
@@ -115,7 +118,7 @@ class BuildTransaction:
         try:
             if not self._closed:
                 try:
-                    self.rollback()
+                    self._rollback_on_exit(exc)
                 except Exception as restore_exc:
                     if exc is None:
                         raise
@@ -131,13 +134,32 @@ class BuildTransaction:
                 try:
                     self.fresh()
                 except Exception:
-                    pass
+                    # The slot's calc output may be stale: its read cache must not serve or store it.
+                    self.history.stale = True
             if not self._committed and getattr(self.worker, "last_good_code", None) is not None:
                 # Only this transaction's commit moves the restart code; one the bridge put aside
                 # after the engine rejected it (None) stays dropped.
                 self.worker.last_good_code = self._entry_code
             self._lock.__exit__(exc_type, exc, tb)
         return False
+
+    def _rollback_on_exit(self, exc: BaseException | None) -> None:
+        """Roll back an unclosed transaction; after an exception a CoW restore is verified (and repaired)."""
+        untouched = self._sent_at is not None and self._requests_sent() == self._sent_at and not self._nested
+        if (
+            exc is None
+            or untouched
+            or self.verify_digest is None
+            or self.base is None
+            or self.base.kind != "cow"
+        ):
+            self.rollback()
+            return
+        check = self.rollback_verified(self.verify_digest)
+        if not check.get("verified"):
+            exc.add_note(f"Restoring the build afterwards could not be verified: {check.get('detail')}")
+        elif check.get("fallback"):
+            exc.add_note(f"The build was restored by re-importing its code: {check['fallback']}")
 
     def checkpoint(self) -> BuildSnapshot:
         """A checkpoint of the build as it is now, part way through this transaction's edits."""
@@ -172,9 +194,10 @@ class BuildTransaction:
 
     def fresh(self) -> None:
         """Rebuild calc output a lazy restore left stale (one engine frame), before reading it."""
-        if self.stale:
+        if self.stale or self.history.stale:
             self.worker.call("pump", {"seconds": 0})
             self.stale = False
+            self.history.stale = False
 
     def verify(self, before_digest: dict[str, Any], cp: BuildSnapshot | None = None) -> dict[str, Any]:
         """Check the build matches `before_digest` after a restore to `cp`; re-import it when a CoW restore drifted."""

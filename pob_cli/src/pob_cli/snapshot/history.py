@@ -15,13 +15,19 @@ class SlotHistory:
     `committed` is the share code of the build the slot holds outside a transaction. The worker
     keeps a copy as `last_good_code`, the build it restores after an engine crash; `bind` and every
     change here keep that copy equal. Each change bumps `rev` (the daemon's read cache compares revisions)
-    and saves the slot file once.
+    and saves the slot file once. `persist=False` keeps a throwaway history (tests, scratch engines)
+    off disk; any slot name, "test" included, persists by default.
     """
 
-    def __init__(self, slot_name: str = "main", runtime_dir: Path | None = None, *, persist: bool | None = None) -> None:
+    def __init__(self, slot_name: str = "main", runtime_dir: Path | None = None, *, persist: bool = True) -> None:
         self.slot_name = slot_name
         self.runtime_dir = Path(runtime_dir) if runtime_dir is not None else None
-        self.persist = slot_name != "test" if persist is None else persist
+        self.persist = persist
+        # Set when the last save of the slot file failed; reported as `persistWarning` until a save succeeds.
+        self.persist_warning: str | None = None
+        # Set when a transaction could not rebuild calc output it left stale; the daemon's read cache
+        # then neither serves nor stores this slot. Cleared by the next rebuild or commit.
+        self.stale = False
         self.committed: str | None = None
         self.undo: list[str] = []
         self.redo: list[str] = []
@@ -36,9 +42,9 @@ class SlotHistory:
         return get_runtime_dir(self.runtime_dir) / f"slot_{self.slot_name}.json"
 
     @classmethod
-    def load(cls, slot_name: str, runtime_dir: Path | None = None) -> SlotHistory:
+    def load(cls, slot_name: str, runtime_dir: Path | None = None, *, persist: bool = True) -> SlotHistory:
         """The slot's history as last saved (empty when there is no slot file)."""
-        hist = cls(slot_name, runtime_dir)
+        hist = cls(slot_name, runtime_dir, persist=persist)
         data = read_slot_state(hist.path) if hist.persist else None
         if data:
             hist.committed = data.get("last_good_code") or None
@@ -58,6 +64,7 @@ class SlotHistory:
 
     def _changed(self) -> None:
         self.rev += 1
+        self.stale = False
         if self._worker is not None:
             self._worker.last_good_code = self.committed
             if getattr(self._worker, "restore_failed", None) is not None:
@@ -69,7 +76,7 @@ class SlotHistory:
         if not self.persist:
             return
         self.source_label = compact_source_label(self.source_label)
-        write_slot_state(
+        ok = write_slot_state(
             self.path,
             slot_name=self.slot_name,
             last_good_code=self.committed,
@@ -78,6 +85,13 @@ class SlotHistory:
             source_label=self.source_label,
             rev=self.rev,
         )
+        if ok is False:
+            self.persist_warning = (
+                f"The change is live in the daemon but could not be saved to {self.path}; "
+                "it and its undo history will be lost when the daemon restarts."
+            )
+        else:
+            self.persist_warning = None
 
     def load_build(self, code: str | None, source_label: str | None) -> None:
         """A new build replaced the slot: it becomes the committed build with an empty history."""
@@ -106,8 +120,12 @@ class SlotHistory:
         self._changed()
         return target
 
-    def depths(self) -> dict[str, int]:
-        return {"undoDepth": len(self.undo), "redoDepth": len(self.redo)}
+    def depths(self) -> dict[str, Any]:
+        """Undo/redo depths, plus `persistWarning` while the slot file could not be saved."""
+        out: dict[str, Any] = {"undoDepth": len(self.undo), "redoDepth": len(self.redo)}
+        if self.persist_warning:
+            out["persistWarning"] = self.persist_warning
+        return out
 
 
 def history_of(worker: Any) -> SlotHistory:

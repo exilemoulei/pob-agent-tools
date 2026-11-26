@@ -37,6 +37,7 @@ def run_mutation(
     """
     with BuildTransaction(worker, scope=scope, will_commit=apply) as tx:
         digest_before = capture_digest(worker)
+        tx.verify_digest = digest_before
         action_detail = mutate_fn(worker)
         digest_after = capture_digest(worker)
         diff = diff_digest(digest_before, digest_after)

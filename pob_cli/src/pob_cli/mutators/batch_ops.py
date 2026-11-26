@@ -31,6 +31,7 @@ from .common import (
 from .config import _apply_config_in_place
 from .item_edit import _apply_edit_item_mods_in_place
 from .items import _apply_anoint_in_place, _parse_flask_slots, _search_item_db_items
+from .strict_args import opt_bool, parse_replace_mods, parse_token_list
 from .tree import _apply_tree_changes_in_place, _resolve_node_token
 
 _BatchOpHandler = Callable[[BridgeWorker, dict[str, Any], _BatchCache, int], dict[str, Any]]
@@ -74,7 +75,7 @@ def _op_flask(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int)
     f_sel = op.get("index")
     if f_sel is None:
         f_sel = op.get("flask_index") if "flask_index" in op else op.get("flaskIndex", "all")
-    act = bool(op.get("active", True))
+    act = opt_bool(op, "active", default=True)
     slots = _parse_flask_slots(f_sel)
     _call_batch(w, [("set_slot_active", {"slotName": s_name, "active": act}) for s_name in slots])
     cache.invalidate("items")
@@ -142,8 +143,8 @@ def _op_item_db(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: in
 
 def _op_item_edit(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
     slot_query = str(op.get("slot") or op.get("slotName") or op.get("slot_name") or "").strip()
-    raw_reps = op.get("replaceMods") or op.get("replace_mods") or []
-    rep_tuples = [(str(p[0]), str(p[1])) for p in raw_reps if isinstance(p, (list, tuple)) and len(p) == 2]
+    rep_key = "replaceMods" if op.get("replaceMods") is not None else "replace_mods"
+    rep_tuples = parse_replace_mods(op.get(rep_key), rep_key)
     edit_res = _apply_edit_item_mods_in_place(
         w,
         slot_name=slot_query,
@@ -189,14 +190,22 @@ def _op_tree(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) 
     tree_state = cache.get_tree()
     nodes_db = w.get_cached_tree_data(tree_state.get("treeVersion")).get("nodes", {})
     dynamic_map = {str(n["id"]): n for n in tree_state.get("dynamicNodes", [])}
-    resolved_alloc = [_resolve_node_token(w, str(tok), nodes_db, dynamic_map) for tok in (op.get("allocate") or [])]
-    resolved_dealloc = [
-        _resolve_node_token(w, str(tok), nodes_db, dynamic_map) for tok in (op.get("deallocate") or [])
-    ]
-    allow_casc = bool(op["allowCascade"] if "allowCascade" in op else op.get("allow_cascade", True))
+    alloc_tokens = parse_token_list(op.get("allocate"), "allocate")
+    dealloc_tokens = parse_token_list(op.get("deallocate"), "deallocate")
+    if not alloc_tokens and not dealloc_tokens:
+        raise ValueError(f"Batch op 'tree' at step {idx} requires at least one node in 'allocate' or 'deallocate'.")
+    resolved_alloc = [_resolve_node_token(w, tok, nodes_db, dynamic_map) for tok in alloc_tokens]
+    resolved_dealloc = [_resolve_node_token(w, tok, nodes_db, dynamic_map) for tok in dealloc_tokens]
+    allow_casc = opt_bool(op, "allowCascade", "allow_cascade", default=True)
     tree_cautions = _check_agnostic_dealloc_caution(w, {nid for nid, _ in resolved_dealloc}, cache=cache)
+    noop_warnings: list[str] = []
     actions_taken, final_state, orphaned_nodes, points_delta, cascade_warning = _apply_tree_changes_in_place(
-        w, resolved_alloc, resolved_dealloc, initial_tree_state=tree_state, allow_cascade=allow_casc
+        w,
+        resolved_alloc,
+        resolved_dealloc,
+        initial_tree_state=tree_state,
+        allow_cascade=allow_casc,
+        noop_warnings_out=noop_warnings,
     )
     cache.tree = final_state
     cache.invalidate("items", "skills")
@@ -207,6 +216,8 @@ def _op_tree(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) 
         "pointsDelta": points_delta,
         "orphanedNodes": orphaned_nodes,
     }
+    if noop_warnings:
+        step_entry["noopWarnings"] = noop_warnings
     if cascade_warning:
         step_entry["cascadeWarning"] = cascade_warning
     if tree_cautions:
@@ -459,6 +470,5 @@ def _execute_batch_ops(
                 f"Unsupported batch op type '{raw_kind}' at step {idx}. "
                 f"Example valid ops: {_BATCH_OP_EXAMPLE}"
             )
-        validate_batch_op(idx, kind, op)
-        step_results.append(handler(w, op, cache, idx))
+        step_results.append(handler(w, validate_batch_op(idx, kind, op), cache, idx))
     return step_results

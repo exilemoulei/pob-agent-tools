@@ -68,6 +68,15 @@ def engine_env(worker: Any, extra_env: dict[str, str], lang: str) -> dict[str, s
     return env
 
 
+def _persists(worker: Any) -> bool:
+    """Whether the slot keeps files on disk: its bound history says so; an unbound scratch "test" worker never does."""
+    hist = getattr(worker, "slot_history", None)
+    flag = getattr(hist, "persist", None)
+    if isinstance(flag, bool):
+        return flag
+    return worker.slot_name != "test"
+
+
 def aside_path(worker: Any) -> Path:
     return get_runtime_dir(worker.runtime_dir) / f"slot_{worker.slot_name}.restore_failed.txt"
 
@@ -75,7 +84,7 @@ def aside_path(worker: Any) -> Path:
 def put_code_aside(worker: Any, code: str, reason: str, *, skipped: bool = False) -> None:
     """Drop `code` as the worker's build, keep a copy on disk, and record why for `status`."""
     code_file: str | None = None
-    if worker.slot_name != "test":
+    if _persists(worker):
         path = aside_path(worker)
         try:
             if not skipped:
@@ -97,7 +106,7 @@ def put_code_aside(worker: Any, code: str, reason: str, *, skipped: bool = False
 
 def _failed_before(worker: Any, code: str) -> bool:
     """True when this exact code already failed to restore and the slot file has not changed since."""
-    if worker.slot_name == "test":
+    if not _persists(worker):
         return False
     path = aside_path(worker)
     try:

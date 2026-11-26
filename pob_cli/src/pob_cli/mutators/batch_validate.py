@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .batch_types import normalize_batch_op_types
+
 # The op itself plus the names people give a remark; a key starting with `_` is a remark too.
 _COMMON_OP_KEYS: frozenset[str] = frozenset(
     {"op", "type", "action", "comment", "note", "why", "desc", "description", "reason"}
@@ -295,11 +297,14 @@ def _check_removal(idx: int, kind: str, op: dict[str, Any]) -> None:
         )
 
 
-def validate_batch_op(idx: int, kind: str, op: dict[str, Any]) -> None:
-    """Reject unknown top-level keys and silent no-op / ambiguous forms on batch step `idx`."""
+def validate_batch_op(idx: int, kind: str, op: dict[str, Any]) -> dict[str, Any]:
+    """Reject unknown keys, wrong types and silent no-op / ambiguous forms on batch step `idx`.
+
+    Returns the step with canonical bools/ints (see `normalize_batch_op_types`) for its handler.
+    """
     valid = _OP_VALID_KEYS.get(kind)
     if valid is None:
-        return
+        return op
 
     unknown = sorted(k for k in op if k not in valid and k not in _COMMON_OP_KEYS and not str(k).startswith("_"))
     if unknown:
@@ -323,6 +328,12 @@ def validate_batch_op(idx: int, kind: str, op: dict[str, Any]) -> None:
             f"(valid keys: {', '.join(sorted(valid))})."
         )
 
+    norm = normalize_batch_op_types(idx, kind, op)
+    if kind == "switch_main" and not any(op.get(k) is not None for k in _SWITCH_MAIN_KEYS):
+        raise ValueError(
+            f"Batch step #{idx} ({kind}): switches nothing; give at least one of spec, skillGroup, "
+            "mainSkill, skillPart, itemSet, skillSet, configSet or loadout."
+        )
     if kind == "skill_rm":
         _check_removal(idx, kind, op)
     if kind in ("skill", "skill_set"):
@@ -357,3 +368,4 @@ def validate_batch_op(idx: int, kind: str, op: dict[str, Any]) -> None:
                     f"Batch step #{idx} ({kind}): skill op performs zero mutations; "
                     'provide at least one of "gem", "addGem", "removeGem", "includeInFullDPS", or "groupEnabled".'
                 )
+    return norm
