@@ -19,7 +19,6 @@ from .constants import (
 )
 from .summary import (
     _has_bloodsoaked_blade_keystone,
-    _has_mageblood_equipped,
     _is_tincture_item,
 )
 
@@ -283,14 +282,17 @@ def _dewater_flasks(
     *,
     has_bloodsoaked_blade: bool | None,
     flask_notes: dict[str, str] | None = None,
+    equipped_slots_raw: list[dict[str, Any]] | None = None,
 ) -> None:
-    has_mb = _has_mageblood_equipped(items_res)
+    from .dewater_mageblood import mageblood_exempt_flask_slots
+
+    mb_exempt, mb_spec = mageblood_exempt_flask_slots(
+        worker, items_res, equipped_slots_raw=equipped_slots_raw
+    )
     items_by_id = {it["id"]: it for it in items_res.get("items", [])}
     for slot in items_res.get("slots", []):
         if slot.get("isFlask") and slot.get("name"):
             known[str(slot["name"]).lower()] = str(slot["name"])
-    if has_mb:
-        return
     has_active_tincture = any(
         slot.get("isFlask")
         and slot.get("active")
@@ -309,6 +311,11 @@ def _dewater_flasks(
             item_title = strip_pob_escapes(item.get("titleZh") or item.get("title") or item.get("name") or slot_name)
             if "flasks" in keep_set or slot_name.lower() in keep_set:
                 stripped["kept"].append(f"{slot_name} ({item_title}) (kept)")
+                continue
+            if slot_name in mb_exempt:
+                stripped.setdefault("autoKept", []).append(
+                    f"{slot_name} ({item_title}) (auto-kept: {mb_spec})"
+                )
                 continue
             if bloodsoaked_active and _is_tincture_item(item):
                 stripped["kept"].append(
