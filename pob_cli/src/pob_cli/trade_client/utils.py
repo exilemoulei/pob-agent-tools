@@ -22,6 +22,11 @@ from ..os_util import _is_pid_alive as _is_pid_alive
 from ..os_util import _try_break_stale_lock as _try_break_stale_lockfile  # noqa: F401  (re-exported)
 
 BASE_URL = "https://www.pathofexile.com"
+TW_BASE_URL = "https://pathofexile.tw"
+TW_LEAGUE_ALIASES: dict[str, str] = {
+    "standard": "標準模式",
+    "hardcore": "專家模式",
+}
 STATS_TTL_SECONDS = 7 * 24 * 3600
 MAX_FETCH_IDS = 10
 MAX_FETCH_MANY = 100
@@ -39,7 +44,7 @@ _POLICY_ALIASES: dict[str, str] = {
 _RULE_STATE_HEADER_RE = re.compile(r"^x-rate-limit-([a-z0-9_-]+)-state$")
 
 _SKIP_LEAGUE_RE = re.compile(
-    r"\b(?:hardcore|hc|ruthless|ssf|private)\b",
+    r"(?:\b(?:hardcore|hc|ruthless|ssf|private)\b|專家|殘暴|單人自力|自力|私人|競賽)",
     re.IGNORECASE,
 )
 

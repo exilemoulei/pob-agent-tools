@@ -46,17 +46,35 @@ def apply_cli_filters_to_auto_query(
     search_sort: str | None = None,
     allow_corrupted: bool | None = None,
     extra_stat_groups: list[dict[str, Any]] | None = None,
+    name: str | None = None,
+    item_type: str | None = None,
+    corrupted: str | None = None,
 ) -> dict[str, Any]:
-    """Overlay CLI price/status/category/sort/stat/open-affix constraints onto a wrapped auto query."""
+    """Overlay CLI price/status/category/name/type/corrupted/sort/stat/open-affix constraints onto a wrapped auto query."""
     inner = body.setdefault("query", {})
     if status:
         inner["status"] = {"option": status.strip().lower()}
+    if name and name.strip():
+        inner["name"] = name.strip()
+    if item_type and item_type.strip():
+        inner["type"] = item_type.strip()
     filters = inner.setdefault("filters", {})
     if category:
         filters.setdefault("type_filters", {}).setdefault("filters", {})["category"] = {"option": category}
     if ilvl_min > 0:
         filters.setdefault("type_filters", {}).setdefault("filters", {})["ilvl"] = {"min": ilvl_min}
-    if allow_corrupted is False:
+    cor_norm = (corrupted or "").strip().lower()
+    if cor_norm in ("yes", "true", "1"):
+        filters.setdefault("misc_filters", {}).setdefault("filters", {})["corrupted"] = {"option": "true"}
+    elif cor_norm in ("no", "false", "0"):
+        filters.setdefault("misc_filters", {}).setdefault("filters", {})["corrupted"] = {"option": "false"}
+    elif cor_norm == "any":
+        misc_blk = filters.get("misc_filters")
+        if isinstance(misc_blk, dict) and isinstance(misc_blk.get("filters"), dict):
+            misc_blk["filters"].pop("corrupted", None)
+            if not misc_blk["filters"]:
+                filters.pop("misc_filters", None)
+    elif allow_corrupted is False:
         filters.setdefault("misc_filters", {}).setdefault("filters", {}).setdefault("corrupted", {"option": "false"})
     trade_f: dict[str, Any] = {}
     if budget is not None and budget > 0:

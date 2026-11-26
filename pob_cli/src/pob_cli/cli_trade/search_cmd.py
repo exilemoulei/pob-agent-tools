@@ -7,6 +7,8 @@ from typing import Any
 import click
 
 from ..cli_common import _emit_json, _output_options
+from ..locale_cfg import current_realm
+from ..trade_client import localize_query_for_tw, unmapped_tw_ascii_fields
 from ..trade_eval import (
     compare_items,
     dedupe_candidates_with_stats,
@@ -81,6 +83,20 @@ __all__ = [
     ),
 )
 @click.option("--league", help="PoE1 trade league (defaults to current challenge league).")
+@click.option(
+    "--realm",
+    type=click.Choice(["global", "tw"], case_sensitive=False),
+    default=None,
+    help="Trade server realm (`global` pathofexile.com or `tw` pathofexile.tw; overrides POB_REALM/config).",
+)
+@click.option("--name", "item_name", help="Unique/item name filter (auto-mapped to zh-TW on --realm tw).")
+@click.option("--type", "item_type", help="Base item or gem type filter (auto-mapped to zh-TW on --realm tw).")
+@click.option(
+    "--corrupted",
+    type=click.Choice(["yes", "no", "any"], case_sensitive=False),
+    default=None,
+    help="Filter corrupted status (`yes` = corrupted only, `no` = uncorrupted only, `any`).",
+)
 @click.option("--rarity", type=click.Choice(["nonunique", "rare", "unique", "any"]), default="nonunique", show_default=True)
 @click.option("--ilvl-min", type=int, default=0, show_default=True)
 @click.option("--category", help="Override official trade category (e.g. weapon.claw).")
@@ -145,6 +161,10 @@ def cmd_trade_search(
     max_age: float | None,
     bargain: float | None,
     league: str | None,
+    realm: str | None,
+    item_name: str | None,
+    item_type: str | None,
+    corrupted: str | None,
     rarity: str,
     ilvl_min: int,
     category: str | None,
@@ -184,10 +204,13 @@ def cmd_trade_search(
         sum_groups=sum_groups, wants=wants, bench_crafts=bench_crafts, pob_mode=pob_mode,
         pob_limit=pob_limit, no_compare=no_compare, current_item_file=current_item_file,
         sort_by=sort_by, status=status, securable=securable, max_per_seller=max_per_seller,
+        item_name=item_name, item_type=item_type,
     )
     if validated is None:
         return
     sort_by, status = validated
+    if item_name and ctx.get_parameter_source("rarity") == click.core.ParameterSource.DEFAULT:
+        rarity = "any"
 
     try:
         weight_map = parse_weights(weights)
@@ -221,10 +244,23 @@ def cmd_trade_search(
                 open_suffix=open_suffix, open_affix=open_affix,
                 category=resolved_category,
                 search_sort=search_sort if ctx.get_parameter_source("search_sort") != click.core.ParameterSource.DEFAULT else None,
+                name=item_name, item_type=item_type, corrupted=corrupted,
             )
+            eff_realm = current_realm(cli_realm=realm)
+            if eff_realm == "tw":
+                auto_res["query"] = localize_query_for_tw(auto_res["query"])
             finalize_auto_query(auto_res)
             if dump_query and not stats and not sum_groups:
-                _emit_json({"slot": slot, "autoQuery": True, **auto_res}, compact=compact, out_path=out_path, sanitize=True)
+                if eff_realm == "tw":
+                    for fld, val in unmapped_tw_ascii_fields(auto_res["query"]):
+                        _err_utf8(
+                            f"Warning: pathofexile.tw requires Traditional Chinese item/base names; "
+                            f"could not map {fld}={val!r} to zh-rTW."
+                        )
+                _emit_json(
+                    {"realm": eff_realm, "slot": slot, "autoQuery": True, **auto_res},
+                    compact=compact, out_path=out_path, sanitize=True,
+                )
                 return
 
     eff_prefilter_k = surrogate_k if (surrogate_k is not None and surrogate_k > 0) else None
@@ -233,7 +269,7 @@ def cmd_trade_search(
         eff_fetch_limit = max(fetch_limit, 50, eff_prefilter_k)
 
     fetched_ctx = _execute_trade_api_query(
-        ctx, proxy=proxy, verbose=verbose, league=league, dump_query=dump_query, slot=slot,
+        ctx, proxy=proxy, verbose=verbose, league=league, realm=realm, dump_query=dump_query, slot=slot,
         resolved_category=resolved_category, requests=requests, weighted_groups=weighted_groups,
         wants=wants, allow_conversion=allow_conversion, convert_to=convert_to, rarity=rarity,
         ilvl_min=ilvl_min, status=status, currency=currency, budget=budget, max_age=max_age,
@@ -241,6 +277,7 @@ def cmd_trade_search(
         open_suffix=open_suffix, open_affix=open_affix, allow_corrupted=allow_corrupted,
         bench_hint=bench_hint, fetch_limit=eff_fetch_limit, compact=compact, out_path=out_path,
         auto_query_body=auto_res["query"] if isinstance(auto_res, dict) else None,
+        item_name=item_name, item_type=item_type, corrupted=corrupted,
     )
     if fetched_ctx is None:
         return
@@ -250,6 +287,7 @@ def cmd_trade_search(
         rows, plan=plan, current=current, weight_map=weight_map, preferred=preferred,
         search_url=fetched_ctx["search_url"], league_name=fetched_ctx["league_name"],
         query=fetched_ctx["query"], rates=fetched_ctx["rates"], market=fetched_ctx["market"], bargain=bargain,
+        realm=fetched_ctx.get("realm") or "global",
     )
 
     pre_sort = "sum" if (sort_by == "sum" or (search_sort == "sum" and sort_by != "price")) else "score"

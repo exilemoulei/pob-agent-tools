@@ -246,6 +246,7 @@ def _emit_search_results(
     price_floor_note = compute_price_floor_note(floor_pool, status=status)
     if as_json:
         payload: dict[str, Any] = {
+            "realm": fetched_ctx.get("realm") or "global",
             "league": fetched_ctx["league_name"],
             "slot": slot,
             "category": resolved_category,

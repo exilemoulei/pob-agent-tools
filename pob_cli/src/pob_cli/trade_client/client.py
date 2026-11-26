@@ -21,15 +21,17 @@ from ..importers import (
     _resolve_proxy,
     _shared_cache_dir,
 )
+from ..locale_cfg import current_realm, normalize_realm, trade_base_url_for_realm
 from .ratelimit import TradeRateLimiter
+from .tw_names import localize_query_for_tw
 from .utils import (
     _SKIP_LEAGUE_RE,
-    BASE_URL,
     DEFAULT_LIMIT_MARGIN,
     DEFAULT_MAX_WAIT_SEC,
     MAX_FETCH_IDS,
     MAX_FETCH_MANY,
     STATS_TTL_SECONDS,
+    TW_LEAGUE_ALIASES,
     ApiError,
     CookieRequired,
     NoResults,
@@ -60,7 +62,12 @@ class TradeClient:
         now: Callable[[], float] = time.time,
         logger: Callable[[str], None] | None = None,
         transport: httpx.BaseTransport | None = None,
+        realm: str | None = None,
+        pob_dir: Path | None = None,
     ) -> None:
+        self.realm = normalize_realm(realm) if realm is not None else current_realm()
+        self.base_url = trade_base_url_for_realm(self.realm)
+        self.pob_dir = Path(pob_dir) if pob_dir is not None else None
         self.cookie = _normalize_cookie(cookie) if cookie is not None else _env_cookie()
         self.proxy = _resolve_proxy(proxy)
         self.user_agent = user_agent or os.environ.get("POE_TRADE_USER_AGENT") or USER_AGENT
@@ -79,6 +86,7 @@ class TradeClient:
         self._client: httpx.Client | None = None
         self.rate_limiter = TradeRateLimiter(
             cache_dir=self.cache_dir,
+            realm=self.realm,
             limit_margin=DEFAULT_LIMIT_MARGIN,
             max_wait_sec=self.max_wait_sec,
             sleep=self._sleep,
@@ -150,7 +158,7 @@ class TradeClient:
         params: dict[str, str] | None = None,
         policy: str = "data",
     ) -> Any:
-        url = BASE_URL + path
+        url = self.base_url + path
         if params:
             url += "?" + urlencode(params)
 
@@ -209,24 +217,32 @@ class TradeClient:
         payload = self._request("GET", "/api/trade/data/leagues", policy="data")
         return list(payload.get("result") or [])
 
+    def normalize_league(self, league: str) -> str:
+        cleaned = str(league or "").strip()
+        if self.realm == "tw" and cleaned:
+            return TW_LEAGUE_ALIASES.get(cleaned.lower(), cleaned)
+        return cleaned
+
     def default_league(self) -> str:
+        fallback = "標準模式" if self.realm == "tw" else "Standard"
         try:
             leagues = self.leagues()
         except TradeError:
-            return "Standard"
+            return fallback
         for league in leagues:
             league_id = str(league.get("id") or "").strip()
             if str(league.get("realm") or "pc").lower() != "pc":
                 continue
-            if not league_id or league_id.lower() in {"standard", "hardcore"}:
+            if not league_id or league_id.lower() in {"standard", "hardcore"} or league_id in {"標準模式", "專家模式"}:
                 continue
             if _SKIP_LEAGUE_RE.search(league_id):
                 continue
             return league_id
-        return "Standard"
+        return fallback
 
     def _cached_data(self, name: str, force_refresh: bool = False) -> list[dict[str, Any]]:
-        cache_path = self.cache_dir / f"trade_{name}.json"
+        fname = f"trade_{name}.json" if self.realm == "global" else f"trade_{name}_{self.realm}.json"
+        cache_path = self.cache_dir / fname
         now = float(self._now())
         if not force_refresh:
             cached = _read_stats_cache(cache_path, now)
@@ -248,10 +264,12 @@ class TradeClient:
     # -- search / fetch -------------------------------------------------
 
     def search(self, league: str, query: dict[str, Any]) -> dict[str, Any]:
-        path = f"/api/trade/search/{_quote(league)}"
-        payload = self._request("POST", path, body=query, policy="search")
+        eff_league = self.normalize_league(league)
+        eff_query = localize_query_for_tw(query, pob_dir=self.pob_dir) if self.realm == "tw" else query
+        path = f"/api/trade/search/{_quote(eff_league)}"
+        payload = self._request("POST", path, body=eff_query, policy="search")
         if not payload.get("result"):
-            inner = query.get("query") if isinstance(query, dict) else None
+            inner = eff_query.get("query") if isinstance(eff_query, dict) else None
             status_opt = (inner.get("status") or {}).get("option") if isinstance(inner, dict) else None
             raise NoResults(str(status_opt) if status_opt else None)
         return payload
@@ -283,10 +301,18 @@ class TradeClient:
         return results
 
     def search_url(self, league: str, query_id: str) -> str:
-        return f"{BASE_URL}/trade/search/{_quote(league)}/{_quote(query_id)}"
+        eff_league = self.normalize_league(league)
+        return f"{self.base_url}/trade/search/{_quote(eff_league)}/{_quote(query_id)}"
 
 
-def seller_url(league: str, query: dict[str, Any], account: str) -> str:
+def seller_url(
+    league: str,
+    query: dict[str, Any],
+    account: str,
+    *,
+    realm: str | None = None,
+    base_url: str | None = None,
+) -> str:
     """Search link narrowed to one seller, so the page shows only their matching listing(s).
 
     The site's search id is the gzip + urlsafe-base64 of the ``query`` JSON, so it is built
@@ -294,12 +320,13 @@ def seller_url(league: str, query: dict[str, Any], account: str) -> str:
     """
     # shortcut: relies on the site accepting self-describing ids (checked against the ids the
     # API issues); if it returns to stored ids, issue one search per listing instead.
+    host = (base_url or trade_base_url_for_realm(realm or "global")).rstrip("/")
     narrowed = copy.deepcopy(query)
     trade_filters = narrowed.setdefault("filters", {}).setdefault("trade_filters", {})
     trade_filters.setdefault("filters", {})["account"] = {"input": account}
     blob = gzip.compress(json.dumps(narrowed, separators=(",", ":")).encode("utf-8"), mtime=0)
     query_id = base64.urlsafe_b64encode(blob).decode("ascii").rstrip("=")
-    return f"{BASE_URL}/trade/search/{_quote(league)}/{query_id}"
+    return f"{host}/trade/search/{_quote(league)}/{query_id}"
 
 
 def _api_error_from_response(response: httpx.Response) -> ApiError:

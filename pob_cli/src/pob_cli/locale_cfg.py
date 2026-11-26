@@ -11,6 +11,34 @@ from typing import Any
 
 SUPPORTED_LANGS: tuple[str, ...] = ("zh-CN", "zh-TW", "en")
 DEFAULT_LANG: str = "zh-CN"
+SUPPORTED_REALMS: tuple[str, ...] = ("global", "tw")
+DEFAULT_REALM: str = "global"
+
+REALM_TRADE_BASE_URLS: dict[str, str] = {
+    "global": "https://www.pathofexile.com",
+    "tw": "https://pathofexile.tw",
+}
+
+_REALM_ALIASES: dict[str, str] = {
+    "global": "global",
+    "intl": "global",
+    "international": "global",
+    "ggg": "global",
+    "pc": "global",
+    "en": "global",
+    "tw": "tw",
+    "taiwan": "tw",
+    "zh-tw": "tw",
+    "zh_tw": "tw",
+    "hk": "tw",
+    "mo": "tw",
+    "pathofexile.tw": "tw",
+}
+
+TW_REALM_CONFIRM_PROMPT: str = (
+    "你玩的是台服吗？請問您遊玩的是台港澳服（pathofexile.tw）嗎？"
+    "若是，請確認後執行 `pob lang --realm tw` 開啟台服市集；國際服繁中玩家無需切換。"
+)
 
 _LANG_ALIASES: dict[str, str] = {
     "zh": "zh-CN",
@@ -46,15 +74,25 @@ _DATA_SUBDIRS: dict[str, str | None] = {
 
 __all__ = [
     "DEFAULT_LANG",
+    "DEFAULT_REALM",
+    "REALM_TRADE_BASE_URLS",
     "SUPPORTED_LANGS",
+    "SUPPORTED_REALMS",
+    "TW_REALM_CONFIRM_PROMPT",
     "_has_runtime_data_l0",
     "current_lang",
+    "current_realm",
     "get_active_lang",
+    "get_active_realm",
     "invalid_env_lang",
+    "invalid_env_realm",
     "lang_to_data_subdir",
     "normalize_lang",
+    "normalize_realm",
     "resolve_runtime_dir_l0",
     "set_active_lang",
+    "set_active_realm",
+    "trade_base_url_for_realm",
 ]
 
 
@@ -213,3 +251,101 @@ def set_active_lang(lang: str, runtime_dir: Path | None = None) -> dict[str, Any
         raise
 
     return {"lang": norm, "configPath": str(cfg_path)}
+
+
+_WARNED_ENV_REALMS: set[str] = set()
+
+
+def normalize_realm(val: str | None) -> str:
+    """Normalize a trade realm identifier to `'global'` or `'tw'`."""
+    if val is None:
+        raise ValueError(f"Unsupported trade realm {val!r}; valid choices: {', '.join(SUPPORTED_REALMS)}")
+    cleaned = str(val).strip().lower()
+    mapped = _REALM_ALIASES.get(cleaned)
+    if mapped is None:
+        raise ValueError(f"Unsupported trade realm {val!r}; valid choices: {', '.join(SUPPORTED_REALMS)}")
+    return mapped
+
+
+def trade_base_url_for_realm(realm: str | None = None) -> str:
+    """Return official trade host URL (`https://www.pathofexile.com` or `https://pathofexile.tw`)."""
+    norm = normalize_realm(realm) if realm is not None else DEFAULT_REALM
+    return REALM_TRADE_BASE_URLS[norm]
+
+
+def invalid_env_realm() -> str | None:
+    """Return raw `POB_REALM` when set to an unsupported value, else None."""
+    env_val = os.environ.get("POB_REALM", "").strip()
+    if not env_val:
+        return None
+    try:
+        normalize_realm(env_val)
+    except ValueError:
+        return env_val
+    return None
+
+
+def get_active_realm(
+    runtime_dir: Path | None = None,
+    *,
+    cli_realm: str | None = None,
+) -> tuple[str, str]:
+    """Return `(realm, source)` where precedence is CLI `--realm` > `POB_REALM` > `config.json` > `'global'`."""
+    if cli_realm is not None and str(cli_realm).strip():
+        return normalize_realm(cli_realm), "cli"
+
+    env_val = os.environ.get("POB_REALM", "").strip()
+    if env_val:
+        try:
+            return normalize_realm(env_val), "env"
+        except ValueError:
+            if env_val not in _WARNED_ENV_REALMS:
+                _WARNED_ENV_REALMS.add(env_val)
+                print(
+                    f"Warning: ignoring POB_REALM={env_val!r}; valid choices: {', '.join(SUPPORTED_REALMS)}.",
+                    file=sys.stderr,
+                )
+
+    cfg_path = resolve_runtime_dir_l0(runtime_dir) / "config.json"
+    if cfg_path.is_file():
+        try:
+            raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and raw.get("realm") is not None:
+                return normalize_realm(str(raw["realm"])), "config"
+        except (OSError, ValueError, TypeError):
+            pass
+
+    return DEFAULT_REALM, "default"
+
+
+def current_realm(runtime_dir: Path | None = None, *, cli_realm: str | None = None) -> str:
+    """Return active normalized trade realm (`'global'` or `'tw'`)."""
+    return get_active_realm(runtime_dir, cli_realm=cli_realm)[0]
+
+
+def set_active_realm(realm: str, runtime_dir: Path | None = None) -> dict[str, Any]:
+    """Normalize `realm`, atomically persist `<runtime_dir>/config.json["realm"]`, and return status dict."""
+    norm = normalize_realm(realm)
+    rt_dir = resolve_runtime_dir_l0(runtime_dir)
+    rt_dir.mkdir(parents=True, exist_ok=True)
+    cfg_path = rt_dir / "config.json"
+
+    payload: dict[str, Any] = {}
+    if cfg_path.is_file():
+        try:
+            existing = json.loads(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                payload = dict(existing)
+        except (OSError, ValueError, TypeError):
+            payload = {}
+
+    payload["realm"] = norm
+    tmp_path = cfg_path.with_name(f".config.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp_path, cfg_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    return {"realm": norm, "tradeBaseUrl": REALM_TRADE_BASE_URLS[norm], "configPath": str(cfg_path)}

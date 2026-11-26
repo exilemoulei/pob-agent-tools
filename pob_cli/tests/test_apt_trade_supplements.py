@@ -91,7 +91,7 @@ def test_cli_trade_stats_json_and_markdown_expose_better_source_and_polarity(
     ]
 
     class _DummyClient:
-        def __init__(self, proxy: str | None = None) -> None:
+        def __init__(self, proxy: str | None = None, **_kwargs: object) -> None:
             pass
 
         def __enter__(self) -> _DummyClient:

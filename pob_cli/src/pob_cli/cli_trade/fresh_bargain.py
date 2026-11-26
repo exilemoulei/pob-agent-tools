@@ -6,7 +6,7 @@ import copy
 import statistics
 from typing import Any
 
-from ..trade_client import MAX_FETCH_IDS, MAX_FETCH_MANY, NoResults, TradeError
+from ..trade_client import MAX_FETCH_IDS, MAX_FETCH_MANY, NoResults, TradeError, localize_query_for_tw
 from ..trade_eval import listing_age_hours
 from ..trade_query import build_query
 from .common import _is_securable_row, _price_of
@@ -176,6 +176,8 @@ def _fetch_with_fresh_and_market(
         # Nothing that fresh: show the older listings rather than an empty report.
         # `query` is replaced so the links and the JSON match what is listed.
         query = _clone_without_max_age(query) if has_auto_query else build_query(**query_args)
+        if not has_auto_query and getattr(client, "realm", "global") == "tw":
+            query = localize_query_for_tw(query, pob_dir=getattr(client, "pob_dir", None))
         query_id, total, rows, fetched = _search_rows(
             client, league_name, query, want=want, max_age=None
         )
@@ -202,6 +204,8 @@ def _fetch_with_fresh_and_market(
                     if has_auto_query
                     else build_query(**{**query_args, "search_sort": "asc"})
                 )
+                if not has_auto_query and getattr(client, "realm", "global") == "tw":
+                    mkt_query = localize_query_for_tw(mkt_query, pob_dir=getattr(client, "pob_dir", None))
                 market_total, cheapest = _search_rows(
                     client,
                     league_name,

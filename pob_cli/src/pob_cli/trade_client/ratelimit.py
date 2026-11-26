@@ -44,12 +44,14 @@ class TradeRateLimiter:
         self,
         cache_dir: Path | None = None,
         *,
+        realm: str = "global",
         limit_margin: int = DEFAULT_LIMIT_MARGIN,
         max_wait_sec: float = DEFAULT_MAX_WAIT_SEC,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], float] = time.time,
     ) -> None:
         self.cache_dir = Path(cache_dir) if cache_dir is not None else _shared_cache_dir()
+        self.realm = str(realm or "global").strip().lower() or "global"
         self.limit_margin = max(0, int(limit_margin))
         self.max_wait_sec = max(0.0, float(max_wait_sec))
         self._sleep = sleep
@@ -58,11 +60,13 @@ class TradeRateLimiter:
 
     @property
     def state_path(self) -> Path:
-        return self.cache_dir / "trade_ratelimit.json"
+        fname = "trade_ratelimit.json" if self.realm == "global" else f"trade_ratelimit_{self.realm}.json"
+        return self.cache_dir / fname
 
     @property
     def lock_path(self) -> Path:
-        return self.cache_dir / "trade_ratelimit.json.lock"
+        fname = "trade_ratelimit.json.lock" if self.realm == "global" else f"trade_ratelimit_{self.realm}.json.lock"
+        return self.cache_dir / fname
 
     @contextlib.contextmanager
     def _state_lock(

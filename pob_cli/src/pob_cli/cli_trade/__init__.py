@@ -39,6 +39,7 @@ from .other_cmds import (
     cmd_bench_list,
     cmd_bench_suggest,
     cmd_trade_convert,
+    cmd_trade_leagues,
     cmd_trade_stats,
     trade_group,
 )
@@ -75,6 +76,7 @@ __all__ = [
     "cmd_bench_list",
     "cmd_bench_suggest",
     "cmd_trade_convert",
+    "cmd_trade_leagues",
     "cmd_trade_search",
     "cmd_trade_stats",
     "fetch_currency_chaos_rates",

@@ -10,6 +10,7 @@ from .. import bench as bench_mod
 from ..cli_common import _emit_json, _emit_text, _output_options, _resolve_output_flags
 from ..formatters import emit_json, render_table
 from ..guardrails import GuardrailScope, check_input, check_input_item_raw, validate_url
+from ..locale_cfg import current_realm, trade_base_url_for_realm
 from ..trade_client import TradeError
 from ..trade_item import convert_item_text
 from ..trade_query import get_stat_polarity_info, resolve_stat, suggest_stats
@@ -39,10 +40,66 @@ def trade_group() -> None:
     """Search official PoE1 trade (read-only), preview Harvest swaps, and verify in PoB."""
 
 
+@trade_group.command("leagues")
+@click.option(
+    "--realm",
+    type=click.Choice(["global", "tw"], case_sensitive=False),
+    default=None,
+    help="Trade server realm (`global` pathofexile.com or `tw` pathofexile.tw).",
+)
+@click.option("--proxy", help="HTTP/SOCKS5 proxy URL (overrides POB_PROXY).")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
+@_output_options
+def cmd_trade_leagues(
+    realm: str | None,
+    proxy: str | None,
+    as_json: bool,
+    compact: bool,
+    out_path: str | None,
+) -> None:
+    """List official PoE1 trade leagues and default PC challenge league for global or tw."""
+    import pob_cli.cli_trade as _ct
+
+    ctx = click.get_current_context()
+    eff_realm = current_realm(cli_realm=realm)
+    with _ct.TradeClient(proxy=proxy, realm=eff_realm) as client:
+        try:
+            leagues = client.leagues()
+            default_lg = client.default_league()
+        except TradeError as exc:
+            _trade_error(ctx, exc)
+            return
+    if as_json:
+        _emit_json(
+            {
+                "realm": eff_realm,
+                "tradeBaseUrl": trade_base_url_for_realm(eff_realm),
+                "defaultLeague": default_lg,
+                "leagues": leagues,
+            },
+            compact=compact,
+            out_path=out_path,
+            sanitize=True,
+        )
+        return
+    rows = [[str(lg.get("id") or "-"), str(lg.get("realm") or "pc"), str(lg.get("text") or "-")] for lg in leagues]
+    header = (
+        f"### PoE1 Trade Leagues (`{eff_realm}`, `{trade_base_url_for_realm(eff_realm)}`, "
+        f"default: `{default_lg}`)\n"
+    )
+    _emit_text(header + render_table(["ID", "Realm", "Label"], rows), out_path=out_path)
+
+
 @trade_group.command("stats")
 @click.argument("text")
 @click.option("--slot", help=f"Optional slot for (Local)/(Shields) routing ({SLOT_HINT}).")
 @click.option("--limit", default=5, show_default=True, help="Maximum suggestions to show.")
+@click.option(
+    "--realm",
+    type=click.Choice(["global", "tw"], case_sensitive=False),
+    default=None,
+    help="Trade server realm (`global` or `tw`).",
+)
 @click.option("--proxy", help="HTTP/SOCKS5 proxy URL (overrides POB_PROXY).")
 @click.option("--refresh", is_flag=True, help="Force refresh remote trade stats cache.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
@@ -51,6 +108,7 @@ def cmd_trade_stats(
     text: str,
     slot: str | None,
     limit: int,
+    realm: str | None,
     proxy: str | None,
     refresh: bool,
     as_json: bool,
@@ -65,7 +123,8 @@ def cmd_trade_stats(
     if slot:
         check_input(slot, scope=GuardrailScope.SLOT, expected_game="poe1")
     check_input(text, scope=GuardrailScope.STAT_QUERY, expected_game="poe1")
-    with _ct.TradeClient(proxy=proxy) as client:
+    eff_realm = current_realm(cli_realm=realm)
+    with _ct.TradeClient(proxy=proxy, realm=eff_realm) as client:
         try:
             entries, source = _ct.load_trade_stats(
                 remote_fetcher=lambda: client.stats(force_refresh=refresh),
