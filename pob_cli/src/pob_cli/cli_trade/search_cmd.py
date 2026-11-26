@@ -19,9 +19,11 @@ from ..trade_eval import (
 )
 from ..trade_query import (
     VALID_STATUSES,
+    apply_exact_item_filters,
     parse_stat_argument,
     parse_sum_group_argument,
     pob_slot_for_slot,
+    resolve_trade_name_and_base,
     translate_stat_query,
 )
 from ..trade_query.auto_query import apply_cli_filters_to_auto_query, finalize_auto_query
@@ -69,6 +71,47 @@ def _enforce_current_item_file(ctx: click.Context, current_item_file: str | None
     return True
 
 
+def _prepare_exact_item_options(
+    ctx: click.Context,
+    *,
+    item_name: str | None,
+    item_type: str | None,
+    links: int | None,
+    foulborn: bool,
+    gem_level: int | None,
+    gem_quality: int | None,
+    category: str | None,
+    slot: str | None,
+    no_category: bool,
+    rarity: str,
+) -> tuple[str | None, str | None, str | None, str, dict[str, Any] | None]:
+    en_name, en_type, detected_fb, inferred_cat = resolve_trade_name_and_base(item_name, item_type)
+    eff_foulborn = bool(foulborn or detected_fb)
+    eff_cat = category
+    if (gem_level is not None or gem_quality is not None) and not eff_cat and not slot and not no_category:
+        eff_cat = "gem"
+    elif inferred_cat and not eff_cat and not slot and not no_category:
+        eff_cat = inferred_cat
+    eff_rarity = rarity
+    if ctx.get_parameter_source("rarity") == click.core.ParameterSource.DEFAULT:
+        if eff_foulborn and gem_level is None and gem_quality is None:
+            eff_rarity = "unique"
+        elif en_name or en_type or gem_level is not None or gem_quality is not None:
+            eff_rarity = "any"
+    exact_filters = (
+        {
+            "links": links,
+            "foulborn": eff_foulborn,
+            "gem_level": gem_level,
+            "gem_quality": gem_quality,
+            "infer_gem_category": not no_category,
+        }
+        if (links is not None or eff_foulborn or gem_level is not None or gem_quality is not None)
+        else None
+    )
+    return en_name, en_type, eff_cat, eff_rarity, exact_filters
+
+
 @trade_group.command("search")
 @click.option("--slot", help=f"Equipment slot ({SLOT_HINT}).")
 @click.option("--stat", "stats", multiple=True, help='Required stat, e.g. "maximum Life=80" (repeatable).')
@@ -104,8 +147,12 @@ def _enforce_current_item_file(ctx: click.Context, current_item_file: str | None
     default=None,
     help="Trade server realm (`global` pathofexile.com or `tw` pathofexile.tw; overrides POB_REALM/config).",
 )
-@click.option("--name", "item_name", help="Unique/item name filter (auto-mapped to zh-TW on --realm tw).")
-@click.option("--type", "item_type", help="Base item or gem type filter (auto-mapped to zh-TW on --realm tw).")
+@click.option("--name", "item_name", help="Unique/item name filter (EN/ZH/slang; auto-mapped to zh-TW on --realm tw).")
+@click.option("--base", "--type", "item_type", help="Base item or gem type filter (EN/ZH/slang; auto-mapped to zh-TW on --realm tw).")
+@click.option("--links", type=click.IntRange(1, 6), default=None, help="Minimum linked sockets (1..6).")
+@click.option("--foulborn", is_flag=True, help="Filter 3.30 Foulborn mutated unique items.")
+@click.option("--gem-level", type=click.IntRange(1, 40), default=None, help="Minimum skill/support gem level.")
+@click.option("--gem-quality", type=click.IntRange(0, 40), default=None, help="Minimum gem/item quality.")
 @click.option(
     "--corrupted",
     type=click.Choice(["yes", "no", "any"], case_sensitive=False),
@@ -179,6 +226,10 @@ def cmd_trade_search(
     realm: str | None,
     item_name: str | None,
     item_type: str | None,
+    links: int | None,
+    foulborn: bool,
+    gem_level: int | None,
+    gem_quality: int | None,
     corrupted: str | None,
     rarity: str,
     ilvl_min: int,
@@ -216,6 +267,11 @@ def cmd_trade_search(
     ctx = click.get_current_context()
     if not _enforce_current_item_file(ctx, current_item_file):
         return
+    item_name, item_type, category, rarity, exact_filters = _prepare_exact_item_options(
+        ctx, item_name=item_name, item_type=item_type, links=links, foulborn=foulborn,
+        gem_level=gem_level, gem_quality=gem_quality, category=category, slot=slot,
+        no_category=no_category, rarity=rarity,
+    )
     validated = _validate_search_inputs(
         ctx, slot=slot, category=category, no_category=no_category, stats=stats,
         sum_groups=sum_groups, wants=wants, bench_crafts=bench_crafts, pob_mode=pob_mode,
@@ -226,8 +282,6 @@ def cmd_trade_search(
     if validated is None:
         return
     sort_by, status = validated
-    if item_name and ctx.get_parameter_source("rarity") == click.core.ParameterSource.DEFAULT:
-        rarity = "any"
 
     try:
         weight_map = parse_weights(weights)
@@ -263,6 +317,8 @@ def cmd_trade_search(
                 search_sort=search_sort if ctx.get_parameter_source("search_sort") != click.core.ParameterSource.DEFAULT else None,
                 name=item_name, item_type=item_type, corrupted=corrupted,
             )
+            if exact_filters:
+                apply_exact_item_filters(auto_res["query"], **exact_filters)
             eff_realm = current_realm(cli_realm=realm)
             if eff_realm == "tw":
                 auto_res["query"] = localize_query_for_tw(auto_res["query"])
@@ -294,7 +350,7 @@ def cmd_trade_search(
         open_suffix=open_suffix, open_affix=open_affix, allow_corrupted=allow_corrupted,
         bench_hint=bench_hint, fetch_limit=eff_fetch_limit, compact=compact, out_path=out_path,
         auto_query_body=auto_res["query"] if isinstance(auto_res, dict) else None,
-        item_name=item_name, item_type=item_type, corrupted=corrupted,
+        item_name=item_name, item_type=item_type, corrupted=corrupted, exact_filters=exact_filters,
     )
     if fetched_ctx is None:
         return
