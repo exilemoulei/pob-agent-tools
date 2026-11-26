@@ -308,7 +308,8 @@ def cmd_calc(
     explicit_selector = group is not None or skill is not None
 
     def _header(total: int) -> list[str]:
-        out = [f"### Calcs Breakdown for `{kw_disp}` ({total} matches)"]
+        actor_tag = " [Actor: Minion]" if res.get("actor") == "minion" else ""
+        out = [f"### Calcs Breakdown for `{kw_disp}`{actor_tag} ({total} matches)"]
         calcs_skill = res.get("calcsSkill")
 
         def _named(group_no: Any, grp_lbl: Any, active: Any) -> str:
@@ -322,7 +323,7 @@ def cmd_calc(
                 calcs_skill.get("labelZh") or calcs_skill.get("label"),
                 calcs_skill.get("skillLabelZh") or calcs_skill.get("skillLabel"),
             )
-            out.append(f"- Calcs tab skill: {shown}")
+            out.append(f"- Calcs tab skill: {shown}{actor_tag}")
             if calcs_skill.get("isMainSkill") is False and not explicit_selector:
                 main = _named(
                     calcs_skill.get("mainSocketGroup"),
@@ -333,6 +334,8 @@ def cmd_calc(
                     f"> [WARN] These rows are for {shown}, the skill selected in PoB's Calcs tab, not the "
                     f"main skill ({main}). `pob summary` reports the main skill."
                 )
+        if res.get("minionHint"):
+            out.append(f"- Hint: {res['minionHint']}")
         return out
 
     def _append_calc_match(lines_out: list[str], m: dict[str, Any]) -> None:

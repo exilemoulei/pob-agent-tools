@@ -15,6 +15,7 @@ from .batch_ops_skills import (
     _op_set_group,
     _op_skill,
 )
+from .batch_types import resolve_flask_active_state
 from .batch_validate import validate_batch_op
 from .build_state import (
     _apply_class_ascendancy_in_place,
@@ -73,10 +74,14 @@ def _op_config(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int
 
 
 def _op_flask(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
-    f_sel = op.get("index")
+    f_sel: Any = None
+    for k in ("index", "flask_index", "flaskIndex", "slot", "flask"):
+        if op.get(k) is not None:
+            f_sel = op[k]
+            break
     if f_sel is None:
-        f_sel = op.get("flask_index") if "flask_index" in op else op.get("flaskIndex", "all")
-    act = opt_bool(op, "active", default=True)
+        f_sel = "all"
+    act = resolve_flask_active_state(op, default=True)
     slots = _parse_flask_slots(f_sel)
     _call_batch(w, [("set_slot_active", {"slotName": s_name, "active": act}) for s_name in slots])
     cache.invalidate("items")

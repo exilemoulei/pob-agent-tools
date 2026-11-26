@@ -88,11 +88,31 @@ _INT_OR_STR_KEYS: frozenset[str] = frozenset(
         "remove_gem",
         "flask_index",
         "flaskIndex",
+        "flask",
     }
 )
 # Where `index` is a 1-based integer rather than a name-or-index selector.
 _INT_INDEX_KINDS: frozenset[str] = frozenset({"anoint", "item_anoint", "item_db"})
 _TREE_KINDS: frozenset[str] = frozenset({"tree", "tree_change"})
+_FLASK_ACTIVE_KEYS: tuple[str, ...] = ("active", "state", "enabled")
+
+
+def resolve_flask_active_state(op: dict[str, Any], *, default: bool = True) -> bool:
+    """Resolve and cross-check flask active/state/enabled aliases (raises `ValueError` on conflict)."""
+    parsed: list[tuple[str, bool]] = []
+    for key in _FLASK_ACTIVE_KEYS:
+        val = op.get(key)
+        if val is not None:
+            parsed.append((key, parse_bool(val, key)))
+    if not parsed:
+        return default
+    first_k, first_v = parsed[0]
+    for other_k, other_v in parsed[1:]:
+        if other_v != first_v:
+            raise ValueError(
+                f"conflicting '{first_k}' ({first_v}) and '{other_k}' ({other_v}); pass only one or matching booleans"
+            )
+    return first_v
 
 
 def normalize_batch_op_types(idx: int, kind: str, op: dict[str, Any]) -> dict[str, Any]:
@@ -114,6 +134,12 @@ def normalize_batch_op_types(idx: int, kind: str, op: dict[str, Any]) -> dict[st
                     check_int_or_str(val, key)
             elif key in _INT_OR_STR_KEYS:
                 check_int_or_str(val, key)
+            elif key == "slot" and kind in ("flask", "item_flask"):
+                check_int_or_str(val, key)
+            elif key == "state" and kind in ("flask", "item_flask"):
+                out[key] = parse_bool(val, key)
+        if kind in ("flask", "item_flask"):
+            resolve_flask_active_state(out)
         if kind in _TREE_KINDS:
             for key in ("allocate", "deallocate"):
                 out[key] = parse_token_list(op.get(key), key)

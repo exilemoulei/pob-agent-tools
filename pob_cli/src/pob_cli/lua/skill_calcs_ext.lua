@@ -89,7 +89,7 @@ local function align_active_skill_index(list, cur_idx, want_gid, want_name, want
 end
 
 local function handle_get_group_gem_states(params)
-	local _, _, g, group_idx = resolve_socket_group(params)
+	local b, _, g, group_idx = resolve_socket_group(params)
 	local gems = {}
 	for i, gem in ipairs(g.gemList or {}) do
 		local entry = {
@@ -123,6 +123,7 @@ local function handle_get_group_gem_states(params)
 		mainActiveCalcsGemId = calcs_gid,
 		mainActiveCalcsNameSpec = calcs_name,
 		mainActiveCalcsSkillId = calcs_sid,
+		defaultItemSetId = (b and b.itemsTab and b.itemsTab.itemSetOrderList and b.itemsTab.itemSetOrderList[1]) or 1,
 		gems = gems,
 	}
 end
@@ -137,7 +138,11 @@ local function handle_apply_group_gem_states(params)
 			if type(gem) == "table" then
 				for _, field in ipairs(GEM_STATE_FIELDS) do
 					local val = entry[field]
-					if val ~= nil then gem[field] = copy_from_json(val) end
+					if val == "__nil__" then
+						gem[field] = nil
+					elseif val ~= nil then
+						gem[field] = copy_from_json(val)
+					end
 				end
 			end
 		end
