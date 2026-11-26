@@ -6,17 +6,15 @@ import http.client
 import json
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any
 
 from ..errors import CrossGameHallucinationError, DaemonRequestError, LegacyPatchTrapError
 from ..json_io import read_json_dict
+from ..os_util import spawn_detached_process
 from ..updater import STATE_BOOTSTRAP_MISSING, load_update_state
 from .runtime import (
-    _CREATE_BREAKAWAY_FROM_JOB,
-    _ERROR_ACCESS_DENIED,
     GAME_ID,
     BootstrapMissingError,
     _build_daemon_spawn_cmd,
@@ -187,26 +185,19 @@ def stop_daemon(runtime_dir: Path | None = None, *, timeout: float = 10.0) -> di
 
 
 def _spawn_daemon_process(cmd: list[str], rt_dir: Path, log_fh: Any) -> subprocess.Popen[Any]:
-    """Spawn background daemon detached from current session/job."""
+    """Spawn background daemon detached from current session/job without flashing a console window."""
     import pob_cli.daemon as _daemon_pkg
 
     sub = _daemon_pkg.subprocess
-    popen_kwargs: dict[str, Any] = {
-        "cwd": str(rt_dir),
-        "stdin": sub.DEVNULL,
-        "stdout": log_fh,
-        "stderr": log_fh,
-    }
-    if sys.platform == "win32":
-        base_flags = sub.CREATE_NEW_PROCESS_GROUP | sub.DETACHED_PROCESS | sub.CREATE_NO_WINDOW
-        try:
-            return sub.Popen(cmd, creationflags=base_flags | _CREATE_BREAKAWAY_FROM_JOB, **popen_kwargs)
-        except OSError as exc:
-            if getattr(exc, "winerror", None) != _ERROR_ACCESS_DENIED:
-                raise
-            return sub.Popen(cmd, creationflags=base_flags, **popen_kwargs)
-    popen_kwargs["start_new_session"] = True
-    return sub.Popen(cmd, **popen_kwargs)
+    return spawn_detached_process(
+        cmd,
+        sub=sub,
+        cwd=str(rt_dir),
+        stdin=sub.DEVNULL,
+        stdout=log_fh,
+        stderr=log_fh,
+        close_fds=True,
+    )
 
 
 def _ensure_daemon(

@@ -11,6 +11,8 @@ from typing import Any
 from ..bridge_client import RUNTIME_DIR
 from ..compat import ensure_utf8
 from ..errors import BootstrapMissingError as BootstrapMissingError
+from ..os_util import _CREATE_BREAKAWAY_FROM_JOB as _CREATE_BREAKAWAY_FROM_JOB
+from ..os_util import _ERROR_ACCESS_DENIED as _ERROR_ACCESS_DENIED
 from ..os_util import _get_kernel32 as _get_kernel32
 from ..os_util import _is_pid_alive as _is_pid_alive
 from ..updater import format_stderr_update_alert, get_runtime_dir, load_update_state
@@ -23,8 +25,6 @@ GLOBAL_IDLE_TIMEOUT_SEC = 1800.0    # 30 minutes
 UPDATE_RECHECK_INTERVAL_SEC = 1800.0  # 30 minutes
 
 _SLOT_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]{1,48}$")
-_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-_ERROR_ACCESS_DENIED = 5
 
 _stderr_alert_emitted = False
 _stderr_alert_checked_at: float | None = None

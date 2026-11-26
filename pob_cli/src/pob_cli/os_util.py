@@ -1,25 +1,28 @@
-"""OS process liveness, stale lockfile detection, and stale-lock reclaim (L0 pure module).
+"""OS process liveness, stale lockfile detection, stale-lock reclaim, and hidden subprocess launch (L0 pure module).
 
 Single canonical implementations shared by game_data (SQLite build locks),
-trade_client (rate-limit state locks), and the daemon runtime. All helpers are
-best-effort and fail safe: they never raise on malformed lock payloads or
-unsupported platforms.
+trade_client (rate-limit state locks), bridge/updater subprocesses, and the
+daemon runtime. All lock/liveness helpers are best-effort and fail safe: they
+never raise on malformed lock payloads or unsupported platforms.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _STILL_ACTIVE = 259
 _ERROR_ACCESS_DENIED = 5
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 _kernel32: Any = None
 
@@ -121,3 +124,69 @@ def _try_break_stale_lock(lock_path: Path) -> bool:
     except OSError:
         pass
     return True
+
+
+def win_hidden_startupinfo(sub: Any = subprocess, *, windows: bool | None = None) -> Any:
+    """Return a Windows STARTUPINFO configured with STARTF_USESHOWWINDOW + SW_HIDE, or None off Windows."""
+    is_win = sys.platform == "win32" if windows is None else windows
+    if not is_win:
+        return None
+    si_cls = getattr(sub, "STARTUPINFO", None)
+    if not callable(si_cls):
+        return None
+    si = si_cls()
+    si.dwFlags |= getattr(sub, "STARTF_USESHOWWINDOW", 0)
+    si.wShowWindow = getattr(sub, "SW_HIDE", 0)
+    return si
+
+
+def win_hidden_subprocess_kwargs(sub: Any = subprocess, *, windows: bool | None = None) -> dict[str, Any]:
+    """Return Windows kwargs (`creationflags=CREATE_NO_WINDOW` + hidden `startupinfo`) for child spawns.
+
+    Never sets `DETACHED_PROCESS`: per Win32 CreateProcess docs, `CREATE_NO_WINDOW` is ignored when
+    combined with `DETACHED_PROCESS`, causing console children to flash visible black windows.
+    """
+    is_win = sys.platform == "win32" if windows is None else windows
+    if not is_win:
+        return {}
+    kwargs: dict[str, Any] = {}
+    no_window = getattr(sub, "CREATE_NO_WINDOW", 0)
+    if no_window:
+        kwargs["creationflags"] = no_window
+    si = win_hidden_startupinfo(sub, windows=True)
+    if si is not None:
+        kwargs["startupinfo"] = si
+    return kwargs
+
+
+def spawn_detached_process(
+    cmd: Sequence[str],
+    *,
+    sub: Any = subprocess,
+    windows: bool | None = None,
+    **popen_kwargs: Any,
+) -> Any:
+    """Spawn a background process detached from parent exit / Ctrl+C without flashing a console window.
+
+    On Windows, uses `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW` (never `DETACHED_PROCESS`) with
+    hidden `STARTUPINFO` and `close_fds=True`, trying `CREATE_BREAKAWAY_FROM_JOB` first and falling
+    back without it on `PermissionError` or `WinError 5` (`ERROR_ACCESS_DENIED`). On POSIX, sets
+    `start_new_session=True`.
+    """
+    kwargs: dict[str, Any] = dict(popen_kwargs)
+    kwargs.setdefault("close_fds", True)
+    is_win = sys.platform == "win32" if windows is None else windows
+    if is_win:
+        base_flags = getattr(sub, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(sub, "CREATE_NO_WINDOW", 0)
+        if "startupinfo" not in kwargs:
+            si = win_hidden_startupinfo(sub, windows=True)
+            if si is not None:
+                kwargs["startupinfo"] = si
+        try:
+            return sub.Popen(cmd, creationflags=base_flags | _CREATE_BREAKAWAY_FROM_JOB, **kwargs)
+        except OSError as exc:
+            if not isinstance(exc, PermissionError) and getattr(exc, "winerror", None) != _ERROR_ACCESS_DENIED:
+                raise
+            return sub.Popen(cmd, creationflags=base_flags, **kwargs)
+    kwargs.setdefault("start_new_session", True)
+    return sub.Popen(cmd, **kwargs)

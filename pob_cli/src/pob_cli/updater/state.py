@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..os_util import win_hidden_subprocess_kwargs
 from .constants import (
     OK_STATES,
     POBTOOLS_META_FILENAME,
@@ -254,7 +255,6 @@ def probe_engine_gate(engine_dir: Path, timeout_sec: float = 20.0) -> dict[str, 
 
     out_queue: queue.Queue[dict[str, Any] | Exception | None] = queue.Queue()
     stderr_tail: collections.deque[str] = collections.deque(maxlen=50)
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     proc_env = os.environ.copy()
     proc_env.update(extra_env)
 
@@ -269,7 +269,7 @@ def probe_engine_gate(engine_dir: Path, timeout_sec: float = 20.0) -> dict[str, 
         encoding="utf-8",
         errors="replace",
         bufsize=1,
-        creationflags=creationflags,
+        **win_hidden_subprocess_kwargs(subprocess),
     )
 
     def _read_stdout() -> None:
