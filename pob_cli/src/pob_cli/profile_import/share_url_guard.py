@@ -15,7 +15,9 @@ import httpx
 from ..errors import DaemonRequestError
 
 MAX_REDIRECTS = 5
-_FAKE_IP_NET = ipaddress.ip_network("198.18.0.0/15")
+# Clash / sing-box "fake-ip" DNS answers every name from these ranges and the proxy resolves the real
+# host, so a name that resolves into them is treated as public or every share link breaks for those users.
+_FAKE_IP_NETS = (ipaddress.ip_network("198.18.0.0/15"), ipaddress.ip_network("fc00::/18"))
 _BLOCKED_HOSTS = frozenset({"api.github.com", "localhost", "localhost.localdomain"})
 
 
@@ -28,25 +30,29 @@ def _resolve_host(host: str) -> list[str]:
     return [str(info[4][0]) for info in infos]
 
 
-def _is_public_ip(addr: str) -> bool:
+def _is_public_ip(addr: str, *, resolved: bool = True) -> bool:
+    """`resolved=False` is an address written in the URL itself: no proxy stands behind that one."""
     try:
         ip = ipaddress.ip_address(addr.split("%", 1)[0])
     except ValueError:
         return False
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
-    if ip in _FAKE_IP_NET:
-        # Clash / sing-box "fake-ip" DNS answers every name from 198.18.0.0/15; the proxy resolves the
-        # real host, so treat it as public or every share link breaks for those users.
+    if resolved and any(ip in net for net in _FAKE_IP_NETS):
         return True
     return ip.is_global and not ip.is_multicast
 
 
 def check_public_https_url(url: str) -> None:
     """Refuse (exit 1) anything but an https URL whose host is public and is not api.github.com."""
-    parsed = urllib.parse.urlsplit(url.strip())
-    host = (parsed.hostname or "").rstrip(".").lower()
-    if parsed.scheme.lower() != "https" or not host:
+    try:
+        # httpx's own reading of the host, so the check sees the name it will connect to
+        # (`api\u3002github\u3002com` is api.github.com after IDNA mapping).
+        parsed = httpx.URL(url.strip())
+        scheme, host = parsed.scheme.lower(), parsed.raw_host.decode("ascii").rstrip(".").lower()
+    except (httpx.InvalidURL, UnicodeError):
+        scheme, host = "", ""
+    if scheme != "https" or not host:
         raise DaemonRequestError(
             f"Refusing to fetch {url!r}: only https share links are supported. "
             "Paste the share code itself, or use a pobb.in / poe.ninja / pastebin link."
@@ -55,11 +61,11 @@ def check_public_https_url(url: str) -> None:
         raise DaemonRequestError(f"Refusing to fetch {url!r}: host {host!r} is not allowed.")
     try:
         ipaddress.ip_address(host)
-        addresses = [host]
+        literal = True
     except ValueError:
-        addresses = _resolve_host(host)
-    for addr in addresses:
-        if not _is_public_ip(addr):
+        literal = False
+    for addr in [host] if literal else _resolve_host(host):
+        if not _is_public_ip(addr, resolved=not literal):
             raise DaemonRequestError(
                 f"Refusing to fetch {url!r}: host {host!r} resolves to a private, loopback or link-local address."
             )

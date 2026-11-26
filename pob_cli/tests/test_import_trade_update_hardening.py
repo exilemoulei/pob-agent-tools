@@ -175,6 +175,22 @@ def test_share_url_guard_allows_proxy_fake_ip_dns(monkeypatch: pytest.MonkeyPatc
     share_url_guard.check_public_https_url("https://pobb.in/abc")
 
 
+def test_share_url_guard_reads_the_host_as_httpx_will_connect_to_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(share_url_guard, "_resolve_host", lambda host: ["93.184.216.34"])
+    for url in ("https://api\u3002github\u3002com/x", "https://API.GitHub.com./x", "https://0177.0.0.1/", "https://\uff21\uff30\uff29.github.com/"):
+        with pytest.raises(DaemonRequestError, match="Refusing"):
+            share_url_guard.check_public_https_url(url)
+
+
+def test_share_url_guard_fake_ip_counts_only_for_a_resolved_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    for answer in ("198.18.0.42", "fc00::1234"):
+        monkeypatch.setattr(share_url_guard, "_resolve_host", lambda host, a=answer: [a])
+        share_url_guard.check_public_https_url("https://share.example/abc")
+    for literal in ("https://198.18.0.1/x", "https://[fc00::1]/x"):
+        with pytest.raises(DaemonRequestError, match="private"):
+            share_url_guard.check_public_https_url(literal)
+
+
 def test_share_url_guard_follows_public_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(share_url_guard, "_resolve_host", lambda host: ["93.184.216.34"])
     code = importers.xml_to_share_code(POE1_XML)
