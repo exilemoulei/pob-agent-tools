@@ -403,14 +403,11 @@ def inspect_tree(
                     {k: meta[k] for k in ("id", "name", "nameZh", "stats", "statsZh", "overrideWhy") if k in meta}
                 )
 
-        jewel_sockets = [
-            {
-                **sock,
-                "socketIndex": socket_index_by_node.get(int(sock["nodeId"])),
-                "allocated": int(sock["nodeId"]) in allocated_set,
-            }
-            for sock in tree_state.get("sockets", [])
-        ]
+        from .tree_sockets import enrich_tree_sockets
+
+        jewel_sockets, socket_summary, nearby_sockets = enrich_tree_sockets(
+            tree_state, items_res, nodes_db, dynamic_map, allocated_set
+        )
 
         return {
             "treeVersion": tree_version,
@@ -424,4 +421,6 @@ def inspect_tree(
             "notables": notables,
             "conqueredSmallPassives": conquered_smalls,
             "jewelSockets": jewel_sockets,
+            "socketSummary": socket_summary,
+            "nearbySockets": nearby_sockets,
         }

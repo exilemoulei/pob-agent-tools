@@ -208,4 +208,36 @@ def format_tree_markdown(
             for mn in items:
                 lines.extend(_format_mastery_effects_lines(mn))
 
+    jewel_sockets = [s for s in (res.get("jewelSockets") or []) if isinstance(s, dict) and s.get("kind") != "charm"]
+    nearby_sockets = [s for s in (res.get("nearbySockets") or []) if isinstance(s, dict)]
+    sock_sum = res.get("socketSummary") or {}
+    if jewel_sockets or nearby_sockets:
+        alloc_socks = [s for s in jewel_sockets if s.get("allocated")]
+        unalloc_nearby = [s for s in nearby_sockets if not s.get("allocated")]
+        empty_cnt = len(sock_sum.get("allocatedEmptyIds") or [s for s in alloc_socks if not s.get("occupied")])
+        near3_cnt = sum(1 for s in unalloc_nearby if int(s.get("cost") or 99) <= 3)
+        lines.append(
+            f"\n#### Jewel Sockets (Allocated: {len(alloc_socks)}, Empty: {empty_cnt} | Nearby <=3pt: {near3_cnt})"
+        )
+        sock_rows: list[list[Any]] = []
+        for s in alloc_socks:
+            idx_lbl = f"#{s['socketIndex']}" if s.get("socketIndex") else "-"
+            kind_lbl = str(s.get("kind") or "basic")
+            if s.get("sector"):
+                kind_lbl = f"{kind_lbl} ({s['sector']})"
+            status_lbl = (
+                strip_pob_escapes(s.get("nameZh") or s.get("name") or "Occupied")
+                if s.get("occupied") or s.get("itemId") or s.get("name")
+                else "[EMPTY]"
+            )
+            sock_rows.append([s.get("nodeId"), idx_lbl, kind_lbl, "0", status_lbl])
+        for s in unalloc_nearby[:6]:
+            kind_lbl = str(s.get("kind") or "basic")
+            if s.get("sector"):
+                kind_lbl = f"{kind_lbl} ({s['sector']})"
+            travel = "; ".join(s.get("travelStats") or [])[:60]
+            note = f"Unallocated ({travel})" if travel else "Unallocated"
+            sock_rows.append([s.get("nodeId"), "-", kind_lbl, s.get("cost"), note])
+        lines.append(render_table(["Node ID", "Slot", "Kind / Sector", "Cost", "Status / Travel"], sock_rows))
+
     return "\n".join(lines)
