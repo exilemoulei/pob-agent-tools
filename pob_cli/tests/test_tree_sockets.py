@@ -3,7 +3,11 @@ N1-N4 noise-reduction rules, `pob tree` Markdown socket panel, and `node_power_k
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+import pytest
+from engine_paths import find_runnable_engine
 
 from pob_cli.analyzer.tree_sockets import (
     classify_socket,
@@ -11,7 +15,25 @@ from pob_cli.analyzer.tree_sockets import (
     filter_sockets_for_view,
     sector_label_for_coords,
 )
+from pob_cli.bridge_client import BridgeWorker
 from pob_cli.formatters.tree_md import format_tree_markdown
+from pob_cli.importers import xml_to_share_code
+from pob_cli.updater import is_valid_engine_dir
+
+
+def _find_engine() -> Path | None:
+    eng = find_runnable_engine()
+    if eng is not None:
+        return eng
+    rt_env = os.environ.get("POB_RUNTIME_DIR", "").strip()
+    if rt_env:
+        cand = Path(rt_env) / "engine"
+        if (cand / "PoE1" / "Data" / "Gems.lua").is_file() and is_valid_engine_dir(cand):
+            return cand
+    return None
+
+
+_ENGINE_DIR = _find_engine()
 
 
 def test_socket_classification_and_six_outer_sectors() -> None:
@@ -21,6 +43,9 @@ def test_socket_classification_and_six_outer_sectors() -> None:
     assert classify_socket({"nodeId": 4, "expansion": True, "expansionSize": 0}) == "small_cluster_inner"
     assert classify_socket({"nodeId": 5, "charm": True}) is None
     assert classify_socket({"nodeId": 6, "expansion": False}, {"ascendancyName": "Primalist"}) is None
+    assert classify_socket({"nodeId": 7, "expansion": False}, {"dn": "Charm Socket"}) is None
+    assert classify_socket({"nodeId": 8, "name": "Charm Socket"}) is None
+    assert classify_socket({"nodeId": 9, "asc": True}) is None
 
     assert sector_label_for_coords(-5000, -8660) == "NW (Witch/Templar)"
     assert sector_label_for_coords(5000, -8660) == "NE (Witch/Shadow)"
@@ -153,3 +178,134 @@ def test_node_power_kernel_lua_budget_and_contract() -> None:
     assert "nearbySockets = nearby_sockets" in npk_txt
     assert 'require("node_power_kernel")' in uk_txt
     assert "node_power = handle_node_power" in uk_txt
+    assert "function handle_node_power" not in uk_txt
+    assert "collect_nearby_sockets" not in uk_txt
+
+
+def test_undirected_bfs_overrides_and_non_cluster_outer_occupant() -> None:
+    # Node 2 does NOT list 3 in its `links` (one-sided edge on 3 -> [2, 7960]),
+    # and node 3 has an override replacing its raw Intelligence travel stat.
+    nodes_db = {
+        "1": {"id": 1, "type": "ClassStart", "links": [2]},
+        "2": {"id": 2, "type": "Normal", "links": [1]},
+        "3": {"id": 3, "type": "Normal", "stats": ["+10 to Intelligence"], "links": [2, 7960]},
+        "7960": {"id": 7960, "type": "Socket", "x": 5000.0, "y": -8660.0, "links": [3]},
+        "21984": {"id": 21984, "type": "Socket", "x": 5000.0, "y": -8660.0, "links": [2]},
+        "46882": {"id": 46882, "type": "Socket", "x": -5000.0, "y": -8660.0, "links": [2]},
+    }
+    tree_state = {
+        "overrides": {"3": {"why": "tattoo", "stats": ["+4% to Chaos Resistance"]}},
+        "sockets": [
+            {"nodeId": 7960, "expansion": True, "expansionSize": 2},
+            # Regular unique jewel in an outer Large Jewel Socket -> NOT an active cluster!
+            {"nodeId": 21984, "expansion": True, "expansionSize": 2, "itemId": 1, "name": "Watcher's Eye", "baseName": "Prismatic Jewel"},
+            # Actual Large Cluster Jewel in an outer socket -> activeOuterClusters += 1
+            {"nodeId": 46882, "expansion": True, "expansionSize": 2, "itemId": 2, "name": "Cluster", "baseName": "Large Cluster Jewel"},
+        ],
+    }
+    items_res = {
+        "slots": [
+            {"nodeId": 21984, "socketIndex": 1, "selItemId": 1},
+            {"nodeId": 46882, "socketIndex": 2, "selItemId": 2},
+        ]
+    }
+    _, summary, nearby = enrich_tree_sockets(tree_state, items_res, nodes_db, {}, {1, 2, 21984, 46882})
+    assert summary["allocatedOccupied"] == 2
+    assert summary["activeOuterClusters"] == 1
+    outer = next(s for s in nearby if s["nodeId"] == 7960)
+    assert outer["cost"] == 2
+    assert outer["travelStats"] == ["+4% to Chaos Resistance"]
+
+
+@pytest.mark.skipif(_ENGINE_DIR is None, reason="No runnable PoB engine found")
+def test_real_engine_lua_and_python_socket_parity() -> None:
+    assert _ENGINE_DIR is not None
+    # Witch 3_30 path:
+    # - 6230 allocated & empty basic socket
+    # - 48768 unallocated basic socket at cost=1 (adjacent to 28221)
+    # - 21984 unallocated NE outer Large Cluster socket at cost=3 ([22618, 21033, 21984] from 49605)
+    # - 26725 isolated allocated node (must NOT create illegal nearby socket paths)
+    alloc_nodes = "58833,55373,38048,55906,6230,15144,918,28221,24643,33545,18033,46092,51923,48778,37671,27415,32710,49605,26725"
+    xml_base = f"""<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding>
+  <Build level="90" targetVersion="3_0" className="Witch" ascendClassName="Elementalist" mainSocketGroup="1" viewMode="SKILLS"/>
+  <Tree activeSpec="1"><Spec title="Default" treeVersion="3_30" classId="3" ascendClassId="2" nodes="{alloc_nodes}"/></Tree>
+  <Skills activeSkillSet="1"><SkillSet id="1"><Skill mainActiveSkill="1" enabled="true" label="Main"><Gem nameSpec="Arc" level="20" quality="20" enabled="true"/></Skill></SkillSet></Skills>
+  <Items activeItemSet="1"><ItemSet id="1"/></Items>
+  <Config activeConfigSet="1"><ConfigSet id="1"/></Config>
+</PathOfBuilding>"""
+
+    w = BridgeWorker(_ENGINE_DIR)
+    w.start()
+    try:
+        w.call("import_code", {"code": xml_to_share_code(xml_base), "mode": "replace"})
+        np_res = w.call("node_power", {"stat": "CombinedDPS", "maxDepth": 4})
+        ts = w.call("get_tree_state", {})
+        it_res = w.call("list_items", {})
+        nodes_db = w.get_cached_tree_data(ts.get("treeVersion")).get("nodes", {})
+        dyn_map = {str(n["id"]): n for n in ts.get("dynamicNodes", [])}
+        alloc_set = {int(x) for x in ts.get("allocatedNodes", [])}
+        _, py_summary, py_nearby = enrich_tree_sockets(
+            ts, it_res, nodes_db, dyn_map, alloc_set, max_basic_dist=4, max_outer_dist=4
+        )
+
+        assert np_res["socketSummary"] == py_summary
+        lua_tuples = [
+            (s["nodeId"], s["kind"], s.get("sector"), s["allocated"], s["occupied"], s["cost"])
+            for s in np_res["nearbySockets"]
+        ]
+        py_tuples = [
+            (s["nodeId"], s["kind"], s.get("sector"), s["allocated"], s["occupied"], s["cost"])
+            for s in py_nearby
+        ]
+        assert lua_tuples == py_tuples
+        assert (6230, "basic", None, True, False, 0) in lua_tuples
+        assert (48768, "basic", None, False, False, 1) in lua_tuples
+        assert (21984, "large_cluster_outer", "NE (Witch/Shadow)", False, False, 3) in lua_tuples
+
+        # Allocate 21984 and socket a regular Cobalt Jewel -> activeOuterClusters MUST stay 0 on both Lua & Python!
+        alloc_with_outer = f"{alloc_nodes},22618,21033,21984"
+        xml_cobalt = f"""<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding>
+  <Build level="90" targetVersion="3_0" className="Witch" ascendClassName="Elementalist" mainSocketGroup="1" viewMode="SKILLS"/>
+  <Tree activeSpec="1">
+    <Spec title="Default" treeVersion="3_30" classId="3" ascendClassId="2" nodes="{alloc_with_outer}">
+      <Sockets><Socket nodeId="21984" itemId="1"/></Sockets>
+    </Spec>
+  </Tree>
+  <Skills activeSkillSet="1"><SkillSet id="1"><Skill mainActiveSkill="1" enabled="true" label="Main"><Gem nameSpec="Arc" level="20" quality="20" enabled="true"/></Skill></SkillSet></Skills>
+  <Items activeItemSet="1">
+    <Item id="1">Rarity: RARE
+Mind Spark
+Cobalt Jewel
++10 to Intelligence</Item>
+    <ItemSet id="1"><SocketIdURL nodeId="21984" itemPbURL="" name="Jewel 21984" itemId="1"/></ItemSet>
+  </Items>
+  <Config activeConfigSet="1"><ConfigSet id="1"/></Config>
+</PathOfBuilding>"""
+        w.call("import_code", {"code": xml_to_share_code(xml_cobalt), "mode": "replace"})
+        np_cob = w.call("node_power", {"stat": "CombinedDPS", "maxDepth": 4})
+        ts_cob = w.call("get_tree_state", {})
+        it_cob = w.call("list_items", {})
+        _, py_sum_cob, _ = enrich_tree_sockets(
+            ts_cob, it_cob, nodes_db, {str(n["id"]): n for n in ts_cob.get("dynamicNodes", [])}, {int(x) for x in ts_cob.get("allocatedNodes", [])}
+        )
+        assert np_cob["socketSummary"]["activeOuterClusters"] == 0
+        assert py_sum_cob["activeOuterClusters"] == 0
+
+        # Socket a real Large Cluster Jewel into 21984 -> activeOuterClusters == 1 on both Lua & Python!
+        xml_cluster = xml_cobalt.replace(
+            "Cobalt Jewel\n+10 to Intelligence",
+            "Large Cluster Jewel\nImplicits: 2\n{crafted}Adds 8 Passive Skills\n{crafted}2 Added Passive Skills are Jewel Sockets\n{crafted}Added Small Passive Skills grant: 12% increased Lightning Damage",
+        )
+        w.call("import_code", {"code": xml_to_share_code(xml_cluster), "mode": "replace"})
+        np_clu = w.call("node_power", {"stat": "CombinedDPS", "maxDepth": 4})
+        ts_clu = w.call("get_tree_state", {})
+        it_clu = w.call("list_items", {})
+        _, py_sum_clu, _ = enrich_tree_sockets(
+            ts_clu, it_clu, nodes_db, {str(n["id"]): n for n in ts_clu.get("dynamicNodes", [])}, {int(x) for x in ts_clu.get("allocatedNodes", [])}
+        )
+        assert np_clu["socketSummary"]["activeOuterClusters"] == 1
+        assert py_sum_clu["activeOuterClusters"] == 1
+    finally:
+        w.stop()

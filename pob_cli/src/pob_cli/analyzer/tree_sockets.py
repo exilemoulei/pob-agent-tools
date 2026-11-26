@@ -6,6 +6,8 @@ import math
 from collections import deque
 from typing import Any
 
+from .tree_helpers import apply_node_override
+
 _KIND_PRIORITY: dict[str, int] = {
     "medium_cluster_inner": 0,
     "basic": 1,
@@ -44,20 +46,21 @@ def sector_label_for_coords(x: float | None, y: float | None) -> str | None:
 
 def classify_socket(sock: dict[str, Any], node_meta: dict[str, Any] | None = None) -> str | None:
     """Return socket kind (`basic`, `large_cluster_outer`, `medium_cluster_inner`, `small_cluster_inner`) or None for Charm sockets."""
-    if sock.get("charm"):
-        return None
-    if isinstance(node_meta, dict):
-        if node_meta.get("charmSocket") or node_meta.get("asc") or node_meta.get("ascendancyName"):
+    for src in (sock, node_meta):
+        if not isinstance(src, dict):
+            continue
+        if src.get("charm") or src.get("charmSocket") or src.get("asc") or src.get("ascendancyName"):
             return None
-        nm = str(node_meta.get("name") or "")
-        if nm == "Charm Socket":
+        if src.get("name") == "Charm Socket" or src.get("dn") == "Charm Socket":
             return None
     if not sock.get("expansion"):
         return "basic"
     exp_size = sock.get("expansionSize")
-    if exp_size == 2:
+    has_parent = isinstance(node_meta, dict) and bool(node_meta.get("expansionParent"))
+    if exp_size == 2 and not has_parent:
         return "large_cluster_outer"
     if exp_size == 1:
+        # Active inner cluster sockets injected by BuildSubgraph keep static <65536 tree IDs with parent != nil.
         return "medium_cluster_inner"
     return "small_cluster_inner"
 
@@ -83,6 +86,26 @@ def _node_neighbors(node: dict[str, Any]) -> list[int]:
     return out
 
 
+def _build_undirected_adj(nodes_db: dict[str, Any], dynamic_map: dict[str, Any]) -> dict[int, list[int]]:
+    adj_sets: dict[int, set[int]] = {}
+    all_keys = set(nodes_db.keys()) | set(dynamic_map.keys())
+    for sid in all_keys:
+        try:
+            u = int(sid)
+        except (TypeError, ValueError):
+            continue
+        nd = dynamic_map.get(sid) or nodes_db.get(sid)
+        if not isinstance(nd, dict):
+            continue
+        u_set = adj_sets.setdefault(u, set())
+        for v in _node_neighbors(nd):
+            v_nd = dynamic_map.get(str(v)) or nodes_db.get(str(v))
+            if isinstance(v_nd, dict):
+                u_set.add(v)
+                adj_sets.setdefault(v, set()).add(u)
+    return {u: sorted(nbs) for u, nbs in adj_sets.items()}
+
+
 def _build_socket_bfs(
     nodes_db: dict[str, Any],
     dynamic_map: dict[str, Any],
@@ -98,16 +121,7 @@ def _build_socket_bfs(
         sid = str(nid)
         return dynamic_map.get(sid) or nodes_db.get(sid)
 
-    adj: dict[int, list[int]] = {}
-
-    def _neighbors(nid: int) -> list[int]:
-        cached = adj.get(nid)
-        if cached is not None:
-            return cached
-        nd = _get(nid)
-        nb = _node_neighbors(nd) if isinstance(nd, dict) else []
-        adj[nid] = nb
-        return nb
+    adj = _build_undirected_adj(nodes_db, dynamic_map)
 
     # Restrict BFS roots to the connected component(s) containing a ClassStart/AscendClassStart
     # when present so Thread of Hope / Impossible Escape / Anoint isolated nodes never act as roots.
@@ -121,7 +135,7 @@ def _build_socket_bfs(
         q_conn: deque[int] = deque(start_roots)
         while q_conn:
             cur = q_conn.popleft()
-            for nb in _neighbors(cur):
+            for nb in adj.get(cur, ()):
                 if nb in allocated_set and nb not in connected:
                     connected.add(nb)
                     q_conn.append(nb)
@@ -145,7 +159,7 @@ def _build_socket_bfs(
         d = dist[cur]
         if d >= max_depth:
             continue
-        for nb in _neighbors(cur):
+        for nb in adj.get(cur, ()):
             if nb in dist:
                 continue
             nb_node = _get(nb)
@@ -167,6 +181,7 @@ def _reconstruct_path_and_stats(
     parent: dict[int, int | None],
     nodes_db: dict[str, Any],
     dynamic_map: dict[str, Any],
+    overrides: dict[str, Any] | None = None,
 ) -> tuple[list[int], list[str]]:
     path: list[int] = []
     cur: int | None = target_id
@@ -174,18 +189,50 @@ def _reconstruct_path_and_stats(
         path.append(cur)
         cur = parent.get(cur)
     path.reverse()
+    ov_map = overrides if isinstance(overrides, dict) else {}
     travel_stats: list[str] = []
     seen: set[str] = set()
     for nid in path:
         if nid == target_id:
             continue
-        nd = dynamic_map.get(str(nid)) or nodes_db.get(str(nid)) or {}
-        for ln in nd.get("stats") or []:
+        sid = str(nid)
+        raw_base = nodes_db.get(sid) or {}
+        eff = dict(raw_base)
+        if sid in dynamic_map and isinstance(dynamic_map[sid], dict):
+            eff.update(dynamic_map[sid])
+        if sid in ov_map and isinstance(ov_map[sid], dict):
+            apply_node_override(eff, ov_map[sid], raw_base)
+        for ln in eff.get("stats") or []:
             clean = " ".join(str(ln).split())
             if clean and clean not in seen and len(travel_stats) < 4:
                 seen.add(clean)
                 travel_stats.append(clean)
     return path, travel_stats
+
+
+def _is_cluster_occupant(
+    nid: int,
+    item_id: Any,
+    sock: dict[str, Any],
+    items_by_id: dict[str, dict[str, Any]],
+    dynamic_map: dict[str, Any],
+) -> bool:
+    if sock.get("clusterJewel"):
+        return True
+    item = items_by_id.get(str(item_id)) if item_id not in (None, 0, "0", False, "") else None
+    if isinstance(item, dict) and item.get("clusterJewel"):
+        return True
+    for src in (sock, item):
+        if not isinstance(src, dict):
+            continue
+        for k in ("baseName", "name", "title", "raw"):
+            txt = str(src.get(k) or "").lower()
+            if "cluster jewel" in txt or "the siege" in txt:
+                return True
+    for dn in dynamic_map.values():
+        if isinstance(dn, dict) and nid in _node_neighbors(dn):
+            return True
+    return False
 
 
 def enrich_tree_sockets(
@@ -209,6 +256,18 @@ def enrich_tree_sockets(
             if slot.get("selItemId"):
                 occupied_by_slot[nid] = int(slot["selItemId"])
 
+    items_by_id: dict[str, dict[str, Any]] = {}
+    raw_items = items_res.get("items")
+    if isinstance(raw_items, list):
+        for it in raw_items:
+            if isinstance(it, dict) and "id" in it:
+                items_by_id[str(it["id"])] = it
+    elif isinstance(raw_items, dict):
+        for k, it in raw_items.items():
+            if isinstance(it, dict):
+                items_by_id[str(k)] = it
+
+    overrides = tree_state.get("overrides") if isinstance(tree_state.get("overrides"), dict) else {}
     bfs_dist, bfs_parent = _build_socket_bfs(
         nodes_db, dynamic_map, allocated_set, max_depth=max(max_basic_dist, max_outer_dist)
     )
@@ -248,7 +307,9 @@ def enrich_tree_sockets(
             allocated_total += 1
             if occupied:
                 allocated_occupied += 1
-                if kind == "large_cluster_outer":
+                if kind == "large_cluster_outer" and _is_cluster_occupant(
+                    nid, item_id, sock, items_by_id, dynamic_map
+                ):
                     active_outer_clusters += 1
             else:
                 allocated_empty_ids.append(nid)
@@ -269,7 +330,7 @@ def enrich_tree_sockets(
             d = bfs_dist.get(nid)
             lim = max_outer_dist if kind == "large_cluster_outer" else max_basic_dist
             if d is not None and 1 <= d <= lim:
-                path_ids, travel_stats = _reconstruct_path_and_stats(nid, bfs_parent, nodes_db, dynamic_map)
+                path_ids, travel_stats = _reconstruct_path_and_stats(nid, bfs_parent, nodes_db, dynamic_map, overrides)
                 nearby_sockets.append(
                     {
                         "nodeId": nid,
