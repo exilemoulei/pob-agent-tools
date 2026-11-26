@@ -25,6 +25,7 @@ from ..updater import (
     unrestored_swap,
 )
 from .read_cache import READ_CACHE_ACTIONS, SlotReadCache
+from .rpc_dual import same_slot_error
 from .rpc_handlers import dispatch_dual_slot_action, dispatch_game_data, dispatch_slot_action
 from .runtime import (
     GAME_ID,
@@ -474,11 +475,7 @@ class DaemonManager:
             default_ref = "ref" if main_slot == "main" else f"{main_slot}_ref"
             ref_slot = normalize_slot_name(params.get("ref_target") or default_ref)
             if ref_slot == main_slot:
-                raise DaemonRequestError(
-                    f"The reference slot must differ from the main slot (both are '{main_slot}'): "
-                    "loading the reference would overwrite the main build and clear its undo history. "
-                    f"Pass a different `--ref-target` (default '{default_ref}')."
-                )
+                raise DaemonRequestError(same_slot_error(action, main_slot))
             with self._reader_barrier():
                 locks = [self._get_slot_lock(s) for s in sorted({main_slot, ref_slot})]
                 with contextlib.ExitStack() as stack:

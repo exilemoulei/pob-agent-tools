@@ -163,6 +163,15 @@ def test_daemon_dual_slot_rejects_ref_equal_to_main(
     assert mgr.main_worker.last_good_code == code_before
 
 
+def test_tree_diff_of_a_slot_against_itself_names_its_own_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    mgr = _make_manager(tmp_path, monkeypatch)
+    with pytest.raises(DaemonRequestError) as exc_info:
+        mgr.dispatch("tree_diff", {"target": "ref", "ref_target": "ref"})
+    text = str(exc_info.value)
+    assert "--against" in text and "--spec-a" in text
+    assert "--ref-target" not in text and "overwrite" not in text
+
+
 def test_cli_slot_slug_types_and_defaults_lowercase(monkeypatch: pytest.MonkeyPatch) -> None:
     from pob_cli.cli_common import _SLOT_SLUG_TYPE, _default_target
     from pob_cli.cli_trade.common import _TARGET_SLOT_TYPE, _default_target_slot

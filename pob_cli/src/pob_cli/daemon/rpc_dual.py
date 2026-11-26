@@ -15,6 +15,19 @@ if TYPE_CHECKING:
     from .slots import DaemonManager
 
 
+def same_slot_error(action: str, slot: str) -> str:
+    """Why a two-slot command refuses one slot named twice, in that command's own flags."""
+    if action == "tree_diff":
+        return (
+            f"`pob tree diff` compares two build slots, and both are '{slot}'. Pass a different "
+            "`--against`, or `--spec-a` / `--spec-b` to compare two tree specs of this one build."
+        )
+    return (
+        f"The reference slot must differ from the main slot (both are '{slot}'): loading the reference "
+        "would overwrite the main build and clear its undo history. Pass a different `--ref-target`."
+    )
+
+
 def dispatch_dual_slot_action(
     manager: DaemonManager,
     action: str,
