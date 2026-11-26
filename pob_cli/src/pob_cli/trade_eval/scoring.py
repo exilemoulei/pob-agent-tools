@@ -241,6 +241,10 @@ class Candidate:
     price_chaos: float | None = None  # price in chaos when the currency rate is known
     vs_market_pct: float | None = None  # price vs the going price; negative = cheaper
     bargain: bool = False
+    trade_mode: str = "in_person"
+    gold_fee: int | None = None
+    price_type: str | None = None
+    seller_duplicates_collapsed: int = 0
     pob: PobEval | None = None
     pob_error: str | None = None
     bench_craft: dict[str, Any] | None = None
@@ -377,6 +381,69 @@ def score_deltas(deltas: list[ModDelta]) -> float:
 def deltas_for_example(current: Item | None, candidate: Item) -> list[ModDelta]:
     """Small helper kept for tests and callers that only need the delta list."""
     return compare_items(current, candidate)
+
+
+def _clone_dedupe_key(candidate: Candidate) -> tuple[Any, ...] | None:
+    seller = (candidate.seller or "").strip().lower()
+    if not seller:
+        return None
+    mod_sig = tuple(sorted((m.kind, m.template, m.values) for m in candidate.item.mods))
+    price_amt = _json_safe_optional_float(candidate.price_amount)
+    price_cur = (candidate.price_currency or "").strip().lower()
+    return (seller, candidate.item.base_type.strip().lower(), mod_sig, price_amt, price_cur)
+
+
+def dedupe_candidates_with_stats(
+    candidates: list[Candidate],
+    *,
+    max_per_seller: int = 2,
+) -> tuple[list[Candidate], int]:
+    """Collapse exact seller clones, then cap retained candidates per seller before PoB eval.
+
+    Returns ``(retained_candidates, seller_capped_dropped)`` where ``seller_capped_dropped``
+    counts distinct listings hidden by ``max_per_seller`` (excluding exact clones collapsed
+    into ``seller_duplicates_collapsed``).
+    """
+    # Step A: exact clone collapse
+    collapsed: list[Candidate] = []
+    seen_clones: dict[tuple[Any, ...], Candidate] = {}
+    for cand in candidates:
+        key = _clone_dedupe_key(cand)
+        if key is not None and key in seen_clones:
+            seen_clones[key].seller_duplicates_collapsed += 1
+            continue
+        if key is not None:
+            seen_clones[key] = cand
+        collapsed.append(cand)
+
+    if max_per_seller <= 0:
+        return collapsed, 0
+
+    # Step B: per-seller cap
+    capped: list[Candidate] = []
+    seller_counts: dict[str, int] = {}
+    seller_capped_dropped = 0
+    for cand in collapsed:
+        seller = (cand.seller or "").strip().lower()
+        if not seller:
+            capped.append(cand)
+            continue
+        count = seller_counts.get(seller, 0)
+        if count >= max_per_seller:
+            seller_capped_dropped += 1
+            continue
+        seller_counts[seller] = count + 1
+        capped.append(cand)
+    return capped, seller_capped_dropped
+
+
+def dedupe_candidates_by_seller(
+    candidates: list[Candidate],
+    *,
+    max_per_seller: int = 2,
+) -> list[Candidate]:
+    """Collapse exact seller clones, then cap retained candidates per seller before PoB eval."""
+    return dedupe_candidates_with_stats(candidates, max_per_seller=max_per_seller)[0]
 
 
 # ---------------------------------------------------------------------------

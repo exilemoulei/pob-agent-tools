@@ -9,7 +9,7 @@ from typing import Any
 from ..trade_client import MAX_FETCH_IDS, MAX_FETCH_MANY, NoResults, TradeError
 from ..trade_eval import listing_age_hours
 from ..trade_query import build_query
-from .common import _price_of
+from .common import _is_securable_row, _price_of
 
 # The trade site stops matching at this many listings and sorts only those, so the "cheapest"
 # page of a search that hits it is not the real floor.
@@ -83,13 +83,51 @@ def _search_rows(
     return query_id, total, rows, fetched
 
 
-def _market_chaos(cheapest: list[dict[str, Any]], rates: dict[str, float]) -> float | None:
-    """Going price in chaos: the median of the cheapest listings of the search, any age.
+def _seller_account_key(row: dict[str, Any]) -> str:
+    listing = row.get("listing") if isinstance(row, dict) else None
+    account = listing.get("account") if isinstance(listing, dict) else None
+    name = account.get("name") if isinstance(account, dict) else None
+    return str(name).strip().lower() if name else ""
 
-    Comparing with old listings only does not work: cheap items sell, so what stays listed
-    is overpriced and every fresh listing looks like a bargain. None under 5 known prices.
+
+def _deduped_seller_prices(rows: list[dict[str, Any]], rates: dict[str, float]) -> list[float]:
+    """Enforce 1 Seller Account = 1 Vote (lowest chaos price per account) before taking cheapest 10."""
+    per_seller: dict[str, float] = {}
+    anon_prices: list[float] = []
+    for row in rows:
+        price = _price_chaos(row, rates)
+        if price is None:
+            continue
+        seller = _seller_account_key(row)
+        if seller:
+            prev = per_seller.get(seller)
+            if prev is None or price < prev:
+                per_seller[seller] = price
+        else:
+            anon_prices.append(price)
+    return sorted([*per_seller.values(), *anon_prices])[:10]
+
+
+def _market_chaos(
+    cheapest: list[dict[str, Any]],
+    rates: dict[str, float],
+    *,
+    status: str | None = None,
+) -> float | None:
+    """Going price in chaos: 1-seller-1-vote median of the 10 cheapest listings, any age.
+
+    When ``status == "available"`` and at least 5 distinct-seller Instant Buyout (``securable``)
+    listings exist in the fetched batch, compute the median from those securable listings so
+    fake low whisper price-fixers cannot depress the bargain anchor. None under 5 votes.
     """
-    prices = [price for row in cheapest if (price := _price_chaos(row, rates)) is not None]
+    if status == "available":
+        securable_prices = _deduped_seller_prices(
+            [row for row in cheapest if _is_securable_row(row)],
+            rates,
+        )
+        if len(securable_prices) >= 5:
+            return statistics.median(securable_prices)
+    prices = _deduped_seller_prices(cheapest, rates)
     return statistics.median(prices) if len(prices) >= 5 else None
 
 
@@ -156,7 +194,7 @@ def _fetch_with_fresh_and_market(
         market_total = total
         # Read the body's sort: an --auto-query search sorts by weighted sum unless told otherwise.
         if (max_age is None or stale_fallback) and query.get("sort") == {"price": "asc"} and want >= 10:
-            cheapest = rows[:10]  # this search already is "cheapest first, any age"
+            cheapest = rows  # this search already is "cheapest first, any age"; _market_chaos dedupes & slices [:10]
         else:
             try:
                 mkt_query = (
@@ -174,7 +212,7 @@ def _fetch_with_fresh_and_market(
             except TradeError:
                 cheapest = []
         capped = market_total >= RESULT_CAP
-        market = None if capped else _market_chaos(cheapest, rates)
+        market = None if capped else _market_chaos(cheapest, rates, status=query_args.get("status"))
         market_note = (
             f"median of the {len(cheapest)} cheapest listings (any age) is {market:g} chaos; "
             f"BARGAIN = at least {bargain:g}% below that (price only - judge the item by the PoB columns)"

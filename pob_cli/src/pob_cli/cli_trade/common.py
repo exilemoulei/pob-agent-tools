@@ -181,6 +181,31 @@ def _price_of(row: dict[str, Any]) -> tuple[float | None, str | None]:
     return parsed_amount, (str(currency) if currency else None)
 
 
+def _listing_trade_meta(row: dict[str, Any]) -> tuple[str, int | None, str | None]:
+    """Extract cookie-invariant `(trade_mode, gold_fee, price_type)` from a trade fetch row.
+
+    Anonymous responses strip `hideout_token` and online Merchant's Tab sellers may still
+    carry `whisper`, whereas traditional in-person listings never carry a Gold `fee`.
+    """
+    listing = row.get("listing") if isinstance(row, dict) else None
+    listing = listing if isinstance(listing, dict) else {}
+    raw_fee = listing.get("fee")
+    gold_fee = int(raw_fee) if isinstance(raw_fee, (int, float)) and not isinstance(raw_fee, bool) else None
+    is_securable = bool(listing.get("hideout_token")) or (
+        gold_fee is not None and (gold_fee > 0 or not listing.get("whisper"))
+    )
+    trade_mode = "securable" if is_securable else "in_person"
+    if not is_securable:
+        gold_fee = None
+    price_obj = listing.get("price")
+    price_type = str(price_obj.get("type") or "") or None if isinstance(price_obj, dict) else None
+    return trade_mode, gold_fee, price_type
+
+
+def _is_securable_row(row: dict[str, Any]) -> bool:
+    return _listing_trade_meta(row)[0] == "securable"
+
+
 def _weighted_sum_of(raw_item: dict[str, Any]) -> float | None:
     """Extract the official PoE1 Trade weighted sum (``pseudoMods: ["Sum: 32"]``) if present."""
     pseudo_mods = raw_item.get("pseudoMods")

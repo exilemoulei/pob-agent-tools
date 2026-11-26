@@ -48,6 +48,7 @@ from .report import (
     _format_delta as _format_delta,
 )
 from .report import (
+    compute_price_floor_note,
     format_report,
     report_json,
     sort_candidates,
@@ -61,6 +62,8 @@ from .scoring import (
     PobEval,
     _safe_pct,
     compare_items,
+    dedupe_candidates_by_seller,
+    dedupe_candidates_with_stats,
     deltas_for_example,
     listing_age_hours,
     parse_weights,
@@ -96,6 +99,9 @@ __all__ = [
     "_pob_eval_from_snapshot",
     "_safe_pct",
     "compare_items",
+    "compute_price_floor_note",
+    "dedupe_candidates_by_seller",
+    "dedupe_candidates_with_stats",
     "deltas_for_example",
     "eval_trade_items",
     "format_report",

@@ -251,7 +251,9 @@ class TradeClient:
         path = f"/api/trade/search/{_quote(league)}"
         payload = self._request("POST", path, body=query, policy="search")
         if not payload.get("result"):
-            raise NoResults()
+            inner = query.get("query") if isinstance(query, dict) else None
+            status_opt = (inner.get("status") or {}).get("option") if isinstance(inner, dict) else None
+            raise NoResults(str(status_opt) if status_opt else None)
         return payload
 
     def fetch(self, ids: list[str], query_id: str) -> list[dict[str, Any]]:
