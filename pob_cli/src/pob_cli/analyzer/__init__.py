@@ -65,7 +65,7 @@ from .dewater import (
     dewater_build_with_records,
     verify_restored,
 )
-from .dewater_auto import infer_auto_keep_and_flask_notes
+from .dewater_auto import dewater_smart_in_place, infer_auto_keep_and_flask_notes
 from .dewater_steps import (
     _is_vaal_skill_entry,
     _is_vaal_text,
@@ -192,6 +192,7 @@ __all__ = [
     "compute_server_tick_cooldown",
     "dewater_build_in_place",
     "dewater_build_with_records",
+    "dewater_smart_in_place",
     "diagnose_build",
     "diagnose_compare_builds",
     "extract_summary",

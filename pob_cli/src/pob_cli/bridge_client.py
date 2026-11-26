@@ -33,6 +33,7 @@ from .bridge_protocol import (
 )
 from .bridge_trees import rpc_tree_stage_error, stage_tree_versions_hint
 from .locale_cfg import current_lang, normalize_lang
+from .os_util import win_hidden_subprocess_kwargs
 from .updater import (
     build_engine_command,
     detect_source_checkout_root,
@@ -169,7 +170,6 @@ class BridgeWorker:
         self._stdout_queue = out_queue
         self._stderr_tail.clear()
 
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         active_lang = self.locale or current_lang(self.runtime_dir)
         try:
             self._proc = subprocess.Popen(
@@ -183,7 +183,7 @@ class BridgeWorker:
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
-                creationflags=creationflags,
+                **win_hidden_subprocess_kwargs(subprocess),
             )
         except OSError as exc:
             raise BridgeError(f"Failed to launch PoB engine: {exc}") from exc

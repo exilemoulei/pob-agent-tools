@@ -94,8 +94,10 @@ def query_meta(
     total_builds = int(target_lb.get("total") or 0)
     stats = target_lb.get("statistics", []) or []
 
-    skill_q = skill.strip().lower() if skill and skill.strip() else None
-    class_q = class_name.strip().lower() if class_name and class_name.strip() else None
+    from .meta_resolve import resolve_meta_filter
+
+    skill_q, resolved_skill = resolve_meta_filter(skill, kind="skill", poedb_lookup=_lookup_poedb_local_en)
+    class_q, resolved_class = resolve_meta_filter(class_name, kind="class", poedb_lookup=_lookup_poedb_local_en)
 
     asc_map: dict[str, dict[str, Any]] = {}
     skill_map: dict[str, dict[str, Any]] = {}
@@ -163,12 +165,18 @@ def query_meta(
 
     combinations.sort(key=lambda x: x["percentage"], reverse=True)
 
+    filters_out: dict[str, Any] = {"skill": skill, "className": class_name}
+    if resolved_skill:
+        filters_out["resolvedSkill"] = resolved_skill
+    if resolved_class:
+        filters_out["resolvedClassName"] = resolved_class
+
     out: dict[str, Any] = {
         "league": target_lb.get("leagueName"),
         "leagueUrl": target_lb.get("leagueUrl"),
         "totalBuilds": total_builds,
         "hardcore": bool(target_lb.get("hardcore", False)),
-        "filters": {"skill": skill, "className": class_name},
+        "filters": filters_out,
         "ascendancies": ascendancies,
         "topSkills": top_skills,
         "combinations": combinations[:top],
@@ -346,6 +354,8 @@ def _extract_wiki_sections_and_summary(
         return (plain if unlimited else plain[:max_len]), []
 
     priority_entries.sort(key=lambda item: (item[0], item[1]))
+    eff_lead_cap = lead_cap if lead_cap is not None else (0 if unlimited else max(900, (max_len * 900) // 3500))
+    lead_shown = lead_text if (unlimited and lead_cap is None) else lead_text[:eff_lead_cap]
     if unlimited:
         mechanics_sections = [
             {"heading": heading, "text": body_text}
@@ -354,15 +364,20 @@ def _extract_wiki_sections_and_summary(
     else:
         sec_cap = max(1800, (max_len * 1800) // 3500)
         max_secs = max(6, (max_len * 6) // 3500)
-        mechanics_sections = [
-            {"heading": heading, "text": body_text[:sec_cap]}
-            for _, _, heading, body_text in priority_entries[:max_secs]
-        ]
+        # The sections are printed in full under the lead paragraph, so lead and sections together
+        # stay within `max_len`: the per-section caps alone allow ten times that.
+        mechanics_sections = []
+        budget = max_len - len(lead_shown)
+        for _, _, heading, body_text in priority_entries[:max_secs]:
+            if budget <= 0:
+                break
+            text = body_text[: min(sec_cap, budget)]
+            mechanics_sections.append({"heading": heading, "text": text})
+            budget -= len(text)
 
-    eff_lead_cap = lead_cap if lead_cap is not None else (0 if unlimited else max(900, (max_len * 900) // 3500))
     blocks: list[str] = []
-    if lead_text:
-        blocks.append(lead_text if (unlimited and lead_cap is None) else lead_text[:eff_lead_cap])
+    if lead_shown:
+        blocks.append(lead_shown)
     for sec in mechanics_sections:
         blocks.append(f"## {sec['heading']}\n{sec['text']}")
     for heading, body_text in other_entries:

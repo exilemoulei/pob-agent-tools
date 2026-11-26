@@ -15,6 +15,7 @@ from .batch_ops_skills import (
     _op_set_group,
     _op_skill,
 )
+from .batch_validate import validate_batch_op
 from .build_state import (
     _apply_class_ascendancy_in_place,
     _apply_new_build_in_place,
@@ -85,7 +86,7 @@ def _op_item(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) 
     raw_text = str(raw_val).strip() if raw_val is not None else ""
     if not raw_text:
         raise ValueError(f"Batch op 'item' at step {idx} requires non-empty 'raw'.")
-    slot_query = op.get("slot") or op.get("slotName")
+    slot_query = op.get("slot") or op.get("slotName") or op.get("slot_name")
     if slot_query:
         check_input(str(slot_query), scope=GuardrailScope.SLOT, expected_game="poe1")
     check_input_item_raw(raw_text, expected_game="poe1")
@@ -101,10 +102,13 @@ def _op_item(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) 
 
 
 def _op_item_db(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
-    query = str(op.get("query") or "").strip()
+    raw_query = op.get("query")
+    if raw_query is None or not str(raw_query).strip():
+        raw_query = op.get("name")
+    query = str(raw_query or "").strip()
     db_type = str(op.get("dbType") or op.get("db_type") or op.get("kind") or "UNIQUE")
     item_index = op.get("index") if op.get("index") is not None else op.get("itemIndex", op.get("item_index"))
-    slot_query = op.get("slot") or op.get("slotName")
+    slot_query = op.get("slot") or op.get("slotName") or op.get("slot_name")
     if slot_query:
         check_input(str(slot_query), scope=GuardrailScope.SLOT, expected_game="poe1")
     if query:
@@ -137,7 +141,7 @@ def _op_item_db(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: in
 
 
 def _op_item_edit(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
-    slot_query = str(op.get("slot") or op.get("slotName") or "").strip()
+    slot_query = str(op.get("slot") or op.get("slotName") or op.get("slot_name") or "").strip()
     raw_reps = op.get("replaceMods") or op.get("replace_mods") or []
     rep_tuples = [(str(p[0]), str(p[1])) for p in raw_reps if isinstance(p, (list, tuple)) and len(p) == 2]
     edit_res = _apply_edit_item_mods_in_place(
@@ -153,7 +157,7 @@ def _op_item_edit(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: 
 
 
 def _op_unequip(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
-    slot_query = str(op.get("slot") or op.get("slotName") or "").strip()
+    slot_query = str(op.get("slot") or op.get("slotName") or op.get("slot_name") or "").strip()
     if not slot_query:
         raw_kind = str(op.get("op") or op.get("type") or op.get("action") or "unequip")
         raise ValueError(f"Batch op '{raw_kind}' at step {idx} requires 'slot'.")
@@ -173,7 +177,7 @@ def _op_anoint(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int
         raise ValueError(f"Batch op 'anoint' at step {idx} requires non-empty 'notable'.")
     an_res = _apply_anoint_in_place(
         w,
-        slot_name=str(op.get("slot") or "Amulet"),
+        slot_name=str(op.get("slot") or op.get("slotName") or op.get("slot_name") or "Amulet"),
         notable_query=notable_text,
         anoint_index=int(op["index"]) if op.get("index") is not None else 1,
         cache=cache,
@@ -293,7 +297,9 @@ def _op_switch_main(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx
             op.get("mainSkill") if "mainSkill" in op else op.get("mainSkillIndex", op.get("main_skill_index"))
         ),
         skill_part_index=(
-            op.get("skillPart") if "skillPart" in op else op.get("skillPartIndex", op.get("skill_part_index"))
+            op.get("skillPart")
+            if "skillPart" in op
+            else op.get("skill_part", op.get("skillPartIndex", op.get("skill_part_index")))
         ),
         item_set_id=op.get("itemSet") if "itemSet" in op else op.get("itemSetId", op.get("item_set_id")),
         skill_set_id=op.get("skillSet") if "skillSet" in op else op.get("skillSetId", op.get("skill_set_id")),
@@ -453,5 +459,6 @@ def _execute_batch_ops(
                 f"Unsupported batch op type '{raw_kind}' at step {idx}. "
                 f"Example valid ops: {_BATCH_OP_EXAMPLE}"
             )
+        validate_batch_op(idx, kind, op)
         step_results.append(handler(w, op, cache, idx))
     return step_results

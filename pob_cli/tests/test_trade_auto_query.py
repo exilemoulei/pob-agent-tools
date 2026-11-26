@@ -237,3 +237,34 @@ def test_surrogate_k_flag_accepted_and_validates_non_negative(searches: list[dic
         ["trade", "search", "--slot", "gloves", "--stat", "maximum Life=80", "--surrogate-k", "-1", "--dump-query"],
     )
     assert bad.exit_code == 2
+
+
+@pytest.mark.parametrize(
+    ("daemon_answer", "reason"),
+    [
+        (RuntimeError("daemon is not running"), "daemon is not running"),
+        ({"error": "No build loaded"}, "No build loaded"),
+        ({"queryJson": "not json"}, "PoB returned no query"),
+    ],
+)
+def test_a_failed_auto_query_says_why_before_the_search_runs_without_it(
+    monkeypatch: pytest.MonkeyPatch, daemon_answer: Any, reason: str
+) -> None:
+    from pob_cli.cli_trade import search_cmd
+
+    def _fake_daemon(action: str, params: dict[str, Any] | None = None, **_: Any) -> dict[str, Any]:
+        assert action == "trade_generate_query"
+        if isinstance(daemon_answer, Exception):
+            raise daemon_answer
+        return daemon_answer
+
+    seen: list[Any] = []
+    monkeypatch.setattr(cli_trade, "_daemon_call_safe", _fake_daemon)
+    monkeypatch.setattr(search_cmd, "_resolve_current_and_category", lambda **_kw: (None, None, None, "slot:main", "accessory.ring"))
+    monkeypatch.setattr(search_cmd, "_execute_trade_api_query", lambda *_a, **kw: seen.append(kw.get("auto_query_body")) or None)
+
+    res = CliRunner().invoke(main, ["trade", "search", "--slot", "ring1", "--auto-query", "--stat", "life>=80"])
+
+    assert res.exit_code == 0, res.output
+    assert seen == [None]
+    assert f"--auto-query gave no query ({reason}); searching without it." in res.stderr

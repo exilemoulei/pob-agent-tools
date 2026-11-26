@@ -55,10 +55,16 @@ def _expand_tree_queries(
 
 
 def _match_tree_row_tier(
-    expanded_queries: list[tuple[str, str]], name_l: str, zh_l: str, search_l: str
+    expanded_queries: list[tuple[str, str]],
+    name_l: str,
+    zh_l: str,
+    search_l: str,
+    *,
+    node_id: int | str | None = None,
 ) -> int:
     """Return best match tier (0..3) or 99 if unmatched."""
     best_q_tier = 99
+    id_str = str(node_id).strip() if node_id is not None else ""
     for q_prim, q_alt in expanded_queries:
         for cand_q in (q_prim, q_alt):
             if not cand_q:
@@ -66,7 +72,7 @@ def _match_tree_row_tier(
             toks = [t for t in cand_q.split() if t]
             if not toks:
                 continue
-            if cand_q == name_l or (zh_l and cand_q == zh_l):
+            if (id_str and cand_q == id_str) or cand_q == name_l or (zh_l and cand_q == zh_l):
                 best_q_tier = min(best_q_tier, 0)
             elif name_l.startswith(cand_q) or (zh_l and zh_l.startswith(cand_q)):
                 best_q_tier = min(best_q_tier, 1)
@@ -82,7 +88,7 @@ def _filter_and_score_tree_rows(
     type_low: str,
     asc_targets: list[str],
     expanded_queries: list[tuple[str, str]],
-) -> list[tuple[tuple[int, int, int, int, str], dict[str, Any]]]:
+) -> list[tuple[tuple[int, int, int, int, int, str], dict[str, Any]]]:
     asc_matches_active_exact = False
     if asc_targets:
         for r in rows:
@@ -90,7 +96,7 @@ def _filter_and_score_tree_rows(
                 asc_matches_active_exact = True
                 break
 
-    scored: list[tuple[tuple[int, int, int, int, str], dict[str, Any]]] = []
+    scored: list[tuple[tuple[int, int, int, int, int, str], dict[str, Any]]] = []
     for (
         _nid,
         name_l,
@@ -134,15 +140,19 @@ def _filter_and_score_tree_rows(
             continue
 
         match_tier = 2
+        exact_id = False
         if expanded_queries:
-            best_q_tier = _match_tree_row_tier(expanded_queries, name_l, zh_l, search_l)
+            id_s = str(_nid)
+            exact_id = any(c == id_s for qp, qa in expanded_queries for c in (qp, qa) if c)
+            best_q_tier = _match_tree_row_tier(expanded_queries, name_l, zh_l, search_l, node_id=_nid)
             if best_q_tier >= 99:
                 continue
             match_tier = best_q_tier
 
         scored.append(
             (
-                (is_alt_asc, match_tier, _TREE_TYPE_RANK.get(ntype, 6), 0 if has_stats else 1, name_l),
+                # A node asked for by id goes first, so the fold of same-named small nodes keeps it.
+                (0 if exact_id else 1, 0 if exact_id else is_alt_asc, match_tier, _TREE_TYPE_RANK.get(ntype, 6), 0 if has_stats else 1, name_l),
                 json.loads(dj),
             )
         )

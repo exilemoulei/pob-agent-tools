@@ -29,6 +29,7 @@ from .inspectors import inspect_items
 from .pitfalls_core import _detect_build_mechanics_and_pitfalls
 from .pitfalls_triggers import deduplicate_trigger_gaps
 from .summary import _is_tincture_item, extract_summary
+from .tree_helpers import apply_node_override
 from .tree_inspect import inspect_tree
 
 
@@ -97,14 +98,12 @@ def _collect_diagnose_tree_and_skills(
             }
             for raw_nid in tree_state_diag.get("allocatedNodes") or []:
                 sid = str(int(raw_nid))
-                nd = dict(nodes_db_diag.get(sid) or {})
+                raw_nd = nodes_db_diag.get(sid) or {}
+                nd = dict(raw_nd)
                 if sid in dyn_diag:
                     nd.update(dyn_diag[sid])
                 if sid in ov_diag and isinstance(ov_diag[sid], dict):
-                    if ov_diag[sid].get("stats"):
-                        nd["stats"] = ov_diag[sid]["stats"]
-                    if ov_diag[sid].get("name"):
-                        nd["name"] = ov_diag[sid]["name"]
+                    apply_node_override(nd, ov_diag[sid], raw_nd)
                 st_lines = normalize_stat_lines(nd.get("stats") or [])
                 if st_lines:
                     lbl = strip_pob_escapes(str(nd.get("name") or sid))
@@ -195,7 +194,8 @@ def _assemble_diagnose_mechanics(
     items_info: dict[str, Any],
     alloc_node_stats: list[tuple[str, list[str]]],
     gaps: list[dict[str, str]],
-) -> tuple[dict[str, Any], list[str], list[str]]:
+    tree_state_diag: Any = None,
+) -> tuple[dict[str, Any], list[str], list[str], dict[str, Any]]:
     stats_full: dict[str, Any] = {}
     stats_full.update(summary.get("offence") or {})
     stats_full.update(summary.get("defence") or {})
@@ -205,6 +205,13 @@ def _assemble_diagnose_mechanics(
             stats_full.update(raw_stats_res["stats"])
     except Exception:
         pass
+
+    nodes_db_diag: dict[str, Any] | None = None
+    if isinstance(tree_state_diag, dict) and not tree_state_diag.get("_error"):
+        try:
+            nodes_db_diag = worker.get_cached_tree_data(tree_state_diag.get("treeVersion")).get("nodes", {})
+        except Exception:
+            nodes_db_diag = None
 
     agent_probe = audit.get("agentProbe")
     if not isinstance(agent_probe, dict):
@@ -225,6 +232,9 @@ def _assemble_diagnose_mechanics(
         warnings=list(summary.get("warnings") or []),
         build_info=info,
         stripped_flasks=stripped_flasks,
+        worker=worker,
+        tree_state=tree_state_diag if isinstance(tree_state_diag, dict) else None,
+        nodes_db=nodes_db_diag,
     )
     dead_sup_gaps, dead_sup_records = _detect_dead_main_supports(worker, mg, stats_full)
     if dead_sup_records:
@@ -273,13 +283,35 @@ def _assemble_diagnose_mechanics(
             existing_gap_msgs.add(mgap["message"])
             gaps.append(mgap)
 
-    return build_mechanics, core_synergies, amulet_7th_link
+    return build_mechanics, core_synergies, amulet_7th_link, stats_full
+
+
+def _attach_diagnose_socket_fields(
+    out_diag: dict[str, Any],
+    top_nodes: dict[str, Any] | None,
+    tree_summary: dict[str, Any],
+) -> None:
+    sock_summary = (
+        top_nodes.get("socketSummary")
+        if isinstance(top_nodes, dict) and isinstance(top_nodes.get("socketSummary"), dict)
+        else tree_summary.get("socketSummary")
+    )
+    nearby_socks = (
+        top_nodes.get("nearbySockets")
+        if isinstance(top_nodes, dict) and isinstance(top_nodes.get("nearbySockets"), list)
+        else tree_summary.get("nearbySockets")
+    )
+    if isinstance(sock_summary, dict):
+        out_diag["socketSummary"] = sock_summary
+    if isinstance(nearby_socks, list):
+        out_diag["nearbySockets"] = nearby_socks
 
 
 def diagnose_build(
     worker: BridgeWorker,
     *,
     keep: Iterable[str] | str | None = None,
+    auto_keep: bool = True,
     top: int = 5,
     no_rank: bool = False,
     ask: str | None = None,
@@ -302,6 +334,8 @@ def diagnose_build(
 
     audit_defs = getattr(_analyzer.audit_build, "__kwdefaults__", None) or {}
     audit_kw: dict[str, Any] = {}
+    if "auto_keep" in audit_defs:
+        audit_kw["auto_keep"] = auto_keep
     if "include_envelope" in audit_defs:
         audit_kw["include_envelope"] = False
     if "pre_tree_summary" in audit_defs:
@@ -363,7 +397,7 @@ def diagnose_build(
     alloc_node_stats, ascendancy_nodes_compact, skill_groups_compact, all_active_skill_names = (
         _collect_diagnose_tree_and_skills(worker, tree_state_diag, tree_summary, all_skills_res)
     )
-    build_mechanics, core_synergies, amulet_7th_link = _assemble_diagnose_mechanics(
+    build_mechanics, core_synergies, amulet_7th_link, stats_full = _assemble_diagnose_mechanics(
         worker,
         summary=summary,
         audit=audit,
@@ -376,6 +410,7 @@ def diagnose_build(
         items_info=items_info,
         alloc_node_stats=alloc_node_stats,
         gaps=gaps,
+        tree_state_diag=tree_state_diag,
     )
 
     keystone_names = [
@@ -414,22 +449,21 @@ def diagnose_build(
         reverse=True,
     )
 
-    auto_keep_diag, _ = infer_auto_keep_and_flask_notes(
-        stats={**(summary.get("offence") or {}), **(summary.get("defence") or {})},
-        skills_res=all_skills_res,
-        items_res=items_raw_res,
-        build_info=info,
-        tree_summary=tree_summary,
-        equipped_slots_raw=items_info.get("equippedSlots"),
-        alloc_node_stats=alloc_node_stats,
-    )
-    top_nodes, top_gems, rank_errors = (
-        (None, None, [])
-        if no_rank
-        else _run_diagnose_rankings(
-            worker, audit, mg, top=top, keep=keep, auto_keep_reasons=auto_keep_diag
+    if no_rank:
+        top_nodes, top_gems, rank_errors = None, None, []
+    else:
+        ak_diag = (
+            infer_auto_keep_and_flask_notes(
+                stats=stats_full, skills_res=all_skills_res, items_res=items_raw_res,
+                build_info=info, tree_summary=tree_summary,
+                equipped_slots_raw=items_info.get("equippedSlots"), alloc_node_stats=alloc_node_stats,
+            )[0]
+            if auto_keep
+            else {}
         )
-    )
+        top_nodes, top_gems, rank_errors = _run_diagnose_rankings(
+            worker, audit, mg, top=top, keep=keep, auto_keep_reasons=ak_diag
+        )
 
     out_diag: dict[str, Any] = {
         "env": _build_diagnose_env(worker, info, fact_cards, target),
@@ -466,4 +500,5 @@ def diagnose_build(
         out_diag["agentProbe"] = build_mechanics["agentProbe"]
     if ask_grounding is not None:
         out_diag["askGrounding"] = ask_grounding
+    _attach_diagnose_socket_fields(out_diag, top_nodes, tree_summary)
     return out_diag

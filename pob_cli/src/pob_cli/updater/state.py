@@ -13,12 +13,14 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..os_util import win_hidden_subprocess_kwargs
 from .constants import (
     OK_STATES,
     POBTOOLS_META_FILENAME,
     STATE_BOOTSTRAP_MISSING,
     STATE_DEGRADED_NETWORK,
     STATE_DEGRADED_ROLLBACK,
+    STATE_UP_TO_DATE,
     UPDATE_STATE_FILENAME,
 )
 from .paths import _get_runtime_dir
@@ -26,6 +28,22 @@ from .paths import _get_runtime_dir
 
 def _pkg() -> Any:
     return sys.modules["pob_cli.updater"]
+
+
+def _state_describes_engine(state: dict[str, Any], engine_dir: Path | None) -> bool:
+    """False when `state` was recorded for another engine than `engine_dir`.
+
+    The state file is per runtime dir, not per engine: a `POB_ROOT` engine without its own version
+    files must not take the managed engine's PobTools tag and data version, or the update check
+    reports it up to date and never installs the bridge or the Chinese data there.
+    """
+    recorded = state.get("engineDir")
+    if engine_dir is None or not recorded:
+        return True
+    try:
+        return Path(str(recorded)).resolve() == Path(engine_dir).resolve()
+    except OSError:
+        return str(recorded) == str(engine_dir)
 
 
 def detect_local_versions(engine_dir: Path | None, runtime_dir: Path | None = None) -> dict[str, str | None]:
@@ -70,7 +88,7 @@ def detect_local_versions(engine_dir: Path | None, runtime_dir: Path | None = No
                 pass
 
     prev = _pkg().load_update_state(runtime_dir)
-    if prev:
+    if prev and _state_describes_engine(prev, engine_dir):
         if not pob_ver and prev.get("localPobVersion"):
             pob_ver = str(prev["localPobVersion"])
         if not pobtools_ver and prev.get("pobToolsVersion"):
@@ -125,16 +143,43 @@ def save_update_state(state: dict[str, Any], runtime_dir: Path | None = None) ->
     """Atomically persist update_state.json to runtime_dir."""
     path = get_update_state_path(runtime_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp_path, path)
+    # A name of its own: the CLI and the daemon both save, and with one shared name the second
+    # `os.replace` finds its file already moved (or moves the other writer's half-written one).
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        _replace_when_free(tmp_path, path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
     return path
+
+
+_REPLACE_ATTEMPTS = 15
+
+
+def _replace_when_free(src: Path, dst: Path) -> None:
+    """`os.replace`, waiting out the moment Windows refuses it.
+
+    Windows denies the replace while another writer is replacing the same file or a reader has it
+    open. Both pass within milliseconds; a folder that really is not writable still fails, half a
+    second later.
+    """
+    for attempt in range(1, _REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS:
+                raise
+            time.sleep(0.005 * attempt)
 
 
 def _build_user_hint(
     state_name: str,
     local_pob_version: str | None = None,
     network_error: str | None = None,
+    *,
+    rolled_back: bool = True,
 ) -> str | None:
     if state_name in OK_STATES:
         return None
@@ -154,6 +199,12 @@ def _build_user_hint(
             "请配置代理后执行 `pob bootstrap --proxy http://127.0.0.1:<port>`"
             "（或设置 HTTPS_PROXY / POB_PROXY / POB_GITHUB_MIRROR），"
             "或使用 `pob bootstrap --from-dir <本地PobTools目录>` 离线导入。"
+        )
+    if state_name == STATE_DEGRADED_ROLLBACK and not rolled_back:
+        # The swap was refused or could not be undone in full: do not promise a clean old engine.
+        return (
+            f"PoB 引擎更新未完成，引擎目录未能确认恢复到更新前的状态{err_part}。"
+            "请先执行 `pob stop`，再执行 `pob update --force` 重试。"
         )
     if state_name == STATE_DEGRADED_ROLLBACK:
         return (
@@ -178,6 +229,7 @@ def get_update_warning(state: dict[str, Any] | None) -> str | None:
         st,
         local_pob_version=state.get("localPobVersion"),
         network_error=state.get("networkError"),
+        rolled_back=bool(state.get("rolledBack")),
     )
 
 
@@ -203,7 +255,6 @@ def probe_engine_gate(engine_dir: Path, timeout_sec: float = 20.0) -> dict[str, 
 
     out_queue: queue.Queue[dict[str, Any] | Exception | None] = queue.Queue()
     stderr_tail: collections.deque[str] = collections.deque(maxlen=50)
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     proc_env = os.environ.copy()
     proc_env.update(extra_env)
 
@@ -218,7 +269,7 @@ def probe_engine_gate(engine_dir: Path, timeout_sec: float = 20.0) -> dict[str, 
         encoding="utf-8",
         errors="replace",
         bufsize=1,
-        creationflags=creationflags,
+        **win_hidden_subprocess_kwargs(subprocess),
     )
 
     def _read_stdout() -> None:
@@ -336,3 +387,106 @@ def probe_engine_gate(engine_dir: Path, timeout_sec: float = 20.0) -> dict[str, 
             proc.wait(timeout=3.0)
         except Exception:
             pass
+
+
+def _save_bootstrap_missing_state(
+    eng_dir: Path, rt_dir: Path, err: str, *, hint: str | None = None
+) -> dict[str, Any]:
+    """Record that no engine is installed. `hint` replaces the default advice, which is about the network."""
+    state = {
+        "state": STATE_BOOTSTRAP_MISSING,
+        "localPobVersion": None,
+        "remotePobVersion": None,
+        "pobToolsVersion": None,
+        "dataVersion": None,
+        "checkedAt": time.time(),
+        "engineDir": str(eng_dir),
+        "networkError": err,
+        "userHint": hint or _build_user_hint(STATE_BOOTSTRAP_MISSING, None, err),
+    }
+    save_update_state(state, rt_dir)
+    return state
+
+
+def _save_degraded_state(
+    state_name: str,
+    *,
+    local_vers: dict[str, str | None],
+    remote_pob_ver: str | None,
+    prev_state: dict[str, Any],
+    engine_dir: Path,
+    rt_dir: Path,
+    err_msg: str,
+    rolled_back: bool = False,
+) -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "state": state_name,
+        "localPobVersion": local_vers["localPobVersion"],
+        "remotePobVersion": remote_pob_ver,
+        "pobToolsVersion": local_vers["pobToolsVersion"],
+        "pobToolsTag": local_vers["pobToolsTag"],
+        "dataVersion": local_vers["dataVersion"],
+        "pobManifestEtag": prev_state.get("pobManifestEtag"),
+        "checkedAt": time.time(),
+        "engineDir": str(engine_dir),
+        "networkError": err_msg,
+        "userHint": _build_user_hint(state_name, local_vers["localPobVersion"], err_msg, rolled_back=rolled_back),
+    }
+    if rolled_back:
+        state["rolledBack"] = True
+    save_update_state(state, rt_dir)
+    return state
+
+
+def _save_offline_state(
+    local_vers: dict[str, str | None], prev_state: dict[str, Any], engine_dir: Path, rt_dir: Path
+) -> dict[str, Any]:
+    state = {
+        "state": STATE_UP_TO_DATE,
+        "localPobVersion": local_vers["localPobVersion"],
+        "remotePobVersion": prev_state.get("remotePobVersion"),
+        "pobToolsVersion": local_vers["pobToolsVersion"],
+        "pobToolsTag": local_vers["pobToolsTag"],
+        "dataVersion": local_vers["dataVersion"],
+        "pobManifestEtag": prev_state.get("pobManifestEtag"),
+        "checkedAt": time.time(),
+        "engineDir": str(engine_dir),
+        "offline": True,
+        "networkError": None,
+        "userHint": None,
+    }
+    save_update_state(state, rt_dir)
+    return state
+
+
+def _save_check_result_state(
+    *,
+    local_vers: dict[str, str | None],
+    remote_pob_ver: str | None,
+    remote_tools_ver: str,
+    remote_tools_tag: str,
+    remote_data_tag: str | None,
+    pob_etag: str | None,
+    active_dir: Path,
+    rt_dir: Path,
+    update_available: bool,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "state": STATE_UP_TO_DATE,
+        "localPobVersion": local_vers["localPobVersion"],
+        "remotePobVersion": remote_pob_ver,
+        "pobToolsVersion": local_vers["pobToolsVersion"] if update_available else (local_vers["pobToolsVersion"] or remote_tools_ver),
+        "pobToolsTag": local_vers["pobToolsTag"] if update_available else (local_vers["pobToolsTag"] or remote_tools_tag),
+        "dataVersion": local_vers["dataVersion"] if update_available else (local_vers["dataVersion"] or remote_data_tag),
+        "pobManifestEtag": pob_etag,
+        "checkedAt": time.time(),
+        "engineDir": str(active_dir),
+        "updateAvailable": update_available,
+        "networkError": None,
+        "userHint": None,
+    }
+    if extra:
+        state.update(extra)
+    save_update_state(state, rt_dir)
+    return state

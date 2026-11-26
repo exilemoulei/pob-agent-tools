@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import time
@@ -60,10 +61,15 @@ def test_cold_build_and_warm_query_benchmarks(tmp_path: Path, monkeypatch: pytes
     for kind, query, kwargs in warm_cases:
         # The first call of a kind loads per-process tables (the zh dictionaries take ~90 ms), so time
         # a second one: otherwise the result depends on which tests ran earlier in the process.
-        query_local_data(kind, query, pob_dir=REAL_POB_DIR, runtime_dir=tmp_path, **kwargs)  # type: ignore[arg-type]
-        tq = time.perf_counter()
         res = query_local_data(kind, query, pob_dir=REAL_POB_DIR, runtime_dir=tmp_path, **kwargs)  # type: ignore[arg-type]
-        elapsed_ms = (time.perf_counter() - tq) * 1000.0
+        # The best of three: one sample on a shared runner measures the runner as much as the query
+        # (a 4 ms query once took 16.5 ms on Windows CI with the code unchanged).
+        samples: list[float] = []
+        for _ in range(3):
+            tq = time.perf_counter()
+            res = query_local_data(kind, query, pob_dir=REAL_POB_DIR, runtime_dir=tmp_path, **kwargs)  # type: ignore[arg-type]
+            samples.append((time.perf_counter() - tq) * 1000.0)
+        elapsed_ms = min(samples)
         assert res["count"] >= 1, f"Expected >= 1 hit for {kind}({query!r})"
         limit_ms = perf_budget(15.0)
         assert elapsed_ms < limit_ms, f"Warm query {kind}({query!r}) took {elapsed_ms:.2f}ms (expected < {limit_ms:.0f}ms)"
@@ -85,18 +91,22 @@ def test_mod_bilingual_foulborn_bench_and_filters(tmp_path: Path) -> None:
 
     # Slot + ilvl filter: Prime (ilvl 86) excluded at ilvl=81, Rapturous (ilvl 81) included
     res_body = query_local_data(
-        "mod", "to maximum Life", pob_dir=REAL_POB_DIR, runtime_dir=tmp_path, slot="Body Armour", ilvl=81, limit=50
+        "mod", "to maximum Life", pob_dir=REAL_POB_DIR, runtime_dir=tmp_path, slot="Body Armour", ilvl=81, limit=0
     )
     body_ids = {m["id"] for m in res_body["results"]}
     assert "IncreasedLife11" in body_ids
+    # Keyed by the base's defence tag (`str_armour`), not by `body_armour`.
+    assert "LocalBaseArmourAndLife4" in body_ids
+    assert "IncreasedLifeEnhancedBodyMod___" in body_ids
     assert "IncreasedLife12" not in body_ids
     for m in res_body["results"]:
         assert m["level"] <= 81
-        if m["source"] == "Bench":
+        if m["source"] == "Bench" or not m["weights"]:
             assert "Body Armour" in m["applicable_types"]
         else:
             assert any(
-                (k == "body_armour" or k.startswith("body_armour_") or k == "default") and v > 0
+                (k in ("body_armour", "armour", "default") or k.startswith("body_armour_") or k.endswith("_armour"))
+                and v > 0
                 for k, v in m["weights"].items()
             )
 
@@ -283,6 +293,40 @@ Implicits: 1
         encoding="utf-8",
     )
     return base_dir
+
+
+def test_pob_root_without_game_data_gives_way_and_a_poe2_root_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pob_cli.errors import CrossGameHallucinationError
+
+    # A checkout may hold the legacy pack, which would answer before the last fallback below.
+    monkeypatch.setattr("pob_cli.game_data.paths.detect_source_checkout_root", lambda: None)
+    rt = tmp_path / "rt"
+    engine_dir = _create_synthetic_pob_dir(rt / "engine", pob_ver="2.99.0", extra_mod_level=10)
+    other = _create_synthetic_pob_dir(tmp_path / "other", pob_ver="2.98.0", extra_mod_level=10)
+
+    monkeypatch.setenv("POB_ROOT", str(other))
+    assert resolve_pob_dir(None, rt) == other
+
+    # A typo: the daemon falls back to the managed engine for builds, so data queries must too.
+    monkeypatch.setenv("POB_ROOT", str(tmp_path / "othre"))
+    assert resolve_pob_dir(None, rt) == engine_dir
+    assert resolve_pob_dir(None, tmp_path / "empty_rt") == tmp_path / "othre"
+
+    # A data pack the daemon cannot run loses to a managed engine it can, and wins when there is none.
+    monkeypatch.setenv("POB_ROOT", str(other))
+    monkeypatch.setattr("pob_cli.updater.is_valid_engine_dir", lambda p: Path(p) == engine_dir)
+    assert resolve_pob_dir(None, rt) == engine_dir
+    monkeypatch.setattr("pob_cli.updater.is_valid_engine_dir", lambda p: False)
+    assert resolve_pob_dir(None, rt) == other
+
+    poe2_only = tmp_path / "poe2"
+    (poe2_only / "PoE2" / "Data").mkdir(parents=True)
+    (poe2_only / "Data").mkdir()
+    monkeypatch.setenv("POB_ROOT", str(poe2_only))
+    with pytest.raises(CrossGameHallucinationError):
+        resolve_pob_dir(None, rt)
 
 
 def test_no_zh_fallback_resolution_and_auto_rebuild(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -918,3 +962,23 @@ table.insert(data.uniques.generated, table.concat(pearl, "\\n"))
     # Lore proverbs excluded and gibberish CJK returns 0 hits
     res_gib = query_local_data("translate", "不存在的测试词缀", runtime_dir=rt)
     assert res_gib["count"] == 0
+
+
+def test_tree_zh_names_come_from_a_bootstrapped_engines_merged_passives_file(tmp_path: Path) -> None:
+    from pob_cli.game_data import _load_tree_zh_maps
+
+    merged = {"entries": {"Amplify": "增幅", "10% increased Area of Effect": "效果区域扩大 10%"}}
+    managed = tmp_path / "zh-rCN"
+    managed.mkdir()
+    (managed / "passives.json").write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
+    names, stats = _load_tree_zh_maps(managed)
+    assert names["Amplify"] == "增幅"
+    assert stats["10% increased area of effect"] == "效果区域扩大 10%"
+
+    # The pack keeps its own tree_dn.json; a passives.json next to it is the superseded one.
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    (pack / "tree_dn.json").write_text(json.dumps({"entries": {"Amplify": "增幅"}}, ensure_ascii=False), encoding="utf-8")
+    (pack / "passives.json").write_text(json.dumps({"entries": {"Amplify": "old", "Other": "x"}}), encoding="utf-8")
+    names, _ = _load_tree_zh_maps(pack)
+    assert names == {"Amplify": "增幅"}

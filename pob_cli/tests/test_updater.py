@@ -6,6 +6,7 @@ import base64
 import hashlib
 import io
 import json
+import threading
 import time
 import zipfile
 import zlib
@@ -47,6 +48,7 @@ from pob_cli.updater import (
     seed_from_legacy_dir,
     verify_pob_sha1,
 )
+from pob_cli.updater.engine_lock import engine_update_lock
 
 REAL_LEGACY_DIR = find_legacy_snapshot()
 
@@ -348,9 +350,30 @@ def test_atomic_swap_and_gate_rollback_restores_all_files(
     assert not (eng / ".staging").exists()
     assert not (eng / ".bak").exists()
 
-    # Second attempt: passing gate_result -> must apply cleanly & persist ETag
     def passing_probe(_path: Path) -> dict[str, Any]:
         return {"ok": True, "pobVersion": "2.68.1", "bridgeVersion": "0.2.0", "caps": {"sidebarBreakdown": True}}
+
+    # While another writer holds the engine, the update stays pending and nothing is touched.
+    held, release = threading.Event(), threading.Event()
+
+    def _other_writer() -> None:
+        with engine_update_lock(eng):
+            held.set()
+            release.wait(timeout=30)
+
+    other = threading.Thread(target=_other_writer, daemon=True)
+    other.start()
+    assert held.wait(timeout=10)
+    try:
+        res_busy = check_and_apply_updates(engine_dir=eng, runtime_dir=rt, include_zh=False, probe_fn=passing_probe)
+    finally:
+        release.set()
+        other.join(timeout=10)
+    assert res_busy["updateAvailable"] is True and "let it finish first" in res_busy["updateSkipped"]
+    assert res_busy["localPobVersion"] == "2.67.2"
+    assert (eng / "PoE1" / "Modules" / "Main.lua").read_bytes() == orig_main_lua
+
+    # Second attempt: passing gate_result -> must apply cleanly & persist ETag
 
     res_ok = check_and_apply_updates(
         engine_dir=eng,

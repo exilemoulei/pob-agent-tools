@@ -22,7 +22,7 @@ from .paths import (
 )
 from .tw_norm import _fold_search_text
 
-TREE_SCHEMA_VERSION = 5
+TREE_SCHEMA_VERSION = 6
 _TREE_INDEX_LOCK = threading.RLock()
 _VALID_TREE_INDEX_CACHE: set[tuple[str, str, str]] = set()
 
@@ -53,6 +53,10 @@ _TREE_ZH_NAME_FILES: tuple[str, ...] = (
     "Z-S30.json",
     "Z-S30-Pearl_of_Tsoatha-Passive_Tree.json",
 )
+
+
+# A bootstrapped engine ships the pack's tree_dn, tree_sd and tattoo files merged into this one.
+_TREE_ZH_MERGED_FILE = "passives.json"
 
 
 def _find_latest_tree_lua(poe1_dir: Path) -> tuple[str, Path]:
@@ -100,7 +104,10 @@ def _unescape_tree_str(raw_inner: str) -> list[str]:
 
 
 def _load_tree_zh_maps(zh_dir: Path | None) -> tuple[dict[str, str], dict[str, str]]:
-    """Load EN->ZH maps for passive node/ascendancy names (`tree_dn.json`) and stats (`tree_sd.json` + S30)."""
+    """Load EN->ZH maps for passive node/ascendancy names (`tree_dn.json`) and stats (`tree_sd.json` + S30).
+
+    Without `tree_dn.json` (a bootstrapped engine) both come from the merged `passives.json`.
+    """
     dn_map: dict[str, str] = {}
     sd_map: dict[str, str] = {}
     if zh_dir is None or not zh_dir.is_dir():
@@ -132,6 +139,16 @@ def _load_tree_zh_maps(zh_dir: Path | None) -> tuple[dict[str, str], dict[str, s
                             sd_map[kl] = v.strip()
         except Exception:
             pass
+    merged_path = zh_dir / _TREE_ZH_MERGED_FILE
+    if not (zh_dir / "tree_dn.json").is_file() and merged_path.is_file():
+        try:
+            entries = json.loads(merged_path.read_text(encoding="utf-8")).get("entries")
+        except Exception:
+            entries = None
+        for k, v in (entries.items() if isinstance(entries, dict) else ()):
+            if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip():
+                dn_map.setdefault(k.strip(), v.strip())
+                sd_map.setdefault(k.strip().lower(), v.strip())
     return dn_map, sd_map
 
 
@@ -338,7 +355,7 @@ def ensure_treedata_index(
     hasher.update(f"{tree_ver}:{st.st_size}:{st.st_mtime_ns};".encode())
     if zh_dir is not None and zh_dir.is_dir():
         hasher.update(f"{zh_dir.name};".encode())
-        for fn in (*_TREE_ZH_NAME_FILES, "tree_sd.json"):
+        for fn in (*_TREE_ZH_NAME_FILES, "tree_sd.json", _TREE_ZH_MERGED_FILE):
             zp = zh_dir / fn
             if zp.is_file():
                 zst = zp.stat()
@@ -434,6 +451,7 @@ def ensure_treedata_index(
                         " ".join(
                             p
                             for p in (
+                                str(nd["id"]),
                                 nd["name"],
                                 nd["zhName"] or "",
                                 nd["ascName"] or "",

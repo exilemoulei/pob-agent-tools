@@ -86,6 +86,7 @@ EXPECTED_SEARCH_KEYS = {
     "calculated",
     "estimate",
     "seedNodes",
+    "radiusSummary",
     "workers",
     "baseline",
     "outcomes",
@@ -590,7 +591,9 @@ Historic
     from pob_cli.cli_timeless import _format_search_markdown
 
     text = _format_search_markdown(res_fast, "CombinedDPS", 10)
-    assert "Shortlist: 200 of 500 seed groups" in text and "a better seed may exist" in text
+    assert "Ranked top 200 of 500 PRNG groups via weight shortlist" in text
+    assert "pass --exact only for exhaustive scan" in text
+    assert "a better seed may exist" not in text
     assert "error allowed for" not in text
 
     # --exact: skips the shortlist, calculates all 500 groups in parallel, and finds what the shortlist missed

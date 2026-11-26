@@ -371,11 +371,11 @@ def test_daemon_spawn_breakaway_fallback_on_access_denied(
     if daemon_mod.sys.platform != "win32":
         pytest.skip("Win32 CREATE_BREAKAWAY_FROM_JOB fallback test")
 
-    seen_flags: list[int] = []
+    seen_calls: list[dict[str, object]] = []
 
     def _fake_popen(cmd, **kwargs):
         flags = int(kwargs.get("creationflags", 0))
-        seen_flags.append(flags)
+        seen_calls.append(kwargs)
         if flags & daemon_mod._CREATE_BREAKAWAY_FROM_JOB:
             err = OSError("Access is denied")
             err.winerror = 5  # type: ignore[attr-defined]
@@ -385,9 +385,21 @@ def test_daemon_spawn_breakaway_fallback_on_access_denied(
     monkeypatch.setattr(daemon_mod.subprocess, "Popen", _fake_popen)
     proc = daemon_mod._spawn_daemon_process(["python", "-m", "pob_cli.daemon"], tmp_path, io.StringIO())
     assert proc is not None
-    assert len(seen_flags) == 2
-    assert bool(seen_flags[0] & daemon_mod._CREATE_BREAKAWAY_FROM_JOB) is True
-    assert bool(seen_flags[1] & daemon_mod._CREATE_BREAKAWAY_FROM_JOB) is False
+    assert len(seen_calls) == 2
+    f0 = int(seen_calls[0]["creationflags"])  # type: ignore[arg-type]
+    f1 = int(seen_calls[1]["creationflags"])  # type: ignore[arg-type]
+    assert bool(f0 & daemon_mod._CREATE_BREAKAWAY_FROM_JOB) is True
+    assert bool(f1 & daemon_mod._CREATE_BREAKAWAY_FROM_JOB) is False
+    for call_kw in seen_calls:
+        fl = int(call_kw["creationflags"])  # type: ignore[arg-type]
+        assert fl & daemon_mod.subprocess.CREATE_NO_WINDOW
+        assert fl & daemon_mod.subprocess.CREATE_NEW_PROCESS_GROUP
+        assert not (fl & daemon_mod.subprocess.DETACHED_PROCESS)
+        assert call_kw.get("close_fds") is True
+        si = call_kw.get("startupinfo")
+        assert si is not None
+        assert si.dwFlags & daemon_mod.subprocess.STARTF_USESHOWWINDOW  # type: ignore[union-attr]
+        assert si.wShowWindow == getattr(daemon_mod.subprocess, "SW_HIDE", 0)  # type: ignore[union-attr]
 
 
 def test_daemon_pid_liveness_and_fast_stale_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

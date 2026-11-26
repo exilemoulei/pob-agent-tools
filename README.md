@@ -2,6 +2,7 @@
 
 **简体中文** | [English](README_EN.md)
 
+[![Bilibili](https://img.shields.io/badge/Bilibili-%E4%BD%BF%E7%94%A8%E6%95%99%E5%AD%A6-FB7299?style=flat-square&logo=bilibili&logoColor=white)](https://www.bilibili.com/video/BV1ijyyzLEHM/)
 [![Discord](https://img.shields.io/badge/Discord-%E5%8A%A0%E5%85%A5%E7%A4%BE%E7%BE%A4-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.gg/tejgNrhjn)
 ![QQ群](https://img.shields.io/badge/QQ%E7%BE%A4-1062048472-12B7F5?style=flat-square&logo=qq&logoColor=white)
 
@@ -14,9 +15,9 @@
 
 碰上不懂的还会去[编年史](https://poedb.tw)和[wiki](https://www.poewiki.net)，而不是和往常一样空口瞎编
 
-它会给你诸多优化建议，还能按构筑缺口去市集找对你最有提升的装备，直接提供购买链接
+它会给你诸多优化建议，还能按构筑缺口去市集找对你最有提升的装备（支持浮士德金币一口价筛选、同卖家刷屏去重与自动补满 +20% 品质跑 PoB 对比），直接提供购买链接
 
-甚至几秒就能帮你搜完永恒珠宝（连 3.30 新的深渊永恒珠宝也支持）！
+甚至几秒就能帮你搜完永恒珠宝（连新的深渊永恒珠宝也支持）！
 
 ---
 
@@ -36,6 +37,8 @@
 
 ## 我该怎么用？
 
+> **先看实战演示**：[B 站教学视频 — AI 帮我云了个全屏 BD（pob4agents 使用讲解）](https://www.bilibili.com/video/BV1ijyyzLEHM/)
+
 安装完成之后，新开对话窗，给它提供你的 poe.ninja / 国际服或国服官网角色链接 / pob导出链接，它都能认
 
 （国服看下面导入 Cookie 的方法。另外官网接口拿不到盗贼和万神殿，记得确认下）
@@ -44,9 +47,12 @@
 
 尽量选择聪明点的模型（推荐Neon/Opus/Sol），不过你只有大肥鱼也没关系
 
-可以多告诉它你的角色是什么bd、有什么特别容易搞错的核心机制
+**比较好用的实践套路**（视频里演示的核心思路）：
 
-让它多问问你，实测会让准确性大幅提升！
+- **别空手聊，给它参考锚点**：有别人成型的 PoB、攻略帖（比如 Reddit 机制讨论）或实战视频，直接一起丢给它；喂的材料越扎实，它出的方案越靠谱
+- **多告诉它核心机制，让它反问你**：说清你的角色是什么 BD、有哪些特别容易搞错的机制，让它多问问你，实测会让准确性大幅提升！
+- **繁琐活交给它，你来做把关**：批量涂纹身、筛冷门升华和天赋、找装备平替都让它改完导回 PoB，你导入看一眼把不对劲的装备或配置指出来，让它继续调就行
+- **想抄 ninja 作业，自己复制链接发给它**：受平台规则限制它不会自己去爬榜，你挑几个顺眼的 `poe.ninja` 角色链接贴进去让它对比分析，又快又准
 
 它会自动挤掉bd水分，还原真实数据
 
@@ -111,7 +117,7 @@ pob bootstrap
 pob status
 ```
 
-- 需代理时加 `--proxy http://127.0.0.1:<端口>`；若本机已有 `PobTools` 目录，可用 `pob bootstrap --from-dir "<本地路径>"` 离线导入。
+- 需代理时加 `--proxy http://127.0.0.1:<端口>`；只要英文引擎、不装中文词典时加 `--no-zh`；若本机已有 `PobTools` 目录，可用 `pob bootstrap --from-dir "<本地路径>"` 离线导入。
 - Windows 采用精简原生 LuaJIT 托管引擎（无需 `pob-zh.exe` 或数百 MB 永恒珠宝 LUT 压缩包），macOS / Linux 独立版会自动使用内置或经 Ed25519 校验下载的预编译 LuaJIT 运行时，无需手动编译。
 - 默认显示语言为简体中文（`zh-CN`）。请按用户语言顺手切换：繁体用户运行 `pob lang zh-TW`，英文用户运行 `pob lang en`（支持简繁英离线秒切，也可用 `POB_LANG` 覆盖；引擎未带的语言会被拒绝）。
 - 确认 `pob status` 返回版本与引擎就绪状态后再进入下一步。

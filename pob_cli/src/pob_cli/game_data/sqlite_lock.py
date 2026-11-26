@@ -15,119 +15,140 @@ from ..os_util import _try_break_stale_lock as _try_break_stale_lock
 from .constants import SCHEMA_VERSION
 from .paths import _sqlite_ro_uri
 
+SCHEMA_SQL = """
+CREATE TABLE meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE gems (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    name_lower TEXT NOT NULL,
+    display_name_lower TEXT NOT NULL,
+    zh_name TEXT,
+    zh_lower TEXT,
+    game_id TEXT,
+    variant_id TEXT,
+    is_support INTEGER NOT NULL,
+    is_vaal INTEGER NOT NULL,
+    is_transfigured INTEGER NOT NULL,
+    is_imbued INTEGER NOT NULL,
+    is_exceptional INTEGER NOT NULL DEFAULT 0,
+    legacy_removed_328 INTEGER NOT NULL DEFAULT 0,
+    natural_max_level INTEGER NOT NULL DEFAULT 20,
+    corrupted_max_level INTEGER NOT NULL DEFAULT 21,
+    is_item_skill INTEGER NOT NULL DEFAULT 0,
+    color TEXT,
+    tag_string TEXT,
+    search_text_lower TEXT NOT NULL,
+    data_json TEXT NOT NULL
+);
+CREATE INDEX idx_gems_name_lower ON gems(name_lower);
+CREATE INDEX idx_gems_display_lower ON gems(display_name_lower);
+CREATE INDEX idx_gems_zh_lower ON gems(zh_lower);
+
+CREATE TABLE uniques (
+    name TEXT PRIMARY KEY,
+    name_lower TEXT NOT NULL,
+    zh_name TEXT,
+    zh_lower TEXT,
+    foulborn_lower TEXT,
+    zh_foulborn_lower TEXT,
+    base_type TEXT NOT NULL,
+    item_class TEXT NOT NULL,
+    slots_lower TEXT NOT NULL,
+    has_foulborn INTEGER NOT NULL,
+    search_text_lower TEXT NOT NULL,
+    data_json TEXT NOT NULL
+);
+CREATE INDEX idx_uniques_name_lower ON uniques(name_lower);
+CREATE INDEX idx_uniques_zh_lower ON uniques(zh_lower);
+
+CREATE TABLE bases (
+    name TEXT PRIMARY KEY,
+    name_lower TEXT NOT NULL,
+    zh_name TEXT,
+    zh_lower TEXT,
+    item_type TEXT NOT NULL,
+    sub_type TEXT,
+    req_level INTEGER NOT NULL,
+    hidden INTEGER NOT NULL,
+    slots_lower TEXT NOT NULL,
+    search_text_lower TEXT NOT NULL,
+    data_json TEXT NOT NULL
+);
+CREATE INDEX idx_bases_name_lower ON bases(name_lower);
+CREATE INDEX idx_bases_zh_lower ON bases(zh_lower);
+
+CREATE TABLE mods (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    gen_type TEXT NOT NULL,
+    mod_group TEXT NOT NULL,
+    mod_group_lower TEXT NOT NULL,
+    affix TEXT NOT NULL,
+    affix_lower TEXT NOT NULL,
+    level INTEGER NOT NULL,
+    stats_en_lower TEXT NOT NULL,
+    stats_zh_lower TEXT NOT NULL,
+    weights_json TEXT NOT NULL,
+    zero_weights_json TEXT NOT NULL,
+    weight_keys_json TEXT NOT NULL,
+    types_json TEXT NOT NULL,
+    search_en_lower TEXT NOT NULL,
+    search_zh_lower TEXT NOT NULL,
+    search_text_lower TEXT NOT NULL,
+    data_json TEXT NOT NULL
+);
+CREATE INDEX idx_mods_level ON mods(level);
+CREATE INDEX idx_mods_group ON mods(mod_group_lower);
+
+CREATE TABLE tattoos (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    name_lower TEXT NOT NULL,
+    zh_name TEXT,
+    zh_lower TEXT,
+    kind TEXT NOT NULL,
+    override_type TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    target_type_lower TEXT NOT NULL,
+    target_value TEXT NOT NULL,
+    legacy INTEGER NOT NULL DEFAULT 0,
+    search_text_lower TEXT NOT NULL,
+    data_json TEXT NOT NULL
+);
+CREATE INDEX idx_tattoos_name_lower ON tattoos(name_lower);
+CREATE INDEX idx_tattoos_zh_lower ON tattoos(zh_lower);
+CREATE INDEX idx_tattoos_kind ON tattoos(kind);
+
+CREATE TABLE translations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    en TEXT NOT NULL,
+    en_lower TEXT NOT NULL,
+    zh TEXT NOT NULL,
+    zh_lower TEXT NOT NULL,
+    category TEXT NOT NULL,
+    cat_rank INTEGER NOT NULL
+);
+
+CREATE VIRTUAL TABLE gems_fts USING fts5(search_text_lower, content='gems', tokenize='trigram');
+CREATE VIRTUAL TABLE uniques_fts USING fts5(search_text_lower, content='uniques', tokenize='trigram');
+CREATE VIRTUAL TABLE bases_fts USING fts5(search_text_lower, content='bases', tokenize='trigram');
+CREATE VIRTUAL TABLE mods_fts USING fts5(search_text_lower, content='mods', tokenize='trigram');
+CREATE VIRTUAL TABLE tattoos_fts USING fts5(search_text_lower, content='tattoos', tokenize='trigram');
+CREATE VIRTUAL TABLE translations_zh_fts USING fts5(
+    zh_lower, content='translations', content_rowid='id', tokenize='trigram'
+);
+CREATE VIRTUAL TABLE translations_en_fts USING fts5(
+    en_lower, content='translations', content_rowid='id', tokenize='unicode61'
+);
+"""
+
 
 def _create_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE meta (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-
-        CREATE TABLE gems (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            name_lower TEXT NOT NULL,
-            display_name_lower TEXT NOT NULL,
-            zh_name TEXT,
-            zh_lower TEXT,
-            game_id TEXT,
-            variant_id TEXT,
-            is_support INTEGER NOT NULL,
-            is_vaal INTEGER NOT NULL,
-            is_transfigured INTEGER NOT NULL,
-            is_imbued INTEGER NOT NULL,
-            is_exceptional INTEGER NOT NULL DEFAULT 0,
-            legacy_removed_328 INTEGER NOT NULL DEFAULT 0,
-            natural_max_level INTEGER NOT NULL DEFAULT 20,
-            corrupted_max_level INTEGER NOT NULL DEFAULT 21,
-            is_item_skill INTEGER NOT NULL DEFAULT 0,
-            color TEXT,
-            tag_string TEXT,
-            search_text_lower TEXT NOT NULL,
-            data_json TEXT NOT NULL
-        );
-        CREATE INDEX idx_gems_name_lower ON gems(name_lower);
-        CREATE INDEX idx_gems_display_lower ON gems(display_name_lower);
-        CREATE INDEX idx_gems_zh_lower ON gems(zh_lower);
-
-        CREATE TABLE uniques (
-            name TEXT PRIMARY KEY,
-            name_lower TEXT NOT NULL,
-            zh_name TEXT,
-            zh_lower TEXT,
-            foulborn_lower TEXT,
-            zh_foulborn_lower TEXT,
-            base_type TEXT NOT NULL,
-            item_class TEXT NOT NULL,
-            slots_lower TEXT NOT NULL,
-            has_foulborn INTEGER NOT NULL,
-            search_text_lower TEXT NOT NULL,
-            data_json TEXT NOT NULL
-        );
-        CREATE INDEX idx_uniques_name_lower ON uniques(name_lower);
-        CREATE INDEX idx_uniques_zh_lower ON uniques(zh_lower);
-
-        CREATE TABLE bases (
-            name TEXT PRIMARY KEY,
-            name_lower TEXT NOT NULL,
-            zh_name TEXT,
-            zh_lower TEXT,
-            item_type TEXT NOT NULL,
-            sub_type TEXT,
-            req_level INTEGER NOT NULL,
-            hidden INTEGER NOT NULL,
-            slots_lower TEXT NOT NULL,
-            search_text_lower TEXT NOT NULL,
-            data_json TEXT NOT NULL
-        );
-        CREATE INDEX idx_bases_name_lower ON bases(name_lower);
-        CREATE INDEX idx_bases_zh_lower ON bases(zh_lower);
-
-        CREATE TABLE mods (
-            id TEXT PRIMARY KEY,
-            source TEXT NOT NULL,
-            gen_type TEXT NOT NULL,
-            mod_group TEXT NOT NULL,
-            mod_group_lower TEXT NOT NULL,
-            affix TEXT NOT NULL,
-            affix_lower TEXT NOT NULL,
-            level INTEGER NOT NULL,
-            stats_en_lower TEXT NOT NULL,
-            stats_zh_lower TEXT NOT NULL,
-            weights_json TEXT NOT NULL,
-            zero_weights_json TEXT NOT NULL,
-            types_json TEXT NOT NULL,
-            search_en_lower TEXT NOT NULL,
-            search_zh_lower TEXT NOT NULL,
-            search_text_lower TEXT NOT NULL,
-            data_json TEXT NOT NULL
-        );
-        CREATE INDEX idx_mods_level ON mods(level);
-        CREATE INDEX idx_mods_group ON mods(mod_group_lower);
-
-        CREATE TABLE translations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            en TEXT NOT NULL,
-            en_lower TEXT NOT NULL,
-            zh TEXT NOT NULL,
-            zh_lower TEXT NOT NULL,
-            category TEXT NOT NULL,
-            cat_rank INTEGER NOT NULL
-        );
-
-        CREATE VIRTUAL TABLE gems_fts USING fts5(search_text_lower, content='gems', tokenize='trigram');
-        CREATE VIRTUAL TABLE uniques_fts USING fts5(search_text_lower, content='uniques', tokenize='trigram');
-        CREATE VIRTUAL TABLE bases_fts USING fts5(search_text_lower, content='bases', tokenize='trigram');
-        CREATE VIRTUAL TABLE mods_fts USING fts5(search_text_lower, content='mods', tokenize='trigram');
-        CREATE VIRTUAL TABLE translations_zh_fts USING fts5(
-            zh_lower, content='translations', content_rowid='id', tokenize='trigram'
-        );
-        CREATE VIRTUAL TABLE translations_en_fts USING fts5(
-            en_lower, content='translations', content_rowid='id', tokenize='unicode61'
-        );
-        """
-    )
+    conn.executescript(SCHEMA_SQL)
 
 
 def _is_index_valid(db_path: Path, pob_version: str, data_version: str) -> bool:

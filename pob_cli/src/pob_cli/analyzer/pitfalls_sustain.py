@@ -1,4 +1,4 @@
-"""Seven-link, ascendancy flask sustain, Ramako, Frost Bomb, and Spectre mana synergy detectors."""
+"""Seven-link, ascendancy flask sustain, Ramako, Frost Bomb, Spectre, and 0-DPS archetype detectors."""
 
 from __future__ import annotations
 
@@ -6,9 +6,190 @@ from typing import Any
 
 from ..formatters import strip_pob_escapes
 from ..snapshot import _finite_float
+from .constants import TEMPORARY_SKILL_PATTERNS
 from .pitfalls_defence import _gem_matches
 from .pitfalls_offence import _item_names_low
-from .summary import _active_item_lines, _normalize_support_base_name
+from .summary import _active_item_lines, _is_reservation_aura_gem, _normalize_support_base_name
+
+_NON_ASC_KS_TOKENS: tuple[str, ...] = (
+    "tattoo",
+    "纹身",
+    "紋身",
+    "刺青",
+    "runegraft",
+    "符文",
+)
+
+_RAMAKO_ASC_QUALIFIED_TOKENS: tuple[str, ...] = (
+    "ramako, sun's light",
+    "ramako, sun’s light",
+    "sun's light",
+    "sun’s light",
+    "雷默科",
+    "烈阳之光",
+    "烈陽之光",
+    "太阳之光",
+    "太陽之光",
+)
+
+_ZERO_OFFENCE_STAT_KEYS: tuple[str, ...] = (
+    "CombinedDPS",
+    "FullDPS",
+    "TotalDPS",
+    "TotalDot",
+    "TotalDotDPS",
+    "MinionCombinedDPS",
+    "MinionTotalDPS",
+)
+
+_SPECTRE_SKILL_TOKENS: tuple[str, ...] = (
+    "raise spectre",
+    "召唤灵体",
+    "召喚靈體",
+    "瞬息之召唤灵体",
+    "瞬息之召喚靈體",
+    "喚醒幽魂",
+    "唤醒幽魂",
+)
+
+_LINK_SKILL_IDS: tuple[str, ...] = (
+    "DestructiveLink",
+    "IntuitiveLink",
+    "ProtectiveLink",
+    "FlameLink",
+    "SoulLink",
+    "VampiricLink",
+    "ArcaneLink",
+)
+
+_LINK_SKILL_EN_TOKENS: tuple[str, ...] = (
+    "destructive link",
+    "intuitive link",
+    "protective link",
+    "flame link",
+    "soul link",
+    "vampiric link",
+    "arcane link",
+)
+
+_NON_OFFENSIVE_UTILITY_TOKENS: tuple[str, ...] = (
+    *TEMPORARY_SKILL_PATTERNS,
+    "elemental weakness",
+    "flammability",
+    "frostbite",
+    "conductivity",
+    "despair",
+    "punishment",
+    "vulnerability",
+    "temporal chains",
+    "enfeeble",
+    "alchemist's mark",
+    "assassin's mark",
+    "sniper's mark",
+    "poacher's mark",
+    "warlord's mark",
+    "penance mark",
+    "offering",
+    " cry",
+    "convocation",
+    "desecrate",
+    "unearth",
+    "animate guardian",
+    "frostblink",
+    "flame dash",
+    "phase run",
+    "withering step",
+    "automation",
+    "autoexertion",
+    "portal",
+    "元素要害",
+    "易燃",
+    "冻伤",
+    "凍傷",
+    "导电",
+    "導電",
+    "绝望",
+    "絕望",
+    "惩戒",
+    "懲戒",
+    "脆弱",
+    "时空锁链",
+    "時空鎖鏈",
+    "衰弱",
+    "印记",
+    "印記",
+    "奉献",
+    "奉獻",
+    "战吼",
+    "戰吼",
+    "号召",
+    "號召",
+    "亵渎",
+    "褻瀆",
+    "幻化守卫",
+    "幻化守衛",
+    "冰霜闪现",
+    "冰霜閃現",
+    "烈焰冲刺",
+    "烈焰衝刺",
+    "暗影迷踪",
+    "凋零步",
+    "自动化",
+    "自動增助",
+    "自动增助",
+)
+
+
+def _is_tattoo_or_graft_label(label_low: str) -> bool:
+    return any(tok in label_low for tok in _NON_ASC_KS_TOKENS)
+
+
+def _is_ramako_ascendancy_name(nm_low: str) -> bool:
+    if _is_tattoo_or_graft_label(nm_low):
+        return False
+    return any(tok in nm_low for tok in _RAMAKO_ASC_QUALIFIED_TOKENS)
+
+
+def _is_spectre_active_gem(gm: dict[str, Any]) -> bool:
+    if not isinstance(gm, dict) or not gm.get("enabled", True) or gm.get("support"):
+        return False
+    return _gem_matches(
+        gm,
+        skill_ids=("RaiseSpectre", "RaiseSpectreAltX"),
+        tokens=_SPECTRE_SKILL_TOKENS,
+    )
+
+
+def _is_link_skill_gem(gm: dict[str, Any]) -> bool:
+    if not isinstance(gm, dict) or not gm.get("enabled", True) or gm.get("support"):
+        return False
+    gsid = str(gm.get("skillId") or "")
+    if gsid in _LINK_SKILL_IDS:
+        return True
+    combined = " ".join(
+        strip_pob_escapes(str(gm.get(k) or ""))
+        for k in ("name", "nameSpec", "nameZh")
+    ).lower()
+    if any(bad in combined for bad in ("searing bond", "灼热", "灼熱")):
+        return False
+    if any(tok in combined for tok in _LINK_SKILL_EN_TOKENS):
+        return True
+    return any(tok in combined for tok in ("羁绊", "羈絆", "连结", "連結"))
+
+
+def _is_non_direct_offensive_gem(gm: dict[str, Any]) -> bool:
+    if _is_link_skill_gem(gm) or _is_reservation_aura_gem(gm):
+        return True
+    if str(gm.get("skillId") or "") in ("Quickstep", "Dash"):
+        return True
+    names_low = [
+        strip_pob_escapes(str(gm.get(k) or "")).strip().lower()
+        for k in ("name", "nameSpec", "nameZh")
+    ]
+    if any(nm in ("dash", "冲刺", "衝刺") for nm in names_low):
+        return True
+    combined = " ".join(names_low)
+    return any(tok in combined for tok in _NON_OFFENSIVE_UTILITY_TOKENS)
 
 
 def _check_seven_link_and_class_synergies(
@@ -103,7 +284,8 @@ def _check_seven_link_and_class_synergies(
         has_multi_active_trigger = False
 
     has_hinekora = 1731 in asc_ids or any(
-        any(tok in nm for tok in ("hinekora", "欣嫩", "海妮可拉", "死神之怒"))
+        not _is_tattoo_or_graft_label(nm)
+        and any(tok in nm for tok in ("hinekora", "欣嫩", "海妮可拉", "死神之怒"))
         for nm in asc_names_lower
     )
     has_penance_mark = any(
@@ -194,9 +376,7 @@ def _check_ascendancy_and_utility_synergies(ctx: dict[str, Any], core_synergies:
                 "of its 50% non-flask life cap!"
             )
 
-    has_ramako = (61355 in asc_ids) or any(
-        tok in nm for nm in asc_names_lower for tok in ("ramako", "雷默科", "烈阳之光", "烈陽之光", "太阳之光", "太陽之光")
-    )
+    has_ramako = (61355 in asc_ids) or any(_is_ramako_ascendancy_name(nm) for nm in asc_names_lower)
     if has_ramako:
         core_synergies.append(
             "[RAMAKO FIXED -20% DOT RES] Chieftain 'Ramako, Sun's Light' sets nearby enemies' Fire Resistance "
@@ -222,7 +402,7 @@ def _check_ascendancy_and_utility_synergies(ctx: dict[str, Any], core_synergies:
             "in non-Cold builds it provides -75% Enemy Life Regeneration against Maven/Essence/Harvest/regen rares."
         )
 
-    main_is_spectre = any(tok in mg_active_low for tok in ("raise spectre", "召唤灵体", "喚醒幽魂"))
+    main_is_spectre = any(tok in mg_active_low for tok in _SPECTRE_SKILL_TOKENS)
     mana_unres_val = _finite_float(ctx["stats"].get("ManaUnreserved"), default=0.0)
     lifetap_group_count = 0
     for grp in ctx["groups"]:
@@ -243,3 +423,99 @@ def _check_ascendancy_and_utility_synergies(ctx: dict[str, Any], core_synergies:
             f"(temporarily toggling off an aura) — {lifetap_group_count} utility groups use Lifetap (Life cost), "
             "so do NOT require Raise Spectre's cast cost to fit inside active in-combat unreserved Mana."
         )
+
+
+def _check_zero_dps_archetypes(
+    ctx: dict[str, Any],
+    gaps: list[dict[str, str]],
+    core_synergies: list[str],
+) -> None:
+    stats = ctx["stats"]
+    if any(_finite_float(stats.get(k), default=0.0) > 0.0 for k in _ZERO_OFFENCE_STAT_KEYS):
+        return
+
+    main_group = ctx["main_group"]
+    groups = ctx["groups"]
+    asc_names_lower = ctx["asc_names_lower"]
+    build_info = ctx["build_info"]
+
+    spectre_gem_label: str | None = None
+    candidate_groups: list[dict[str, Any]] = []
+    if isinstance(main_group, dict) and main_group.get("enabled", True) and "Swap" not in str(main_group.get("slot") or ""):
+        candidate_groups.append(main_group)
+    for g in groups:
+        if (
+            isinstance(g, dict)
+            and g is not main_group
+            and g.get("enabled", True)
+            and g.get("includeInFullDPS")
+            and "Swap" not in str(g.get("slot") or "")
+        ):
+            candidate_groups.append(g)
+
+    for g in candidate_groups:
+        for gm in g.get("gems") or []:
+            if _is_spectre_active_gem(gm):
+                spectre_gem_label = (
+                    strip_pob_escapes(str(gm.get("name") or gm.get("nameSpec") or gm.get("nameZh") or "")).strip()
+                    or "Raise Spectre"
+                )
+                break
+        if spectre_gem_label is not None:
+            break
+
+    if spectre_gem_label is not None:
+        gaps.append(
+            {
+                "category": "MinionConfig",
+                "severity": "HIGH",
+                "message": (
+                    f"[EMPTY <Spectres> CONFIG] '{spectre_gem_label}' shows CombinedDPS / MinionDPS = 0 because "
+                    "no Spectre monster corpses are selected in PoB's `<Spectres>` list (`Manage Spectres`) — "
+                    "NOT because support links are broken!"
+                ),
+            }
+        )
+        return
+
+    mg_active_gems = [
+        gm
+        for gm in ((main_group.get("gems") or []) if isinstance(main_group, dict) and main_group.get("enabled", True) else [])
+        if isinstance(gm, dict) and gm.get("enabled", True) and not gm.get("support")
+    ]
+    link_gems = [
+        strip_pob_escapes(str(gm.get("name") or gm.get("nameSpec") or gm.get("nameZh") or "")).strip() or "Link"
+        for gm in mg_active_gems
+        if _is_link_skill_gem(gm)
+    ]
+    asc_cls_low = " ".join(
+        strip_pob_escapes(str((build_info or {}).get(k) or ""))
+        for k in ("ascendClassName", "ascendClassNameZh")
+    ).lower()
+    has_luminary = (
+        any(
+            not _is_tattoo_or_graft_label(nm) and any(tok in nm for tok in ("luminary", "光明使者"))
+            for nm in asc_names_lower
+        )
+        or "luminary" in asc_cls_low
+        or "光明使者" in asc_cls_low
+        or "luminary" in ctx["asc_classes_lower"]
+        or "光明使者" in ctx["asc_classes_lower"]
+    )
+    no_direct_offensive_main = not mg_active_gems or all(
+        _is_non_direct_offensive_gem(gm) for gm in mg_active_gems
+    )
+    if link_gems or (has_luminary and no_direct_offensive_main):
+        tags: list[str] = []
+        if link_gems:
+            tags.append(", ".join(dict.fromkeys(link_gems)))
+        if has_luminary:
+            tags.append("Luminary / 光明使者")
+        detail = " + ".join(tags) if tags else "Support"
+        support_msg = (
+            f"[SUPPORT ARCHETYPE] ({detail}) CombinedDPS = 0 is expected on a Link / Aura-bot / "
+            "Mercenary (`Luminary`) support build because ally/Mercenary entity DPS is `[PoB未模拟]` in PoB 2.69.0 "
+            "— evaluate Link/aura/curse scaling and defensive EHP instead of solo player DPS."
+        )
+        gaps.append({"category": "SupportArchetype", "severity": "INFO", "message": support_msg})
+        core_synergies.append(support_msg)

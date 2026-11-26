@@ -420,7 +420,19 @@ def _first_int(value: str) -> int:
         return 0
 
 
+PROPERTY_PREFIXES: tuple[str, ...] = (
+    "implicits:",
+    "item level:",
+    "rarity:",
+    "item class:",
+    "crafted:",
+)
+
+
 def _is_property_line(line: str) -> bool:
+    lowered = line.strip().lower()
+    if lowered.startswith(PROPERTY_PREFIXES):
+        return True
     match = PROPERTY_RE.match(line)
     if not match:
         return False
@@ -442,7 +454,7 @@ def _is_meta_or_property_line(line: str) -> bool:
         return True
     if lowered in STATE_LINES:
         return True
-    if lowered.startswith(("implicits:", "item level:", "rarity:", "item class:")):
+    if lowered.startswith(PROPERTY_PREFIXES):
         return True
     if lowered.startswith("foil unique"):
         return True
@@ -502,7 +514,9 @@ def parse_item_text(text: str) -> Item:
             index += 1
             if index < len(lines) and not _is_meta_or_property_line(lines[index]):
                 item.name = first
-                item.base_type = escape_ggg_string(sanitize_text(lines[index], 120))
+                # The game writes "Vestigial <base>" on such a unique; PoB drops the word, and so
+                # must the base that is looked up here.
+                item.base_type = escape_ggg_string(sanitize_text(lines[index], 120)).removeprefix("Vestigial ")
                 index += 1
             else:
                 item.name = ""

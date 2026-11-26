@@ -120,23 +120,39 @@ def _shared_cache_dir(
     return cache_dir
 
 
+def _holds_game_data(root: Path) -> bool:
+    return (root / "PoE1" / "Data").is_dir() or (root / "Data").is_dir()
+
+
 def resolve_pob_dir(pob_dir: Path | None = None, runtime_dir: Path | None = None) -> Path:
-    """Resolve PoB engine root: explicit arg -> POB_ROOT -> <runtime_dir>/engine -> PobTools[20261102]."""
+    """Resolve PoB engine root: explicit arg -> POB_ROOT -> <runtime_dir>/engine -> PobTools[20261102].
+
+    `POB_ROOT` is held to what `updater.resolve_engine_root` asks of it, so `pob data` reads the
+    engine that builds are calculated on: a PoE2-only folder is refused, and a folder the daemon
+    would not run (a typo, a data pack with no LuaJIT) gives way to a managed engine it would run.
+    A folder that only holds game data still answers when no engine can run at all.
+    """
     if pob_dir is not None:
         return Path(pob_dir)
     env_pob = os.environ.get("POB_ROOT", "").strip()
     if env_pob:
-        return Path(env_pob)
+        from ..guardrails import validate_engine_root
+
+        validate_engine_root(Path(env_pob), expected_game="poe1", source_label="POB_ROOT")
     rt = resolve_runtime_dir(runtime_dir)
     managed_engine = rt / "engine"
-    if (managed_engine / "PoE1" / "Data").is_dir() or (managed_engine / "Data").is_dir():
-        return managed_engine
+    data_only = [c for c in ([Path(env_pob)] if env_pob else []) + [managed_engine] if _holds_game_data(c)]
+    for candidate in data_only:
+        if _updater.is_valid_engine_dir(candidate):
+            return candidate
+    if data_only:
+        return data_only[0]
     checkout_root = detect_source_checkout_root()
     if checkout_root is not None:
         local_pob = checkout_root / "PobTools[20261102]"
         if local_pob.is_dir():
             return local_pob
-    return managed_engine
+    return Path(env_pob) if env_pob else managed_engine
 
 
 def list_available_zh_dirs(pob_dir: Path) -> list[Path]:

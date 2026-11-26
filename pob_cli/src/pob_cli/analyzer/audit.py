@@ -23,10 +23,14 @@ from .dewater import (
     _probe_rpc_method,
     _rpc_error_text,
 )
-from .dewater_auto import best_effort_audit_tree_and_raw, infer_auto_keep_and_flask_notes
+from .dewater_auto import (
+    best_effort_audit_tree_and_raw,
+    infer_auto_keep_and_flask_notes,
+)
 from .dewater_steps import _same_state
+from .eb_sustain import collect_dewatered_eb_flask_note, collect_mana_sustain_issues
 from .pitfalls_core import _detect_build_mechanics_and_pitfalls
-from .summary import _compute_effective_mana_spend, _has_doryanis_prototype_equipped
+from .summary import _has_doryanis_prototype_equipped
 
 
 def _prepare_attribution_probes(
@@ -292,6 +296,8 @@ def _collect_static_health_issues(
     items_res: dict[str, Any],
     skills_res_audit: dict[str, Any] | None,
     warnings: list[str],
+    tree_summary: dict[str, Any] | None = None,
+    equipped_slots_raw: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     health_issues: list[dict[str, str]] = []
     has_doryani = _has_doryanis_prototype_equipped(items_res)
@@ -355,56 +361,15 @@ def _collect_static_health_issues(
                 }
             )
 
-    mana_cost = _finite_float(stats.get("ManaCost"))
-    mana_unres = _finite_float(stats.get("ManaUnreserved"))
-    raw_mana_regen = (
-        stats.get("ManaRegenRecovery")
-        if stats.get("ManaRegenRecovery") is not None
-        else stats.get("ManaRegen")
+    health_issues.extend(
+        collect_mana_sustain_issues(
+            stats,
+            skills_res_audit,
+            tree_summary=tree_summary,
+            items_res=items_res,
+            equipped_slots_raw=equipped_slots_raw,
+        )
     )
-    mana_regen = _finite_float(raw_mana_regen)
-    mana_leech = _finite_float(stats.get("ManaLeechGainRate"))
-    speed = _finite_float(stats.get("Speed"))
-    life_unres = _finite_float(stats.get("LifeUnreserved"))
-    spend_info = _compute_effective_mana_spend(stats, skills_res_audit)
-    spend_rate = float(spend_info["spendRate"])
-    eff_casts = float(spend_info["effectiveCastsPerSec"])
-    repeats = int(spend_info["repeats"])
-    rec_rate = max(0.0, mana_regen) + mana_leech
-    exceeds_recovery = (spend_rate > rec_rate * 1.10) if rec_rate > 0.0 else (spend_rate > 0.0)
-    if mana_cost > 0 and mana_cost > mana_unres and life_unres > 0:
-        health_issues.append(
-            {
-                "category": "Sustain",
-                "severity": "HIGH",
-                "message": f"Skill Mana Cost ({mana_cost:.0f}) exceeds Unreserved Mana ({mana_unres:.0f})",
-            }
-        )
-    elif mana_cost > 0 and mana_regen < 0:
-        health_issues.append(
-            {
-                "category": "Sustain",
-                "severity": "MEDIUM",
-                "message": f"Net Mana Regen is negative ({mana_regen:.1f}/s) with Mana Cost {mana_cost:.0f}",
-            }
-        )
-    elif mana_cost > 0 and eff_casts > 0 and exceeds_recovery and life_unres > 0:
-        detail_bits: list[str] = []
-        if repeats > 1:
-            detail_bits.append(f"raw {speed:.2f}/s / {repeats}x repeats")
-        if spend_info.get("cooldownCapped") and spend_info.get("effectiveCooldown"):
-            detail_bits.append(f"capped by {float(spend_info['effectiveCooldown']):.2f}s CD")
-        detail_suffix = f"; {', '.join(detail_bits)}" if detail_bits else ""
-        health_issues.append(
-            {
-                "category": "Sustain",
-                "severity": "LOW",
-                "message": (
-                    f"Mana spend rate ({spend_rate:.1f}/s = {mana_cost:.0f} * {eff_casts:.2f}/s{detail_suffix}) "
-                    f"exceeds net Mana recovery + leech ({rec_rate:.1f}/s)"
-                ),
-            }
-        )
 
     pts = info.get("points", {})
     used, used_max = int(pts.get("used") or 0), int(pts.get("usedMax") or 0)
@@ -439,6 +404,40 @@ def _collect_static_health_issues(
                     "message": f"Equipment slot '{slot['name']}' is empty",
                 }
             )
+
+    if isinstance(tree_summary, dict):
+        sock_by_id = {
+            int(s["nodeId"]): s
+            for s in (tree_summary.get("jewelSockets") or [])
+            if isinstance(s, dict) and s.get("nodeId") is not None
+        }
+        empty_ids = list((tree_summary.get("socketSummary") or {}).get("allocatedEmptyIds") or [])
+        if not empty_ids:
+            empty_ids = [
+                nid
+                for nid, s in sock_by_id.items()
+                if s.get("allocated")
+                and not s.get("occupied")
+                and not s.get("itemId")
+                and not s.get("name")
+                and s.get("kind") != "charm"
+            ]
+        for nid in sorted({int(x) for x in empty_ids}):
+            s = sock_by_id.get(nid) or {}
+            idx_part = f" (#{s['socketIndex']})" if s.get("socketIndex") else ""
+            kind_part = str(s.get("kind") or "basic")
+            if s.get("sector"):
+                kind_part = f"{kind_part}, {s['sector']}"
+            health_issues.append(
+                {
+                    "category": "PassiveTree",
+                    "severity": "MEDIUM",
+                    "message": (
+                        f"[EMPTY-ALLOCATED-SOCKET] Jewel socket nodeId={nid}{idx_part} ({kind_part}) "
+                        "is allocated on the passive tree with no jewel socketed."
+                    ),
+                }
+            )
     return health_issues
 
 
@@ -465,6 +464,7 @@ def audit_build(
     keep: Iterable[str] | str | None = None,
     attribution: bool = True,
     *,
+    auto_keep: bool = True,
     include_envelope: bool = True,
     pre_tree_summary: dict[str, Any] | None = None,
     pre_equipped_slots_raw: list[dict[str, Any]] | None = None,
@@ -485,33 +485,53 @@ def audit_build(
         except Exception:
             skills_res_audit, cfg_res_audit = None, None
 
-        health_issues = _collect_static_health_issues(
-            stats, info, items_res, skills_res_audit, digest_before["warnings"]
-        )
-
         eff_tree, eff_raw, alloc_st = best_effort_audit_tree_and_raw(
             worker,
             items_res,
             pre_tree_summary=pre_tree_summary,
             pre_equipped_slots_raw=pre_equipped_slots_raw,
         )
-        auto_keep, flask_notes = infer_auto_keep_and_flask_notes(
-            stats=stats,
-            skills_res=skills_res_audit,
-            items_res=items_res,
-            build_info=info,
+        health_issues = _collect_static_health_issues(
+            stats,
+            info,
+            items_res,
+            skills_res_audit,
+            digest_before["warnings"],
             tree_summary=eff_tree,
             equipped_slots_raw=eff_raw,
-            alloc_node_stats=alloc_st,
+        )
+
+        ak_reasons, flask_notes = (
+            infer_auto_keep_and_flask_notes(
+                stats=stats,
+                skills_res=skills_res_audit,
+                items_res=items_res,
+                build_info=info,
+                tree_summary=eff_tree,
+                equipped_slots_raw=eff_raw,
+                alloc_node_stats=alloc_st,
+            )
+            if auto_keep
+            else ({}, {})
         )
         dw_defs = getattr(_analyzer.dewater_build_with_records, "__kwdefaults__", None) or {}
         dw_kw: dict[str, Any] = {}
         if "auto_keep_reasons" in dw_defs:
-            dw_kw["auto_keep_reasons"] = auto_keep
+            dw_kw["auto_keep_reasons"] = ak_reasons
         if "flask_notes" in dw_defs:
             dw_kw["flask_notes"] = flask_notes
         stripped, records = _analyzer.dewater_build_with_records(worker, keep=keep, **dw_kw)
         digest_dewatered = capture_digest(worker)
+        eb_dew_note = collect_dewatered_eb_flask_note(
+            digest_dewatered["stats"],
+            tree_summary=eff_tree,
+            items_res=items_res,
+            equipped_slots_raw=eff_raw,
+            stripped_flasks=list((stripped or {}).get("flasks") or []),
+            existing_issues=health_issues,
+        )
+        if eb_dew_note is not None:
+            health_issues.append(eb_dew_note)
         dewater_diff = diff_digest(digest_before, digest_dewatered)
         water_attribution = (
             _analyzer.attribute_water(worker, records, digest_dewatered, digest_before["primaryDpsKey"])

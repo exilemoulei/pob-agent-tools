@@ -1,0 +1,495 @@
+"""One writer per engine folder, and an install or update that stops halfway leaves the old engine."""
+
+from __future__ import annotations
+
+import os
+import threading
+from pathlib import Path
+from typing import Any
+
+import pytest
+from click.testing import CliRunner
+from test_updater import _make_fake_engine
+
+import pob_cli.daemon as daemon_mod
+from pob_cli import cli, updater
+from pob_cli.updater import bootstrap as bootstrap_mod
+from pob_cli.updater import engine_lock as engine_lock_mod
+from pob_cli.updater.engine_lock import (
+    EngineBusyError,
+    EngineLockError,
+    backup_file,
+    discard_backup,
+    engine_update_lock,
+    recover_idle_engine,
+    restore_interrupted_apply,
+    unrestored_swap,
+)
+
+OK_PROBE = {"ok": True, "pobVersion": "2.69.0"}
+
+
+def _hold_lock_elsewhere(engine: Path) -> tuple[threading.Event, threading.Thread]:
+    """Take the engine's lock on another thread, as a second process would, until the event is set."""
+    taken, release = threading.Event(), threading.Event()
+
+    def _holder() -> None:
+        with engine_update_lock(engine):
+            taken.set()
+            release.wait(timeout=30)
+
+    thread = threading.Thread(target=_holder, daemon=True)
+    thread.start()
+    assert taken.wait(timeout=10)
+    return release, thread
+
+
+def _stage(engine: Path, files: dict[str, bytes]) -> dict[Path, Path]:
+    staged: dict[Path, Path] = {}
+    for rel, content in files.items():
+        src = engine / ".staging" / rel
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(content)
+        staged[Path(rel)] = src
+    return staged
+
+
+def test_a_second_writer_is_refused_and_the_same_one_may_nest(tmp_path: Path) -> None:
+    engine = tmp_path / "engine"
+    release, thread = _hold_lock_elsewhere(engine)
+    try:
+        with pytest.raises(EngineBusyError, match="installing or updating the engine"), engine_update_lock(engine):
+            pass
+    finally:
+        release.set()
+        thread.join(timeout=10)
+
+    # Bootstrap seeds from a legacy pack and then updates the same folder under its own lock.
+    with engine_update_lock(engine), engine_update_lock(engine):
+        pass
+    with engine_update_lock(engine):
+        pass
+
+
+def test_an_interrupted_swap_is_put_back_by_the_next_writer(tmp_path: Path) -> None:
+    engine = _make_fake_engine(tmp_path / "engine", files={"Modules/Main.lua": b"new main\n", "Data/Gems.lua": b"old gems\n"})
+    main, gems = engine / "PoE1" / "Modules" / "Main.lua", engine / "PoE1" / "Data" / "Gems.lua"
+    # What a killed apply leaves: Main.lua already replaced with its backup taken, Gems.lua's backup cut short.
+    bak = engine / ".bak" / "PoE1"
+    (bak / "Modules").mkdir(parents=True)
+    (bak / "Modules" / "Main.lua").write_bytes(b"old main\n")
+    (bak / "Data").mkdir()
+    (bak / "Data" / "Gems.lua.pob-partial").write_bytes(b"old ge")
+
+    with engine_update_lock(engine):
+        assert main.read_bytes() == b"old main\n"
+        assert gems.read_bytes() == b"old gems\n"
+        assert not (engine / ".bak").exists()
+
+
+def test_recovery_leaves_a_busy_or_clean_engine_alone(tmp_path: Path) -> None:
+    engine = _make_fake_engine(tmp_path / "engine", files={"Modules/Main.lua": b"new main\n"})
+    assert recover_idle_engine(engine) == 0
+    assert not (engine / ".update.lock").exists()  # a legacy pack is never written to
+
+    backup_file(engine / "PoE1" / "Modules" / "Main.lua", engine / ".bak" / "PoE1" / "Modules" / "Main.lua")
+    (engine / ".bak" / "PoE1" / "Modules" / "Main.lua").write_bytes(b"old main\n")
+    release, thread = _hold_lock_elsewhere_without_restore(engine)
+    try:
+        assert recover_idle_engine(engine) == 0  # that backup belongs to the process at work
+        assert (engine / "PoE1" / "Modules" / "Main.lua").read_bytes() == b"new main\n"
+    finally:
+        release.set()
+        thread.join(timeout=10)
+    assert recover_idle_engine(engine) == 1
+    assert (engine / "PoE1" / "Modules" / "Main.lua").read_bytes() == b"old main\n"
+    assert restore_interrupted_apply(engine) == 0
+
+
+def _hold_lock_elsewhere_without_restore(engine: Path) -> tuple[threading.Event, threading.Thread]:
+    """Hold only the lock file, like a process that is mid-swap and owns the backup folder."""
+    from pob_cli.updater.self_update import _lock
+
+    taken, release = threading.Event(), threading.Event()
+
+    def _holder() -> None:
+        with open(engine / ".update.lock", "a+b") as fh:
+            _lock(fh)
+            taken.set()
+            release.wait(timeout=30)
+            _lock(fh, release=True)
+
+    thread = threading.Thread(target=_holder, daemon=True)
+    thread.start()
+    assert taken.wait(timeout=10)
+    return release, thread
+
+
+def test_ctrl_c_during_the_probe_still_rolls_the_swap_back(tmp_path: Path) -> None:
+    engine = _make_fake_engine(tmp_path / "engine", files={"Modules/Main.lua": b"old main\n"})
+    staged = _stage(engine, {"PoE1/Modules/Main.lua": b"new main\n", "PoE1/Modules/Added.lua": b"added\n"})
+
+    def _interrupted(_engine: Path) -> dict[str, Any]:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        bootstrap_mod._apply_staged_files_with_gate(engine, staged, probe_fn=_interrupted)
+    assert (engine / "PoE1" / "Modules" / "Main.lua").read_bytes() == b"old main\n"
+    assert not (engine / "PoE1" / "Modules" / "Added.lua").exists()
+    assert not (engine / ".bak").exists() and not (engine / ".staging").exists()
+
+
+def test_from_dir_that_fails_the_probe_leaves_the_engine_as_it_was(tmp_path: Path) -> None:
+    rt = tmp_path / "rt"
+    engine = _make_fake_engine(rt / "engine", files={"Modules/Main.lua": b"working main\n"})
+    source = _make_fake_engine(tmp_path / "pack", files={"Modules/Main.lua": b"broken main\n", "Modules/Extra.lua": b"extra\n"})
+
+    with pytest.raises(updater.EngineGateError, match="was put back as it was"):
+        updater.bootstrap_engine(from_dir=source, runtime_dir=rt, probe_fn=lambda _p: {"ok": False, "error": "Build.Init"})
+    assert (engine / "PoE1" / "Modules" / "Main.lua").read_bytes() == b"working main\n"
+    assert not (engine / "PoE1" / "Modules" / "Extra.lua").exists()
+    assert not (engine / ".bak").exists() and not (engine / ".staging").exists()
+
+    state = updater.bootstrap_engine(from_dir=source, runtime_dir=rt, probe_fn=lambda _p: dict(OK_PROBE))
+    assert state["state"] == updater.STATE_UPDATED and state["source"] == f"offline:{source}"
+    assert (engine / "PoE1" / "Modules" / "Main.lua").read_bytes() == b"broken main\n"
+    assert (engine / "PoE1" / "Modules" / "Extra.lua").read_bytes() == b"extra\n"
+    assert (source / "PoE1" / "Modules" / "Main.lua").read_bytes() == b"broken main\n"  # the source is only read
+
+
+def test_bootstrap_into_a_busy_engine_reports_it(tmp_path: Path) -> None:
+    rt = tmp_path / "rt"
+    source = _make_fake_engine(tmp_path / "pack")
+    release, thread = _hold_lock_elsewhere(rt / "engine")
+    try:
+        with pytest.raises(EngineBusyError):
+            updater.bootstrap_engine(from_dir=source, runtime_dir=rt, probe_fn=lambda _p: dict(OK_PROBE))
+        # The daemon's own entry point answers with a state instead of raising.
+        state = updater.check_and_apply_updates(
+            engine_dir=rt / "engine", runtime_dir=rt, probe_fn=lambda _p: dict(OK_PROBE)
+        )
+        assert state["state"] == updater.STATE_BOOTSTRAP_MISSING
+        assert "installing or updating the engine" in state["networkError"]
+        # The stock hint for this state blames the network and sends the user to their proxy.
+        assert state["userHint"] == state["networkError"] == updater.get_update_warning(state)
+    finally:
+        release.set()
+        thread.join(timeout=10)
+
+
+def _old_main_backed_up(engine: Path) -> tuple[Path, Path]:
+    """An engine whose Main.lua was replaced by a run that died: the new file in place, the old one in `.bak`."""
+    main = engine / "PoE1" / "Modules" / "Main.lua"
+    bak = engine / ".bak" / "PoE1" / "Modules" / "Main.lua"
+    bak.parent.mkdir(parents=True)
+    bak.write_bytes(b"old main\n")
+    return main, bak
+
+
+def test_a_backup_that_cannot_go_back_is_kept_and_blocks_the_next_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = _make_fake_engine(tmp_path / "engine", files={"Modules/Main.lua": b"new main\n"})
+    main, bak = _old_main_backed_up(engine)
+    real_replace = os.replace
+
+    def _file_in_use(src: Any, dst: Any) -> None:
+        if Path(dst) == main:
+            raise PermissionError(13, "The process cannot access the file", str(dst))
+        real_replace(src, dst)
+
+    # Windows refuses to replace a DLL or script a running engine has open.
+    monkeypatch.setattr(engine_lock_mod.os, "replace", _file_in_use)
+    assert restore_interrupted_apply(engine) == 0
+    assert bak.read_bytes() == b"old main\n" and main.read_bytes() == b"new main\n"
+
+    staged = _stage(engine, {"PoE1/Modules/Main.lua": b"newer main\n"})
+    with pytest.raises(EngineLockError, match=r"could not be put back.*pob stop"):
+        bootstrap_mod._apply_staged_files_with_gate(engine, staged, probe_fn=lambda _p: dict(OK_PROBE))
+    assert main.read_bytes() == b"new main\n" and bak.read_bytes() == b"old main\n"
+    assert not (engine / ".staging").exists()
+
+    monkeypatch.undo()
+    assert restore_interrupted_apply(engine) == 1
+    assert main.read_bytes() == b"old main\n" and not (engine / ".bak").exists()
+
+
+def test_a_kept_swap_cannot_be_mistaken_for_an_interrupted_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = _make_fake_engine(tmp_path / "engine", files={"Modules/Main.lua": b"old main\n"})
+    main = engine / "PoE1" / "Modules" / "Main.lua"
+    staged = _stage(engine, {"PoE1/Modules/Main.lua": b"new main\n"})
+    real_rmtree = engine_lock_mod.shutil.rmtree
+
+    def _backups_stay(path: Any, *args: Any, **kwargs: Any) -> None:
+        # The process dies while deleting, or a scanner holds a backup open: old files stay on disk.
+        if Path(path).name == ".bak" and Path(path).exists():
+            return
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(engine_lock_mod.shutil, "rmtree", _backups_stay)
+    res = bootstrap_mod._apply_staged_files_with_gate(engine, staged, probe_fn=lambda _p: dict(OK_PROBE))
+    assert res["ok"] is True
+    assert (engine / ".bak" / "PoE1" / "Modules" / "Main.lua").read_bytes() == b"old main\n"
+    assert (engine / ".bak-kept").is_file()
+
+    # Still undeletable: nothing is put back, and a new swap waits with a reason that fits.
+    with engine_update_lock(engine):
+        assert main.read_bytes() == b"new main\n"
+    assert recover_idle_engine(engine) == 0 and main.read_bytes() == b"new main\n"
+    newer = _stage(engine, {"PoE1/Modules/Main.lua": b"newer main\n"})
+    with pytest.raises(EngineLockError, match=r"could not be deleted.*engine itself is complete") as blocked:
+        bootstrap_mod._apply_staged_files_with_gate(engine, newer, probe_fn=lambda _p: dict(OK_PROBE))
+    assert str(engine / ".bak") in str(blocked.value)
+    assert main.read_bytes() == b"new main\n" and (engine / ".bak-kept").is_file()
+    assert unrestored_swap(engine) is None  # leftovers of a kept swap are no fault of the engine
+
+    monkeypatch.undo()
+    with engine_update_lock(engine):
+        assert main.read_bytes() == b"new main\n"  # the update that went through stays
+        assert not (engine / ".bak").exists() and not (engine / ".bak-kept").exists()
+
+    # With the marker gone, a later swap that dies is put back as usual.
+    _old_main_backed_up(engine)
+    assert restore_interrupted_apply(engine) == 1 and main.read_bytes() == b"old main\n"
+
+    discard_backup(engine)  # nothing to drop is fine
+    assert not (engine / ".bak").exists() and not (engine / ".bak-kept").exists()
+
+
+def test_a_failed_swap_that_could_not_be_undone_is_not_reported_as_rolled_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = tmp_path / "rt"
+    engine = _make_fake_engine(rt / "engine", files={"Modules/Main.lua": b"working main\n"})
+    source = _make_fake_engine(tmp_path / "pack", files={"Modules/Main.lua": b"broken main\n"})
+    main = engine / "PoE1" / "Modules" / "Main.lua"
+    real_replace, real_copy2 = os.replace, bootstrap_mod.shutil.copy2
+
+    def _failing_probe(_engine: Path) -> dict[str, Any]:
+        def _in_use(src: Any, dst: Any, *a: Any, **k: Any) -> Any:
+            if Path(dst) == main:
+                raise PermissionError(13, "The process cannot access the file", str(dst))
+            return real_replace(src, dst)
+
+        def _copy_in_use(src: Any, dst: Any, *a: Any, **k: Any) -> Any:
+            if Path(dst) == main:
+                raise PermissionError(13, "The process cannot access the file", str(dst))
+            return real_copy2(src, dst, *a, **k)
+
+        # From here on the engine the probe started holds Main.lua open, so the rollback cannot replace it.
+        monkeypatch.setattr(bootstrap_mod.os, "replace", _in_use)
+        monkeypatch.setattr(bootstrap_mod.shutil, "copy2", _copy_in_use)
+        monkeypatch.setattr(engine_lock_mod.os, "replace", _in_use)
+        return {"ok": False, "error": "Build.Init"}
+
+    with pytest.raises(updater.EngineGateError) as caught:
+        updater.bootstrap_engine(from_dir=source, runtime_dir=rt, probe_fn=_failing_probe)
+    assert "was put back as it was" not in str(caught.value) and "pob stop" in str(caught.value)
+    assert main.read_bytes() == b"broken main\n"
+    assert (engine / ".bak" / "PoE1" / "Modules" / "Main.lua").read_bytes() == b"working main\n"
+
+    # The next run cannot swap either: that is a folder it cannot take, not a probe that failed.
+    with pytest.raises(EngineLockError, match="could not be put back"):
+        updater.bootstrap_engine(from_dir=source, runtime_dir=rt, probe_fn=lambda _p: dict(OK_PROBE))
+    assert updater.get_update_warning({"state": updater.STATE_DEGRADED_ROLLBACK, "networkError": "x"}) == (
+        updater.state._build_user_hint(updater.STATE_DEGRADED_ROLLBACK, None, "x", rolled_back=False)
+    )
+
+    hint_kept = updater.state._build_user_hint(updater.STATE_DEGRADED_ROLLBACK, "2.68.1", "Build.Init")
+    hint_mixed = updater.state._build_user_hint(
+        updater.STATE_DEGRADED_ROLLBACK, "2.68.1", "Build.Init", rolled_back=False
+    )
+    assert "已自动回滚" in hint_kept
+    assert "回滚" not in hint_mixed and "pob stop" in hint_mixed and "Build.Init" in hint_mixed
+
+    monkeypatch.undo()
+    with engine_update_lock(engine):
+        assert main.read_bytes() == b"working main\n" and not (engine / ".bak").exists()
+
+
+def test_a_rollback_cut_short_keeps_its_backups_for_the_next_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = _make_fake_engine(tmp_path / "engine", files={"Modules/Main.lua": b"old main\n"})
+    main = engine / "PoE1" / "Modules" / "Main.lua"
+    staged = _stage(engine, {"PoE1/Modules/Main.lua": b"new main\n"})
+
+    def _second_ctrl_c(*_a: Any, **_k: Any) -> None:
+        raise KeyboardInterrupt
+
+    def _interrupted(_engine: Path) -> dict[str, Any]:
+        monkeypatch.setattr(bootstrap_mod.os, "replace", _second_ctrl_c)  # hits the rollback too
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        bootstrap_mod._apply_staged_files_with_gate(engine, staged, probe_fn=_interrupted)
+    monkeypatch.undo()
+    assert main.read_bytes() == b"new main\n"
+    assert (engine / ".bak" / "PoE1" / "Modules" / "Main.lua").read_bytes() == b"old main\n"
+
+    with engine_update_lock(engine):
+        assert main.read_bytes() == b"old main\n"
+        assert not (engine / ".bak").exists()
+
+
+def test_an_engine_folder_that_cannot_be_locked_gives_a_state_not_an_exception(tmp_path: Path) -> None:
+    rt = tmp_path / "rt"
+    engine = rt / "engine"
+    (engine / ".update.lock").mkdir(parents=True)  # opening it for writing fails on every platform
+
+    with pytest.raises(EngineLockError, match="Cannot write to the engine folder") as caught:
+        with engine_update_lock(engine):
+            pass
+    assert not isinstance(caught.value, EngineBusyError)
+
+    state = updater.check_and_apply_updates(engine_dir=engine, runtime_dir=rt, probe_fn=lambda _p: dict(OK_PROBE))
+    assert state["state"] == updater.STATE_BOOTSTRAP_MISSING
+    assert "Cannot write to the engine folder" in state["userHint"]
+
+
+def test_the_cli_shows_why_an_update_was_skipped_and_exits_5_on_a_busy_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    busy = "Another pob process is installing or updating the engine in /e; let it finish first."
+    monkeypatch.setattr(daemon_mod, "read_daemon_state", lambda *a, **k: None)
+    monkeypatch.setattr(
+        updater,
+        "check_and_apply_updates",
+        lambda **_: {"state": "up_to_date", "localPobVersion": "2.68.1", "updateAvailable": True, "updateSkipped": busy},
+    )
+    res = CliRunner().invoke(cli.main, ["update"])
+    assert res.exit_code == 0, res.output
+    assert "Update Skipped" in res.output and "let it finish first" in res.output
+
+    monkeypatch.setattr(updater, "bootstrap_engine", lambda **_: (_ for _ in ()).throw(EngineBusyError(busy)))
+    res_boot = CliRunner().invoke(cli.main, ["bootstrap"])
+    assert res_boot.exit_code == 5, res_boot.output
+    assert f"Error: {busy}" in res_boot.output and "Traceback" not in res_boot.output
+
+
+class _IdleWorker:
+    def __init__(self, slot_name: str = "main", pob_dir: Path | None = None, runtime_dir: Path | None = None) -> None:
+        self.slot_name, self.pob_root, self.runtime_dir = slot_name, pob_dir, runtime_dir
+        self.seen_main: bytes | None = None
+
+    def start(self) -> None:
+        assert self.pob_root is not None
+        self.seen_main = (self.pob_root / "PoE1" / "Modules" / "Main.lua").read_bytes()
+
+    def stop(self) -> None:
+        pass
+
+
+def test_a_daemon_puts_an_interrupted_swap_back_before_its_first_worker_loads_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = _make_fake_engine(tmp_path / "engine", files={"Modules/Main.lua": b"new main\n"})
+    _old_main_backed_up(engine)
+    monkeypatch.setattr(daemon_mod, "BridgeWorker", _IdleWorker)
+    mgr = daemon_mod.DaemonManager(
+        pob_dir=engine, token="tok", runtime_dir=tmp_path / "rt", offline=True, skip_update_check=True
+    )
+    mgr.start()
+    assert mgr._workers["main"].seen_main == b"old main\n"
+    assert not (engine / ".bak").exists()
+
+
+def test_a_kept_swap_survives_a_marker_that_cannot_be_written_or_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = _make_fake_engine(tmp_path / "engine", files={"Modules/Main.lua": b"old main\n"})
+    main = engine / "PoE1" / "Modules" / "Main.lua"
+    real_touch, real_unlink, real_rmtree = Path.touch, Path.unlink, engine_lock_mod.shutil.rmtree
+
+    def _no_new_file(self: Path, *a: Any, **k: Any) -> None:
+        if self.name == ".bak-kept":
+            raise OSError(28, "No space left on device", str(self))
+        real_touch(self, *a, **k)
+
+    def _backups_stay(path: Any, *a: Any, **k: Any) -> None:
+        if Path(path).name in (".bak", ".bak-done") and Path(path).exists():
+            return
+        real_rmtree(path, *a, **k)
+
+    # A full disk takes no marker, and the delete is cut short: the rename still says "kept".
+    monkeypatch.setattr(Path, "touch", _no_new_file)
+    monkeypatch.setattr(engine_lock_mod.shutil, "rmtree", _backups_stay)
+    staged = _stage(engine, {"PoE1/Modules/Main.lua": b"new main\n"})
+    assert bootstrap_mod._apply_staged_files_with_gate(engine, staged, probe_fn=lambda _p: dict(OK_PROBE))["ok"]
+    assert (engine / ".bak-done").is_dir() and not (engine / ".bak").exists()
+    monkeypatch.undo()
+    with engine_update_lock(engine):
+        assert main.read_bytes() == b"new main\n" and not (engine / ".bak-done").exists()
+
+    def _marker_held(self: Path, *a: Any, **k: Any) -> None:
+        if self.name == ".bak-kept":
+            raise PermissionError(13, "The process cannot access the file", str(self))
+        real_unlink(self, *a, **k)
+
+    # The backups go but a scanner holds the marker: the message names what is really in the way.
+    monkeypatch.setattr(Path, "unlink", _marker_held)
+    staged = _stage(engine, {"PoE1/Modules/Main.lua": b"newer main\n"})
+    assert bootstrap_mod._apply_staged_files_with_gate(engine, staged, probe_fn=lambda _p: dict(OK_PROBE))["ok"]
+    assert (engine / ".bak-kept").is_file() and not (engine / ".bak").exists()
+    with pytest.raises(EngineLockError) as held:
+        bootstrap_mod._apply_staged_files_with_gate(
+            engine, _stage(engine, {"PoE1/Modules/Main.lua": b"newest\n"}), probe_fn=lambda _p: dict(OK_PROBE)
+        )
+    assert str(engine / ".bak-kept") in str(held.value) and str(engine / ".bak") + " " not in str(held.value)
+    monkeypatch.undo()
+    with engine_update_lock(engine):
+        assert main.read_bytes() == b"newer main\n" and not (engine / ".bak-kept").exists()
+
+
+def test_an_update_refused_before_its_swap_stays_pending_and_a_stuck_added_file_is_no_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = _make_fake_engine(tmp_path / "engine", files={"Modules/Main.lua": b"old main\n"})
+    added = engine / "PoE1" / "Modules" / "Added.lua"
+    real_unlink = Path.unlink
+
+    def _added_held(self: Path, *a: Any, **k: Any) -> None:
+        if self == added:
+            raise PermissionError(13, "The process cannot access the file", str(self))
+        real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", _added_held)
+    staged = _stage(engine, {"PoE1/Modules/Main.lua": b"new main\n", "PoE1/Modules/Added.lua": b"added\n"})
+    res = bootstrap_mod._apply_staged_files_with_gate(
+        engine, staged, probe_fn=lambda _p: {"ok": False, "error": "Build.Init"}
+    )
+    monkeypatch.undo()
+    assert res["ok"] is False and added.is_file()
+    assert res["rolledBack"] is False  # a file of the failed update is still in the engine
+    text = bootstrap_mod._failed_apply_text(res, engine)
+    assert text.startswith("Build.Init. Not every file") and "was put back as it was" not in text
+    assert bootstrap_mod._failed_apply_text({**res, "rolledBack": True}, engine).endswith("was put back as it was.")
+
+
+def test_a_daemon_on_a_half_updated_engine_says_so_with_every_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = _make_fake_engine(tmp_path / "engine", files={"Modules/Main.lua": b"new main\n"})
+    main, _bak = _old_main_backed_up(engine)
+    real_replace = os.replace
+
+    def _file_in_use(src: Any, dst: Any) -> None:
+        if Path(dst) == main:
+            raise PermissionError(13, "The process cannot access the file", str(dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(engine_lock_mod.os, "replace", _file_in_use)
+    monkeypatch.setattr(daemon_mod, "BridgeWorker", _IdleWorker)
+    mgr = daemon_mod.DaemonManager(
+        pob_dir=engine, token="tok", runtime_dir=tmp_path / "rt", offline=True, skip_update_check=True
+    )
+    mgr.start()
+    warned = mgr._attach_warning_if_degraded({})
+    assert "could not be put back" in warned["updateWarning"] and "pob stop" in warned["updateWarning"]
+
+    monkeypatch.setattr(engine_lock_mod.os, "replace", real_replace)
+    assert recover_idle_engine(engine) == 1
+    assert "updateWarning" not in mgr._attach_warning_if_degraded({})
+

@@ -323,7 +323,7 @@ def test_trade_search_bargain_reuses_any_age_asc_search_and_guards_under_5(
     monkeypatch.setattr(cli_trade, "TradeClient", _FakeClient10)
     args = [
         "trade", "search", "--slot", "gloves", "--stat", "to Cold Resistance=30",
-        "--bargain", "30", "--pob", "off", "--no-compare", "--json",
+        "--bargain", "30", "--pob", "off", "--no-compare", "--json", "--compact",
     ]
     res = CliRunner().invoke(main, args)
     assert res.exit_code == 0, res.output
@@ -443,7 +443,7 @@ def test_trade_search_bench_craft_preserves_bargain_seller_and_url(
 
     args = [
         "trade", "search", "--slot", "gloves", "--stat", "to Cold Resistance=30",
-        "--bargain", "30", "--bench-craft", "Area Damage", "--pob", "on", "--pob-limit", "1", "--json",
+        "--bargain", "30", "--bench-craft", "Area Damage", "--pob", "on", "--pob-limit", "1", "--json", "--compact",
     ]
     res = CliRunner().invoke(main, args)
     assert res.exit_code == 0, res.output

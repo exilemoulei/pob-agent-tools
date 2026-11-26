@@ -29,6 +29,7 @@ from .common import (
     _conversion_payload,
     _err_utf8,
     _is_known_slot,
+    _listing_trade_meta,
     _price_of,
     _trade_error,
     _weighted_sum_of,
@@ -51,7 +52,21 @@ def _validate_search_inputs(
     no_compare: bool,
     current_item_file: str | None,
     sort_by: str,
-) -> str | None:
+    status: str = "available",
+    securable: bool = False,
+    max_per_seller: int = 2,
+) -> tuple[str, str] | None:
+    if securable:
+        status_src = ctx.get_parameter_source("status")
+        if status_src != click.core.ParameterSource.DEFAULT and status != "securable":
+            _err_utf8(f"--securable conflicts with --status {status!r}; omit --status or pass --status securable.")
+            ctx.exit(1)
+            return None
+        status = "securable"
+    if max_per_seller < 0:
+        _err_utf8("--max-per-seller must be 0 or greater.")
+        ctx.exit(1)
+        return None
     if slot:
         check_input(slot, scope=GuardrailScope.SLOT, expected_game="poe1")
     if category:
@@ -85,7 +100,7 @@ def _validate_search_inputs(
         _err_utf8(f"Unknown slot {slot!r}; pass a known --slot, --category, or --no-category.")
         ctx.exit(1)
         return None
-    return sort_by
+    return sort_by, status
 
 
 def _build_candidates_from_rows(
@@ -127,6 +142,7 @@ def _build_candidates_from_rows(
 
         deltas = compare_items(current, item, weights=weight_map, preferred=preferred)
         amount, price_currency = _price_of(row)
+        trade_mode, gold_fee, price_type = _listing_trade_meta(row)
         candidate = Candidate(
             raw=row,
             item=item,
@@ -141,6 +157,9 @@ def _build_candidates_from_rows(
             listing_id=row.get("id"),
             weighted_sum=_weighted_sum_of(raw_item),
             price_chaos=_price_chaos(row, rates),
+            trade_mode=trade_mode,
+            gold_fee=gold_fee,
+            price_type=price_type,
         )
         if candidate.seller:
             # One seller rarely has two matching items, so this link lands on the item itself.
@@ -162,6 +181,7 @@ def _verify_candidates_with_pob(
     target: str,
     verification_limit: int,
     prefilter_k: int | None = None,
+    normalize_quality: bool = False,
 ) -> bool:
     import pob_cli.cli_trade as _ct
 
@@ -182,6 +202,7 @@ def _verify_candidates_with_pob(
             target=target,
             limit=verification_limit,
             prefilter_k=prefilter_k,
+            normalize_quality=normalize_quality,
             daemon_call=_ct._daemon_call_safe,
         )
     except CrossGameHallucinationError:

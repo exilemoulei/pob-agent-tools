@@ -23,7 +23,7 @@ Plans written before or during a piece of work, in Chinese. They record why thin
 |---|---|
 | [design/v0.1-architecture.zh-CN.md](design/v0.1-architecture.zh-CN.md) | Original architecture: product goals, the zero-formula rule (all numbers come from the real PoB engine), RPC contracts and the `R1`..`R12` red lines |
 | [design/v0.2-swarm-plan.zh-CN.md](design/v0.2-swarm-plan.zh-CN.md) | v0.2: engine bootstrap from upstream PoB and PobTools-zh, update checks with network warnings, the local game-data DB, and the work split into parallel waves |
-| [design/hook-guardrails.zh-CN.md](design/hook-guardrails.zh-CN.md) | `pob hook` lifecycle guardrails against "fake execution" by agents: reply scanning, turn receipts, the stop gate |
+| [design/hook-guardrails.zh-CN.md](design/hook-guardrails.zh-CN.md) | `pob hook` lifecycle guardrails against "fake execution" by agents: reply scanning, turn receipts, the stop gate. The command and its gates were removed in v0.10.0; kept as history |
 | [design/web-research-guardrails.zh-CN.md](design/web-research-guardrails.zh-CN.md) | `pob research` / `pob wiki` and the V5 gate that makes agents look up mechanics instead of guessing |
 
 ## Elsewhere in the repo
@@ -32,13 +32,12 @@ These stay outside `docs/` because tools expect them at fixed paths.
 
 | File | Purpose |
 |---|---|
-| [../README.md](../README.md) / [../README_EN.md](../README_EN.md) | User docs: install, engine setup, every command with examples |
+| [../README.md](../README.md) / [../README_EN.md](../README_EN.md) | User docs: install, what an agent does with it, and the setup guide an agent follows |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Where a new contributor starts: points to AGENTS.md, the architecture guide, the PR template and SECURITY.md |
 | [../AGENTS.md](../AGENTS.md) | Contributor guide for agents and people: commands, layout, hard rules, conventions, commit scopes. `CLAUDE.md` imports it |
 | [../skills/pob/SKILL.md](../skills/pob/SKILL.md) | Cross-harness agent skill, with topic references in [../skills/pob/references/](../skills/pob/references/) |
 | [../.github/pull_request_template.md](../.github/pull_request_template.md) | What every pull request states: summary, testing (platforms and engine), AI disclosure |
 | [../SECURITY.md](../SECURITY.md) | How to report a vulnerability |
-| [../PROGRESS.md](../PROGRESS.md) | Rolling progress log kept by the maintainers' agents (Chinese) |
 
 ## Adding a doc
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import shutil
 import tempfile
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import CrossGameHallucinationError
+from ..game_data import fold_han
 from ..guardrails import GuardrailScope, check_input, check_poe2_timeless_jewel
 from ..updater import (
     _download_pob_files_to_staging,
@@ -33,7 +35,27 @@ from .lut import (
     _resolve_jewel_static,
     _worker_batch,
     load_jewels,
+    load_node_index,
 )
+
+
+class CliUsageError(ValueError):
+    """Raised when a CLI/search argument names a non-jewel entity before spawning any PoB engine."""
+
+
+_PUTRID_SEED_KEYS = frozenset({"putridseed", "腐朽之种", "腐败之种"})
+
+
+def _check_putrid_seed(jewel_name: str) -> None:
+    folded = fold_han(jewel_name.strip()).lower()
+    compact = folded.replace(" ", "").replace("_", "").replace("-", "")
+    if compact in _PUTRID_SEED_KEYS:
+        raise CliUsageError(
+            f"{jewel_name!r} is not a Timeless Jewel item. "
+            "If you meant the PoE1 3.30 Abyss Timeless Jewel, pass `--jewel \"Festering Vengeance\"` "
+            "(`溃烂复仇`). If you meant the passive-tree socket cluster notable fork (`Putrid Seed` / "
+            "`Mycelium Core`), inspect it with `pob tree --search \"Putrid Seed\"`."
+        )
 
 
 class Engine:
@@ -115,6 +137,9 @@ class Engine:
         calls: list[tuple[str, dict[str, Any]]] = [
             ("unequip_slot", {"slotName": slot}) for slot in pending_clear
         ]
+        # The replaced jewel stays in the item list until the next reload: deleting it is a second
+        # full recalculation per seed (measured 72 ms a seed against 51 ms on PoB 2.69), and a
+        # reload every RESET_EVERY seeds costs far less than that.
         calls.append(("add_item", {"raw": raw, "equip": True, "slotName": self.slot}))
         calls.append(("get_stats", {}))
         responses = _worker_batch(self.worker, calls, timeout=60.0)
@@ -234,10 +259,17 @@ def _resolve_jewel(
     raise ValueError(f"Unknown timeless jewel {name!r}. Known: {', '.join(jewels)}")
 
 
-def _seed_nodes(engine: Engine, xml: str, index: dict[int, int], code: str = "") -> list[int]:
+def _seed_nodes(
+    engine: Engine,
+    xml: str,
+    index: dict[int, int],
+    code: str = "",
+    state: dict[str, Any] | None = None,
+) -> list[int]:
     """Notables whose table entry can change this build: conquered by the socketed jewel AND either allocated
     or granted by an item ("Allocates X", e.g. an anoint) - PoB uses the conquered version for those too."""
-    state = engine.worker.call("get_tree_state", {}, timeout=60)
+    if state is None:
+        state = engine.worker.call("get_tree_state", {}, timeout=60)
     conquered = {int(k) for k, v in (state.get("overrides") or {}).items() if v.get("why") == "conquered"}
     used = {int(x) for x in (state.get("allocatedNodes") or [])}
     granted = _extract_allocated_notable_names(xml, code or getattr(engine, "code", ""))
@@ -247,12 +279,85 @@ def _seed_nodes(engine: Engine, xml: str, index: dict[int, int], code: str = "")
     return sorted(node for node in conquered & used if node in index)
 
 
+def _build_radius_summary(
+    engine: Engine,
+    socket: int,
+    jewel: dict[str, Any],
+    state: dict[str, Any] | None,
+    xml: str,
+    code: str,
+    game_dir: Path,
+) -> dict[str, Any]:
+    """Classify allocated vs unallocated notables inside the jewel's radius using worker tree data."""
+    allocated_set = {int(x) for x in ((state or {}).get("allocatedNodes") or [])}
+    overrides = (state or {}).get("overrides") or {}
+    conquered_ids = {int(k) for k, v in overrides.items() if isinstance(v, dict) and v.get("why") == "conquered"}
+    tree_nodes: dict[Any, Any] = {}
+    get_tree_fn = getattr(engine.worker, "get_cached_tree_data", None)
+    if callable(get_tree_fn):
+        try:
+            tree_nodes = (get_tree_fn((state or {}).get("treeVersion")) or {}).get("nodes") or {}
+        except Exception:
+            tree_nodes = {}
+
+    radius_ids = set(conquered_ids)
+    sock_info = (tree_nodes.get(str(socket)) or tree_nodes.get(socket)) if tree_nodes else None
+    sx = sock_info.get("x") if isinstance(sock_info, dict) else None
+    sy = sock_info.get("y") if isinstance(sock_info, dict) else None
+    if any(str(h).startswith("Radius:") for h in (jewel.get("head") or [])) and isinstance(sx, (int, float)) and isinstance(sy, (int, float)):
+        tv = str((state or {}).get("treeVersion") or "")
+        large_r = 1500.0 if tv.startswith(("3_15", "3_14", "3_13", "3_12", "3_11", "3_10", "3_9", "3_8")) else 1800.0
+        for raw_nid, info in tree_nodes.items():
+            if not isinstance(info, dict) or info.get("asc") or info.get("proxy") or info.get("expansion"):
+                continue
+            if info.get("type") in ("ClassStart", "AscendClassStart"):
+                continue
+            nx, ny = info.get("x"), info.get("y")
+            if isinstance(nx, (int, float)) and isinstance(ny, (int, float)) and math.hypot(float(nx) - float(sx), float(ny) - float(sy)) <= large_r:
+                radius_ids.add(int(info.get("id", raw_nid)))
+
+    node_index: dict[int, int] | None = None
+    if (Path(game_dir) / "Data" / "TimelessJewelData" / "NodeIndexMapping.lua").is_file():
+        try:
+            node_index = load_node_index(game_dir)
+        except Exception:
+            node_index = None
+
+    granted = _extract_allocated_notable_names(xml, code or getattr(engine, "code", ""))
+    alloc_notables: list[dict[str, Any]] = []
+    unalloc_notables: list[dict[str, Any]] = []
+    for nid in sorted(radius_ids - {socket}):
+        info = (tree_nodes.get(str(nid)) or tree_nodes.get(nid)) if tree_nodes else None
+        ov = overrides.get(str(nid)) if isinstance(overrides, dict) else None
+        if isinstance(info, dict) and ("type" in info or "isNotable" in info):
+            is_notable = info.get("type") == "Notable" or bool(info.get("isNotable"))
+        elif node_index is not None:
+            is_notable = nid in node_index
+        else:
+            is_notable = nid in conquered_ids
+        if not is_notable:
+            continue
+        nm = str((info.get("name") if isinstance(info, dict) else None) or (ov.get("name") if isinstance(ov, dict) else None) or f"Node {nid}")
+        zh = (info.get("nameZh") if isinstance(info, dict) else None) or (ov.get("nameZh") if isinstance(ov, dict) else None)
+        entry: dict[str, Any] = {"id": nid, "name": nm}
+        if isinstance(zh, str) and zh and zh != nm:
+            entry["nameZh"] = zh
+        target_list = alloc_notables if ((nid in allocated_set) or (isinstance(info, dict) and info.get("name") in granted)) else unalloc_notables
+        target_list.append(entry)
+
+    return {
+        "allocatedNodeIds": sorted(nid for nid in radius_ids if nid in allocated_set and nid != socket),
+        "allocatedNotables": alloc_notables,
+        "unallocatedNotables": unalloc_notables,
+    }
+
+
 def _prevalidate_search(
     jewel_name: str,
     conqueror: str | None,
     mods: Sequence[str],
     stat: str,
-    socket: int,
+    socket: int | Sequence[int] | str,
     xml: str,
     pob_dir: Path | str | None,
     runtime_dir: Path | str | None,
@@ -260,6 +365,7 @@ def _prevalidate_search(
     """Run guardrails and fast pre-spawn validation before launching a throwaway engine."""
     import pob_cli.timeless as _tl
 
+    _check_putrid_seed(jewel_name)
     check_poe2_timeless_jewel(jewel_name, expected_game="poe1")
     check_input(jewel_name, scope=GuardrailScope.DATA_QUERY, expected_game="poe1")
     for mod in mods:
@@ -267,11 +373,22 @@ def _prevalidate_search(
 
     if stat not in STAT_KEYS:
         raise ValueError(f"Unknown stat {stat!r}. Known: {', '.join(STAT_KEYS)}")
-    if socket <= 0:
-        raise ValueError(f"Node {socket} is not an allocated jewel socket of this build (see `pob timeless list`).")
 
-    # Fast pre-spawn validation (~5s saved): resolve jewel/conqueror (static English + Chinese aliases)
-    # and reject provably unallocated sockets before spawning a ~1.3 GB throwaway PoB engine.
+    if isinstance(socket, str):
+        if socket.strip().lower() != "all":
+            raise ValueError(f"Invalid socket {socket!r}; expected socket ID(s) or 'all'.")
+        explicit_sockets: list[int] = []
+    elif isinstance(socket, int) and not isinstance(socket, bool):
+        explicit_sockets = [socket]
+    else:
+        explicit_sockets = [int(s) for s in socket]
+        if not explicit_sockets:
+            raise ValueError("At least one socket node ID is required.")
+
+    for sock_id in explicit_sockets:
+        if sock_id <= 0:
+            raise ValueError(f"Node {sock_id} is not an allocated jewel socket of this build (see `pob timeless list`).")
+
     pre_game_dir: Path | None = None
     if pob_dir is not None:
         pre_game_dir = _resolve_game_dir(None, pob_dir=pob_dir, runtime_dir=runtime_dir)
@@ -296,8 +413,10 @@ def _prevalidate_search(
                 raise ValueError(f"Unknown timeless jewel {jewel_name!r}. Known: {', '.join(pre_jewels)}")
 
     xml_nodes = _extract_xml_allocated_nodes(xml)
-    if xml_nodes is not None and socket not in xml_nodes:
-        raise ValueError(f"Node {socket} is not an allocated jewel socket of this build (see `pob timeless list`).")
+    if xml_nodes is not None:
+        for sock_id in explicit_sockets:
+            if sock_id not in xml_nodes:
+                raise ValueError(f"Node {sock_id} is not an allocated jewel socket of this build (see `pob timeless list`).")
 
     return pre_game_dir, pre_jewels, conqueror
 

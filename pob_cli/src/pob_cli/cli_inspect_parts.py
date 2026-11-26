@@ -222,6 +222,15 @@ def _run_tree_inspect(
 
 @click.command("calc")
 @click.argument("keywords", nargs=-1, required=True)
+@click.option("--group", default=None, help="Skill group (1-based index, 'main', or group/gem name substring).")
+@click.option(
+    "--skill",
+    default=None,
+    help=(
+        "With --group: an active skill of that group (1-based index, 'main' or gem name). "
+        "Without --group: a gem or group name looked up in every group, or a group number / 'main'."
+    ),
+)
 @click.option("--limit", type=click.IntRange(min=0), default=20, show_default=True, help="Maximum matched rows to return (0 = all).")
 @click.option(
     "--max-breakdowns",
@@ -237,6 +246,8 @@ def _run_tree_inspect(
 @_output_options
 def cmd_calc(
     keywords: tuple[str, ...],
+    group: str | None,
+    skill: str | None,
     limit: int,
     max_breakdowns: int,
     no_breakdown: bool,
@@ -253,17 +264,19 @@ def cmd_calc(
     for kw in kw_list:
         if kw.strip():
             check_input(kw, scope=GuardrailScope.CALC_QUERY, expected_game="poe1")
-    res = invoke_daemon(
-        "calc",
-        {
-            "target": target,
-            "keyword": kw_list[0],
-            "keywords": kw_list,
-            "limit": limit,
-            "max_breakdowns": max_breakdowns,
-            "no_breakdown": no_breakdown,
-        },
-    )
+    rpc_params: dict[str, Any] = {
+        "target": target,
+        "keyword": kw_list[0],
+        "keywords": kw_list,
+        "limit": limit,
+        "max_breakdowns": max_breakdowns,
+        "no_breakdown": no_breakdown,
+    }
+    if group is not None:
+        rpc_params["group"] = group
+    if skill is not None:
+        rpc_params["skill"] = skill
+    res = invoke_daemon("calc", rpc_params)
     if as_json:
         _apply_loop_guard(res)
         _emit_json(res, compact=compact, out_path=out_path)
@@ -271,28 +284,29 @@ def cmd_calc(
 
     matches = res.get("matches") or []
     kw_disp = ", ".join(kw_list)
+    explicit_selector = group is not None or skill is not None
 
     def _header(total: int) -> list[str]:
         out = [f"### Calcs Breakdown for `{kw_disp}` ({total} matches)"]
-        skill = res.get("calcsSkill")
+        calcs_skill = res.get("calcsSkill")
 
-        def _named(group_no: Any, group: Any, active: Any) -> str:
+        def _named(group_no: Any, grp_lbl: Any, active: Any) -> str:
             """`#3 Group / Active skill`; the skill only when it is not the group's own name."""
-            group, active = strip_pob_escapes(group), strip_pob_escapes(active)
-            return f"#{group_no} {group}" + (f" / {active}" if active and active != group else "")
+            grp_lbl, active = strip_pob_escapes(grp_lbl), strip_pob_escapes(active)
+            return f"#{group_no} {grp_lbl}" + (f" / {active}" if active and active != grp_lbl else "")
 
-        if isinstance(skill, dict):
+        if isinstance(calcs_skill, dict):
             shown = _named(
-                skill.get("socketGroup"),
-                skill.get("labelZh") or skill.get("label"),
-                skill.get("skillLabelZh") or skill.get("skillLabel"),
+                calcs_skill.get("socketGroup"),
+                calcs_skill.get("labelZh") or calcs_skill.get("label"),
+                calcs_skill.get("skillLabelZh") or calcs_skill.get("skillLabel"),
             )
             out.append(f"- Calcs tab skill: {shown}")
-            if skill.get("isMainSkill") is False:
+            if calcs_skill.get("isMainSkill") is False and not explicit_selector:
                 main = _named(
-                    skill.get("mainSocketGroup"),
-                    skill.get("mainLabelZh") or skill.get("mainLabel"),
-                    skill.get("mainSkillLabelZh") or skill.get("mainSkillLabel"),
+                    calcs_skill.get("mainSocketGroup"),
+                    calcs_skill.get("mainLabelZh") or calcs_skill.get("mainLabel"),
+                    calcs_skill.get("mainSkillLabelZh") or calcs_skill.get("mainSkillLabel"),
                 )
                 out.append(
                     f"> [WARN] These rows are for {shown}, the skill selected in PoB's Calcs tab, not the "

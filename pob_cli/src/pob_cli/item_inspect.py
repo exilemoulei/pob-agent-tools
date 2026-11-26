@@ -96,16 +96,16 @@ def _base_key(base_type: str) -> str:
 
 
 @lru_cache(maxsize=8)
-def _cached_mod_rows(db_path_str: str) -> tuple[tuple[str, str, str, str, dict[str, Any]], ...]:
+def _cached_mod_rows(db_path_str: str) -> tuple[tuple[str, str, str, str, str, dict[str, Any]], ...]:
     conn = sqlite3.connect(game_data._sqlite_ro_uri(Path(db_path_str)), uri=True)
     try:
         rows = conn.execute(
-            "SELECT source, weights_json, zero_weights_json, types_json, data_json "
-            "FROM mods WHERE source IN ('Explicit', 'Bench')"
+            "SELECT source, weights_json, zero_weights_json, weight_keys_json, types_json, data_json "
+            "FROM mods WHERE source IN ('Explicit', 'Delve', 'Veiled', 'Bench')"
         ).fetchall()
     finally:
         conn.close()
-    return tuple((s, w, z, t, json.loads(p)) for s, w, z, t, p in rows)
+    return tuple((s, w, z, k, t, json.loads(p)) for s, w, z, k, t, p in rows)
 
 
 def classify_mod_affix_types(
@@ -117,7 +117,7 @@ def classify_mod_affix_types(
         return {}
     db_path = game_data.ensure_gamedata_index(pob_dir=pob_dir, runtime_dir=runtime_dir)
     by_tmpl: dict[str, set[str]] = defaultdict(set)
-    for _, _, _, _, entry in _cached_mod_rows(str(db_path)):
+    for _, _, _, _, _, entry in _cached_mod_rows(str(db_path)):
         kind = _affix_type(entry)
         if not kind:
             continue
@@ -160,19 +160,32 @@ def _load_entries(
         ).fetchone()
     finally:
         conn.close()
-    base_tags = set(json.loads(base_row[0]).get("tags") or []) if base_row else set()
+    base = json.loads(base_row[0]) if base_row else {}
+    base_tags = set(base.get("tags") or [])
+    # The item text does not say which influence a line came from, so every one the base can take counts.
+    influence_tags = tuple(base.get("influence_tags") or ())
     slot_spec = game_data._normalize_slot_filter(slot) if slot else None
     out: list[dict[str, Any]] = []
-    for source, weights, zeros, types, entry in _cached_mod_rows(str(db_path)):
+    for source, weights, zeros, keys, types, entry in _cached_mod_rows(str(db_path)):
         if source == "Bench":
             if slot_spec and not game_data._mod_matches_slot(source, weights, zeros, types, slot_spec):
                 continue
         elif base_tags:
             positive = json.loads(weights)
             excluded = set(json.loads(zeros))
-            specific = any(positive.get(tag, 0) > 0 for tag in base_tags if tag != "default")
-            if not specific and not (positive.get("default", 0) > 0 and not (base_tags & excluded)):
-                continue
+            if positive:
+                if not game_data.mod_rolls_on_base(source, json.loads(keys), positive, base_tags, influence_tags):
+                    continue
+            elif "elevated" in str(entry.get("affix") or "").lower():
+                # A Maven-elevated mod has no weight of its own: it sits where its influence mod can.
+                if not game_data.mod_rolls_on_base(
+                    source, json.loads(keys), positive, base_tags, influence_tags, elevated=True
+                ):
+                    continue
+            else:
+                if base_tags & (excluded - {"default"}):
+                    continue
+                entry = {**entry, "_drop_only_fallback": True}
         # Without a resolved base, keep all explicit candidates and report ambiguity.
         if _affix_type(entry):
             out.append(entry)
@@ -231,17 +244,31 @@ def _find_attempt(
 
 
 def _classify(
-    mods: list[Mod], entries: list[dict[str, Any]], caps: dict[str, int] | None = None
+    mods: list[Mod],
+    entries: list[dict[str, Any]],
+    caps: dict[str, int] | None = None,
+    scaled_types: set[str] | None = None,
 ) -> dict[str, Any]:
     caps = caps or {"prefix": 3, "suffix": 3}
-    index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    primary_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    fallback_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    has_fallback = False
     for entry in entries:
+        is_fb = bool(entry.get("_drop_only_fallback"))
+        has_fallback = has_fallback or is_fb
+        target_idx = fallback_index if is_fb else primary_index
         for data_line in entry.get("stats") or []:
-            index[normalize_template(str(data_line))].append(entry)
+            target_idx[normalize_template(str(data_line))].append(entry)
 
     claimed: set[int] = set()
     affixes: list[dict[str, Any]] = []
-    for strict in (True, False):
+    if not has_fallback:
+        passes: tuple[tuple[dict[str, list[dict[str, Any]]], bool], ...] = ((primary_index, True), (primary_index, False))
+    elif scaled_types:
+        passes = ((primary_index, True), (primary_index, False), (fallback_index, True), (fallback_index, False))
+    else:
+        passes = ((primary_index, True), (fallback_index, True), (primary_index, False), (fallback_index, False))
+    for index, strict in passes:
         for i, mod in enumerate(mods):
             if i in claimed:
                 continue
@@ -309,7 +336,7 @@ def inspect_item(
             magnitude = _MAGNITUDE_MOD.fullmatch(mod.raw)
             if magnitude:
                 scaled_types.add(magnitude.group(1).lower())
-    classified = _classify(matchable, entries, capacity)
+    classified = _classify(matchable, entries, capacity, scaled_types)
     for affix in classified["affixes"]:
         if affix["type"] in scaled_types:
             affix["tierLevels"] = []

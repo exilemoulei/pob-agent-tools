@@ -99,14 +99,12 @@ from .quality import (
     query_gem_quality_breakpoints,
 )
 from .queries import (
-    _TICK_BASE_CD_PRESETS,
     _annotate_legacy_gem_rows,
     _dispatch_query,
     _guardrail_scope_for_kind,
     get_gem_level_bounds,
     query_local_data,
     query_multi,
-    query_tick_breakpoints,
 )
 from .queries_core import (
     _build_fts_match,
@@ -118,7 +116,9 @@ from .queries_core import (
     _query_mods,
     _query_uniques,
     _unique_matching_mod_lines,
+    mod_rolls_on_base,
 )
+from .queries_ticks import _TICK_BASE_CD_PRESETS, query_tick_breakpoints
 from .queries_translate import _query_translate
 from .slang import (
     _GROUND_EN_STOPWORDS,
@@ -132,6 +132,7 @@ from .sqlite_index import (
     ensure_gamedata_index,
 )
 from .sqlite_lock import (
+    SCHEMA_SQL,
     _acquire_build_lock,
     _create_schema,
     _is_build_lock_stale,
@@ -140,6 +141,7 @@ from .sqlite_lock import (
     _try_break_stale_lock,
 )
 from .tables_tw import _TRAD_TO_SIMP_MAP, _TW_ALIAS_RE, TW_TO_EN_ALIASES
+from .tattoos import _insert_tattoos_table, _parse_tattoos, query_tattoo_data
 from .tree_index import (
     _TREE_ASC_ID_NAME_RE,
     _TREE_BOOL_FIELD_RE,
@@ -184,6 +186,7 @@ __all__ = [
     "MOD_TRADEHASH_STRIP_RE",
     "NUM_PLACEHOLDER_RE",
     "PLAYER_SLANG_MAP",
+    "SCHEMA_SQL",
     "SCHEMA_VERSION",
     "SKILL_DAMAGE_BASE_EFFECTIVENESS",
     "SKILL_DAMAGE_INCREMENTAL_EFFECTIVENESS",
@@ -257,6 +260,7 @@ __all__ = [
     "_get_ground_entity_index",
     "_guardrail_scope_for_kind",
     "_humanize_quality_stat",
+    "_insert_tattoos_table",
     "_is_build_lock_stale",
     "_is_index_valid",
     "_is_pid_alive",
@@ -270,6 +274,7 @@ __all__ = [
     "_parse_lua_return",
     "_parse_mods",
     "_parse_num",
+    "_parse_tattoos",
     "_parse_tree_lua_nodes",
     "_parse_uniques",
     "_query_bases",
@@ -300,11 +305,13 @@ __all__ = [
     "ground_text_entities",
     "is_legacy_awakened_gem",
     "lookup_fact_cards_for_build",
+    "mod_rolls_on_base",
     "normalize_stat_lines",
     "normalize_tw_query",
     "query_gem_quality_breakpoints",
     "query_local_data",
     "query_multi",
+    "query_tattoo_data",
     "query_tick_breakpoints",
     "query_tree_data",
     "resolve_player_slang",

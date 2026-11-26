@@ -251,11 +251,13 @@ class _CapsFakeWorker:
 
 def test_lua_modules_contract_budgets_and_no_compare_prefix() -> None:
     uk_path = LUA_DIR / "upstream_kernels.lua"
+    tk_path = LUA_DIR / "trade_kernel.lua"
     ap_path = LUA_DIR / "agent_probes.lua"
     assert uk_path.is_file()
+    assert tk_path.is_file()
     assert ap_path.is_file()
 
-    for path in (uk_path, ap_path):
+    for path in (uk_path, tk_path, ap_path):
         raw = path.read_bytes()
         text = raw.decode("utf-8").replace("\r\n", "\n")
         lines = text.splitlines()
@@ -267,11 +269,17 @@ def test_lua_modules_contract_budgets_and_no_compare_prefix() -> None:
     uk_text = uk_path.read_text(encoding="utf-8")
     assert "node_power = handle_node_power" in uk_text
     assert "power_diff_attribution = handle_power_diff_attribution" in uk_text
-    assert "trade_generate_query = handle_trade_generate_query" in uk_text
     # R1 red line: never define any RPC starting with compare_ in M.rpc_handlers
     m_handlers = re.search(r"M\.rpc_handlers\s*=\s*\{(.*?)\}", uk_text, re.DOTALL)
     assert m_handlers is not None
     assert not re.search(r"\bcompare_[a-zA-Z0-9_]+\s*=", m_handlers.group(1))
+
+    tk_text = tk_path.read_text(encoding="utf-8")
+    assert "trade_generate_query = handle_trade_generate_query" in tk_text
+    assert "trade_add_item = handle_trade_add_item" in tk_text
+    m_tk = re.search(r"M\.rpc_handlers\s*=\s*\{(.*?)\}", tk_text, re.DOTALL)
+    assert m_tk is not None
+    assert not re.search(r"\bcompare_[a-zA-Z0-9_]+\s*=", m_tk.group(1))
 
     ap_text = ap_path.read_text(encoding="utf-8")
     assert "agent_probe_build = handle_agent_probe_build" in ap_text

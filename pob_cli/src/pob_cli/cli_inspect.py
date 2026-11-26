@@ -33,11 +33,11 @@ _DIAGNOSE_JSON_KEYS: dict[str, tuple[str, ...]] = {
         "inflationStripped",
         "topWaterSources",
     ),
-    "gaps": ("healthGaps", "core_synergies", "buildMechanics", "agentProbe"),
+    "gaps": ("healthGaps", "core_synergies", "buildMechanics", "agentProbe", "socketSummary"),
     "items": ("equippedItems",),
     "skills": ("mainGroup", "amulet_7th_link", "skillGroups"),
     "cards": ("factCards", "advisories", "askGrounding"),
-    "upgrades": ("topNodes", "topGems", "rankErrors"),
+    "upgrades": ("topNodes", "topGems", "socketSummary", "nearbySockets", "rankErrors"),
 }
 
 
@@ -95,6 +95,31 @@ def _slice_diagnose_markdown(full_md: str, section: str) -> str:
     if not matched:
         return f"{header}\n\n_(no {section} entries)_"
     return header + "\n\n" + "\n\n".join(matched)
+
+
+def _slice_diagnose_compare_markdown(res: dict[str, Any], section: str) -> str:
+    """One section of a dual-build diagnosis, each build's part under its own heading.
+
+    Slicing the joined report would file the `## Build B Diagnosis` heading under Build A's last
+    section and print B's numbers as A's.
+    """
+    from .formatters import format_diagnose_markdown
+
+    head = format_diagnose_markdown(res).split("\n## Build A Diagnosis", 1)[0].rstrip()
+    if section != "summary":
+        # The comparison block goes; the env line and the update warning under it stay.
+        kept = [ln for ln in head.split("\n## ", 1)[0].splitlines() if ln.startswith(("[Env:", "> "))]
+        head = "\n".join(kept) if kept else head.split("\n", 1)[0]
+    parts = [head]
+    for label, key, slot in (
+        ("A", "buildA", res.get("target") or "main"),
+        ("B", "buildB", res.get("refTarget") or "ref"),
+    ):
+        build = res.get(key)
+        if isinstance(build, dict) and build:
+            parts.append(f"\n## Build {label} Diagnosis (`{slot}`)")
+            parts.append(_slice_diagnose_markdown(format_diagnose_markdown(build, compact=True), section))
+    return "\n".join(parts)
 
 
 @click.command("summary")
@@ -197,6 +222,12 @@ def cmd_summary(target: str, as_json: bool, compact: bool, out_path: str | None)
     multiple=True,
     help="Keep build-guaranteed config/flask/skill/customMods/party items during dewatering (repeatable or comma-separated).",
 )
+@click.option(
+    "--no-auto-keep",
+    "no_auto_keep",
+    is_flag=True,
+    help="Disable automatic mechanism-based config retention during Pinnacle dewatering.",
+)
 @click.option("--top", type=int, default=5, show_default=True, help="Top N passive nodes & candidate support gems.")
 @click.option(
     "--rank/--no-rank",
@@ -237,6 +268,7 @@ def cmd_diagnose(
     compare_source: str | None,
     ask_text: str | None,
     keep: tuple[str, ...],
+    no_auto_keep: bool,
     top: int,
     rank: bool | None,
     section: str,
@@ -281,6 +313,8 @@ def cmd_diagnose(
         params["realm"] = realm.strip().lower()
     if keep:
         params["keep"] = list(keep)
+    if no_auto_keep:
+        params["no_auto_keep"] = True
     if ask_text and ask_text.strip():
         params["ask"] = ask_text.strip()
     if source:
@@ -309,7 +343,10 @@ def cmd_diagnose(
         _apply_loop_guard(res)
         _emit_json(_slice_diagnose_json(res, sec_norm), compact=compact, out_path=out_path)
         return
-    md = _slice_diagnose_markdown(format_diagnose_markdown(res), sec_norm)
+    if sec_norm != "all" and res.get("mode") == "compare" and isinstance(res.get("comparison"), dict):
+        md = _slice_diagnose_compare_markdown(res, sec_norm)
+    else:
+        md = _slice_diagnose_markdown(format_diagnose_markdown(res), sec_norm)
     extra_notes = [str(n) for n in (res.get("importNotes") or []) if n]
     extra_warns = [str(w) for w in (res.get("translateWarnings") or []) if w]
     if (extra_notes or extra_warns) and sec_norm in ("all", "summary"):
@@ -356,6 +393,12 @@ def cmd_ground(
     help="Keep build-guaranteed config/flask/skill/customMods/party items during dewatering (repeatable or comma-separated).",
 )
 @click.option(
+    "--no-auto-keep",
+    "no_auto_keep",
+    is_flag=True,
+    help="Disable automatic mechanism-based config retention during Pinnacle dewatering.",
+)
+@click.option(
     "--no-attribution",
     "no_attribution",
     is_flag=True,
@@ -366,6 +409,7 @@ def cmd_ground(
 @_output_options
 def cmd_audit(
     keep: tuple[str, ...],
+    no_auto_keep: bool,
     no_attribution: bool,
     target: str,
     as_json: bool,
@@ -386,6 +430,8 @@ def cmd_audit(
     params: dict[str, Any] = {"target": target, "attribution": not no_attribution}
     if keep:
         params["keep"] = list(keep)
+    if no_auto_keep:
+        params["no_auto_keep"] = True
     res = invoke_daemon("audit", params)
     if as_json:
         _apply_loop_guard(res)
@@ -411,6 +457,9 @@ def cmd_audit(
         items = stripped.get(dim) or []
         s_rows.append([dim.capitalize(), len(items), "; ".join(items) if items else "_(Clean)_"])
     lines.append(render_table(["Dimension", "Count", "Stripped Items"], s_rows))
+    auto_kept = stripped.get("autoKept") or []
+    if auto_kept:
+        lines.append("\n**Auto-Kept (Build-Guaranteed)**: " + "; ".join(str(x) for x in auto_kept))
     kept = stripped.get("kept") or []
     if kept:
         lines.append("\n**Kept (--keep)**: " + "; ".join(kept))

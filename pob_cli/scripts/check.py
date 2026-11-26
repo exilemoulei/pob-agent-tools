@@ -3,7 +3,7 @@
 
 Modes:
   python pob_cli/scripts/check.py             # ruff + arch-lint + isolated offline pytest (>=905 passed, <=25 skipped)
-  python pob_cli/scripts/check.py --min-passed 975 --max-skipped 7  # CI ratchet for a POSIX real-engine run
+  python pob_cli/scripts/check.py --min-passed 1331 --max-skipped 8  # CI ratchet for a POSIX real-engine run
   python pob_cli/scripts/check.py --fast      # ruff + AST arch-lint only (<3s)
   python pob_cli/scripts/check.py --self-test # mutation checks in %TEMP% proving every rule fires
 """
@@ -208,6 +208,12 @@ def run_self_test(pob_cli_root: Path) -> int:
                 pkg / "snapshot" / "__init__.py",
                 '\n\ndef _selftest_blocked_rpc(worker: object) -> None:\n'
                 '    worker.call("save_build_as", {})  # type: ignore[attr-defined]\n',
+            ),
+            (
+                "spec-sync",
+                "spec-sync (lazy subcommand without a module)",
+                pkg / "cli.py",
+                '\n_LAZY_SUBCOMMANDS = {"selftest": (".cli_selftest_missing", "cmd_selftest", "Missing.")}\n',
             ),
         ]
 

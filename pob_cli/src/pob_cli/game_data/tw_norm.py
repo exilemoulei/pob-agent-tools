@@ -18,6 +18,38 @@ from .tables_tw import _TRAD_TO_SIMP_MAP, _TW_ALIAS_RE, TW_TO_EN_ALIASES
 # (e.g. 鍊 -> 链 as in 链结, where Unihan picks 炼).
 _HAN_FOLD_ALL = {**HAN_FOLD, **_TRAD_TO_SIMP_MAP}
 
+_ZH_REPLICA_BARE_RE = re.compile(
+    r"^[\s·・.．\-:：]*(?:[【\[（(]\s*(?:仿品|赝品|贗品)\s*[】\]）)]|(?:仿品|赝品|贗品))[\s·・.．\-:：]*$"
+)
+_ZH_REPLICA_PREFIX_RE = re.compile(
+    r"^(?:[【\[（(]\s*(?:仿品|赝品|贗品)\s*[】\]）)]|(?:仿品|赝品|贗品))[\s·・.．\-:：]*(.+)$"
+)
+_ZH_REPLICA_SUFFIX_RE = re.compile(
+    r"^(.+?)[\s·・.．\-:：]*(?:[【\[（(]\s*(?:仿品|赝品|贗品)\s*[】\]）)]|(?<=[\s·・.．\-:：】\]）)])(?:仿品|赝品|贗品))$"
+)
+
+
+def extract_zh_replica_stem(text: str | None, *, fold: bool = True) -> tuple[bool, str]:
+    """Parse Chinese/mixed Replica item queries (`仿品X`, `仿品·X`, `X【仿品】`, `贗品．X`, `Replica 中文`) into `(is_replica, stem)`."""
+    if not text:
+        return False, ""
+    s = (fold_han(text) if fold else str(text)).strip()
+    if not s:
+        return False, ""
+    if s.lower().startswith("replica ") and _CJK_RE.search(s):
+        return True, s[8:].strip(" \t·・.．-:：")
+    if not any(tok in s for tok in ("仿品", "赝品", "贗品")):
+        return False, ""
+    if _ZH_REPLICA_BARE_RE.match(s):
+        return True, ""
+    m_pre = _ZH_REPLICA_PREFIX_RE.match(s)
+    if m_pre:
+        return True, m_pre.group(1).strip(" \t·・.．-:：")
+    m_suf = _ZH_REPLICA_SUFFIX_RE.match(s)
+    if m_suf:
+        return True, m_suf.group(1).strip(" \t·・.．-:：")
+    return False, ""
+
 
 def is_legacy_awakened_gem(name: str) -> bool:
     """Return True iff `name` is a legacy Awakened support removed/drop-disabled in PoE1 3.28 (Mirage).

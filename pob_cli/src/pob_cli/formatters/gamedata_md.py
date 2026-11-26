@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..game_data.mod_guidance import DROP_ONLY_SOURCES
 from .primitives import _parse_numeric_or_none, render_table
 
 
@@ -133,6 +134,15 @@ def _fmt_game_data_unique(results: list[dict[str, Any]]) -> list[str]:
                 st_en = "; ".join(fb.get("stats") or [])
                 st_zh = "; ".join(x for x in (fb.get("stats_zh") or []) if x)
                 lines.append(f"  - {st_en}" + (f" / {st_zh}" if st_zh else ""))
+        donor_en, donor_zh = r.get("vestigial_donor_mods") or [], r.get("vestigial_donor_mods_zh") or []
+        if donor_en:
+            pairs = [
+                f"{en} / {donor_zh[i]}" if (i < len(donor_zh) and donor_zh[i] and donor_zh[i] != en) else str(en)
+                for i, en in enumerate(donor_en)
+            ]
+            lines.append(f"- **Gives as Vestigial implicit**: {'; '.join(pairs)}")
+        if r.get("takes_vestigial"):
+            lines.append(f"- **Takes a Vestigial implicit** from another unique `{r.get('item_class')}`")
     return lines
 
 
@@ -149,8 +159,23 @@ def _fmt_game_data_mod(results: list[dict[str, Any]]) -> list[str]:
             cost_s = ", ".join(f"{k}:{v}" for k, v in cost.items()) if isinstance(cost, dict) else str(cost or "")
             types_s = ",".join((bench.get("types") or [])[:5])
             w_disp = f"Bench[{types_s}]" + (f" ({cost_s})" if cost_s else "")
+        elif weights:
+            w_disp = ", ".join(f"{k}:{v}" for k, v in list(weights.items())[:5])
+        elif r.get("source") == "Vestigial":
+            donors, types_s = r.get("vestigialDonors") or [], ",".join(r.get("applicable_types") or [])
+            w_disp = f"unique {types_s}, from {donors[0]}" if (donors and types_s) else "not offered by PoB"
         else:
-            w_disp = ", ".join(f"{k}:{v}" for k, v in list(weights.items())[:5]) or "-"
+            origin = str(r.get("drop_origin") or "")
+            app_types = r.get("applicable_types") or []
+            if app_types:
+                types_s = ",".join(str(x) for x in app_types[:4])
+                w_disp = f"{origin or 'Drop'}[{types_s}] (drop-only)"
+            elif origin:
+                w_disp = f"{origin} (drop-only; no roll weight)"
+            elif str(r.get("source") or "Explicit") in DROP_ONLY_SOURCES:
+                w_disp = "drop-only (no roll weight)"
+            else:  # a legacy corrupted, Eldritch, Foulborn or jewel implicit: not a dropped explicit
+                w_disp = f"{r.get('source')} (no roll weight)"
         affix_grp = f"{r.get('affix') or '-'} ({r.get('group') or '-'})"
         rows.append(
             [
@@ -190,8 +215,28 @@ def _fmt_game_data_base(results: list[dict[str, Any]]) -> list[str]:
     return [render_table(["Base", "Class", "Req (Lv/S/D/I)", "Properties", "Implicits"], rows)]
 
 
+def _fmt_game_data_tattoo(results: list[dict[str, Any]]) -> list[str]:
+    rows = []
+    for r in results:
+        en, zh = str(r.get("name") or "-"), str(r.get("zh_name") or "")
+        kind = ("Runegraft" if r.get("kind") == "runegraft" else "Tattoo") + (" [Legacy]" if r.get("legacy") else "")
+        target, target_value = str(r.get("target_type") or "-"), str(r.get("target_value") or "")
+        s_en, s_zh = r.get("stats") or [], r.get("stats_zh") or []
+        stats = [f"{s} / {s_zh[i]}" if (i < len(s_zh) and s_zh[i] and s_zh[i] != s) else str(s) for i, s in enumerate(s_en)]
+        rows.append(
+            [
+                kind,
+                f"{zh} ({en})" if (zh and zh != en) else en,
+                f"{target} ({target_value})" if target_value else target,
+                "; ".join(stats) or "-",
+                r.get("limit_text") or "-",
+            ]
+        )
+    return [render_table(["Kind", "Name", "Replaces", "Stats", "Limit"], rows)]
+
+
 def format_game_data(res: dict[str, Any], kind: str | None = None, query: str | None = None) -> str:
-    """Format `pob data <gem|unique|mod|base|translate>` local game data results into Markdown."""
+    """Format `pob data <gem|unique|mod|base|translate|tattoo|runegraft>` local game data results into Markdown."""
     kind_norm = str(res.get("kind") or kind or "gem").lower()
     q_disp = str(query if query is not None else (res.get("query") or ""))
     results = res.get("results") or []
@@ -230,7 +275,55 @@ def format_game_data(res: dict[str, Any], kind: str | None = None, query: str | 
         lines.extend(_fmt_game_data_unique(results))
     elif kind_norm == "mod":
         lines.extend(_fmt_game_data_mod(results))
+        if res.get("dropOnlyNote"):
+            lines.append(f"\n> {res['dropOnlyNote']}")
     elif kind_norm == "base":
         lines.extend(_fmt_game_data_base(results))
+    elif kind_norm in ("tattoo", "runegraft"):
+        lines.extend(_fmt_game_data_tattoo(results))
 
+    return "\n".join(lines)
+
+
+def format_meta_markdown(res: dict[str, Any]) -> str:
+    """Format `pob meta` snapshot into bilingual Markdown tables."""
+    from ..external_data.meta_resolve import bilingual_meta_label
+    from ..locale_cfg import current_lang
+
+    show_zh = current_lang() != "en"
+    lines = [
+        f"### poe.ninja Meta Snapshot: `{res.get('league')}` — `{res.get('totalBuilds', 0):,}` total builds",
+    ]
+    flt = res.get("filters") if isinstance(res.get("filters"), dict) else {}
+    res_bits: list[str] = []
+    if flt.get("resolvedSkill"):
+        res_bits.append(f"skill `{flt.get('skill')}` -> `{flt['resolvedSkill']}`")
+    if flt.get("resolvedClassName"):
+        res_bits.append(f"class `{flt.get('className')}` -> `{flt['resolvedClassName']}`")
+    if res_bits:
+        lines.append(f"_Resolved filter: {', '.join(res_bits)}_")
+
+    asc_rows = [
+        [
+            bilingual_meta_label(str(a.get("class") or ""), kind="class", show_zh=show_zh),
+            f"{a.get('percentage', 0):.2f}%",
+            f"{a.get('estimatedBuilds', 0):,}",
+            ", ".join(bilingual_meta_label(str(sk), kind="skill", show_zh=show_zh) for sk in (a.get("skills") or [])[:4]),
+        ]
+        for a in res.get("ascendancies", [])
+    ]
+    lines.append("\n#### Top Ascendancies")
+    lines.append(render_table(["Ascendancy", "Share", "Est. Builds", "Top Skills"], asc_rows))
+
+    sk_rows = [
+        [
+            bilingual_meta_label(str(s.get("skill") or ""), kind="skill", show_zh=show_zh),
+            f"{s.get('percentage', 0):.2f}%",
+            f"{s.get('estimatedBuilds', 0):,}",
+            ", ".join(bilingual_meta_label(str(c), kind="class", show_zh=show_zh) for c in (s.get("classes") or [])[:4]),
+        ]
+        for s in res.get("topSkills", [])
+    ]
+    lines.append("\n#### Top Main Skills")
+    lines.append(render_table(["Skill", "Share", "Est. Builds", "Top Classes"], sk_rows))
     return "\n".join(lines)

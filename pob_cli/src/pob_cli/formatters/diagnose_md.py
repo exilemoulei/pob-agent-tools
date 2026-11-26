@@ -6,6 +6,7 @@ import math
 from typing import Any
 
 from ..game_data.fact_cards import normalize_stat_lines
+from .build_md import extract_custom_mods_330_notes
 from .diagnose_compare_md import (
     _fmt_ask_grounding_line,
     _fmt_diagnose_fact_cards_and_upgrades,
@@ -137,12 +138,12 @@ def _fmt_diagnose_baseline(res: dict[str, Any], *, compact: bool) -> list[str]:
             f"ManaCost `{fmt_num(off.get('ManaCost'))}`"
         )
 
-    top_water = res.get("topWaterSources") or []
+    top_water = res.get("topWaterSources") or res.get("waterSources") or []
     if top_water:
         w_rows = [
             [
                 r.get("dimension") or "-",
-                r.get("label") or "-",
+                r.get("label") or r.get("item") or "-",
                 fmt_signed_pct(r.get("dpsDelta"), r.get("dpsPct")),
                 fmt_signed_pct(r.get("totalEhpDelta"), r.get("totalEhpPct")),
             ]
@@ -152,12 +153,17 @@ def _fmt_diagnose_baseline(res: dict[str, Any], *, compact: bool) -> list[str]:
         lines.append(render_table(["Dim", "Item", f"Δ{p_key}", "ΔTotalEHP"], w_rows))
 
     stripped = res.get("inflationStripped") or {}
+    for cm_note in extract_custom_mods_330_notes(stripped, top_water, res):
+        lines.append(f"\n> [3.30 CustomMods Note] {cm_note}")
     auto_kept = stripped.get("autoKept") or []
     if auto_kept:
         lines.append("\n**Auto-Kept (Build-Guaranteed)**: " + "; ".join(str(x) for x in auto_kept))
     kept = stripped.get("kept") or []
     if kept:
         lines.append("\n**Kept (--keep)**: " + "; ".join(kept))
+    noted_flasks = [str(f) for f in (stripped.get("flasks") or []) if "[" in str(f) and "]" in str(f)]
+    if noted_flasks:
+        lines.append("\n**Flask Dewater Notes**: " + "; ".join(noted_flasks))
     rej = keep_rejected_warning(stripped)
     if rej:
         lines.extend(rej)
@@ -178,12 +184,16 @@ def _fmt_diagnose_gaps_and_mechanics(res: dict[str, Any], *, compact: bool) -> l
     else:
         lines.append("- No critical resistance, attribute, accuracy, mana, or point gaps detected.")
 
-    core_syn = (
+    bm = res.get("buildMechanics") or {}
+    core_syn = list(
         res.get("core_synergies")
         or res.get("coreSynergies")
-        or (res.get("buildMechanics") or {}).get("coreSynergies")
+        or bm.get("coreSynergies")
         or []
     )
+    mst = bm.get("minionSkillTrigger")
+    if isinstance(mst, dict) and mst.get("note"):
+        core_syn.append(str(mst["note"]))
     if core_syn:
         lines.append("\n#### 2b. Core Build Synergies & Do-Not-Brick Advisories")
         seen_syn: set[str] = set()
@@ -193,7 +203,6 @@ def _fmt_diagnose_gaps_and_mechanics(res: dict[str, Any], *, compact: bool) -> l
                 seen_syn.add(syn_txt)
                 lines.append(f"- {syn_txt}")
 
-    bm = res.get("buildMechanics") or {}
     has_bm_section = bool(
         isinstance(bm.get("swordOfAges"), dict)
         or (bm.get("triggers") or [])

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from .. import game_data as _game_data
 from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
-from .common import _call_batch, _fold_search_text, _is_batch_error, _validate_gem_level
+from ..guardrails import GuardrailScope, check_input
+from .common import _call_batch, _fold_search_text, _is_batch_error, _merge_cautions, _validate_gem_level
 
 
 def _resolve_gem_in_group(group: dict[str, Any], gem_selector: str | int) -> dict[str, Any]:
@@ -109,6 +111,99 @@ def _extract_explicit_gem_level(entry: str | dict[str, Any]) -> int | None:
     return None
 
 
+def _gem_spec_allows_illegal_level(entry: str | dict[str, Any], allow_illegal_level: bool) -> bool:
+    """The command-wide flag, or the same permission set on one gem of a `--gems` JSON list."""
+    if allow_illegal_level or not isinstance(entry, dict):
+        return bool(allow_illegal_level)
+    return bool(entry.get("allowIllegalLevel", entry.get("allow_illegal_level", False)))
+
+
+def _legacy_warn_cautions(warns: list[Any]) -> list[str]:
+    return [f"[POE1-PATCH-WARN] {w.summary}" for w in warns if getattr(w, "category", "") == "legacy_patch"]
+
+
+def _gem_name_cautions(
+    raw_gems: Sequence[str | dict[str, Any]], allow_legacy: bool, *, names: Sequence[Any] | None = None
+) -> list[str]:
+    """Guardrail check of every gem name in a `--gems` list; a legacy gem needs the flag or its own `allowLegacy`."""
+    cautions: list[str] = []
+    for pos, entry in enumerate(raw_gems):
+        if names is not None:
+            name = str(names[pos] or "")
+        elif isinstance(entry, str):
+            name = entry
+        else:
+            name = str(entry.get("name") or entry.get("nameSpec") or entry.get("gem") or "")
+        if not name:
+            continue
+        own = isinstance(entry, dict) and bool(entry.get("allowLegacy", entry.get("allow_legacy", False)))
+        warns = check_input(
+            name, scope=GuardrailScope.GEM_NAME, expected_game="poe1", block_legacy_gems=not (allow_legacy or own)
+        )
+        cautions = _merge_cautions(cautions, _legacy_warn_cautions(warns))
+    return cautions
+
+
+_VALID_GEM_SPEC_KEYS: frozenset[str] = frozenset(
+    {
+        "name",
+        "nameSpec",
+        "gem",
+        "gemId",
+        "id",
+        "level",
+        "quality",
+        "enabled",
+        "count",
+        "allowIllegalLevel",
+        "allow_illegal_level",
+        "allowLegacy",
+        "allow_legacy",
+        "skillPart",
+        "skill_part",
+        "stageCount",
+        "stage_count",
+        "skillStageCount",
+        "enableGlobal1",
+        "enableGlobal2",
+    }
+)
+
+# What `pob skills --json` reports about a gem and nothing can set. They are let through so a
+# reported gem can be handed back as a spec; every other unknown key is a typo and is refused.
+_REPORTED_GEM_KEYS: frozenset[str] = frozenset(
+    {
+        "index",
+        "nameZh",
+        "skillId",
+        "support",
+        "errMsg",
+        "color",
+        "hasGlobalEffect",
+        "naturalMaxLevel",
+        "reqLevel",
+        "matchesSocket",
+        "fromItem",
+        "fromNode",
+        "tooltipDps",  # added by `pob skills --group N --json`
+    }
+)
+
+def _parse_positive_int(val: Any, field_name: str) -> int | None:
+    """Validate and convert an optional positive integer (`>= 1`) such as `skillPart` or `stageCount`."""
+    if val is None:
+        return None
+    if isinstance(val, bool) or (isinstance(val, float) and not val.is_integer()):
+        raise ValueError(f"'{field_name}' must be a positive integer (>= 1), got {val!r}.")
+    try:
+        iv = int(val)
+    except (TypeError, ValueError):
+        raise ValueError(f"'{field_name}' must be a positive integer (>= 1), got {val!r}.") from None
+    if iv < 1:
+        raise ValueError(f"'{field_name}' must be a positive integer (>= 1), got {iv}.")
+    return iv
+
+
 def _normalize_gem_spec(
     entry: str | dict[str, Any],
     *,
@@ -149,14 +244,26 @@ def _normalize_gem_spec(
         return out
 
     if isinstance(entry, dict):
+        unknown = sorted(k for k in entry if k not in _VALID_GEM_SPEC_KEYS and k not in _REPORTED_GEM_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Unknown key(s) {unknown} in gem spec dict "
+                f"(valid keys: {', '.join(sorted(_VALID_GEM_SPEC_KEYS))})."
+            )
         name = str(entry.get("name") or entry.get("nameSpec") or entry.get("gem") or "").strip()
-        gem_id = entry.get("gemId")
+        gem_id = entry.get("gemId") or entry.get("id")
         if not name and not gem_id:
             raise ValueError("Gem spec dict must include 'name', 'nameSpec', 'gem', or 'gemId'.")
-        explicit_level = int(entry["level"]) if entry.get("level") is not None else None
-        eff_allow_illegal = allow_illegal_level or bool(
-            entry.get("allowIllegalLevel", entry.get("allow_illegal_level", False))
+        raw_sp = entry.get("skillPart") if "skillPart" in entry else entry.get("skill_part")
+        skill_part = _parse_positive_int(raw_sp, "skillPart")
+        raw_sc = (
+            entry.get("stageCount")
+            if "stageCount" in entry
+            else (entry.get("stage_count") if "stage_count" in entry else entry.get("skillStageCount"))
         )
+        stage_count = _parse_positive_int(raw_sc, "stageCount")
+        explicit_level = int(entry["level"]) if entry.get("level") is not None else None
+        eff_allow_illegal = _gem_spec_allows_illegal_level(entry, allow_illegal_level)
         if name:
             eff_level, cautions = _validate_gem_level(name, explicit_level, allow_illegal_level=eff_allow_illegal)
         else:
@@ -170,6 +277,13 @@ def _normalize_gem_spec(
             "enabled": bool(entry.get("enabled", True)),
             "count": int(entry["count"]) if entry.get("count") is not None else 1,
         }
+        if skill_part is not None:
+            out["skill_part"] = skill_part
+        if stage_count is not None:
+            out["stage_count"] = stage_count
+        for flag in ("enableGlobal1", "enableGlobal2"):
+            if entry.get(flag) is not None:
+                out[flag] = bool(entry[flag])
         if cautions:
             out["cautions"] = cautions
         return out
@@ -249,6 +363,31 @@ def _build_add_gem_params(g_idx: int, spec: dict[str, Any]) -> dict[str, Any]:
     return params
 
 
+def _resolve_and_validate_specs(
+    w: BridgeWorker,
+    g_idx: int,
+    norm_specs: list[dict[str, Any]],
+    explicit_levels: list[int | None],
+    raw_specs: Sequence[str | dict[str, Any]],
+    *,
+    allow_illegal_level: bool,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    cautions: list[str] = []
+    for sp in norm_specs:
+        cautions = _merge_cautions(cautions, sp.get("cautions"))
+    resolved_specs = _resolve_gem_specs_batch(w, g_idx, norm_specs)
+    for sp, exp_lv, raw_spec in zip(resolved_specs, explicit_levels, raw_specs, strict=False):
+        r_name = str(sp.get("name") or "").strip()
+        if r_name:
+            # Same permission as the first pass in `_normalize_gem_spec`, or this pass refuses what that one let through.
+            allow_lv = _gem_spec_allows_illegal_level(raw_spec, allow_illegal_level)
+            eff_lv, lv_c = _validate_gem_level(r_name, exp_lv, allow_illegal_level=allow_lv)
+            if eff_lv is not None:
+                sp["level"] = eff_lv
+            cautions = _merge_cautions(cautions, lv_c)
+    return resolved_specs, cautions
+
+
 def _is_vaal_gem_entry(gem: dict[str, Any] | None, fallback_name: str = "") -> bool:
     """Return True if `gem` or `fallback_name` refers to a Vaal skill gem."""
     g = gem if isinstance(gem, dict) else {}
@@ -295,23 +434,26 @@ def _apply_vaal_defaults_batch(
     resolved_specs: list[dict[str, Any]],
     gem_results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Build `added_gems` records and batch `set_gem(enableGlobal1=False, enableGlobal2=True)` ONLY for Vaal gems."""
+    """Build `added_gems` records and batch the `set_gem` calls for the global-effect flags.
+
+    A Vaal gem defaults to `enableGlobal1=False, enableGlobal2=True`; a flag the spec names wins,
+    on a Vaal gem or any other.
+    """
     added_gems: list[dict[str, Any]] = []
     vaal_fix_positions: list[int] = []
     vaal_fix_calls: list[tuple[str, dict[str, Any]]] = []
     for pos, (sp, res) in enumerate(zip(resolved_specs, gem_results, strict=False)):
         gem_obj = res.get("gem") if isinstance(res, dict) else None
+        flags: dict[str, bool] = {}
         if _is_vaal_gem_entry(gem_obj, str(sp.get("name") or "")):
+            flags = {"enableGlobal1": False, "enableGlobal2": True}
+        flags.update({k: bool(sp[k]) for k in ("enableGlobal1", "enableGlobal2") if sp.get(k) is not None})
+        if flags:
             gem_idx = gem_obj.get("index") if isinstance(gem_obj, dict) else None
             if gem_idx is None:
                 raise RuntimeError("add_gem did not return the added gem index")
             vaal_fix_positions.append(pos)
-            vaal_fix_calls.append(
-                (
-                    "set_gem",
-                    {"group": g_idx, "index": gem_idx, "enableGlobal1": False, "enableGlobal2": True},
-                )
-            )
+            vaal_fix_calls.append(("set_gem", {"group": g_idx, "index": gem_idx, **flags}))
         added_gems.append(
             {
                 "name": sp.get("name"),

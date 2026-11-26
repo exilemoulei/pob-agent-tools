@@ -11,6 +11,7 @@ from ..bridge_client import BridgeWorker
 from ..formatters import _parse_numeric_or_none
 from ..snapshot import (
     _call_batch,
+    _finite_float,
     _json_safe_stat,
     _safe_min_ele_max_hit,
     verify_build,
@@ -138,8 +139,62 @@ def dewater_build_with_records(
     if mutations:
         _call_batch(worker, mutations)
 
+    ig_reason = (auto_keep_reasons or {}).get("conditionenemyignited") or ""
+    if "IgniteChance" in ig_reason and any(
+        s.lower().startswith("conditionenemyignited=") for s in stripped.get("autoKept", [])
+    ):
+        _revoke_flask_inflated_ignite(worker, cfg_res, stripped, records)
+
     stripped["keepRejected"] = _unmatched_keep(keep_set, known)
     return stripped, records
+
+
+def _revoke_flask_inflated_ignite(
+    worker: BridgeWorker,
+    cfg_res: dict[str, Any],
+    stripped: dict[str, list[str]],
+    records: list[dict[str, Any]],
+) -> None:
+    """Revoke `conditionEnemyIgnited` auto-keep if post-dewater `IgniteChance` fell below 100%."""
+    ig_var = "conditionEnemyIgnited"
+    ig_val: Any = True
+    for sec in cfg_res.get("sections", []):
+        for item in sec.get("items", []):
+            if str(item.get("var") or "").lower() == "conditionenemyignited":
+                ig_var = str(item["var"])
+                ig_val = item.get("value")
+                break
+    try:
+        st_batch = _call_batch(worker, [("get_stats", {})], raise_on_error=False)
+    except Exception:
+        return
+    if not st_batch or not isinstance(st_batch[0], dict) or st_batch[0].get("_error"):
+        return
+    post_stats = st_batch[0].get("stats")
+    if not isinstance(post_stats, dict):
+        return
+    post_ig = max(
+        _finite_float(post_stats.get("IgniteChance")),
+        _finite_float(post_stats.get("EnemyIgniteChance")),
+    )
+    if post_ig >= 100.0:
+        return
+    _call_batch(worker, [("reset_config", {"var": ig_var})])
+    stripped["autoKept"] = [
+        s for s in stripped.get("autoKept", []) if not s.lower().startswith("conditionenemyignited=")
+    ]
+    stripped["config"].append(f"{ig_var}={ig_val!r} -> reset (post-dewater IgniteChance {post_ig:.0f}% < 100%)")
+    records.append(
+        {
+            "dimension": "config",
+            "key": ig_var,
+            "label": f"{ig_var}={ig_val!r}",
+            "restore": [("set_config", {"var": ig_var, "value": ig_val})],
+            "revert": [("reset_config", {"var": ig_var})],
+            "probe": {"kind": "config", "var": ig_var},
+            "original": ig_val,
+        }
+    )
 
 
 def _probe_rpc_method(probe: dict[str, Any]) -> str:

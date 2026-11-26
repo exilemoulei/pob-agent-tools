@@ -150,7 +150,18 @@ def _read_current_item(slot: str, target: str) -> tuple[Any, str | None, str | N
         return None, sanitize_text(exc, 300), None, None
     warn = payload.get("updateWarning") if isinstance(payload, dict) else None
     label = _build_label_from_info(payload.get("buildInfo") if isinstance(payload, dict) else None, target)
-    raw = payload.get("raw")
+    raw = payload.get("raw") if isinstance(payload, dict) else None
+    if not raw and isinstance(payload, dict) and isinstance(payload.get("equippedSlots"), list):
+        slot_low = slot.strip().lower()
+        sock_idx = int(slot_low[1:]) if slot_low.startswith("#") and slot_low[1:].isdigit() else None
+        for entry in payload["equippedSlots"]:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("slotName") or "").strip().lower() == slot_low or (
+                sock_idx is not None and entry.get("socketIndex") == sock_idx
+            ):
+                raw = entry.get("raw")
+                break
     if not raw:
         return None, None, warn, label
     try:
@@ -168,6 +179,31 @@ def _price_of(row: dict[str, Any]) -> tuple[float | None, str | None]:
         parsed_amount = None
     currency = price.get("currency")
     return parsed_amount, (str(currency) if currency else None)
+
+
+def _listing_trade_meta(row: dict[str, Any]) -> tuple[str, int | None, str | None]:
+    """Extract cookie-invariant `(trade_mode, gold_fee, price_type)` from a trade fetch row.
+
+    Anonymous responses strip `hideout_token` and online Merchant's Tab sellers may still
+    carry `whisper`, whereas traditional in-person listings never carry a Gold `fee`.
+    """
+    listing = row.get("listing") if isinstance(row, dict) else None
+    listing = listing if isinstance(listing, dict) else {}
+    raw_fee = listing.get("fee")
+    gold_fee = int(raw_fee) if isinstance(raw_fee, (int, float)) and not isinstance(raw_fee, bool) else None
+    is_securable = bool(listing.get("hideout_token")) or (
+        gold_fee is not None and (gold_fee > 0 or not listing.get("whisper"))
+    )
+    trade_mode = "securable" if is_securable else "in_person"
+    if not is_securable:
+        gold_fee = None
+    price_obj = listing.get("price")
+    price_type = str(price_obj.get("type") or "") or None if isinstance(price_obj, dict) else None
+    return trade_mode, gold_fee, price_type
+
+
+def _is_securable_row(row: dict[str, Any]) -> bool:
+    return _listing_trade_meta(row)[0] == "securable"
 
 
 def _weighted_sum_of(raw_item: dict[str, Any]) -> float | None:

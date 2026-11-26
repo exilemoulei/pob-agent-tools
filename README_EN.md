@@ -2,6 +2,7 @@
 
 [简体中文](README.md) | **English**
 
+[![YouTube](https://img.shields.io/badge/YouTube-Walkthrough-FF0000?style=flat-square&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=3HX5Uvi7-XM)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.gg/tejgNrhjn)
 
 > [!TIP]
@@ -13,7 +14,7 @@ Just import your build through a normal chat and let your agent actually run it 
 
 When it runs into a mechanic it isn't sure about, it checks [PoEDB](https://poedb.tw) and [PoE Wiki](https://www.poewiki.net) instead of making things up.
 
-It gives real upgrade suggestions, automatically builds trade queries around your build's gaps with direct trade links, and hunts Timeless Jewel seeds (including 3.30 Abyss jewels) in seconds!
+It gives real upgrade suggestions, automatically builds trade queries around your build's gaps (with instant Gold buyout `--securable` filtering, seller deduplication, and lossless `+20%` quality normalization in PoB) with direct trade links, and hunts Timeless Jewel seeds (including Abyss jewels) in seconds!
 
 ---
 
@@ -33,6 +34,8 @@ If you've never used one before, search YouTube for a quick setup tutorial.
 
 ## How do I use it?
 
+> **Watch the walkthrough**: [YouTube — pob4agents Best-Practice Demo](https://www.youtube.com/watch?v=3HX5Uvi7-XM)
+
 Once installed, open a fresh chat and drop in your `poe.ninja` link, official PoE profile link, or PoB export link/code — it recognizes all of them.
 
 (Note that the official profile API doesn't include Bandits or Pantheon, so double-check those with your agent after importing.)
@@ -41,9 +44,12 @@ English, Traditional Chinese, and Simplified Chinese are all supported — if yo
 
 Pick a smarter model if you can (e.g. Claude Opus / Gemini Neon / GPT Sol), though lighter models like DeepSeek work fine too.
 
-Tell it what build you're playing and call out any tricky core mechanics that are easy to get wrong.
+**Best practices that work well** (walked through in the video):
 
-Ask it to ask you follow-up questions — in practice, that makes its answers dramatically more accurate!
+- **Give it reference anchors instead of starting cold**: drop in a working PoB, a mechanics thread (e.g. Reddit), or a showcase video alongside your build — the richer the context, the better its decisions.
+- **Call out tricky mechanics and ask it to ask you questions**: tell it what build you're playing and what's easy to get wrong; having it ask follow-up questions makes its answers dramatically more accurate!
+- **Offload the tedious PoB work while you stay in the loop**: let it handle bulk tattooing, scanning niche ascendancies/notables, and gear swaps, then open the updated PoB, flag anything off, and iterate.
+- **Pick `poe.ninja` characters yourself and paste their links**: to respect platform limits, the agent won't scrape leaderboards on its own — browse `poe.ninja`, copy a few strong character links, and drop them in for side-by-side comparison.
 
 It automatically strips out inflated PoB settings to show realistic numbers.
 

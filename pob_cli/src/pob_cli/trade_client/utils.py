@@ -93,8 +93,10 @@ class ApiError(TradeError):
 class NoResults(TradeError):
     """Raised when a trade search succeeds with zero matching listings."""
 
-    def __init__(self) -> None:
-        super().__init__("No matching online listings; loosen the budget or the stat filters.")
+    def __init__(self, status: str | None = None) -> None:
+        self.status = status
+        prefix = f"No matching {status} listings" if status else "No matching listings"
+        super().__init__(f"{prefix}; loosen the budget or the stat filters.")
 
 
 # ---------------------------------------------------------------------------

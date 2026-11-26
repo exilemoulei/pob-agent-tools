@@ -9,7 +9,7 @@ from ..bridge_client import BridgeError, BridgeWorker
 from ..bridge_protocol import get_worker_caps
 from ..errors import CrossGameHallucinationError, DaemonRequestError
 from ..snapshot import history_of
-from .read_cache import compute_source_hash
+from .read_cache import compute_source_hash, is_live_source
 from .rpc_mutate import MUTATE_ACTION_HANDLERS, norm_keep
 from .runtime import normalize_slot_name
 
@@ -63,7 +63,12 @@ def dispatch_dual_slot_action(
 
     if action == "compare":
         cmp_res = compare_builds(
-            mw, rw, ref_source=params.get("ref_source"), ref_xml_code=params.get("ref_xml_code")
+            mw,
+            rw,
+            ref_source=params.get("ref_source"),
+            ref_xml_code=params.get("ref_xml_code"),
+            keep=norm_keep(params),
+            auto_keep=not bool(params.get("no_auto_keep", params.get("noAutoKeep", False))),
         )
         return manager._attach_state_meta(cmp_res, mw)
 
@@ -137,6 +142,7 @@ def dispatch_dual_slot_action(
             league=params.get("league"),
             realm=None if skip_main else params.get("realm"),
             keep=norm_keep(params),
+            auto_keep=not bool(params.get("no_auto_keep", params.get("noAutoKeep", False))),
             top=top_val,
             no_rank=bool(params.get("no_rank", params.get("noRank", True))),
             ask=params.get("ask"),
@@ -147,9 +153,13 @@ def dispatch_dual_slot_action(
         )
         if read_cache is not None:
             if main_hash and not skip_main:
-                read_cache.record_slot_load(main_slot_name, history_of(mw).rev, main_hash)
+                read_cache.record_slot_load(
+                    main_slot_name, history_of(mw).rev, main_hash, live=is_live_source(main_load_params)
+                )
             if ref_hash and not skip_ref:
-                read_cache.record_slot_load(ref_slot_name, history_of(rw).rev, ref_hash)
+                read_cache.record_slot_load(
+                    ref_slot_name, history_of(rw).rev, ref_hash, live=is_live_source(ref_load_params)
+                )
         return manager._attach_warning_if_degraded(diag_cmp)
 
     raise ValueError(f"Unknown dual-slot daemon action '{action}'.")
@@ -190,7 +200,7 @@ def _h_load(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[s
     slot_nm = normalize_slot_name(params.get("target") or getattr(w, "slot_name", None))
     read_cache = getattr(m, "_read_cache", None)
     if read_cache is not None:
-        read_cache.record_slot_load(slot_nm, history_of(w).rev, src_hash, load_res)
+        read_cache.record_slot_load(slot_nm, history_of(w).rev, src_hash, load_res, live=is_live_source(params))
     if src_hash and isinstance(load_res, dict):
         load_res["sourceHash"] = src_hash
     return m._attach_warning_if_degraded(load_res)
@@ -230,7 +240,12 @@ def _h_summary(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[st
 def _h_audit(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from ..analyzer import audit_build
 
-    return audit_build(w, keep=norm_keep(params), attribution=bool(params.get("attribution", True)))
+    return audit_build(
+        w,
+        keep=norm_keep(params),
+        attribution=bool(params.get("attribution", True)),
+        auto_keep=not bool(params.get("no_auto_keep", params.get("noAutoKeep", False))),
+    )
 
 
 def _h_diagnose(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
@@ -264,11 +279,14 @@ def _h_diagnose(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> di
                 realm=params.get("realm"),
             )
             if read_cache is not None:
-                read_cache.record_slot_load(slot_nm, history_of(w).rev, src_hash, load_meta)
+                read_cache.record_slot_load(
+                    slot_nm, history_of(w).rev, src_hash, load_meta, live=is_live_source(params)
+                )
     top_val = int(params["top"]) if params.get("top") is not None else 5
     diag_res = diagnose_build(
         w,
         keep=norm_keep(params),
+        auto_keep=not bool(params.get("no_auto_keep", params.get("noAutoKeep", False))),
         top=top_val,
         no_rank=bool(params.get("no_rank", params.get("noRank", False))),
         ask=params.get("ask"),
@@ -361,13 +379,21 @@ def _h_calc(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[
         limit=limit_val,
         max_breakdowns=max_bd_val,
         no_breakdown=bool(params.get("no_breakdown", params.get("noBreakdown", False))),
+        group=params.get("group"),
+        skill=params.get("skill"),
     )
 
 
 def _h_matrix(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from ..comparator import run_matrix
 
-    return run_matrix(w, scenarios=params.get("scenarios"), full=bool(params.get("full", False)), keep=norm_keep(params))
+    return run_matrix(
+        w,
+        scenarios=params.get("scenarios"),
+        full=bool(params.get("full", False)),
+        keep=norm_keep(params),
+        auto_keep=not bool(params.get("no_auto_keep", params.get("noAutoKeep", False))),
+    )
 
 
 def _h_rank_nodes(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
@@ -433,20 +459,28 @@ def _h_trade_eval_items(_m: DaemonManager, params: dict[str, Any], w: BridgeWork
     from .. import trade_eval
 
     raw_pk = params.get("prefilter_k") if params.get("prefilter_k") is not None else params.get("prefilterK")
+    raw_pl = params.get("pob_limit") if params.get("pob_limit") is not None else params.get("pobLimit")
+    raw_nq = params.get("normalizeQuality") if "normalizeQuality" in params else params.get("normalize_quality")
     return trade_eval.eval_trade_items(
         w,
         slot_name=params.get("slot") or params.get("slotName"),
         items=list(params.get("items") or []),
         prefilter_k=int(raw_pk) if raw_pk is not None else None,
+        pob_limit=int(raw_pl) if raw_pl is not None else None,
+        normalize_quality=bool(raw_nq),
     )
 
 
 def _h_trade_generate_query(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     if not get_worker_caps(w).get("tradeAutoQuery"):
         return {"error": "tradeAutoQuery capability unavailable on this engine worker"}
-    rpc_params: dict[str, Any] = {
-        "slotName": params.get("slotName") or params.get("slot_name") or params.get("slot") or "",
-    }
+    slot_name = str(params.get("slotName") or params.get("slot_name") or params.get("slot") or "").strip()
+    if slot_name.startswith("#"):
+        from ..analyzer.inspectors import resolve_slot_name
+
+        with w.lock:
+            slot_name = resolve_slot_name(w, slot_name)
+    rpc_params: dict[str, Any] = {"slotName": slot_name}
     for key in ("stat", "includeEhp", "ehpWeight", "includeCorrupted", "league", "reuseModData", "rarity", "maxFilters"):
         if params.get(key) is not None:
             rpc_params[key] = params[key]

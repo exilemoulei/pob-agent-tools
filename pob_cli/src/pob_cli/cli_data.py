@@ -18,17 +18,32 @@ from .cli_research import cmd_poedb, cmd_research, cmd_wiki
 
 
 @click.command("data")
-@click.argument("kind", type=click.Choice(["gem", "unique", "mod", "base", "translate", "tree", "tick"], case_sensitive=False))
+@click.argument(
+    "kind",
+    type=click.Choice(
+        ["gem", "unique", "mod", "base", "translate", "tattoo", "runegraft", "tree", "tick"],
+        case_sensitive=False,
+    ),
+)
 @click.argument("queries", nargs=-1, required=False)
-@click.option("--slot", help="Filter mods/uniques/bases by slot (e.g. 'body_armour', 'helmet', 'ring', 'wand').")
+@click.option("--slot", help="Filter mods/uniques/bases by slot, or tattoos by target passive type (e.g. 'body_armour', 'Small Strength', 'Mastery').")
 @click.option("--ilvl", type=int, help="Maximum item level / required level filter.")
-@click.option("--mod", "mod_filter", type=str, default=None, help="[unique only] Filter uniques by explicit/implicit mod substring (EN or ZH).")
+@click.option("--mod", "mod_filter", type=str, default=None, help="[unique/tattoo] Filter uniques or tattoos/runegrafts by mod/stat substring (EN or ZH).")
+@click.option(
+    "--kind",
+    "tattoo_kind",
+    type=click.Choice(["all", "tattoo", "runegraft"], case_sensitive=False),
+    default="all",
+    show_default=True,
+    help="[tattoo] Filter passive overrides by kind (all, tattoo, runegraft).",
+)
+@click.option("--legacy", "include_legacy", is_flag=True, help="[tattoo, runegraft] Include retired 3.22 legacy tattoos.")
 @click.option("--type", "node_type", type=str, default=None, help="[tree only] Filter passive tree nodes by type (Keystone, Notable, Mastery, Ascendancy, Bloodline, Socket).")
 @click.option("--asc", "asc_filter", type=str, default=None, help="[tree only] Filter passive tree nodes by Ascendancy or Bloodline name (EN or ZH, e.g. Warden, Trickster, 守望者).")
 @click.option("--cdr", "cdr_pct", type=float, default=0.0, show_default=True, help="[tick only] Total Cooldown Recovery Rate % (e.g. 14, 52).")
 @click.option("--aps", "aps_rate", type=float, default=None, help="[tick only] Trigger attack/action rate per second for CoC overspeed check.")
 @click.option("--spells", "triggered_spells", type=int, default=1, show_default=True, help="[tick only] Number of distinct triggered skills sharing the trigger.")
-@click.option("--limit", type=int, default=25, show_default=True, help="Maximum number of results per query (0 = unlimited).")
+@click.option("--limit", type=click.IntRange(min=0), default=25, show_default=True, help="Maximum number of results per query (0 = unlimited).")
 @click.option("--quality-breakpoints", "quality_breakpoints", is_flag=True, help="[gem only] Scan 3.30 gems for 20%->40%+ quality breakpoints (integer steps & more multipliers).")
 @click.option("--search-quality", "search_quality", type=str, default=None, help="[gem only] Search gems by quality stat keyword (EN or ZH, e.g. 'projectile', '连锁', 'more').")
 @click.option("--active-only", "active_only", is_flag=True, help="[gem quality scan] Restrict to Active Skill Gems only (matching '+% to Quality of all Skill Gems').")
@@ -41,6 +56,8 @@ def cmd_data(
     slot: str | None,
     ilvl: int | None,
     mod_filter: str | None,
+    tattoo_kind: str,
+    include_legacy: bool,
     node_type: str | None,
     asc_filter: str | None,
     cdr_pct: float,
@@ -55,7 +72,7 @@ def cmd_data(
     compact: bool,
     out_path: str | None,
 ) -> None:
-    """Query local 0ms PoB Lua game/tree data & 0.033s tick calculator (`gem|unique|mod|base|translate|tree|tick`, daemon-free)."""
+    """Query local 0ms PoB Lua game/tree data & 0.033s tick calculator (`gem|unique|mod|base|translate|tattoo|runegraft|tree|tick`, daemon-free)."""
     from . import game_data as gd
 
     kind_low = kind.lower()
@@ -104,8 +121,12 @@ def cmd_data(
         _emit_text(_render_tree_data_markdown(res), out_path=out_path)
         return
 
-    if mod_filter is not None and kind_low != "unique":
-        raise click.UsageError("--mod is only supported for `pob data unique`.")
+    if mod_filter is not None and kind_low not in ("unique", "tattoo", "runegraft"):
+        raise click.UsageError("--mod is only supported for `pob data unique` and `pob data tattoo`.")
+    if (tattoo_kind.lower() != "all" or include_legacy) and kind_low not in ("tattoo", "runegraft"):
+        raise click.UsageError("--kind and --legacy are only supported for `pob data tattoo` and `pob data runegraft`.")
+    if kind_low == "runegraft" and tattoo_kind.lower() == "tattoo":
+        raise click.UsageError("`pob data runegraft` lists runegrafts only; use `pob data tattoo --kind tattoo`.")
 
     if quality_breakpoints or search_quality is not None:
         if kind_low != "gem":
@@ -122,7 +143,19 @@ def cmd_data(
         _emit_text(_render_gem_quality_breakpoints_markdown(res), out_path=out_path)
         return
 
+    extra_kw: dict[str, Any] = {}
+    if kind_low in ("tattoo", "runegraft"):
+        extra_kw = {"tattoo_kind": tattoo_kind.lower(), "include_legacy": include_legacy}
+
     if not q_list:
+        if kind_low in ("tattoo", "runegraft"):
+            res = gd.query_local_data(kind, "", slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw)
+            if as_json:
+                _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
+                return
+            lbl = f"--mod {mod_filter}" if mod_filter else (slot or tattoo_kind)
+            _emit_text(_render_single_data_markdown(res, kind, lbl), out_path=out_path)
+            return
         if kind_low == "unique" and mod_filter and mod_filter.strip():
             res = gd.query_local_data(kind, "", slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit)
             if as_json:
@@ -132,7 +165,7 @@ def cmd_data(
             return
         raise click.UsageError("Provide at least one non-empty query.")
     if len(q_list) == 1:
-        res = gd.query_local_data(kind, q_list[0], slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit)
+        res = gd.query_local_data(kind, q_list[0], slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw)
         if as_json:
             _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
             return
@@ -143,7 +176,7 @@ def cmd_data(
     multi_res: dict[str, Any]
     if hasattr(gd, "query_local_data_multi"):
         multi_res = _call_with_supported_kwargs(
-            gd.query_local_data_multi, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit
+            gd.query_local_data_multi, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw
         )
     elif hasattr(gd, "query_multi"):
         import inspect
@@ -153,14 +186,17 @@ def cmd_data(
         if first_param in ("db", "conn", "db_path"):
             db_path = gd.ensure_gamedata_index()
             multi_res = _call_with_supported_kwargs(
-                gd.query_multi, db_path, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit
+                gd.query_multi, db_path, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw
             )
         else:
             multi_res = _call_with_supported_kwargs(
-                gd.query_multi, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit
+                gd.query_multi, kind, q_list, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw
             )
     else:
-        grouped = {q: gd.query_local_data(kind, q, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit) for q in q_list}
+        grouped = {
+            q: gd.query_local_data(kind, q, slot=slot, ilvl=ilvl, mod_filter=mod_filter, limit=limit, **extra_kw)
+            for q in q_list
+        }
         multi_res = {"kind": kind.lower(), "queries": q_list, "results": grouped}
 
     if as_json:
@@ -192,7 +228,7 @@ def cmd_data(
 @click.option("--league", help="League name (defaults to current primary softcore trade league).")
 @click.option("--category", default="all", show_default=True, help="Category (all, unique, gem, imbuedgem, currency, card, cluster, base, flask, scarab, runegraft, wombgift, etc.).")
 @click.option("--variant", help="Filter matches by variant substring (e.g. 'Necromancer', '8 passives', '21/20').")
-@click.option("--limit", type=int, default=20, show_default=True, help="Maximum number of matches to return.")
+@click.option("--limit", type=click.IntRange(min=1), default=20, show_default=True, help="Maximum number of matches to return.")
 @click.option("--detailed", is_flag=True, help="Use detailed stash overview API (gem level/quality, corrupted, links, cluster passives).")
 @click.option("--proxy", help="Optional HTTP/SOCKS proxy URL.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
@@ -285,8 +321,8 @@ def cmd_price(
 
 @click.command("meta")
 @click.option("--league", help="League name or slug (defaults to current primary challenge league).")
-@click.option("--skill", help="Filter by main skill substring.")
-@click.option("--class", "class_name", help="Filter by ascendancy/class substring.")
+@click.option("--skill", help="Filter by main skill (EN substring, ZH/TW name, or slang like 正火).")
+@click.option("--class", "class_name", help="Filter by ascendancy/class (EN substring or ZH/TW like 酋长/圣宗).")
 @click.option("--top", type=int, default=15, show_default=True, help="Number of top entries to show.")
 @click.option("--proxy", help="Optional HTTP/SOCKS proxy URL.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
@@ -303,7 +339,7 @@ def cmd_meta(
 ) -> None:
     """Query poe.ninja league meta snapshot (total builds, ascendancy & main skill share)."""
     from . import external_data as ext
-    from .formatters import render_table
+    from .formatters.gamedata_md import format_meta_markdown
 
     res = _call_with_supported_kwargs(
         ext.query_meta,
@@ -316,35 +352,7 @@ def cmd_meta(
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
         return
-
-    lines = [
-        f"### poe.ninja Meta Snapshot: `{res.get('league')}` — `{res.get('totalBuilds', 0):,}` total builds",
-    ]
-    asc_rows = [
-        [
-            a.get("class"),
-            f"{a.get('percentage', 0):.2f}%",
-            f"{a.get('estimatedBuilds', 0):,}",
-            ", ".join((a.get("skills") or [])[:4]),
-        ]
-        for a in res.get("ascendancies", [])
-    ]
-    lines.append("\n#### Top Ascendancies")
-    lines.append(render_table(["Ascendancy", "Share", "Est. Builds", "Top Skills"], asc_rows))
-
-    sk_rows = [
-        [
-            s.get("skill"),
-            f"{s.get('percentage', 0):.2f}%",
-            f"{s.get('estimatedBuilds', 0):,}",
-            ", ".join((s.get("classes") or [])[:4]),
-        ]
-        for s in res.get("topSkills", [])
-    ]
-    lines.append("\n#### Top Main Skills")
-    lines.append(render_table(["Skill", "Share", "Est. Builds", "Top Classes"], sk_rows))
-
-    _emit_text("\n".join(lines), out_path=out_path)
+    _emit_text(format_meta_markdown(res), out_path=out_path)
 
 
 def register_data_commands(group: click.Group) -> None:

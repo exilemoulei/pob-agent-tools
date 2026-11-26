@@ -11,11 +11,11 @@ RANGE_RE = re.compile(r"\(\s*-?\d+(?:\.\d+)?\s*-\s*-?\d+(?:\.\d+)?\s*\)")
 POB_TAG_RE = re.compile(r"\{([a-zA-Z][a-zA-Z0-9_:.,-]*)\}")
 SIMPLE_TAG_RE = re.compile(r"\{([a-zA-Z]+)\}")
 TRAILING_KIND_RE = re.compile(
-    r"\s*\((crafted|fractured|implicit|enchant|scourge|mutated|crucible|veiled|rune)\)\s*$",
+    r"\s*\((crafted|fractured|implicit|enchant|scourge|mutated|vestigial|crucible|veiled|rune)\)\s*$",
     re.IGNORECASE,
 )
 SPACE_RE = re.compile(r"\s+")
-SEPARATOR_RE = re.compile(r"^-{3,}$")
+SEPARATOR_RE = re.compile(r"^(?:-{3,}|={3,})$")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 PROPERTY_RE = re.compile(r"^([A-Za-z][A-Za-z '/()-]+):")
 
@@ -91,6 +91,7 @@ PROPERTY_KEYS: frozenset[str] = frozenset(
         "cluster jewel node count",
         "prefix",
         "suffix",
+        "crafted",
         "variant",
         "selected variant",
         "version",
@@ -179,7 +180,9 @@ INFLUENCE_API_MAP: tuple[tuple[str, str], ...] = (
 )
 
 INFLUENCE_LINE_MAP: dict[str, str] = {
-    f"{display.lower()} item": display for _, display in INFLUENCE_API_MAP
+    **{f"{display.lower()} item": display for _, display in INFLUENCE_API_MAP},
+    "vestigial item": "Vestigial",
+    "vestigial": "Vestigial",
 }
 
 STATE_LINES: frozenset[str] = frozenset(
@@ -201,6 +204,7 @@ MOD_KIND_TAGS: frozenset[str] = frozenset(
         "enchant",
         "scourge",
         "mutated",
+        "vestigial",
         "implicit",
         "crucible",
         "veiled",
@@ -217,6 +221,7 @@ NON_CONVERTIBLE_KINDS: frozenset[str] = frozenset(
         "scourge",
         "crucible",
         "mutated",
+        "vestigial",
         "veiled",
         "rune",
     }

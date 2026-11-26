@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from ..guardrails import GuardrailScope, check_input, validate_url
-from ..ticks import build_server_tick_table
 from .constants import (
     _ACTIVE_AWAKENED_EXCEPTIONAL_LOWER,
     _EXCEPTIONAL_GEM_FALLBACK_BOUNDS,
@@ -17,25 +16,14 @@ from .constants import (
     _REMOVED_LEGACY_GEM_NAMES_LOWER,
 )
 from .grounding import _build_zero_result_hint, _suggest_similar
+from .mod_guidance import _attach_mod_drop_only_guidance
 from .paths import _sqlite_ro_uri
 from .quality import _enrich_gem_quality_stats
 from .queries_core import _query_bases, _query_gems, _query_mods, _query_uniques
 from .queries_translate import _query_translate
 from .slang import resolve_player_slang
+from .tattoos import query_tattoo_data
 from .tw_norm import _fold_search_text, is_legacy_awakened_gem, normalize_tw_query
-
-_TICK_BASE_CD_PRESETS: dict[str, tuple[float, str]] = {
-    "coc": (0.15, "Cast On Critical Strike (0.15s)"),
-    "cospri": (0.25, "Cospri's Malice (0.25s)"),
-    "mjolner": (0.25, "Mjölner (0.25s)"),
-    "poet": (0.25, "The Poet's Pen (0.25s)"),
-    "cwdt": (0.25, "Cast when Damage Taken (0.25s)"),
-    "soa": (0.50, "The Sword of Ages / Temporal Mirage (0.50s)"),
-    "mirage": (0.50, "Temporal Mirage (0.50s)"),
-    "hidden": (0.50, "The Hidden Blade (0.50s)"),
-    "spellslinger": (0.60, "Spellslinger (0.60s)"),
-    "kitava": (0.10, "Kitava's Thirst (0.10s)"),
-}
 
 
 def _dispatch_query(
@@ -51,6 +39,9 @@ def _dispatch_query(
     pob_dir: Path | None = None,
     runtime_dir: Path | None = None,
     raw_query: str | None = None,
+    drop_only_sink: list[dict[str, Any]] | None = None,
+    tattoo_kind: str = "all",
+    include_legacy: bool = False,
 ) -> list[dict[str, Any]]:
     if kind_norm == "gem":
         return _query_gems(conn, q_folded, limit)
@@ -59,7 +50,10 @@ def _dispatch_query(
     if kind_norm == "base":
         return _query_bases(conn, q_folded, slot, ilvl, limit)
     if kind_norm == "mod":
-        return _query_mods(conn, q_folded, slot, ilvl, limit)
+        return _query_mods(conn, q_folded, slot, ilvl, limit, drop_only_sink=drop_only_sink)
+    if kind_norm in ("tattoo", "runegraft"):
+        tk = "runegraft" if kind_norm == "runegraft" else tattoo_kind
+        return query_tattoo_data(conn, q_folded, kind=tk, slot_filter=slot, mod_filter=mod_filter, include_legacy=include_legacy, limit=limit)
     return _query_translate(
         conn, q_folded, limit, zh_available, pob_dir=pob_dir, runtime_dir=runtime_dir, raw_query=raw_query
     )
@@ -199,23 +193,23 @@ def query_local_data(
     slot: str | None = None,
     ilvl: int | None = None,
     mod_filter: str | None = None,
+    tattoo_kind: str = "all",
+    include_legacy: bool = False,
     limit: int = 25,
 ) -> dict[str, Any]:
-    """Query local PoB game data (`gem`, `unique`, `mod`, `base`, `translate`) via SQLite index."""
+    """Query local PoB game data (`gem`, `unique`, `mod`, `base`, `translate`, `tattoo`) via SQLite index."""
     import pob_cli.game_data as _gd
 
     kind_norm = kind.strip().lower()
-    if kind_norm not in ("gem", "unique", "mod", "base", "translate"):
-        raise ValueError(
-            f"Unsupported kind {kind!r}; expected one of: gem, unique, mod, base, translate."
-        )
+    if kind_norm not in ("gem", "unique", "mod", "base", "translate", "tattoo", "runegraft"):
+        raise ValueError(f"Unsupported kind {kind!r}; expected one of: gem, unique, mod, base, translate, tattoo, runegraft.")
 
     q_clean = str(query or "").strip()
     q_tw = normalize_tw_query(q_clean) if q_clean else ""
     mod_clean = str(mod_filter or "").strip() or None
     mod_tw = normalize_tw_query(mod_clean) if mod_clean else None
-    if mod_clean and kind_norm != "unique":
-        raise ValueError("--mod filter is only supported for kind='unique'.")
+    if mod_clean and kind_norm not in ("unique", "tattoo", "runegraft"):
+        raise ValueError("--mod filter is only supported for kind='unique' or 'tattoo'.")
     if q_clean:
         validate_url(q_clean, expected_game="poe1", cli_subcommand=f"data {kind_norm}")
     q_scope = _guardrail_scope_for_kind(kind_norm)
@@ -238,6 +232,7 @@ def query_local_data(
     resolved_alias: dict[str, str] | None = None
     suggestions: list[dict[str, Any]] | None = None
     hint: str | None = None
+    drop_only_sink: list[dict[str, Any]] = []
 
     conn = sqlite3.connect(_sqlite_ro_uri(db_path), uri=True)
     try:
@@ -255,6 +250,9 @@ def query_local_data(
             pob_dir=pob_dir,
             runtime_dir=runtime_dir,
             raw_query=q_clean,
+            drop_only_sink=drop_only_sink if kind_norm == "mod" else None,
+            tattoo_kind=tattoo_kind,
+            include_legacy=include_legacy,
         )
         needs_slang = (not results) or (
             kind_norm == "translate" and not any(r.get("match_type") == "exact" for r in results)
@@ -263,6 +261,7 @@ def query_local_data(
             slang_hit = resolve_player_slang(q_tw) or (resolve_player_slang(q_clean) if q_tw != q_clean else None)
             if slang_hit is not None:
                 canon_en, _ = slang_hit
+                slang_sink: list[dict[str, Any]] = []
                 slang_res = _dispatch_query(
                     conn,
                     kind_norm,
@@ -272,9 +271,14 @@ def query_local_data(
                     limit=limit,
                     zh_available=zh_available,
                     mod_filter=mod_tw,
+                    tattoo_kind=tattoo_kind,
+                    include_legacy=include_legacy,
                     pob_dir=pob_dir,
                     runtime_dir=runtime_dir,
+                    drop_only_sink=slang_sink if kind_norm == "mod" else None,
                 )
+                if slang_sink and not drop_only_sink:
+                    drop_only_sink = slang_sink
                 if slang_res:
                     results = slang_res
                     resolved_alias = {"from": q_clean, "to": canon_en}
@@ -283,6 +287,7 @@ def query_local_data(
 
                 en_canon = english_for_zh(q_clean, pob_dir=pob_dir, runtime_dir=runtime_dir)
                 if en_canon and _fold_search_text(en_canon) != q_lower:
+                    sib_sink: list[dict[str, Any]] = []
                     sib_res = _dispatch_query(
                         conn,
                         kind_norm,
@@ -292,9 +297,14 @@ def query_local_data(
                         limit=limit,
                         zh_available=zh_available,
                         mod_filter=mod_tw,
+                        tattoo_kind=tattoo_kind,
+                        include_legacy=include_legacy,
                         pob_dir=pob_dir,
                         runtime_dir=runtime_dir,
+                        drop_only_sink=sib_sink if kind_norm == "mod" else None,
                     )
+                    if sib_sink and not drop_only_sink:
+                        drop_only_sink = sib_sink
                     if sib_res:
                         results = sib_res
                         resolved_alias = {"from": q_clean, "to": en_canon}
@@ -314,6 +324,8 @@ def query_local_data(
                     limit=limit,
                     zh_available=zh_available,
                     mod_filter=canon_mod,
+                    tattoo_kind=tattoo_kind,
+                    include_legacy=include_legacy,
                 )
                 if slang_res:
                     results = slang_res
@@ -332,12 +344,16 @@ def query_local_data(
         "count": len(results),
         "results": results,
     }
+    if kind_norm in ("tattoo", "runegraft"):
+        out["filters"].update({"tattooKind": tattoo_kind, "legacy": include_legacy})
     if resolved_alias is not None:
         out["resolvedAlias"] = resolved_alias
     if suggestions is not None:
         out["suggestions"] = suggestions
     if hint is not None:
         out["hint"] = hint
+    if kind_norm == "mod":
+        _attach_mod_drop_only_guidance(out, results, drop_only_sink, q_clean, slot)
     if warnings:
         out["warnings"] = [w.to_dict() for w in warnings]
     return out
@@ -353,16 +369,16 @@ def query_multi(
     slot: str | None = None,
     ilvl: int | None = None,
     mod_filter: str | None = None,
+    tattoo_kind: str = "all",
+    include_legacy: bool = False,
     limit: int = 25,
 ) -> dict[str, Any]:
     """Run multiple local game-data queries in one SQLite connection for variadic `pob data`."""
     import pob_cli.game_data as _gd
 
     kind_norm = str(kind).strip().lower()
-    if kind_norm not in ("gem", "unique", "mod", "base", "translate"):
-        raise ValueError(
-            f"Unsupported kind {kind!r}; expected one of: gem, unique, mod, base, translate."
-        )
+    if kind_norm not in ("gem", "unique", "mod", "base", "translate", "tattoo", "runegraft"):
+        raise ValueError(f"Unsupported kind {kind!r}; expected one of: gem, unique, mod, base, translate, tattoo, runegraft.")
 
     clean_queries = list(
         dict.fromkeys(q.strip() for q in (queries or []) if isinstance(q, str) and q.strip())
@@ -409,6 +425,7 @@ def query_multi(
         for q_clean in clean_queries:
             q_tw = q_tw_map[q_clean]
             q_folded = _fold_search_text(q_tw)
+            sub_sink: list[dict[str, Any]] = []
             res = _dispatch_query(
                 conn,
                 kind_norm,
@@ -418,7 +435,12 @@ def query_multi(
                 limit=limit,
                 zh_available=zh_available,
                 mod_filter=mod_tw,
+                pob_dir=pob_dir,
+                runtime_dir=runtime_dir,
                 raw_query=q_clean,
+                drop_only_sink=sub_sink if kind_norm == "mod" else None,
+                tattoo_kind=tattoo_kind,
+                include_legacy=include_legacy,
             )
             resolved_alias: dict[str, str] | None = None
             suggestions: list[dict[str, Any]] | None = None
@@ -439,10 +461,34 @@ def query_multi(
                         limit=limit,
                         zh_available=zh_available,
                         mod_filter=mod_tw,
+                        tattoo_kind=tattoo_kind,
+                        include_legacy=include_legacy,
                     )
                     if slang_res:
                         res = slang_res
                         resolved_alias = {"from": q_clean, "to": canon_en}
+                if not res and kind_norm != "translate":
+                    from .zh_match import english_for_zh
+
+                    en_canon = english_for_zh(q_clean, pob_dir=pob_dir, runtime_dir=runtime_dir)
+                    if en_canon and _fold_search_text(en_canon) != q_folded:
+                        sib_res = _dispatch_query(
+                            conn,
+                            kind_norm,
+                            _fold_search_text(en_canon),
+                            slot=slot,
+                            ilvl=ilvl,
+                            limit=limit,
+                            zh_available=zh_available,
+                            mod_filter=mod_tw,
+                            tattoo_kind=tattoo_kind,
+                            include_legacy=include_legacy,
+                            pob_dir=pob_dir,
+                            runtime_dir=runtime_dir,
+                        )
+                        if sib_res:
+                            res = sib_res
+                            resolved_alias = {"from": q_clean, "to": en_canon}
                 if not res and not mod_tw:
                     suggestions = _suggest_similar(conn, kind_norm, q_folded, limit=5, zh_available=zh_available)
                     hint = _build_zero_result_hint(kind_norm, q_clean, suggestions)
@@ -457,12 +503,16 @@ def query_multi(
                 "count": len(res),
                 "results": res,
             }
+            if kind_norm in ("tattoo", "runegraft"):
+                entry["filters"].update({"tattooKind": tattoo_kind, "legacy": include_legacy})
             if resolved_alias is not None:
                 entry["resolvedAlias"] = resolved_alias
             if suggestions is not None:
                 entry["suggestions"] = suggestions
             if hint is not None:
                 entry["hint"] = hint
+            if kind_norm == "mod":
+                _attach_mod_drop_only_guidance(entry, res, sub_sink, q_clean, slot)
             if q_clean in warnings_by_query:
                 entry["warnings"] = warnings_by_query[q_clean]
             results_by_query[q_clean] = entry
@@ -491,45 +541,3 @@ def query_multi(
     if dedup_warns:
         out_multi["warnings"] = dedup_warns
     return out_multi
-
-
-def query_tick_breakpoints(
-    base_cd_spec: str | float,
-    *,
-    cdr_pct: float | None = None,
-    aps: float | None = None,
-    triggered_spells: int = 1,
-) -> dict[str, Any]:
-    """Daemon-free 0ms PoE1 0.033s (33ms) server-tick cooldown breakpoint calculator."""
-    raw = str(base_cd_spec or "").strip()
-    low = raw.lower()
-    preset_label: str | None = None
-    if low in _TICK_BASE_CD_PRESETS:
-        base_cd, preset_label = _TICK_BASE_CD_PRESETS[low]
-    elif low.endswith("ms"):
-        try:
-            base_cd = float(low[:-2].strip()) / 1000.0
-        except ValueError as exc:
-            raise ValueError(
-                f"Invalid base cooldown {base_cd_spec!r}; pass seconds (e.g. 0.15), ms (150ms), or preset ({', '.join(_TICK_BASE_CD_PRESETS)})."
-            ) from exc
-    else:
-        try:
-            base_cd = float(low.rstrip("s").strip())
-        except ValueError as exc:
-            raise ValueError(
-                f"Invalid base cooldown {base_cd_spec!r}; pass seconds (e.g. 0.15), ms (150ms), or preset ({', '.join(_TICK_BASE_CD_PRESETS)})."
-            ) from exc
-    if base_cd <= 0:
-        raise ValueError(f"Base cooldown must be > 0 (got {base_cd}).")
-
-    tbl = build_server_tick_table(
-        base_cd,
-        cdr_pct=cdr_pct,
-        aps=aps,
-        triggered_spells=triggered_spells,
-    )
-    tbl["kind"] = "tick"
-    if preset_label:
-        tbl["preset"] = preset_label
-    return tbl

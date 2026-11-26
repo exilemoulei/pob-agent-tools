@@ -9,49 +9,21 @@ from typing import Any
 from ..formatters import strip_pob_escapes
 from ..snapshot import _finite_float
 from ..ticks import compute_server_tick_cooldown
+from .pitfalls_minion_trigger import _check_minion_convocation_trigger
 from .pitfalls_offence import _item_names_low
 from .summary import _awakened_coc_gem_cdr, _cwc_interval_ms
 
-NON_APS_TRIGGER_KEYS: frozenset[str] = frozenset(
-    {
-        "automation",
-        "autoexertion",
-        "call to arms",
-        "cast when damage taken",
-        "cast when stunned",
-        "cast on ward break",
-        "cast on death",
-        "cast on melee kill",
-        "vengeance",
-        "riposte",
-        "reckoning",
-        "counterattack",
-        "mark on hit",
-        "hextouch",
-        "arcanist brand",
-        "focus",
-        "tempest shield",
-        "shattershard",
-        "svalinn cast on block",
-        "festering resentment cast on block",
-        "battlemage's cry",
-        "combust",
-        "seize the flesh",
-        "intuitive link",
-        "avenging flame",
-        "hex on trap",
-        "snipe",
-        "trigger craft",
-        "hidden blade",
-        "unseen strike",
-        "kitava's thirst",
-        "foulborn kitava's thirst",
-    }
-)
+NON_APS_TRIGGER_KEYS: frozenset[str] = frozenset({
+    "automation", "autoexertion", "call to arms", "cast when damage taken", "cast when stunned",
+    "cast on ward break", "cast on death", "cast on melee kill", "vengeance", "riposte", "reckoning",
+    "counterattack", "mark on hit", "hextouch", "arcanist brand", "focus", "tempest shield", "shattershard",
+    "svalinn cast on block", "festering resentment cast on block", "battlemage's cry", "combust",
+    "seize the flesh", "intuitive link", "avenging flame", "hex on trap", "snipe", "trigger craft",
+    "hidden blade", "unseen strike", "kitava's thirst", "foulborn kitava's thirst",
+})
 
 _OVERSPEED_TRIG_RE = re.compile(r"^Trigger Overspeed \(([^,)]+)(?:,\s*([^)]+))?\)")
 _OVERSPEED_CDR_RE = re.compile(r"at\s+([0-9]+(?:\.[0-9]+)?)%\s+CDR")
-
 
 def canonical_trigger_key(name: str) -> str:
     """Normalize gem/item trigger names for cross-source deduplication."""
@@ -63,6 +35,19 @@ def canonical_trigger_key(name: str) -> str:
     if s.startswith("the "):
         s = s[len("the ") :].strip()
     return s.replace("ö", "o")
+
+
+def _fmt_overspeed_gap(disp: str, loc: Any, aps: float, cdr: float, tick: dict[str, Any]) -> dict[str, str]:
+    nb = tick.get("nextBreakpoint") or {}
+    nh = f" or reach {nb['requiredCdrPct']}% CDR ({nb['targetTicks']}t={nb['effectiveCdMs']}ms, cap {nb['effectiveCapPerSec']:.2f}/s)" if nb else ""
+    return {
+        "category": "TriggerOverspeed", "severity": "HIGH",
+        "message": (
+            f"Trigger Overspeed ({disp}, {loc}): Attack rate ({aps:.2f}/s) "
+            f"exceeds trigger cap ({tick['effectiveCapPerSec']:.2f}/s at {cdr:g}% CDR, "
+            f"{tick['ticks']}t = {tick['effectiveCdMs']}ms) — lower APS <= {tick['effectiveCapPerSec']:.2f}/s{nh}."
+        ),
+    }
 
 
 def deduplicate_trigger_gaps(
@@ -109,30 +94,14 @@ def deduplicate_trigger_gaps(
             probe_cdr = _finite_float(cliff_info.get("currentIcdrPct"), default=-1.0)
             b_cd = _finite_float(cliff_info.get("baseActionCd"), default=0.25)
             src_aps = _finite_float(cliff_info.get("sourceAps"), default=0.0)
-            # At equal CDR the probe still wins: it also knows how many spells share the trigger.
             if probe_cdr >= msg_cdr and b_cd > 0.0 and src_aps > 0.0:
-                # Each linked spell has its own cooldown, so N spells multiply the safe rate by N.
                 spells = max(1, int(_finite_float(cliff_info.get("linkedTriggeredSpells"), default=1.0)))
                 tick = compute_server_tick_cooldown(b_cd, probe_cdr, aps=src_aps, triggered_spells=spells)
                 if not tick.get("overspeed"):
                     continue
                 disp = m_trig.group(1) if m_trig else tkey
                 loc = m_trig.group(2) if (m_trig and m_trig.group(2)) else "-"
-                nb = tick.get("nextBreakpoint") or {}
-                next_hint = (
-                    f" or reach {nb['requiredCdrPct']}% CDR ({nb['targetTicks']}t={nb['effectiveCdMs']}ms, cap {nb['effectiveCapPerSec']:.2f}/s)"
-                    if nb
-                    else ""
-                )
-                gap = {
-                    "category": "TriggerOverspeed",
-                    "severity": "HIGH",
-                    "message": (
-                        f"Trigger Overspeed ({disp}, {loc}): Attack rate ({src_aps:.2f}/s) "
-                        f"exceeds trigger cap ({tick['effectiveCapPerSec']:.2f}/s at {probe_cdr:g}% CDR, "
-                        f"{tick['ticks']}t = {tick['effectiveCdMs']}ms) — lower APS <= {tick['effectiveCapPerSec']:.2f}/s{next_hint}."
-                    ),
-                }
+                gap = _fmt_overspeed_gap(disp, loc, src_aps, probe_cdr, tick)
                 msg_cdr = probe_cdr
 
         if tkey in seen_trig_idx:
@@ -159,13 +128,9 @@ def _check_sword_of_ages_and_triggers(
         has_43_comp = bool(re.search(r"4[23](?:\.\d+)?%\s+more\s+spell\s+damage", ctx["custom_mods_joined"]))
         has_perfect_crime = ctx["has_perfect_crime"]
         soa_block: dict[str, Any] = {
-            "equipped": True,
-            "baseCooldownSec": 0.50,
-            "globalCdrPct": global_cdr_pct,
-            "cdrSources": cdr_data["sources"],
-            "temporalMirageCooldown": tick_info,
-            "hasPerfectCrime": has_perfect_crime,
-            "hasTriggerbotCompensationCustomMod": has_43_comp,
+            "equipped": True, "baseCooldownSec": 0.50, "globalCdrPct": global_cdr_pct,
+            "cdrSources": cdr_data["sources"], "temporalMirageCooldown": tick_info,
+            "hasPerfectCrime": has_perfect_crime, "hasTriggerbotCompensationCustomMod": has_43_comp,
             "advisories": [
                 (
                     "Two separate `30% less` lines: Temporal Mirage clones DO take their own innate `30% less Damage` "
@@ -178,25 +143,21 @@ def _check_sword_of_ages_and_triggers(
                 ),
                 (
                     "`on using a Movement Attack`: holding channelling `Cyclone` triggers ONLY ONCE on channel start "
-                    "(never continuously while held); requires tap-macro (interval >= "
-                    f"{tick_info['effectiveCdMs']}ms + jitter margin) or discrete movement attacks "
-                    "(`Leap Slam`/`Flicker Strike`/`Consecrated Path`)."
+                    f"(never continuously while held); requires tap-macro (interval >= {tick_info['effectiveCdMs']}ms "
+                    "+ jitter margin) or discrete movement attacks (`Leap Slam`/`Flicker Strike`/`Consecrated Path`)."
                 ),
             ],
         }
         mechanics["swordOfAges"] = soa_block
         if has_perfect_crime and not has_43_comp:
-            gaps.append(
-                {
-                    "category": "PoBModeling",
-                    "severity": "MEDIUM",
-                    "message": (
-                        "The Sword of Ages + Saboteur Perfect Crime: PoB 2.68.1 double-penalizes `0.7 * 0.7 = 0.49` by "
-                        "stacking Perfect Crime `-30% less` on top of Temporal Mirage's own `-30% less` (live 3.30 only takes "
-                        "Temporal Mirage's innate `-30% less`). Add `43% more Spell Damage` in customMods to cancel the second `-30%`."
-                    ),
-                }
-            )
+            gaps.append({
+                "category": "PoBModeling", "severity": "MEDIUM",
+                "message": (
+                    "The Sword of Ages + Saboteur Perfect Crime: PoB 2.68.1 double-penalizes `0.7 * 0.7 = 0.49` by "
+                    "stacking Perfect Crime `-30% less` on top of Temporal Mirage's own `-30% less` (live 3.30 only takes "
+                    "Temporal Mirage's innate `-30% less`). Add `43% more Spell Damage` in customMods to cancel the second `-30%`."
+                ),
+            })
 
     triggers_detected: list[dict[str, Any]] = []
     seen_trigger_keys: set[str] = set()
@@ -219,113 +180,68 @@ def _check_sword_of_ages_and_triggers(
 
         for gm in g_gems:
             gnm = strip_pob_escapes(str(gm.get("name") or gm.get("nameSpec") or "")).strip()
-            glow = gnm.lower()
-            gsid = str(gm.get("skillId") or "")
-            glvl = int(gm.get("level") or 20)
+            glow, gsid, glvl = gnm.lower(), str(gm.get("skillId") or ""), int(gm.get("level") or 20)
 
-            if (
-                "cast on critical strike" in glow
-                or gsid in ("SupportCastOnCriticalStrike", "SupportAwakenedCastOnCriticalStrike")
-            ):
+            if "cast on critical strike" in glow or gsid in ("SupportCastOnCriticalStrike", "SupportAwakenedCastOnCriticalStrike"):
                 is_awk = "awakened" in glow or gsid == "SupportAwakenedCastOnCriticalStrike"
                 gem_cdr = _awakened_coc_gem_cdr(glvl) if is_awk else 0
                 total_cdr = round(global_cdr_pct + gem_cdr, 2)
                 num_spells = max(1, len(act_gems_in_g) - 1) if len(act_gems_in_g) >= 2 else 1
                 aps_for_group = eff_attack_aps if is_mg else None
                 tick = compute_server_tick_cooldown(0.15, total_cdr, aps=aps_for_group, triggered_spells=num_spells)
-                triggers_detected.append(
-                    {
-                        "kind": "cooldown_trigger",
-                        "name": gnm,
-                        "groupIndex": g_idx,
-                        "slot": g.get("slot") or "-",
-                        "baseCooldownSec": 0.15,
-                        "globalCdrPct": global_cdr_pct,
-                        "gemCdrPct": gem_cdr,
-                        "totalCdrPct": total_cdr,
-                        "cdrSources": cdr_data["sources"],
-                        "triggeredSpells": num_spells,
-                        "cooldown": tick,
-                    }
-                )
+                triggers_detected.append({
+                    "kind": "cooldown_trigger", "name": gnm, "groupIndex": g_idx, "slot": g.get("slot") or "-",
+                    "baseCooldownSec": 0.15, "globalCdrPct": global_cdr_pct, "gemCdrPct": gem_cdr,
+                    "totalCdrPct": total_cdr, "cdrSources": cdr_data["sources"],
+                    "triggeredSpells": num_spells, "cooldown": tick,
+                })
                 if tick.get("overspeed") and aps_for_group is not None:
                     nb = tick.get("nextBreakpoint") or {}
-                    next_hint = (
+                    nh = (
                         f" or reach next CDR breakpoint ({nb['requiredCdrPct']}% CDR -> {nb['targetTicks']}t = "
-                        f"{nb['effectiveCdMs']}ms, cap {nb['effectiveCapPerSec']:.2f}/s)"
-                        if nb
-                        else ""
+                        f"{nb['effectiveCdMs']}ms, cap {nb['effectiveCapPerSec']:.2f}/s)" if nb else ""
                     )
-                    gaps.append(
-                        {
-                            "category": "TriggerOverspeed",
-                            "severity": "HIGH",
-                            "message": (
-                                f"Trigger Overspeed ({gnm}, Group #{g_idx}): Attack rate ({aps_for_group:.2f}/s) "
-                                f"exceeds CoC trigger cap ({tick['effectiveCapPerSec']:.2f}/s at {total_cdr:g}% CDR, "
-                                f"{tick['ticks']}t = {tick['effectiveCdMs']}ms) — attacks land inside cooldown and "
-                                f"HALVE effective trigger rate! Either lower APS <= {tick['effectiveCapPerSec']:.2f}/s{next_hint}."
-                            ),
-                        }
-                    )
-            elif (
-                "cast while channelling" in glow
-                or gsid in ("SupportCastWhileChannelling", "SupportAwakenedCastWhileChannelling")
-            ):
-                is_awk = "awakened" in glow or gsid == "SupportAwakenedCastWhileChannelling"
-                iv_ms = _cwc_interval_ms(glvl, awakened=is_awk)
-                triggers_detected.append(
-                    {
-                        "kind": "fixed_interval_channelling",
-                        "name": gnm,
-                        "groupIndex": g_idx,
-                        "slot": g.get("slot") or "-",
-                        "level": glvl,
-                        "intervalMs": iv_ms,
-                        "intervalSec": round(iv_ms / 1000.0, 3),
-                        "scaledByCdr": False,
-                        "note": (
-                            f"`{gnm}` (Lv.{glvl}) uses a **fixed channelling trigger interval of {iv_ms}ms "
-                            f"({iv_ms / 1000.0:.2f}s)**, NOT a Cooldown — `Cooldown Recovery Rate (CDR)` has "
-                            "**ZERO effect** on CwC trigger rate!"
+                    gaps.append({
+                        "category": "TriggerOverspeed", "severity": "HIGH",
+                        "message": (
+                            f"Trigger Overspeed ({gnm}, Group #{g_idx}): Attack rate ({aps_for_group:.2f}/s) "
+                            f"exceeds CoC trigger cap ({tick['effectiveCapPerSec']:.2f}/s at {total_cdr:g}% CDR, "
+                            f"{tick['ticks']}t = {tick['effectiveCdMs']}ms) — attacks land inside cooldown and "
+                            f"HALVE effective trigger rate! Either lower APS <= {tick['effectiveCapPerSec']:.2f}/s{nh}."
                         ),
-                    }
-                )
+                    })
+            elif "cast while channelling" in glow or gsid in ("SupportCastWhileChannelling", "SupportAwakenedCastWhileChannelling"):
+                iv_ms = _cwc_interval_ms(glvl, awakened=("awakened" in glow or gsid == "SupportAwakenedCastWhileChannelling"))
+                triggers_detected.append({
+                    "kind": "fixed_interval_channelling", "name": gnm, "groupIndex": g_idx,
+                    "slot": g.get("slot") or "-", "level": glvl, "intervalMs": iv_ms,
+                    "intervalSec": round(iv_ms / 1000.0, 3), "scaledByCdr": False,
+                    "note": (
+                        f"`{gnm}` (Lv.{glvl}) uses a **fixed channelling trigger interval of {iv_ms}ms "
+                        f"({iv_ms / 1000.0:.2f}s)**, NOT a Cooldown — `Cooldown Recovery Rate (CDR)` has "
+                        "**ZERO effect** on CwC trigger rate!"
+                    ),
+                })
             elif glow == "spellslinger" or gsid == "Spellslinger":
                 tkey = f"spellslinger:{g_idx}"
                 if tkey not in seen_trigger_keys:
                     seen_trigger_keys.add(tkey)
-                    tick = compute_server_tick_cooldown(0.60, global_cdr_pct)
-                    triggers_detected.append(
-                        {
-                            "kind": "cooldown_trigger",
-                            "name": "Spellslinger",
-                            "groupIndex": g_idx,
-                            "slot": g.get("slot") or "-",
-                            "baseCooldownSec": 0.60,
-                            "globalCdrPct": global_cdr_pct,
-                            "totalCdrPct": global_cdr_pct,
-                            "cooldown": tick,
-                        }
-                    )
+                    triggers_detected.append({
+                        "kind": "cooldown_trigger", "name": "Spellslinger", "groupIndex": g_idx,
+                        "slot": g.get("slot") or "-", "baseCooldownSec": 0.60, "globalCdrPct": global_cdr_pct,
+                        "totalCdrPct": global_cdr_pct, "cooldown": compute_server_tick_cooldown(0.60, global_cdr_pct),
+                    })
             elif is_mg and ("cast when damage taken" in glow or gsid == "SupportCastWhenDamageTaken"):
-                tick = compute_server_tick_cooldown(0.25, global_cdr_pct)
-                triggers_detected.append(
-                    {
-                        "kind": "cooldown_trigger",
-                        "name": gnm,
-                        "groupIndex": g_idx,
-                        "slot": g.get("slot") or "-",
-                        "baseCooldownSec": 0.25,
-                        "globalCdrPct": global_cdr_pct,
-                        "totalCdrPct": global_cdr_pct,
-                        "cooldown": tick,
-                    }
-                )
+                triggers_detected.append({
+                    "kind": "cooldown_trigger", "name": gnm, "groupIndex": g_idx,
+                    "slot": g.get("slot") or "-", "baseCooldownSec": 0.25, "globalCdrPct": global_cdr_pct,
+                    "totalCdrPct": global_cdr_pct, "cooldown": compute_server_tick_cooldown(0.25, global_cdr_pct),
+                })
 
     _check_item_triggers(ctx, gaps, triggers_detected, seen_trigger_keys, eff_attack_aps)
     if triggers_detected:
         mechanics["triggers"] = triggers_detected
+    _check_minion_convocation_trigger(ctx, gaps, mechanics)
 
 
 def _check_item_triggers(
@@ -351,32 +267,10 @@ def _check_item_triggers(
                 seen_trigger_keys.add(disp_name)
                 aps_for_item = eff_attack_aps if is_atk_trig else None
                 tick = compute_server_tick_cooldown(b_cd, global_cdr_pct, aps=aps_for_item)
-                triggers_detected.append(
-                    {
-                        "kind": "item_cooldown_trigger",
-                        "name": disp_name,
-                        "slot": sname,
-                        "baseCooldownSec": b_cd,
-                        "globalCdrPct": global_cdr_pct,
-                        "totalCdrPct": global_cdr_pct,
-                        "cooldown": tick,
-                    }
-                )
+                triggers_detected.append({
+                    "kind": "item_cooldown_trigger", "name": disp_name, "slot": sname,
+                    "baseCooldownSec": b_cd, "globalCdrPct": global_cdr_pct,
+                    "totalCdrPct": global_cdr_pct, "cooldown": tick,
+                })
                 if is_atk_trig and tick.get("overspeed") and aps_for_item is not None:
-                    nb = tick.get("nextBreakpoint") or {}
-                    next_hint = (
-                        f" or reach {nb['requiredCdrPct']}% CDR ({nb['targetTicks']}t={nb['effectiveCdMs']}ms, cap {nb['effectiveCapPerSec']:.2f}/s)"
-                        if nb
-                        else ""
-                    )
-                    gaps.append(
-                        {
-                            "category": "TriggerOverspeed",
-                            "severity": "HIGH",
-                            "message": (
-                                f"Trigger Overspeed ({disp_name}, {sname}): Attack rate ({aps_for_item:.2f}/s) "
-                                f"exceeds trigger cap ({tick['effectiveCapPerSec']:.2f}/s at {global_cdr_pct:g}% CDR, "
-                                f"{tick['ticks']}t = {tick['effectiveCdMs']}ms) — lower APS <= {tick['effectiveCapPerSec']:.2f}/s{next_hint}."
-                            ),
-                        }
-                    )
+                    gaps.append(_fmt_overspeed_gap(disp_name, sname, aps_for_item, global_cdr_pct, tick))

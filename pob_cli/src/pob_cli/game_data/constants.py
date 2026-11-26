@@ -10,8 +10,10 @@ from typing import Any
 
 from ..updater import detect_source_checkout_root, get_runtime_dir
 
-# 11: zh-rTW id-keyed and lookup files (passives_by_id, ggpk_*, synonyms...) left the index.
-SCHEMA_VERSION = 11
+# 12: Index ModDelve/ModVeiled + DelveDropOnly/IncursionDropOnly/Essence drop-slot tags.
+# 13: Mods keep their weight keys in PoB's order, bases their influence tags (`mod --slot`).
+# 14: Index 3.30 Vestigial mods + Tattoos/Runegrafts tables (tattoos + tattoos_fts).
+SCHEMA_VERSION = 15
 _INDEX_BUILD_LOCK = threading.RLock()
 
 _POB_ESCAPE_RE = re.compile(r"\^x[0-9A-Fa-f]{6}|\^\d")
@@ -177,6 +179,8 @@ SKILL_KEEP_LEVELS: frozenset[int] = frozenset({1, 3, 4, 5, 6, 7, 20, 21})
 
 MOD_FILES: tuple[tuple[str, str], ...] = (
     ("ModExplicit.lua", "Explicit"),
+    ("ModDelve.lua", "Delve"),
+    ("ModVeiled.lua", "Veiled"),
     ("ModCorrupted.lua", "Corrupted"),
     ("ModMaster.lua", "Bench"),
     ("ModEldritch.lua", "Eldritch"),
@@ -252,7 +256,7 @@ SLOT_ALIASES: dict[str, tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]
     "ring_3": (("ring",), ("ring", "default"), ("Ring",)),
     "belt": (("belt",), ("belt", "default"), ("Belt",)),
     "flask": (("flask",), ("flask", "default"), ("Flask",)),
-    "tincture": (("tincture",), ("tincture", "default"), ()),
+    "tincture": (("tincture",), ("tincture", "default"), ("Tincture",)),
     "jewel": (("jewel", "abyss_jewel"), ("jewel", "default"), ()),
     "abyss_jewel": (("abyss_jewel",), ("abyss_jewel", "default"), ()),
     "cluster_jewel": (
@@ -408,6 +412,9 @@ ZH_FILE_CATEGORY_HINT: dict[str, tuple[str, int]] = {
     "Items_Oils.json": ("base", 2),
     "Z-Item.json": ("base", 2),
     "tree_dn.json": ("passive", 1),
+    "Tatto.json": ("passive", 2),
+    "tatto.json": ("passive", 2),
+    "tattoo.json": ("passive", 2),
     "TattooPassives.json": ("passive", 2),
     "passiveTree.json": ("passive", 3),
     "tree_sd.json": ("stat", 3),

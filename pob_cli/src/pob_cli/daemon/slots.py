@@ -20,9 +20,11 @@ from ..updater import (
     get_update_warning,
     is_valid_engine_dir,
     load_update_state,
+    recover_idle_engine,
     resolve_engine_root,
+    unrestored_swap,
 )
-from .read_cache import READ_CACHE_ACTIONS, SlotReadCache, compute_source_hash
+from .read_cache import READ_CACHE_ACTIONS, SlotReadCache
 from .rpc_handlers import dispatch_dual_slot_action, dispatch_game_data, dispatch_slot_action
 from .runtime import (
     GAME_ID,
@@ -42,6 +44,7 @@ from .slot_updates import (
     hot_reload_update,
     maybe_periodic_update_check,
     run_background_boot_update_check,
+    slot_status_entry,
     update_daemon_state_pob_dir,
 )
 
@@ -104,6 +107,7 @@ class DaemonManager:
         self.skip_update_check = skip_update_check
         self.disable_global_idle = disable_global_idle
         self.update_status: dict[str, Any] = load_update_state(self.runtime_dir)
+        self._engine_fault: str | None = None
         self.started_at = time.time()
         self.last_active_ts = time.time()
 
@@ -154,6 +158,7 @@ class DaemonManager:
     def main_worker(self, worker: BridgeWorker) -> None:
         with self._lock:
             self._workers["main"] = worker
+        self._read_cache.invalidate_slot("main")
 
     @property
     def ref_worker(self) -> BridgeWorker | None:
@@ -167,6 +172,7 @@ class DaemonManager:
                 self._workers.pop("ref", None)
             else:
                 self._workers["ref"] = worker
+        self._read_cache.invalidate_slot("ref")
 
     def _get_slot_lock(self, slot: str) -> threading.RLock:
         with self._lock:
@@ -234,6 +240,9 @@ class DaemonManager:
 
         launch_bg_check = False
         with self._exclusive_barrier():
+            # An update killed mid-swap leaves a mix of two versions that still looks valid.
+            recover_idle_engine(self.pob_dir)
+            self._engine_fault = unrestored_swap(self.pob_dir)
             checked_at = float(self.update_status.get("checkedAt") or 0.0)
             engine_valid = is_valid_engine_dir(self.pob_dir)
             fresh_ok = (
@@ -283,7 +292,10 @@ class DaemonManager:
 
     def _current_update_warning(self) -> str | None:
         with self._lock:
-            return get_update_warning(self.update_status)
+            # Results from a half-updated engine are not to be trusted, whatever the update state says.
+            if self._engine_fault and not unrestored_swap(self.pob_dir):
+                self._engine_fault = None
+            return self._engine_fault or get_update_warning(self.update_status)
 
     def _attach_warning_if_degraded(self, payload: dict[str, Any]) -> dict[str, Any]:
         warn = self._current_update_warning()
@@ -323,7 +335,16 @@ class DaemonManager:
             worker = self._get_or_create_worker_unlocked(slot)
             slot_lock = self._slot_locks[slot]
         with slot_lock:
+            before_gen = getattr(worker, "generation", None)
+            before_code = getattr(worker, "last_good_code", None)
             worker.ensure_alive()
+            if (
+                getattr(worker, "generation", None) != before_gen
+                or getattr(worker, "last_good_code", None) != before_code
+            ):
+                rc = getattr(self, "_read_cache", None)
+                if rc is not None:
+                    rc.invalidate_slot(slot)
             return worker
 
     def get_worker(self, target: str = "main") -> BridgeWorker:
@@ -352,9 +373,13 @@ class DaemonManager:
                             worker.stop()
                         except Exception:
                             pass
+                        evicted = False
                         with self._lock:
                             if self._workers.get(slot_name) is worker:
                                 self._workers.pop(slot_name, None)
+                                evicted = True
+                        if evicted:
+                            self._read_cache.invalidate_slot(slot_name)
                 finally:
                     slot_lock.release()
 
@@ -387,12 +412,17 @@ class DaemonManager:
                 except Exception:
                     pass
 
+            rc = getattr(self, "_read_cache", None)
             with self._exclusive_barrier():
-                for worker in list(self._workers.values()):
+                for slot_name, worker in list(self._workers.items()):
                     try:
                         worker.stop()
                     except Exception:
                         pass
+                    if rc is not None:
+                        rc.invalidate_slot(slot_name)
+                if rc is not None:
+                    rc.clear_all()
                 self._workers = {"main": self._workers.get("main") or self._new_worker("main")}
             state_file = _daemon_state_file(self.runtime_dir)
             try:
@@ -411,45 +441,7 @@ class DaemonManager:
             self._shutdown_done.set()
 
     def _slot_status_entry(self, slot_name: str, worker: BridgeWorker | None) -> dict[str, Any]:
-        alive = worker is not None and worker.is_alive()
-        info = None
-        busy = False
-        if alive and worker is not None:
-            slot_lock = self._get_slot_lock(slot_name)
-            if slot_lock.acquire(blocking=False):
-                try:
-                    with self._lock:
-                        still_active = self._workers.get(slot_name) is worker and worker.is_alive()
-                    if still_active:
-                        try:
-                            info = worker.call("get_build_info", {})
-                        except Exception:
-                            info = None
-                    else:
-                        alive = False
-                finally:
-                    slot_lock.release()
-            else:
-                busy = True
-        entry: dict[str, Any] = {
-            "alive": alive,
-            "buildInfo": info,
-            "hasLoadedBuild": bool(worker and worker.last_good_code),
-        }
-        if busy:
-            entry["busy"] = True
-        if worker is not None:
-            history = history_of(worker)
-            entry.update(history.depths())
-            if slot_name == "main":
-                entry["hello"] = worker.hello_info
-            if history.source_label:
-                entry["sourceLabel"] = history.source_label
-            restore_failed = getattr(worker, "restore_failed", None)
-            if restore_failed:
-                # The saved build could not be restored at boot: why, and the file it was put aside in.
-                entry["restoreFailed"] = restore_failed
-        return entry
+        return slot_status_entry(self, slot_name, worker)
 
     def dispatch(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         self.last_active_ts = time.time()
@@ -486,6 +478,19 @@ class DaemonManager:
                         stack.enter_context(lk)
                     mw = self._get_worker_in_barrier(main_slot)
                     rw = self._get_worker_in_barrier(ref_slot)
+                    if action == "compare" and not any(
+                        params.get(k) for k in ("source", "xml_code", "ref_source", "ref_xml_code")
+                    ):
+                        eff_lang, _ = get_active_lang(self.runtime_dir)
+                        return self._read_cache.run_cached_compare(
+                            main_slot,
+                            mw,
+                            ref_slot,
+                            rw,
+                            eff_lang,
+                            params,
+                            lambda: self._dispatch_dual_slot(action, params, mw, rw),
+                        )
                     return self._dispatch_dual_slot(action, params, mw, rw)
 
         target = normalize_slot_name(params.get("target"))
@@ -512,35 +517,12 @@ class DaemonManager:
                             "if you intended to inspect or mutate that build."
                         )
 
-                cache_lang = ""
-                can_check_cache = action in READ_CACHE_ACTIONS
-                if can_check_cache:
-                    eff_lang, _ = get_active_lang(self.runtime_dir)
-                    w_loc = getattr(worker, "locale", None)
-                    cache_lang = f"{eff_lang}:{w_loc}" if w_loc else eff_lang
-                    if action == "diagnose":
-                        has_load_arg = bool(
-                            params.get("source")
-                            or params.get("xml_code")
-                            or (params.get("realm") and str(params.get("realm")).lower() == "cn")
-                        )
-                        if has_load_arg:
-                            inc_hash = compute_source_hash(params)
-                            can_check_cache = (
-                                self._read_cache.matching_slot_load(
-                                    target,
-                                    history_of(worker).rev,
-                                    bool(getattr(worker, "last_good_code", None)),
-                                    inc_hash,
-                                )
-                                is not None
-                            )
-                    if can_check_cache:
-                        cached_hit = self._read_cache.lookup(
-                            target, history_of(worker).rev, cache_lang, action, params
-                        )
-                        if cached_hit is not None:
-                            return cached_hit
+                eff_lang = get_active_lang(self.runtime_dir)[0] if action in READ_CACHE_ACTIONS else ""
+                cache_lang, cached_hit = self._read_cache.check_slot_read(
+                    target, worker, eff_lang, action, params
+                )
+                if cached_hit is not None:
+                    return cached_hit
 
                 try:
                     res_slot = self._dispatch_slot(action, params, worker)
@@ -552,10 +534,7 @@ class DaemonManager:
                     res_slot.setdefault("slotDriftWarning", drift_warn)
                 if action in _STATE_META_ACTIONS:
                     res_slot = self._attach_state_meta(res_slot, worker)
-                if action in READ_CACHE_ACTIONS and isinstance(res_slot, dict):
-                    self._read_cache.store(
-                        target, history_of(worker).rev, cache_lang, action, params, res_slot
-                    )
+                self._read_cache.store_slot_read(target, worker, cache_lang, action, params, res_slot)
                 return res_slot
 
     @staticmethod

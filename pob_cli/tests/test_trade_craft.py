@@ -58,11 +58,11 @@ def test_weapon_crafts_follow_actual_base_class(monkeypatch, tmp_path, slot, ite
         conn.execute('CREATE TABLE bases (name_lower TEXT, zh_lower TEXT, item_type TEXT, data_json TEXT)')
         conn.execute('INSERT INTO bases VALUES (?, ?, ?, ?)',
                      ('test base', '', item_type, json.dumps({'tags': [item_type.lower()]})))
-        conn.execute('CREATE TABLE mods (source TEXT, weights_json TEXT, zero_weights_json TEXT, types_json TEXT, data_json TEXT)')
+        conn.execute('CREATE TABLE mods (source TEXT, weights_json TEXT, zero_weights_json TEXT, weight_keys_json TEXT, types_json TEXT, data_json TEXT)')
         natural = {'id':'cast', 'source':'Explicit', 'generation_type':'Suffix',
                    'group':'IncreasedCastSpeed', 'level':1, 'stats':['12% increased Cast Speed']}
-        conn.execute('INSERT INTO mods VALUES (?, ?, ?, ?, ?)',
-                     ('Explicit', json.dumps({'wand':1, 'staff':1}), '[]', '[]', json.dumps(natural)))
+        conn.execute('INSERT INTO mods VALUES (?, ?, ?, ?, ?, ?)',
+                     ('Explicit', json.dumps({'wand':1, 'staff':1}), '[]', '["wand","staff"]', '[]', json.dumps(natural)))
         for cls, top in [('Wand', 66), ('Staff', 115)]:
             text = f'(1-{top})% increased Spell Damage'
             recipe = BenchRecipe(id=cls, lines=(text,), lines_zh=(), text=text, text_zh='',
@@ -71,8 +71,8 @@ def test_weapon_crafts_follow_actual_base_class(monkeypatch, tmp_path, slot, ite
             recipes.append(recipe)
             entry = {'id':cls, 'source':'Bench', 'generation_type':'Bench Prefix',
                      'group':'SpellDamage', 'level':1, 'stats':[text]}
-            conn.execute('INSERT INTO mods VALUES (?, ?, ?, ?, ?)',
-                         ('Bench', '{}', '[]', json.dumps([cls]), json.dumps(entry)))
+            conn.execute('INSERT INTO mods VALUES (?, ?, ?, ?, ?, ?)',
+                         ('Bench', '{}', '[]', '[]', json.dumps([cls]), json.dumps(entry)))
     monkeypatch.setattr(trade_craft.item_inspect.game_data, 'ensure_gamedata_index', lambda **k: db)
     monkeypatch.setattr(trade_craft.bench, 'load_recipes', lambda **k: (tuple(recipes), {}))
     raw = 'Rarity: RARE\nTest Weapon\nTest Base\nItem Level: 85\nImplicits: 0\n12% increased Cast Speed'
