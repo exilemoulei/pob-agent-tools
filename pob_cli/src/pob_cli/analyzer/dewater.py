@@ -17,6 +17,7 @@ from ..snapshot import (
     verify_build,
 )
 from .constants import _KEEP_KEYWORDS
+from .dewater_provenance import evaluate_flask_provenance, fetch_dewater_provenance
 from .dewater_steps import (
     _dewater_config_and_custom_mods,
     _dewater_flasks,
@@ -119,6 +120,18 @@ def dewater_build_with_records(
             ("get_party", {}),
         ],
     )
+    provenance = fetch_dewater_provenance(worker)
+    flask_verdict = evaluate_flask_provenance(
+        worker,
+        items_res,
+        provenance=provenance,
+        equipped_slots_raw=equipped_slots_raw,
+        has_bloodsoaked_blade=has_bloodsoaked_blade,
+        auto_keep_sustain=auto_keep_live,
+    )
+    eff_auto_keep = dict(auto_keep_reasons or {})
+    if flask_verdict.get("alchemistsGeniusReason"):
+        eff_auto_keep.setdefault("buffalchemistsgenius", str(flask_verdict["alchemistsGeniusReason"]))
 
     mutations: list[tuple[str, dict[str, Any]]] = []
     _dewater_config_and_custom_mods(
@@ -128,7 +141,7 @@ def dewater_build_with_records(
         stripped,
         mutations,
         records,
-        auto_keep_reasons=auto_keep_reasons,
+        auto_keep_reasons=eff_auto_keep or None,
     )
     _dewater_flasks(
         worker,
@@ -141,8 +154,18 @@ def dewater_build_with_records(
         has_bloodsoaked_blade=has_bloodsoaked_blade,
         flask_notes=flask_notes,
         equipped_slots_raw=equipped_slots_raw,
+        flask_verdict=flask_verdict,
     )
-    _dewater_skills(skills_res, keep_set, known, stripped, mutations, records)
+    _dewater_skills(
+        skills_res,
+        keep_set,
+        known,
+        stripped,
+        mutations,
+        records,
+        items_res=items_res,
+        provenance=provenance,
+    )
 
     party_fields = party_res.get("fields", {})
     non_empty_party = [k for k, v in party_fields.items() if str(v or "").strip()]
