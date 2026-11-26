@@ -46,6 +46,7 @@ LAYER_MAP: dict[str, int] = {
     "trade_query": 2,
     "trade_eval": 2,
     "timeless": 2,
+    "map_regex": 2,
     # L3: daemon server & client
     "daemon": 3,
     # L4: CLI entry points
@@ -69,6 +70,7 @@ LAYER_MAP: dict[str, int] = {
     "cli_research": 4,
     "cli_trade": 4,
     "cli_timeless": 4,
+    "cli_map_regex": 4,
 }
 
 BLOCKED_RPC_EXACT: frozenset[str] = frozenset(

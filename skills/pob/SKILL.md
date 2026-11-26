@@ -1,6 +1,6 @@
 ---
 name: pob-poe1
-description: Path of Exile 1 (PoE1 3.30, 流放之路1) build diagnosis, headless PoB calculation, DPS/EHP Pinnacle audit, passive tree/gem/item what-if optimization, official PoE1 trade search, crafting bench, and timeless jewel seed lookup via local `pob` CLI. Trigger on PoE1, PoB, pobb.in, poe.ninja, 配装, 天赋, 宝石, 技能连法, 伤害计算, 脱水, 跑PoB, 市集, 工艺台, 永恒珠宝, 法血, 猎首, 尼米斯, 大法师, 正火, 闪打, 龙卷, 漩涡, 憎恨, 耐力球, 异灵之体, 异能魔力, 万古之剑, 圣宗, 喋血之刃, 暴击时施放, 吟唱时施放, 艾许之面, 残存, 内脏, 符文之结.
+description: Path of Exile 1 (PoE1 3.30, 流放之路1) build diagnosis, headless PoB calculation, DPS/EHP Pinnacle audit, passive tree/gem/item what-if optimization, Atlas map stash regex (map-regex), official PoE1 trade search, crafting bench, and timeless jewel seed lookup via local `pob` CLI. Trigger on PoE1, PoB, pobb.in, poe.ninja, 配装, 天赋, 宝石, 技能连法, 伤害计算, 脱水, 跑PoB, 洗图正则, 词缀正则, 市集, 工艺台, 永恒珠宝, 法血, 猎首, 尼米斯, 大法师, 正火, 闪打, 龙卷, 漩涡, 憎恨, 耐力球, 异灵之体, 异能魔力, 万古之剑, 圣宗, 喋血之刃, 暴击时施放, 吟唱时施放, 艾许之面, 残存, 内脏, 符文之结.
 ---
 
 # PoE1 3.30 Headless PoB Skill (`pob4agents`, command `pob`)
@@ -49,6 +49,7 @@ pob bench suggest --slot boots --stat "抗性" | pob trade search --slot ring1 [
 pob trade upgrade --budget 100 [--slot ring1] [--top-slots 3]           # one-shot reference: free moves + weakest slots -> live PoB-verified trade -> best combo within budget
 pob trade plan ring.json amulet.json --budget 100 [--score dps=1,ehp=0.5]   # offline: best one-listing-per-slot combo within budget from saved `trade search --pob on --json --out` files
 pob timeless search --jewel "Lethal Pride" --socket <nodeId|id1,id2|all> --stat CombinedDPS [--exact] | pob lang [zh-CN|zh-TW|en]
+pob map-regex [@build.xml] [--tier both|t16|t17] [--mode safe|brick] [--avoid "<id|kw>"] [--allow "<id|kw>"] [--min-quant 80] [--client-lang auto|zh-CN|zh-TW|en] # <=250-char 0-FP stash regex
 ```
 
 ## 3. High-Risk PoE1 3.23–3.30 Domain Facts

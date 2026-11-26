@@ -252,6 +252,11 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "timeless_group",
         "Find optimal timeless jewel seeds verified by headless PoB.",
     ),
+    "map-regex": (
+        ".cli_map_regex",
+        "cmd_map_regex",
+        "Generate <=250-char 0-false-positive T16/T17 map filter regex tailored to your PoB build.",
+    ),
     "help": (
         ".cli_help",
         "cmd_help",

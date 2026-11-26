@@ -11,6 +11,7 @@ from ..errors import CrossGameHallucinationError, DaemonRequestError
 from ..snapshot import history_of
 from .read_cache import compute_source_hash, is_live_source
 from .rpc_mutate import MUTATE_ACTION_HANDLERS, norm_keep
+from .rpc_optimize import OPTIMIZE_ACTION_HANDLERS
 from .runtime import normalize_slot_name
 
 if TYPE_CHECKING:
@@ -396,59 +397,6 @@ def _h_matrix(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dic
     )
 
 
-def _h_rank_nodes(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
-    from ..comparator import rank_nodes, rank_nodes_scored, rank_refunds
-    from ..scoring import floors_from_json
-
-    max_dist = int(params["max_dist"]) if params.get("max_dist") is not None else 5
-    top = int(params["top"]) if params.get("top") is not None else 15
-    score = {str(k): float(v) for k, v in (params.get("score") or {}).items()}
-    floors = floors_from_json(params.get("floors"))
-    stat = str(params.get("stat") or "CombinedDPS")
-    if params.get("refund"):
-        return rank_refunds(w, score=score or None, floors=floors, top=top)
-    if score or floors:
-        # --floor alone keeps --stat as the objective.
-        return rank_nodes_scored(w, score=score or {stat: 1.0}, floors=floors, max_dist=max_dist, top=top)
-    return rank_nodes(w, stat=stat, max_dist=max_dist, top=top)
-
-
-def _h_respec(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
-    from ..comparator import plan_respec
-    from ..scoring import floors_from_json
-
-    return plan_respec(
-        w,
-        score={str(k): float(v) for k, v in (params.get("score") or {}).items()} or None,
-        floors=floors_from_json(params.get("floors")),
-        rounds=int(params["rounds"]) if params.get("rounds") is not None else 3,
-        max_dist=int(params["max_dist"]) if params.get("max_dist") is not None else 5,
-    )
-
-
-def _h_rank_gems(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
-    from ..comparator import optimize_links, rank_gems
-
-    if params.get("optimize"):
-        return optimize_links(
-            w,
-            group_selector=str(params.get("group") or "main"),
-            field=str(params.get("field") or "CombinedDPS"),
-            passes=int(params["passes"]) if params.get("passes") is not None else 2,
-            include_legacy=bool(params.get("include_legacy", False)),
-        )
-
-    return rank_gems(
-        w,
-        group_selector=str(params.get("group") or "main"),
-        slot_idx=params.get("slot_idx"),
-        add_link=bool(params.get("add_link", False)),
-        field=str(params.get("field") or "CombinedDPS"),
-        top=int(params["top"]) if params.get("top") is not None else 15,
-        include_legacy=bool(params.get("include_legacy", False)),
-    )
-
-
 def _h_timeless_list(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from ..timeless import describe_worker
 
@@ -497,6 +445,67 @@ def _h_compute_grad_build(_m: DaemonManager, params: dict[str, Any], w: BridgeWo
     return w.call("compute_grad_build", rpc_params, timeout=30.0)
 
 
+def _h_map_regex(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    from ..locale_cfg import current_lang, normalize_lang
+    from ..map_regex import build_map_regex_result, load_corpus, resolve_preset_ids
+    from ..snapshot import load_build
+
+    slot_nm = normalize_slot_name(params.get("target") or getattr(w, "slot_name", None))
+    src = params.get("source")
+    xml_code = params.get("xml_code")
+    has_load_arg = bool(src or xml_code or (params.get("realm") and str(params.get("realm")).lower() == "cn"))
+    src_hash = compute_source_hash(params) if has_load_arg else None
+    read_cache = getattr(m, "_read_cache", None)
+    if has_load_arg:
+        matched = (
+            read_cache.matching_slot_load(slot_nm, history_of(w).rev, bool(getattr(w, "last_good_code", None)), src_hash)
+            if read_cache is not None
+            else None
+        )
+        if matched is None:
+            load_meta = load_build(
+                w,
+                source=src,
+                xml_code=xml_code,
+                char_name=params.get("char_name"),
+                league=params.get("league"),
+                realm=params.get("realm"),
+            )
+            if read_cache is not None:
+                read_cache.record_slot_load(slot_nm, history_of(w).rev, src_hash, load_meta, live=is_live_source(params))
+
+    if not getattr(w, "last_good_code", None) and not has_load_arg:
+        raise DaemonRequestError(
+            f"No build loaded in '{slot_nm}' slot. Pass SOURCE, run `pob load <source>`, or use `--preset-only`."
+        )
+    if not get_worker_caps(w).get("mapRegexProbe"):
+        raise RuntimeError("mapRegexProbe capability unavailable on this engine worker")
+
+    raw_lang = str(params.get("client_lang") or "auto").strip()
+    eff_lang = current_lang(m.runtime_dir) if raw_lang.lower() == "auto" else normalize_lang(raw_lang)
+    corpus = load_corpus(eff_lang, engine_root=m.pob_dir)
+    avoid_ids = resolve_preset_ids(params.get("avoid"), corpus)
+    allow_ids = resolve_preset_ids(params.get("allow"), corpus)
+    probe = w.call("map_regex_probe", {}, timeout=30.0)
+    res = build_map_regex_result(
+        probe,
+        tier=str(params.get("tier") or "both"),
+        mode=str(params.get("mode") or "safe"),
+        avoid_ids=avoid_ids,
+        allow_ids=allow_ids,
+        client_lang=eff_lang,
+        max_len=int(params["max_len"]) if params.get("max_len") is not None else 250,
+        min_quant=int(params["min_quant"]) if params.get("min_quant") is not None else None,
+        min_pack=int(params["min_pack"]) if params.get("min_pack") is not None else None,
+        corpus=corpus,
+    )
+    res["targetSlot"] = slot_nm
+    res["rev"] = history_of(w).rev
+    if src_hash:
+        res["sourceHash"] = src_hash
+    return m._attach_warning_if_degraded(res)
+
+
 _SLOT_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "load": _h_load,
     "export": _h_export,
@@ -511,14 +520,13 @@ _SLOT_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "config_list": _h_config_list,
     "calc": _h_calc,
     "matrix": _h_matrix,
-    "rank_nodes": _h_rank_nodes,
-    "respec": _h_respec,
-    "rank_gems": _h_rank_gems,
     "timeless_list": _h_timeless_list,
     "trade_eval_items": _h_trade_eval_items,
     "trade_generate_query": _h_trade_generate_query,
     "compute_grad_build": _h_compute_grad_build,
+    "map_regex": _h_map_regex,
     **MUTATE_ACTION_HANDLERS,
+    **OPTIMIZE_ACTION_HANDLERS,
 }
 
 

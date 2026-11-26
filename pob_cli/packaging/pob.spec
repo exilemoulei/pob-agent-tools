@@ -22,13 +22,15 @@ _LUA_DIR = os.path.join(src_dir, "pob_cli", "lua")
 _LUA_FILES = sorted(name for name in os.listdir(_LUA_DIR) if name.endswith(".lua"))
 _DATA_FILES = (
     "bench_costs.json",
+    "map_mods_3_30.json",
     "timeless_meta_3_30.lua.gz",
 )
 
+_THIRD_PARTY_NOTICES = os.path.abspath(os.path.join(spec_dir, "..", "..", "THIRD_PARTY_NOTICES.md"))
 datas = collect_data_files("certifi") + [
     (os.path.join(src_dir, "pob_cli", "data", name), os.path.join("pob_cli", "data"))
     for name in _DATA_FILES
-] + [
+] + ([(_THIRD_PARTY_NOTICES, ".")] if os.path.isfile(_THIRD_PARTY_NOTICES) else []) + [
     (os.path.join(_LUA_DIR, name), os.path.join("pob_cli", "lua"))
     for name in _LUA_FILES
 ] + [

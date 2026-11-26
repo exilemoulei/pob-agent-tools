@@ -429,6 +429,12 @@ do
 			CAPS.skillCalcsExt = true
 		end
 	end
+
+	local mp = load_ext("map_probe.lua")
+	if type(mp) == "table" and type(mp.rpc_handlers) == "table" then
+		register_handlers(mp.rpc_handlers)
+		if mp.rpc_handlers.map_regex_probe then CAPS.mapRegexProbe = true end
+	end
 end
 
 -- Blocking NDJSON stdin/stdout RPC loop

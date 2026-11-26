@@ -346,4 +346,11 @@ def format_diagnose_markdown(res: dict[str, Any], *, compact: bool = False) -> s
     lines.extend(_fmt_diagnose_gaps_and_mechanics(res, compact=compact))
     lines.extend(_fmt_diagnose_skills_and_gear(res, compact=compact))
     lines.extend(_fmt_diagnose_fact_cards_and_upgrades(res, compact=compact))
+    if not compact:
+        env = res.get("env") or {}
+        slot = str(env.get("slot") or res.get("targetSlot") or "main").strip() or "main"
+        cmd_hint = f"pob map-regex --target {slot}" if slot != "main" else "pob map-regex"
+        lines.append(
+            f"\n_Tip: run `{cmd_hint}` for a <=250-char T16/T17 map filter regex tailored to this build._"
+        )
     return "\n".join(lines)
