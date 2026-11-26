@@ -17,7 +17,7 @@ from pob_cli.analyzer.calcs import _norm_calc_text
 from pob_cli.game_data import english_for_zh, fold_han
 from pob_cli.mutators.build_state import _match_named_option
 from pob_cli.mutators.common import _fold_search_text
-from pob_cli.mutators.items import _search_item_db_items
+from pob_cli.mutators.item_db import _search_item_db_items
 from pob_cli.mutators.skills_resolve import _resolve_gem_candidate
 
 TEMPLAR_ASCENDANCIES_TW = [

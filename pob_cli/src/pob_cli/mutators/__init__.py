@@ -45,6 +45,11 @@ from .config import (
     _split_custom_mod_lines,
     modify_config,
 )
+from .item_db import (
+    _search_item_db_items,
+    query_item_db,
+    search_and_try_item_db,
+)
 from .item_edit import (
     _apply_edit_item_mods_in_place,
     _edit_raw_item_mods,
@@ -54,10 +59,7 @@ from .item_edit import (
 from .items import (
     _apply_anoint_in_place,
     _parse_flask_slots,
-    _search_item_db_items,
     anoint_item,
-    query_item_db,
-    search_and_try_item_db,
     set_flask_active,
     try_item,
     unequip_item,

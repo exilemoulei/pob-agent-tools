@@ -29,8 +29,9 @@ from .common import (
     _resolve_slot_from_items,
 )
 from .config import _apply_config_in_place
+from .item_db import _search_item_db_items
 from .item_edit import _apply_edit_item_mods_in_place
-from .items import _apply_anoint_in_place, _parse_flask_slots, _search_item_db_items
+from .items import _apply_anoint_in_place, _parse_flask_slots
 from .strict_args import opt_bool, parse_replace_mods, parse_token_list
 from .tree import _apply_tree_changes_in_place, _resolve_node_token
 
