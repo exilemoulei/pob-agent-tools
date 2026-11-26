@@ -228,7 +228,7 @@ def cmd_summary(target: str, as_json: bool, compact: bool, out_path: str | None)
     is_flag=True,
     help="Disable automatic mechanism-based config retention during Pinnacle dewatering.",
 )
-@click.option("--top", type=int, default=5, show_default=True, help="Top N passive nodes & candidate support gems.")
+@click.option("--top", type=int, default=5, show_default=True, help="Top N passive nodes & candidate support gems; passing --top turns the slow ROI ranking on (unless --no-rank).")
 @click.option(
     "--rank/--no-rank",
     "rank",

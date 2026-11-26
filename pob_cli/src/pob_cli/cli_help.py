@@ -6,13 +6,17 @@ from typing import Any
 
 import click
 
-from .cli_common import _emit_json, _emit_text, _output_options
+from .cli_common import SLOT_ALIAS_PARAM, _emit_json, _emit_text, _output_options
 
-_GLOBAL_NOISE_OPTS = frozenset({"--help", "-h", "--compact", "--out", "--offline", "--version", "-V"})
+# Root-only `--version` / `-V` never reach a subcommand's params, so only per-command output noise is
+# dropped here (`pob self-update --version X.Y.Z` stays visible).
+_GLOBAL_NOISE_OPTS = frozenset({"--help", "-h", "--compact", "--out", "--offline"})
+# Commands whose key options sit past the default cut-off (`--char/--realm/--json`, `--limit`, ...).
+_BRIEF_MAX_OPTS = {"diagnose": 16, "data": 20}
 
 
 def _param_token(param: click.Parameter) -> str | None:
-    if getattr(param, "hidden", False):
+    if getattr(param, "hidden", False) or param.name == SLOT_ALIAS_PARAM:
         return None
     if isinstance(param, click.Argument):
         label = (param.metavar or param.name or "ARG").upper()
@@ -70,7 +74,7 @@ def build_brief_entries(root: click.Group, root_ctx: click.Context) -> list[dict
                     "name": name,
                     "kind": "command",
                     "summary": short,
-                    "flags": _command_signature(cmd, max_opts=10),
+                    "flags": _command_signature(cmd, max_opts=_BRIEF_MAX_OPTS.get(name, 10)),
                 }
             )
     return entries
@@ -80,7 +84,8 @@ def format_brief_help(root: click.Group, root_ctx: click.Context) -> str:
     entries = build_brief_entries(root, root_ctx)
     lines = [
         "pob — Headless PoE1 3.30 Path of Building CLI (run `pob <cmd> --help` for full details)",
-        "Global: [--offline] [--compact] [--out FILE] | Slot: [--target/--slot SLUG] (default POB_SLOT or 'main')",
+        "Global: [--offline] [--compact] [--out FILE] | Build slot: [--target SLUG] (default POB_SLOT or 'main'); "
+        "--slot below is an equipment/socket slot (items, item, trade, bench, data, rank-gems, skill new-group)",
     ]
     pad = max((len(e["name"]) for e in entries), default=10)
     for ent in entries:

@@ -128,6 +128,11 @@ def _augment_click_usage_error(exc: click.UsageError, fallback_ctx: click.Contex
                 all_opts.extend(getattr(p, "secondary_opts", ()))
         all_opts = sorted({o for o in all_opts if o.startswith("-")})
         matches = difflib.get_close_matches(bad_opt, all_opts, n=3, cutoff=0.45)
+        # Click appends its own "Did you mean" from `possibilities`; fold those in so only one line prints.
+        for p in exc.possibilities or ():
+            if p not in matches:
+                matches.append(p)
+        exc.possibilities = None
         if matches:
             exc.message = f"{msg}\nDid you mean: {', '.join(matches)}? (Run `{cmd_path} --help` for valid options.)"
         else:
@@ -203,15 +208,86 @@ class GuardrailGroup(LazyGroup):
                 raise
 
 
+_SLOT_ALIAS_ATTR = "_pob_build_slot_alias"
+SLOT_ALIAS_PARAM = "pob_build_slot_alias"
+
+
+def _looks_like_equipment_slot(value: str) -> bool:
+    """True when `value` names an equipment slot (`gloves`, `ring1`, `Weapon 1`, `#1`, `頭盔`) rather than a build slot."""
+    from .game_data import fold_han
+    from .guardrails import EQUIPMENT_SLOT_ALIASES, normalize_equipment_slot
+
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    if raw.startswith("#"):
+        return True
+    canonical = {v.lower() for v in EQUIPMENT_SLOT_ALIASES.values()}
+    for cand in dict.fromkeys((raw, fold_han(raw))):
+        hit = normalize_equipment_slot(cand)
+        if (hit is not None and hit != cand) or cand.lower() in canonical:
+            return True
+    return False
+
+
+def _slot_alias_callback(ctx: click.Context, param: click.Parameter, value: Any) -> None:
+    """Validate the `--slot` build-slot alias; refuse an equipment slot name instead of silently using it."""
+    if value is None:
+        return
+    if _looks_like_equipment_slot(str(value)):
+        raise click.ClickException(
+            f"`--slot {value}` here selects a build slot, not an equipment slot; use --target for build slots, "
+            "or the command's equipment option (e.g. `pob items --slot`, `pob item try --slot`)."
+        )
+    setattr(ctx, _SLOT_ALIAS_ATTR, _SLOT_SLUG_TYPE.convert(value, param, ctx))
+
+
+def _target_callback(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
+    """Fold the `--slot` alias into `--target` (the alias is eager, so it is already parsed)."""
+    from click.core import ParameterSource
+
+    alias = getattr(ctx, _SLOT_ALIAS_ATTR, None)
+    if alias is None:
+        return value
+    name = param.name or "target"
+    if ctx.get_parameter_source(name) == ParameterSource.COMMANDLINE and value != alias:
+        raise click.ClickException(f"Both --target {value} and --slot {alias} were given; pass only --target.")
+    # The alias was typed on the command line: group -> subcommand target inheritance must see that.
+    ctx.set_parameter_source(name, ParameterSource.COMMANDLINE)
+    return alias
+
+
 def _target_option(*, allow_slot_alias: bool = True) -> Any:
-    """Attach named multi-slot `--target` (plus `--slot` alias when non-conflicting)."""
-    decls = ("--target", "--slot", "target") if allow_slot_alias else ("--target", "target")
-    return click.option(
-        *decls,
+    """Attach named multi-slot `--target` (plus a `--slot` build-slot alias on commands without an equipment `--slot`).
+
+    The alias refuses equipment slot names (`--slot gloves` exits 1) so it cannot be mistaken for the
+    equipment `--slot` of `items` / `item` / `trade` / `bench` / `data`.
+    """
+    target_opt = click.option(
+        "--target",
+        "target",
         type=_SLOT_SLUG_TYPE,
         default=_default_target,
+        callback=_target_callback if allow_slot_alias else None,
         help="Target build slot slug (defaults to POB_SLOT or 'main').",
     )
+    if not allow_slot_alias:
+        return target_opt
+    alias_opt = click.option(
+        "--slot",
+        SLOT_ALIAS_PARAM,
+        default=None,
+        expose_value=False,
+        is_eager=True,
+        metavar="SLUG",
+        callback=_slot_alias_callback,
+        help="Deprecated alias of --target (a build slot; equipment slot names are refused).",
+    )
+
+    def _decorate(fn: Any) -> Any:
+        return target_opt(alias_opt(fn))
+
+    return _decorate
 
 
 def _output_options(fn: Any) -> Any:
@@ -342,6 +418,11 @@ def _daemon_call(
         raise
     except BootstrapMissingError as exc:
         alert = redact_secrets(format_stderr_update_alert(exc.update_status) or str(exc))
+        if "pob bootstrap" not in alert:
+            alert = (
+                f"{alert}\nError: no PoB engine is installed; run `pob bootstrap` "
+                "(or `pob bootstrap --from-dir <path>`) and retry."
+            )
         _echo_stderr_utf8(alert)
         raise click.exceptions.Exit(1) from exc
     except DaemonRequestError as exc:

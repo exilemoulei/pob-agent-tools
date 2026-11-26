@@ -101,6 +101,15 @@ def _fmt_diagnose_header(res: dict[str, Any], *, compact: bool) -> list[str]:
     return lines
 
 
+def _overcap_suffix(dfn: dict[str, Any]) -> str:
+    """` (overcap +a/+b/+c/+d%)` from PoB's `*ResistOverCap` stats, or "" when PoB reported none."""
+    keys = ("FireResistOverCap", "ColdResistOverCap", "LightningResistOverCap", "ChaosResistOverCap")
+    if all(dfn.get(k) is None for k in keys):
+        return ""
+    parts = [f"+{fmt_num(dfn.get(k), 0)}" if dfn.get(k) is not None else "-" for k in keys]
+    return f" (overcap `{'/'.join(parts)}%`)"
+
+
 def _fmt_diagnose_baseline(res: dict[str, Any], *, compact: bool) -> list[str]:
     lines: list[str] = []
     orig = res.get("original") or {}
@@ -131,11 +140,11 @@ def _fmt_diagnose_baseline(res: dict[str, Any], *, compact: bool) -> list[str]:
         lines.append(
             f"- **Core Pool & Res**: Life `{fmt_num(dfn.get('Life'))}`{life_unres_p} | ES `{fmt_num(dfn.get('EnergyShield'))}` | "
             f"Mana `{fmt_num(dfn.get('Mana'))}` (Unres `{fmt_num(dfn.get('ManaUnreserved'))}`) | "
-            f"Res F/C/L/Ch `{fmt_num(dfn.get('FireResist'), 0)}/{fmt_num(dfn.get('ColdResist'), 0)}/{fmt_num(dfn.get('LightningResist'), 0)}/{chaos_res_disp}%` | "
+            f"Res F/C/L/Ch (capped) `{fmt_num(dfn.get('FireResist'), 0)}/{fmt_num(dfn.get('ColdResist'), 0)}/{fmt_num(dfn.get('LightningResist'), 0)}/{chaos_res_disp}%`{_overcap_suffix(dfn)} | "
             f"Supp `{fmt_num(dfn.get('EffectiveSpellSuppressionChance'), 0)}%` | "
             f"Block `{fmt_num(dfn.get('EffectiveBlockChance'), 0)}/{fmt_num(dfn.get('EffectiveSpellBlockChance'), 0)}%` | "
             f"Regen L/M `{fmt_num(dfn.get('NetLifeRegen'), 1)}/{fmt_num(dfn.get('NetManaRegen'), 1)}/s` | "
-            f"ManaCost `{fmt_num(off.get('ManaCost'))}`"
+            f"ManaCost `{fmt_num(off.get('ManaCost'))}/use`"
         )
 
     top_water = res.get("topWaterSources") or res.get("waterSources") or []
