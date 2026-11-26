@@ -282,7 +282,15 @@ def _execute_trade_api_query(
     import pob_cli.cli_trade as _ct
 
     with _ct.TradeClient(proxy=proxy, logger=(lambda line: _err_utf8(line)) if verbose else None) as client:
-        league_name = _ct._resolve_league(league, offline_only=dump_query, proxy=proxy, client=client)
+        try:
+            league_name = _ct._resolve_league(league, offline_only=dump_query, proxy=proxy, client=client)
+        except TradeError as exc:
+            _trade_error(ctx, exc)
+            return None
+        league_warning = getattr(client, "league_warning", None)
+        league_warning = league_warning if isinstance(league_warning, str) and league_warning else None
+        if league_warning:
+            _err_utf8(f"Warning: {league_warning}")
         try:
             entries, stats_source = _ct.load_trade_stats(remote_fetcher=None if dump_query else client.stats)
         except TradeError as exc:
@@ -390,6 +398,7 @@ def _execute_trade_api_query(
         if dump_query:
             payload = {
                 "league": league_name,
+                "leagueWarning": league_warning,
                 "slot": slot,
                 "category": resolved_category,
                 "statsSource": stats_source,
@@ -424,6 +433,7 @@ def _execute_trade_api_query(
 
     return {
         "league_name": league_name,
+        "league_warning": league_warning,
         "stats_source": stats_source,
         "plan": plan,
         "open_flags": open_flags,

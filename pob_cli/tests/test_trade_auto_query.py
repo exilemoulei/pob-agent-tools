@@ -236,7 +236,7 @@ def test_surrogate_k_flag_accepted_and_validates_non_negative(searches: list[dic
         main,
         ["trade", "search", "--slot", "gloves", "--stat", "maximum Life=80", "--surrogate-k", "-1", "--dump-query"],
     )
-    assert bad.exit_code == 2
+    assert bad.exit_code == 1  # trade usage errors exit 1; trade's 2 means "no results"
 
 
 @pytest.mark.parametrize(

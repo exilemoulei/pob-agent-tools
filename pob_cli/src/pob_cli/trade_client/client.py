@@ -77,6 +77,8 @@ class TradeClient:
         self.logger = logger
         self.transport = transport
         self._client: httpx.Client | None = None
+        # Set when default_league() had to fall back to Standard because the lookup failed.
+        self.league_warning: str | None = None
         self.rate_limiter = TradeRateLimiter(
             cache_dir=self.cache_dir,
             limit_margin=DEFAULT_LIMIT_MARGIN,
@@ -158,8 +160,8 @@ class TradeClient:
         if self.logger:
             self.logger(f"[trade] {method} {path}")
 
-        client = self._get_client()
         try:
+            client = self._get_client()
             if body is not None:
                 response = client.request(
                     method,
@@ -170,9 +172,14 @@ class TradeClient:
             else:
                 response = client.request(method, url)
         except httpx.TimeoutException:
+            self.rate_limiter.release_reservation(policy)
             raise TradeError("Trade API request timed out; check the network or proxy.") from None
         except httpx.HTTPError as error:
+            self.rate_limiter.release_reservation(policy)
             raise TradeError(f"Could not reach the trade API: {redact(str(error))}") from None
+        except BaseException:
+            self.rate_limiter.release_reservation(policy)
+            raise
 
         status = response.status_code
         if status == 429:
@@ -210,9 +217,13 @@ class TradeClient:
         return list(payload.get("result") or [])
 
     def default_league(self) -> str:
+        """The current softcore trade league; RateLimited and CookieRequired propagate (exit 4 / 3)."""
         try:
             leagues = self.leagues()
-        except TradeError:
+        except (RateLimited, CookieRequired):
+            raise
+        except TradeError as exc:
+            self.league_warning = f"League lookup failed ({exc}); using Standard. Pass --league to choose one."
             return "Standard"
         for league in leagues:
             league_id = str(league.get("id") or "").strip()

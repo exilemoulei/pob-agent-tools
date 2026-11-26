@@ -46,6 +46,22 @@ SHARE_RAW_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 
 MAXROLL_POB_RE = re.compile(r"^https?://maxroll\.gg/poe/pob/([A-Za-z0-9_-]+)", re.IGNORECASE)
 
+# A real build XML is a few MiB at most; anything past this is a decompression bomb.
+MAX_SHARE_XML_BYTES = 64 * 1024 * 1024
+
+
+def _inflate_capped(raw_bytes: bytes, wbits: int) -> bytes:
+    """`zlib.decompress` that stops at MAX_SHARE_XML_BYTES instead of filling memory."""
+    inflater = zlib.decompressobj(wbits)
+    out = inflater.decompress(raw_bytes, MAX_SHARE_XML_BYTES + 1)
+    if len(out) <= MAX_SHARE_XML_BYTES and not inflater.unconsumed_tail:
+        out += inflater.flush()
+    if len(out) > MAX_SHARE_XML_BYTES or inflater.unconsumed_tail:
+        raise ValueError(f"decompressed build XML exceeds {MAX_SHARE_XML_BYTES // (1024 * 1024)} MiB")
+    if not inflater.eof:
+        raise zlib.error("incomplete or truncated stream")
+    return out
+
 
 def xml_to_share_code(xml_text: str) -> str:
     """Compress raw PoB XML string into a URL-safe Base64 PoB share code."""
@@ -55,7 +71,11 @@ def xml_to_share_code(xml_text: str) -> str:
 
 
 def share_code_to_xml(code: str) -> str:
-    """Decompress a URL-safe Base64 PoB share code into raw PoB XML text."""
+    """Decompress a URL-safe Base64 PoB share code into raw PoB XML text.
+
+    Characters outside the Base64 alphabet are dropped, as PoB's own decoder does, so every code
+    the engine would accept decodes here too and the PoE2 guardrail sees what the engine gets.
+    """
     cleaned = re.sub(r"\s+", "", code.lstrip("\ufeff")).replace("-", "+").replace("_", "/")
     if not cleaned:
         raise ValueError("Invalid PoB share code: empty share code.")
@@ -63,14 +83,14 @@ def share_code_to_xml(code: str) -> str:
     if pad:
         cleaned += "=" * pad
     try:
-        raw_bytes = base64.b64decode(cleaned, validate=True)
+        raw_bytes = base64.b64decode(cleaned, validate=False)
     except (binascii.Error, ValueError) as exc:
         raise ValueError(f"Invalid PoB share code: {exc}") from exc
     try:
         try:
-            decompressed = zlib.decompress(raw_bytes)
+            decompressed = _inflate_capped(raw_bytes, zlib.MAX_WBITS)
         except zlib.error:
-            decompressed = zlib.decompress(raw_bytes, -15)
+            decompressed = _inflate_capped(raw_bytes, -zlib.MAX_WBITS)
     except (zlib.error, ValueError) as exc:
         raise ValueError(f"Invalid PoB share code: {exc}") from exc
     return decompressed.decode("utf-8-sig", errors="replace").lstrip("\ufeff")
@@ -178,13 +198,11 @@ def _make_httpx_client(
     return httpx.Client(**kwargs)
 
 
-def _fetch_poe_ninja_index_state(
-    ttl_sec: int = 900,
-    *,
-    proxy: str | None = None,
-    client: httpx.Client | None = None,
+def _fetch_cached_ninja_json(
+    name: str, ttl_sec: int, proxy: str | None, client: httpx.Client | None
 ) -> dict[str, Any]:
-    cache_file = _shared_cache_dir() / "poe_ninja_index_state.json"
+    """GET poe.ninja `/poe1/api/data/<name>` with a disk cache, reusing a stale copy when offline."""
+    cache_file = _shared_cache_dir() / f"poe_ninja_{name.replace('-', '_')}.json"
     now = time.time()
     if cache_file.exists():
         try:
@@ -194,7 +212,7 @@ def _fetch_poe_ninja_index_state(
         except Exception:
             pass
 
-    url = "https://poe.ninja/poe1/api/data/index-state"
+    url = f"https://poe.ninja/poe1/api/data/{name}"
     try:
         if client is not None:
             resp = client.get(url)
@@ -213,6 +231,15 @@ def _fetch_poe_ninja_index_state(
 
     _atomic_write_json(cache_file, {"_ts": now, "data": data})
     return data
+
+
+def _fetch_poe_ninja_index_state(
+    ttl_sec: int = 900,
+    *,
+    proxy: str | None = None,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    return _fetch_cached_ninja_json("index-state", ttl_sec, proxy, client)
 
 
 def _fetch_poe_ninja_build_index_state(
@@ -222,35 +249,7 @@ def _fetch_poe_ninja_build_index_state(
     client: httpx.Client | None = None,
 ) -> dict[str, Any]:
     """Fetch poe.ninja build-index-state (leagueBuilds + meta statistics) with 15m disk cache."""
-    cache_file = _shared_cache_dir() / "poe_ninja_build_index_state.json"
-    now = time.time()
-    if cache_file.exists():
-        try:
-            cached = json.loads(cache_file.read_text(encoding="utf-8"))
-            if now - cached.get("_ts", 0) < ttl_sec and "data" in cached:
-                return cached["data"]
-        except Exception:
-            pass
-
-    url = "https://poe.ninja/poe1/api/data/build-index-state"
-    try:
-        if client is not None:
-            resp = client.get(url)
-            resp.raise_for_status()
-            data = resp.json()
-        else:
-            with _make_httpx_client(timeout=DEFAULT_HTTP_TIMEOUT, proxy=proxy) as own_client:
-                resp = own_client.get(url)
-                resp.raise_for_status()
-                data = resp.json()
-    except (httpx.HTTPError, OSError):
-        stale_data, _ = read_stale_cache(cache_file, data_key="data")
-        if isinstance(stale_data, dict):
-            return stale_data
-        raise
-
-    _atomic_write_json(cache_file, {"_ts": now, "data": data})
-    return data
+    return _fetch_cached_ninja_json("build-index-state", ttl_sec, proxy, client)
 
 
 def _resolve_poe_ninja_overviews(
@@ -366,6 +365,7 @@ def fetch_poe_ninja_character_code(url: str) -> str:
         account_attempts.append(hash_account)
 
     last_err: Exception | None = None
+    only_not_found = True  # every attempt answered 404: the character is not there, not a fault
     with _make_httpx_client(timeout=DEFAULT_HTTP_TIMEOUT) as client:
         for overview, snap_type in candidates:
             for acc_idx, acc in enumerate(account_attempts):
@@ -384,12 +384,20 @@ def fetch_poe_ninja_character_code(url: str) -> str:
                         share_code_to_xml(code)
                         return code
                     last_err = RuntimeError(f"HTTP {resp.status_code} for overview={overview}, type={snap_type}")
-                    if resp.status_code != 404 and acc_idx == 0:
-                        break
+                    if resp.status_code != 404:
+                        only_not_found = False
+                        if acc_idx == 0:
+                            break
                 except Exception as exc:
                     last_err = exc
+                    only_not_found = False
                     break
 
+    if only_not_found:
+        raise DaemonRequestError(
+            f"poe.ninja has no character '{raw_account}/{char_name}' in league '{league_slug}' (HTTP 404). "
+            "Check the account name (Name-1234), the character name and the league in the URL."
+        )
     raise RuntimeError(f"Failed to fetch PoB code for poe.ninja character '{raw_account}/{char_name}': {last_err}")
 
 
@@ -430,7 +438,9 @@ def fetch_share_url_code_fallback(url: str) -> str:
                     validate_build_xml(share_code_to_xml(code.strip()), expected_game="poe1", source_hint=clean_url)
                     return code.strip()
 
-            resp = client.get(clean_url)
+            from .profile_import.share_url_guard import get_public_https
+
+            resp = get_public_https(client, clean_url)
             resp.raise_for_status()
             text = resp.text.strip()
             validate_build_xml(share_code_to_xml(text), expected_game="poe1", source_hint=clean_url)
@@ -478,12 +488,8 @@ def load_build_into_worker(
                 validate_build_xml(clean_xml_code, expected_game="poe1")
                 clean_xml_code = xml_to_share_code(clean_xml_code)
             else:
-                try:
-                    decoded_xml = share_code_to_xml(clean_xml_code)
-                except ValueError:
-                    decoded_xml = ""
-                if decoded_xml:
-                    validate_build_xml(decoded_xml, expected_game="poe1")
+                # Undecodable is refused (ValueError -> exit 1): the guardrail must see what the engine gets.
+                validate_build_xml(share_code_to_xml(clean_xml_code), expected_game="poe1")
             res = worker.call("import_code", {"code": clean_xml_code, "mode": "replace"})
             import_method = "xml_file"
         elif source or (realm and realm.strip().lower() == "cn"):
@@ -511,12 +517,7 @@ def load_build_into_worker(
                         code = (url_res.get("code") or "").strip()
                         if not code:
                             raise BridgeError("import_from_url returned empty code")
-                        try:
-                            decoded_xml = share_code_to_xml(code)
-                        except ValueError:
-                            decoded_xml = ""
-                        if decoded_xml:
-                            validate_build_xml(decoded_xml, expected_game="poe1", source_hint=src)
+                        validate_build_xml(share_code_to_xml(code), expected_game="poe1", source_hint=src)
                         res = worker.call("import_code", {"code": code, "mode": "replace"})
                         import_method = "url_native"
                     except BridgeError:

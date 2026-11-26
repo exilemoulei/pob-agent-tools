@@ -294,6 +294,17 @@ class TradeRateLimiter:
             self._save_state(state)
             return retry_after_sec
 
+    def release_reservation(self, policy: str) -> None:
+        """Drop the in-flight slot ``before_request`` reserved, for a request that got no response.
+
+        The reservation's timestamp stays in the window: a timed-out request may still have
+        counted against GGG's buckets.
+        """
+        try:
+            self._apply_headers(policy, {}, is_429=False)
+        except Exception:
+            pass  # never mask the transport error that brought us here
+
     def record_response(self, policy: str, headers: Mapping[str, str]) -> None:
         """Update and persist rate-limit state from a non-429 HTTP response."""
         self._apply_headers(policy, headers, is_429=False)

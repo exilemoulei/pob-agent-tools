@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import os
 import re
@@ -456,7 +457,11 @@ def fetch_intl_character_bundle(
     use_cookie: bool = False,
     client: httpx.Client | None = None,
 ) -> dict[str, Any]:
-    """Fetch passive skills + equipped items JSON for an international character."""
+    """Fetch passive skills + equipped items JSON for an international character.
+
+    A public character list does not make the character's tree and items public: on 401/403 the
+    pair is fetched once more with the env cookie (POESESSID / POE_COOKIE), as the list fetch does.
+    """
     cookie = _env_intl_cookie() if use_cookie else None
     char_name = str(char_entry.get("name") or "")
 
@@ -467,20 +472,21 @@ def fetch_intl_character_bundle(
         r_items = c.get(f"{INTL_HOST}/character-window/get-items", params=base_params, headers=extra_hdrs)
         return r_tree, r_items
 
+    acc = account_name
     try:
-        if client is not None:
-            r_tree, r_items = _fetch_pair(client, account_name)
+        with contextlib.nullcontext(client) if client is not None else make_site_client(
+            proxy=proxy, cookie=cookie
+        ) as c:
+            r_tree, r_items = _fetch_pair(c, acc)
             if r_tree.status_code == 404 or r_items.status_code == 404:
-                canonical = _resolve_canonical_account_case(client, account_name, cookie=cookie)
-                if canonical and canonical != account_name:
-                    r_tree, r_items = _fetch_pair(client, canonical)
-        else:
-            with make_site_client(proxy=proxy, cookie=cookie) as own:
-                r_tree, r_items = _fetch_pair(own, account_name)
-                if r_tree.status_code == 404 or r_items.status_code == 404:
-                    canonical = _resolve_canonical_account_case(own, account_name, cookie=cookie)
-                    if canonical and canonical != account_name:
-                        r_tree, r_items = _fetch_pair(own, canonical)
+                canonical = _resolve_canonical_account_case(c, acc, cookie=cookie)
+                if canonical and canonical != acc:
+                    acc = canonical
+                    r_tree, r_items = _fetch_pair(c, acc)
+            if cookie is None and {r_tree.status_code, r_items.status_code} & {401, 403}:
+                cookie = _env_intl_cookie()
+                if cookie:
+                    r_tree, r_items = _fetch_pair(c, acc)
     except httpx.HTTPError as exc:
         raise DaemonRequestError(f"拉取角色 `{char_name}` 数据失败：{exc}") from exc
 

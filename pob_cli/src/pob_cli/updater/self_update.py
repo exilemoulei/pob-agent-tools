@@ -213,7 +213,12 @@ def _extract(archive: Path, dest: Path) -> None:
             return
         members = tf.getmembers()
         _validate_tar_members(archive.name, members, dest_resolved)
-        tf.extractall(dest, members=members)
+        # The members are vetted above; say so explicitly where the `filter` argument exists (3.12+
+        # warns without one), and fall back to the bare call on interpreters that predate it.
+        if getattr(tarfile, "fully_trusted_filter", None) is not None:
+            tf.extractall(dest, members=members, filter="fully_trusted")
+        else:
+            tf.extractall(dest, members=members)
 
 
 @contextmanager
@@ -224,7 +229,10 @@ def _network_errors(what: str) -> Iterator[None]:
     try:
         yield
     except (httpx.HTTPError, httpx.InvalidURL, OSError, ValueError) as exc:
-        detail = str(exc).strip() or type(exc).__name__
+        from ..guardrails import redact_secrets
+
+        # Proxy errors can echo the proxy URL, credentials included.
+        detail = redact_secrets(str(exc).strip()) or type(exc).__name__
         raise UpdateError(f"{what} failed: {detail} (offline? try --proxy or --mirror).") from exc
 
 

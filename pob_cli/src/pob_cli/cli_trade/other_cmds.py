@@ -13,10 +13,10 @@ from ..guardrails import GuardrailScope, check_input, check_input_item_raw, vali
 from ..trade_client import TradeError
 from ..trade_item import convert_item_text
 from ..trade_query import resolve_stat, suggest_stats
-from .common import SLOT_HINT, _echo_utf8, _err_utf8, _trade_error
+from .common import SLOT_HINT, TradeUsageGroup, _echo_utf8, _err_utf8, _trade_error
 
 
-@click.group("trade")
+@click.group("trade", cls=TradeUsageGroup)
 def trade_group() -> None:
     """Search official PoE1 trade (read-only), preview Harvest swaps, and verify in PoB."""
 
