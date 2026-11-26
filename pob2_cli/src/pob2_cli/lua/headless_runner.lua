@@ -408,6 +408,16 @@ do
 		register_handlers(ap.rpc_handlers)
 		CAPS.agentProbes = true
 	end
+	local dap = load_ext("deep_audit_probe.lua")
+	if type(dap) == "table" and type(dap.rpc_handlers) == "table" then
+		register_handlers(dap.rpc_handlers)
+		CAPS.deepAuditProbe = true
+	end
+	local urk = load_ext("unique_rank_kernel.lua")
+	if type(urk) == "table" and type(urk.rpc_handlers) == "table" then
+		register_handlers(urk.rpc_handlers)
+		CAPS.uniqueRankKernel = true
+	end
 end
 
 -- Blocking NDJSON stdin/stdout RPC loop
