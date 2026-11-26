@@ -97,7 +97,14 @@ local function sector_label(x, y)
 end
 
 local function classify_socket(node)
-	if node.charmSocket or node.ascendancyName or node.name == "Charm Socket" or node.dn == "Charm Socket" then
+	if
+		node.charm
+		or node.charmSocket
+		or node.asc
+		or node.ascendancyName
+		or node.name == "Charm Socket"
+		or node.dn == "Charm Socket"
+	then
 		return nil
 	end
 	local ej = node.expansionJewel
@@ -107,6 +114,7 @@ local function classify_socket(node)
 	if ej.size == 2 and ej.parent == nil then
 		return "large_cluster_outer"
 	elseif ej.size == 1 then
+		-- Active inner cluster sockets injected by BuildSubgraph keep static <65536 tree IDs with ej.parent ~= nil.
 		return "medium_cluster_inner"
 	end
 	return "small_cluster_inner"
@@ -141,7 +149,16 @@ local function collect_nearby_sockets(build, max_dist)
 					summary.allocatedTotal = summary.allocatedTotal + 1
 					if occupied then
 						summary.allocatedOccupied = summary.allocatedOccupied + 1
-						if kind == "large_cluster_outer" then
+						local occupant = items_tab and items_tab.items and items_tab.items[sel_id]
+						local is_cluster = occupant
+							and (
+								occupant.clusterJewel ~= nil
+								or (
+									occupant.jewelData
+									and (occupant.jewelData.clusterJewelValid or occupant.jewelData.blightcoreNotables)
+								)
+							)
+						if kind == "large_cluster_outer" and is_cluster then
 							summary.activeOuterClusters = summary.activeOuterClusters + 1
 						end
 					else
