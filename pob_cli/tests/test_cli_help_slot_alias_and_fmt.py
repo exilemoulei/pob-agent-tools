@@ -87,6 +87,7 @@ def test_fmt_num_keeps_precision_below_one() -> None:
     assert fmt_num(0.25, decimals=2) == "0.25"
     assert fmt_num(0.5, decimals=3) == "0.500"
     assert fmt_num(1e-12) == "0.0"
+    assert fmt_num(0.4, 0) == "0" and fmt_num(0.999, 0) == "1" and fmt_num(-0.6, 0) == "-1"
     # Unchanged at or above 1
     assert fmt_num(1.25) == "1.2"
     assert fmt_num(12.34, decimals=2) == "12.34"

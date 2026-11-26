@@ -125,8 +125,9 @@ def fmt_num(val: float | int | str | None, decimals: int = 1) -> str:
             return f"{int(val):,}"
         if abs(val) >= 100:
             return f"{val:,.0f}"
-        if abs(val) < 1:
+        if abs(val) < 1 and decimals > 0:
             # Keep ~3 significant figures below 1 (0.033 s ticks, 0.25 multipliers) instead of "0.0".
+            # Not for decimals=0: that caller asked for a whole number (a resist, an overcap).
             digits = min(10, max(decimals, 2 - math.floor(math.log10(abs(val)))))
             text = f"{val:.{digits}f}"
             if digits > decimals:
