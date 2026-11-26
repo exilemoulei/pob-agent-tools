@@ -46,6 +46,7 @@ class BuildTransaction:
         self.parent: BuildTransaction | None = None
         self.base: BuildSnapshot | None = None
         self.before_code: str | None = None
+        self.verify_digest: dict[str, Any] | None = None
         self.stale = False
         self.notes: list[str] = []
         self._nested: list[BuildSnapshot] = []
@@ -99,7 +100,7 @@ class BuildTransaction:
         try:
             if not self._closed:
                 try:
-                    self.rollback()
+                    self._rollback_on_exit(exc)
                 except Exception as restore_exc:
                     if exc is None:
                         raise
@@ -108,15 +109,36 @@ class BuildTransaction:
             self.history.active = self.parent
             if self.parent is not None:
                 self.parent.stale = self.parent.stale or self.stale
-            elif self.stale and getattr(self.worker, "is_running", True):
-                try:
-                    self.fresh()
-                except Exception:
-                    pass
+            elif self.stale:
+                if getattr(self.worker, "is_running", True):
+                    try:
+                        self.fresh()
+                    except Exception:
+                        self.history.stale = True
+                else:
+                    self.history.stale = True
             if not self._committed and getattr(self.worker, "last_good_code", None) is not None:
                 self.worker.last_good_code = self._entry_code
             self._lock.__exit__(exc_type, exc, tb)
         return False
+
+    def _rollback_on_exit(self, exc: BaseException | None) -> None:
+        """Roll back an unclosed transaction; verify CoW restore when exiting via exception."""
+        untouched = self._sent_at is not None and self._requests_sent() == self._sent_at and not self._nested
+        if (
+            exc is None
+            or untouched
+            or self.verify_digest is None
+            or self.base is None
+            or self.base.kind != "cow"
+        ):
+            self.rollback()
+            return
+        check = self.rollback_verified(self.verify_digest)
+        if not check.get("verified"):
+            exc.add_note(f"Restoring the build afterwards could not be verified: {check.get('detail')}")
+        elif check.get("fallback"):
+            exc.add_note(f"The build was restored by re-importing its code: {check['fallback']}")
 
     def checkpoint(self) -> BuildSnapshot:
         cp = take_snapshot(self.worker, prefer_cow=self.use_cow, fresh_fallback=True)
@@ -142,9 +164,10 @@ class BuildTransaction:
         return note
 
     def fresh(self) -> None:
-        if self.stale:
+        if self.stale or self.history.stale:
             self.worker.call("pump", {"seconds": 0})
             self.stale = False
+            self.history.stale = False
 
     def verify(self, before_digest: dict[str, Any], cp: BuildSnapshot | None = None) -> dict[str, Any]:
         target = cp or self.base

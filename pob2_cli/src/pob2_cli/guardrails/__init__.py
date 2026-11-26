@@ -44,6 +44,12 @@ from .matcher import (
     strip_scope_suffix,
     warning_context,
 )
+from .redact import (
+    get_auth_env_status,
+    redact,
+    redact_secrets,
+    redact_url_credentials,
+)
 from .traps import (
     POE1_ONLY_TRAPS_FOR_POB2,
     POE2_ONLY_REVERSE_TRAPS_FOR_POB1,
@@ -292,11 +298,15 @@ __all__ = [
     "extract_scannable_item_parts",
     "get_active_warning_dicts",
     "get_active_warnings",
+    "get_auth_env_status",
     "match_phrase_zh",
     "match_word_en",
     "normalize_guardrail_text",
     "normalize_poe2_equipment_slot",
     "normalize_zh_compact",
+    "redact",
+    "redact_secrets",
+    "redact_url_credentials",
     "reset_cli_warnings",
     "resolve_poe1_zh_alias",
     "resolve_poe2_slot_name",

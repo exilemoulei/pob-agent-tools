@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -128,6 +131,32 @@ def _daemon_state_file(runtime_dir: Path | None = None) -> Path:
     return _get_runtime_dir(runtime_dir) / DAEMON_STATE_FILENAME
 
 
+def write_private_json(path: Path, payload: dict[str, Any]) -> None:
+    """Atomically write ``payload`` with owner-only permissions (0600 on POSIX; safe replace on Windows)."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(f".{os.getpid()}.tmp")
+    tmp_path.unlink(missing_ok=True)
+    try:
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False, indent=2))
+        if os.name != "nt":
+            os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def same_slot_error(action: str, slot: str) -> str:
+    """Actionable error message refusing a dual-slot comparison of a slot against itself."""
+    return (
+        f"Cannot {action} build slot '{slot}' against itself: the reference slot must differ "
+        "from the target slot. Pass a different `--ref-target` or a separate PoE2 build source."
+    )
+
+
 def _daemon_lock_file(runtime_dir: Path | None = None) -> Path:
     return _get_runtime_dir(runtime_dir) / DAEMON_LOCK_FILENAME
 
@@ -222,4 +251,6 @@ __all__ = [
     "resolve_daemon_host",
     "resolve_daemon_port",
     "resolve_global_idle_sec",
+    "same_slot_error",
+    "write_private_json",
 ]

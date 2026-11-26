@@ -64,18 +64,26 @@ function M.zlib_codec(lib)
 		zlib_declared = true
 	end
 	local ver, size, chunk = lib.zlibVersion(), ffi.sizeof("pob_z_stream"), 65536
+	local max_inflate = 64 * 1024 * 1024
 	local Z_OK, Z_STREAM_END, Z_FINISH, Z_NO_FLUSH, Z_BUF_ERROR = 0, 1, 4, 0, -5
 
 	local function inflate_wbits(data, wbits)
 		local strm = ffi.new("pob_z_stream")
 		if lib.inflateInit2_(strm, wbits, ver, size) ~= Z_OK then return nil, "inflateInit2 failed" end
 		strm.next_in, strm.avail_in = ffi.cast("const unsigned char *", data), #data
-		local buf, parts = ffi.new("unsigned char[?]", chunk), {}
+		local buf, parts, total = ffi.new("unsigned char[?]", chunk), {}, 0
 		while true do
 			strm.next_out, strm.avail_out = buf, chunk
 			local rc = lib.inflate(strm, Z_NO_FLUSH)
 			local produced = chunk - tonumber(strm.avail_out)
-			if produced > 0 then parts[#parts + 1] = ffi.string(buf, produced) end
+			if produced > 0 then
+				total = total + produced
+				if total > max_inflate then
+					lib.inflateEnd(strm)
+					return nil, "Inflate output exceeds 64 MiB limit"
+				end
+				parts[#parts + 1] = ffi.string(buf, produced)
+			end
 			if rc == Z_STREAM_END then break end
 			if rc ~= Z_OK then lib.inflateEnd(strm); return nil, "inflate failed: " .. tostring(rc) end
 			if tonumber(strm.avail_in) == 0 and produced == 0 then

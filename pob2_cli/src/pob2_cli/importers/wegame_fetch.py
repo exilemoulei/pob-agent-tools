@@ -21,7 +21,8 @@ from urllib.parse import urlsplit
 import httpx
 
 from ..errors import DaemonRequestError
-from ..guardrails import validate_url
+from ..guardrails import redact_secrets, validate_url
+from .url_guard import check_public_https_url
 
 WEGAME_API_BASE = "https://www.wegame.com.cn/api/v1/wegame.pallas.poe2.Profile/"
 WEGAME_METHODS: tuple[str, ...] = (
@@ -229,12 +230,14 @@ def _default_post_endpoint(
 ) -> dict[str, Any]:
     """Issue a single cookie-free, redirect-disabled POST request to WeGame Profile API."""
     url = WEGAME_API_BASE + method
+    check_public_https_url(url)
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     try:
         with httpx.Client(
             follow_redirects=False,
             timeout=timeout,
             transport=transport,
+            trust_env=False,
         ) as client:
             # Explicit empty cookie jar guarantees zero Cookie headers.
             client.cookies.clear()
@@ -245,7 +248,7 @@ def _default_post_endpoint(
     except httpx.TimeoutException as exc:
         raise DaemonRequestError(f"WeGame {method} timed out after {timeout:.1f}s.") from exc
     except httpx.HTTPError as exc:
-        raise DaemonRequestError(f"WeGame {method} network error: {exc}") from exc
+        raise DaemonRequestError(f"WeGame {method} network error: {redact_secrets(str(exc))}") from exc
 
 
 EndpointPoster = Callable[[str, dict[str, Any]], dict[str, Any]]

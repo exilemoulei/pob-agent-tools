@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ..game_profile import stamp_game
+from ..guardrails import redact_secrets, redact_url_credentials
 from ..json_io import atomic_write_json, read_json_dict
 from ..os_util import win_hidden_subprocess_kwargs
 from .constants import (
@@ -124,7 +125,8 @@ def _build_user_hint(
     if state_name in OK_STATES:
         return None
     ver = local_pob_version or "unknown"
-    err = f" ({network_error})" if network_error else ""
+    safe_err = redact_secrets(redact_url_credentials(network_error)) if network_error else ""
+    err = f" ({safe_err})" if safe_err else ""
     if state_name == STATE_DEGRADED_NETWORK:
         return (
             f"GitHub update check failed for PoB2 (local {ver}{err}). "
@@ -322,14 +324,15 @@ def _save_state_snapshot(
     rolled_back: bool = False,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    clean_err = redact_secrets(redact_url_credentials(err)) if err else None
     state: dict[str, Any] = {
         "state": state_name,
         "localPobVersion": local_pob_ver,
         "remotePobVersion": remote_pob_ver,
         "checkedAt": time.time(),
         "engineDir": str(engine_dir),
-        "networkError": err,
-        "userHint": _build_user_hint(state_name, local_pob_ver, err, rolled_back=rolled_back),
+        "networkError": clean_err,
+        "userHint": _build_user_hint(state_name, local_pob_ver, clean_err, rolled_back=rolled_back),
     }
     if rolled_back:
         state["rolledBack"] = True

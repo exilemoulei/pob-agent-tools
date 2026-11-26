@@ -1,11 +1,17 @@
-"""AST architecture, budget, layer-DAG, isolation, subprocess, RPC, and leak linter for ``pob2_cli``."""
+"""AST architecture, budget, layer-DAG, intra-pkg cycle, spec-sync, and isolation linter for ``pob2_cli``."""
 
 from __future__ import annotations
 
 import ast
-import re
-import tomllib
 from pathlib import Path
+
+from arch_lint_spec import (
+    FORBIDDEN_RUNTIME_DEPS,
+    SKIP_COPY_DIRS,
+    check_ghost_layer_map,
+    check_policy_and_leaks,
+    check_spec_sync,
+)
 
 MAX_FILE_LINES = 650
 MAX_FILE_BYTES = 24000
@@ -13,7 +19,7 @@ MAX_TEST_LINES = 1000
 MAX_TEST_BYTES = 38000
 MAX_FN_LINES = 200
 
-# 5-layer unidirectional architecture (L0 -> L1 -> L2 -> L3 -> L4)
+# 5-layer unidirectional architecture (L0 -> L1 -> L2 -> L3 -> L4): exact real units only (0 ghosts).
 LAYER_MAP: dict[str, int] = {
     "__init__": 0,
     "game_profile": 0,
@@ -23,16 +29,14 @@ LAYER_MAP: dict[str, int] = {
     "errors": 0,
     "han_fold": 0,
     "locale_cfg": 0,
+    "share_codec": 0,
     "guardrails": 0,
     "updater": 1,
     "bridge_protocol": 1,
     "bridge_client": 1,
     "bridge_boot": 1,
     "importers": 1,
-    "profile_import": 1,
     "game_data": 1,
-    "external_data": 1,
-    "poedb_client": 1,
     "formatters": 2,
     "snapshot": 2,
     "analyzer": 2,
@@ -40,14 +44,7 @@ LAYER_MAP: dict[str, int] = {
     "comparator": 2,
     "craft": 2,
     "rune": 2,
-    "timeless": 2,
-    "waystone": 2,
     "rebalance": 2,
-    "item_inspect": 2,
-    "trade_client": 2,
-    "trade_item": 2,
-    "trade_query": 2,
-    "trade_eval": 2,
     "daemon": 3,
     "__main__": 4,
     "cli_common": 4,
@@ -60,11 +57,7 @@ LAYER_MAP: dict[str, int] = {
     "cli_build_io": 4,
     "cli_inspect": 4,
     "cli_mutate": 4,
-    "cli_optimize": 4,
-    "cli_data": 4,
     "cli_rune": 4,
-    "cli_timeless": 4,
-    "cli_trade": 4,
     "cli_rebalance": 4,
     "cli_help": 4,
 }
@@ -83,36 +76,8 @@ BLOCKED_RPC_EXACT: frozenset[str] = frozenset(
     }
 )
 RPC_ALLOWLIST_FILES: frozenset[str] = frozenset({"bridge_client.py", "bridge_protocol.py"})
-FORBIDDEN_RUNTIME_DEPS: frozenset[str] = frozenset({"pydantic", "typer", "rich", "mcp"})
-SKIP_COPY_DIRS: frozenset[str] = frozenset(
-    {"__pycache__", "build", "dist", ".git", ".venv", ".runtime", ".pytest_cache", ".ruff_cache", ".mypy_cache"}
-)
-_TEXT_EXTS: frozenset[str] = frozenset({".py", ".lua", ".md", ".toml", ".txt", ".json", ".yml", ".yaml", ".sh", ".ps1"})
-_FORBIDDEN_FILES: frozenset[str] = frozenset({"PROGRESS.md", "SPEC.md"})
-_BUDGET_IGNORE = "code-budget:" + " ignore"
 _DETACHED = "DETACHED" + "_PROCESS"
 _CROSS_PKG = "pob" + "_cli"
-_USER_TOK = "mou" + "le"
-
-_LEAK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("win-user-path", re.compile(r"(?i)(?<![A-Za-z0-9_])C:[/\\]Users(?:[/\\]|$)")),
-    ("local-f-drive", re.compile(r"(?i)(?<![A-Za-z0-9_])F:[/\\]")),
-    ("posix-home", re.compile(r"(?<![A-Za-z0-9_])/(?:Users|home)/[A-Za-z0-9._-]+/")),
-    ("smb-host", re.compile(r"(?i)\\\\Tui7(?:\\|$)")),
-    ("local-seed", re.compile(r"(?i)(?:Poe" + r"Charm3\[|PoE2" + r"cache)")),
-    (
-        "local-user",
-        re.compile(
-            r"(?i)(?:(?<![A-Za-z0-9_])"
-            + _USER_TOK
-            + r"(?![A-Za-z0-9_])|"
-            + _USER_TOK
-            + r"[-_]host|[/\\]"
-            + _USER_TOK
-            + r"(?:[/\\]|$))"
-        ),
-    ),
-)
 
 
 def _fail(rule: str, path: str, line: int, problem: str, fix: str) -> str:
@@ -153,6 +118,47 @@ def _resolve_import(rel: Path, node: ast.Import | ast.ImportFrom) -> list[tuple[
         out.extend((a.name, f"pob2_cli.{a.name}") for a in node.names if a.name != "*")
     else:
         out.append((resolved[0], "pob2_cli." + ".".join(resolved)))
+    return out
+
+
+def _module_ref_exists(pkg_root: Path, parts: list[str]) -> str | None:
+    if not parts:
+        return "__init__"
+    if pkg_root.joinpath(*parts).with_suffix(".py").is_file():
+        return ".".join(parts)
+    if (pkg_root.joinpath(*parts) / "__init__.py").is_file():
+        return ".".join([*parts, "__init__"])
+    return None
+
+
+def _resolve_intra_targets(pkg_root: Path, rel: Path, node: ast.Import | ast.ImportFrom) -> list[str]:
+    out: list[str] = []
+    if isinstance(node, ast.Import):
+        for a in node.names:
+            if a.name.startswith("pob2_cli."):
+                hit = _module_ref_exists(pkg_root, a.name[len("pob2_cli.") :].split("."))
+                if hit:
+                    out.append(hit)
+        return out
+    pkg_parts = list(rel.parts[:-1])
+    if node.level == 0:
+        mod = node.module or ""
+        if not mod.startswith("pob2_cli"):
+            return out
+        base_parts = [p for p in mod[len("pob2_cli") :].strip(".").split(".") if p]
+    else:
+        up = node.level - 1
+        if up > len(pkg_parts):
+            return out
+        base_parts = pkg_parts[: len(pkg_parts) - up] + [p for p in (node.module or "").split(".") if p]
+    for a in node.names:
+        hit = (
+            _module_ref_exists(pkg_root, base_parts)
+            if a.name == "*"
+            else (_module_ref_exists(pkg_root, [*base_parts, a.name]) or _module_ref_exists(pkg_root, base_parts))
+        )
+        if hit:
+            out.append(hit)
     return out
 
 
@@ -358,13 +364,17 @@ def _check_py_file(
     return tree
 
 
-def _check_layers(
+def _check_layers_and_intra(
+    pkg_root: Path,
     rel: Path,
     rel_posix: str,
     tree: ast.Module,
     violations: list[str],
     edges: dict[str, set[str]],
     sites: dict[tuple[str, str], tuple[str, int]],
+    intra_top: dict[str, dict[str, set[str]]],
+    intra_rt: dict[str, dict[str, set[str]]],
+    intra_sites: dict[tuple[str, str], tuple[str, int]],
 ) -> None:
     src_u = _top_unit(rel)
     src_l = LAYER_MAP.get(src_u)
@@ -385,58 +395,34 @@ def _check_layers(
                 edges.setdefault(src_u, set()).add(dst_u)
                 sites.setdefault((src_u, dst_u), (rel_posix, node.lineno))
 
-
-def _check_policy_and_leaks(pob2_root: Path) -> list[str]:
-    bad: list[str] = []
-    pp = pob2_root / "pyproject.toml"
-    if not pp.is_file():
-        bad.append(_fail("pkg-policy", "pyproject.toml", 1, "Missing pyproject.toml", "Restore pob2_cli/pyproject.toml."))
-    else:
-        proj = tomllib.loads(pp.read_text(encoding="utf-8")).get("project", {})
-        lic = proj.get("license", {})
-        lic_text = lic.get("text") if isinstance(lic, dict) else lic
-        if lic_text != "GPL-3.0-only":
-            bad.append(_fail("pkg-policy", "pyproject.toml", 1, f"License must be GPL-3.0-only, got `{lic_text}`", 'Set license = { text = "GPL-3.0-only" }.'))
-        for clf in proj.get("classifiers", []):
-            if "or later" in str(clf).lower() or "gplv3+" in str(clf).lower():
-                bad.append(_fail("pkg-policy", "pyproject.toml", 1, f"Invalid classifier `{clf}`", "Use GNU General Public License v3 (GPLv3)."))
-        for dep in proj.get("dependencies", []):
-            pkg = re.split(r"[<>=!~;\[\s]", str(dep).strip(), maxsplit=1)[0].lower()
-            if pkg in FORBIDDEN_RUNTIME_DEPS:
-                bad.append(_fail("pkg-policy", "pyproject.toml", 1, f"Forbidden runtime dep `{dep}`", "Restrict deps to click, httpx[socks], tabulate."))
-
-    for fp in sorted(pob2_root.rglob("*")):
-        if not fp.is_file():
-            continue
-        rel = fp.relative_to(pob2_root)
-        if any(p in SKIP_COPY_DIRS or p.endswith(".egg-info") for p in rel.parts):
-            continue
-        disp = rel.as_posix()
-        if fp.name in _FORBIDDEN_FILES or fp.name.endswith("_PLAN.md"):
-            bad.append(_fail("local-path-leak", disp, 1, f"Forbidden internal doc `{fp.name}`", "Remove bot working notes from git."))
-            continue
-        if fp.suffix.lower() not in _TEXT_EXTS:
-            continue
-        try:
-            text = fp.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        for lineno, line in enumerate(text.splitlines(), 1):
-            if _BUDGET_IGNORE in line:
-                bad.append(_fail("budget-ignore", disp, lineno, "Forbidden budget-ignore pragma", "Split file under size budget."))
-            for tag, pat in _LEAK_PATTERNS:
-                if pat.search(line):
-                    bad.append(_fail("local-path-leak", disp, lineno, f"Local path/username leak ({tag})", "Use POB2_ENGINE_DIR/POB2_DATA_DIR env vars instead."))
-                    break
-    return bad
+    if len(rel.parts) >= 2:
+        sub = rel.parts[0]
+        src_m = ".".join(rel.with_suffix("").parts)
+        intra_top.setdefault(sub, {}).setdefault(src_m, set())
+        if not src_m.endswith(".__init__"):
+            intra_rt.setdefault(sub, {}).setdefault(src_m, set())
+        for node in _iter_top_imports(tree):
+            for dst_m in _resolve_intra_targets(pkg_root, rel, node):
+                if dst_m.startswith(f"{sub}.") and dst_m != src_m:
+                    intra_top[sub][src_m].add(dst_m)
+                    intra_sites.setdefault((src_m, dst_m), (rel_posix, node.lineno))
+        if not src_m.endswith(".__init__"):
+            for node in _iter_runtime_imports(tree):
+                for dst_m in _resolve_intra_targets(pkg_root, rel, node):
+                    if dst_m.startswith(f"{sub}.") and not dst_m.endswith(".__init__") and dst_m != src_m:
+                        intra_rt[sub][src_m].add(dst_m)
+                        intra_sites.setdefault((src_m, dst_m), (rel_posix, node.lineno))
 
 
 def run_arch_lint(pob2_root: Path) -> tuple[list[str], dict[str, object]]:
     pkg_root = pob2_root / "src" / "pob2_cli"
     py_files = sorted(pkg_root.rglob("*.py")) if pkg_root.is_dir() else []
-    violations: list[str] = []
+    violations: list[str] = check_ghost_layer_map(pkg_root, LAYER_MAP)
     edges: dict[str, set[str]] = {}
     sites: dict[tuple[str, str], tuple[str, int]] = {}
+    intra_top: dict[str, dict[str, set[str]]] = {}
+    intra_rt: dict[str, dict[str, set[str]]] = {}
+    intra_sites: dict[tuple[str, str], tuple[str, int]] = {}
     extremes: dict[str, tuple[int, str]] = {"maxLines": (0, ""), "maxBytes": (0, ""), "maxFn": (0, "")}
 
     if (pkg_root / "ticks.py").exists():
@@ -446,7 +432,7 @@ def run_arch_lint(pob2_root: Path) -> tuple[list[str], dict[str, object]]:
         rel = fp.relative_to(pkg_root)
         rp = rel.as_posix()
         tree = _check_py_file(fp, rp, violations, extremes)
-        _check_layers(rel, rp, tree, violations, edges, sites)
+        _check_layers_and_intra(pkg_root, rel, rp, tree, violations, edges, sites, intra_top, intra_rt, intra_sites)
         violations.extend(_check_cross_pkg(tree, f"src/pob2_cli/{rp}"))
         violations.extend(_check_win_subproc(tree, rp))
         violations.extend(_check_blocked_rpc(tree, rp))
@@ -481,7 +467,28 @@ def run_arch_lint(pob2_root: Path) -> tuple[list[str], dict[str, object]]:
         sf, sl = sites.get((cyc[0], cyc[1]), ("src/pob2_cli", 1))
         violations.append(_fail("layer-dag", sf, sl, f"Circular import cycle: {' -> '.join(cyc)}", "Break cycle via lower layer."))
 
-    violations.extend(_check_policy_and_leaks(pob2_root))
+    seen_intra: set[tuple[str, ...]] = set()
+    for sub in sorted(set(intra_top) | set(intra_rt)):
+        for graph in (intra_top.get(sub, {}), intra_rt.get(sub, {})):
+            for cyc in _find_cycles(graph):
+                key = tuple(cyc)
+                if key not in seen_intra:
+                    seen_intra.add(key)
+                    sf, sl = intra_sites.get((cyc[0], cyc[1]), (f"src/pob2_cli/{sub}", 1))
+                    violations.append(
+                        _fail(
+                            "intra-pkg-cycle",
+                            sf,
+                            sl,
+                            f"Intra-package circular import in `{sub}`: {' -> '.join(cyc)}",
+                            "Extract shared types/helpers into a leaf module within the subpackage.",
+                        )
+                    )
+
+    violations.extend(
+        check_spec_sync(pob2_root, pkg_root, extremes, check_size_fn=_check_size, check_cross_pkg_fn=_check_cross_pkg)
+    )
+    violations.extend(check_policy_and_leaks(pob2_root))
     return violations, {
         "files": len(py_files),
         "checkedFiles": len(py_files) + extra,
@@ -489,3 +496,18 @@ def run_arch_lint(pob2_root: Path) -> tuple[list[str], dict[str, object]]:
         "maxBytes": extremes["maxBytes"],
         "maxFn": extremes["maxFn"],
     }
+
+
+__all__ = [
+    "BLOCKED_RPC_EXACT",
+    "FORBIDDEN_RUNTIME_DEPS",
+    "LAYER_MAP",
+    "MAX_FILE_BYTES",
+    "MAX_FILE_LINES",
+    "MAX_FN_LINES",
+    "MAX_TEST_BYTES",
+    "MAX_TEST_LINES",
+    "RPC_ALLOWLIST_FILES",
+    "SKIP_COPY_DIRS",
+    "run_arch_lint",
+]

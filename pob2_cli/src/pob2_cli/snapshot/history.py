@@ -34,6 +34,8 @@ class SlotHistory:
         self.slot_name = slot_name
         self.runtime_dir = Path(runtime_dir) if runtime_dir is not None else None
         self.persist = slot_name != "test" if persist is None else persist
+        self.persist_warning: str | None = None
+        self.stale: bool = False
         self.committed: str | None = None
         self.undo: list[str] = []
         self.redo: list[str] = []
@@ -41,14 +43,15 @@ class SlotHistory:
         self.source_label: str | None = None
         self.active: Any = None
         self._worker: Any = None
+        self._disk_mtime_ns: int | None = None
 
     @property
     def path(self) -> Path:
         return get_runtime_dir(self.runtime_dir) / f"slot_{self.slot_name}.json"
 
     @classmethod
-    def load(cls, slot_name: str, runtime_dir: Path | None = None) -> SlotHistory:
-        hist = cls(slot_name, runtime_dir)
+    def load(cls, slot_name: str, runtime_dir: Path | None = None, *, persist: bool | None = None) -> SlotHistory:
+        hist = cls(slot_name, runtime_dir, persist=persist)
         data = read_slot_state(hist.path) if hist.persist else None
         if data:
             hist.committed = data.get("last_good_code") or None
@@ -58,6 +61,10 @@ class SlotHistory:
             raw_rev = data.get("rev")
             if isinstance(raw_rev, int) and not isinstance(raw_rev, bool) and raw_rev >= 0:
                 hist.rev = raw_rev
+            try:
+                hist._disk_mtime_ns = hist.path.stat().st_mtime_ns
+            except OSError:
+                hist._disk_mtime_ns = None
         return hist
 
     def bind(self, worker: Any) -> None:
@@ -68,9 +75,10 @@ class SlotHistory:
 
     def _changed(self) -> None:
         self.rev += 1
+        self.stale = False
         if self._worker is not None:
             self._worker.last_good_code = self.committed
-            self._worker.has_build = bool(self.committed)
+            self._worker.has_build = bool(self._worker.last_good_code)
             if getattr(self._worker, "restore_failed", None) is not None:
                 self._worker.restore_failed = None
         self.save()
@@ -79,7 +87,7 @@ class SlotHistory:
         if not self.persist:
             return
         self.source_label = compact_source_label(self.source_label)
-        write_slot_state(
+        ok = write_slot_state(
             self.path,
             slot_name=self.slot_name,
             last_good_code=self.committed,
@@ -88,6 +96,17 @@ class SlotHistory:
             source_label=self.source_label,
             rev=self.rev,
         )
+        if ok is False:
+            self.persist_warning = (
+                f"This slot's build is live in the daemon but could not be saved to {self.path}; "
+                "the build and its undo history will be lost when the daemon restarts."
+            )
+        else:
+            self.persist_warning = None
+            try:
+                self._disk_mtime_ns = self.path.stat().st_mtime_ns
+            except OSError:
+                self._disk_mtime_ns = None
 
     def load_build(self, code: str | None, source_label: str | None) -> None:
         self.committed = code or None
@@ -113,8 +132,11 @@ class SlotHistory:
         self._changed()
         return target
 
-    def depths(self) -> dict[str, int]:
-        return {"undoDepth": len(self.undo), "redoDepth": len(self.redo)}
+    def depths(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"undoDepth": len(self.undo), "redoDepth": len(self.redo)}
+        if self.persist_warning:
+            out["persistWarning"] = self.persist_warning
+        return out
 
 
 def history_of(worker: Any) -> SlotHistory:
@@ -133,3 +155,17 @@ def history_of(worker: Any) -> SlotHistory:
     except AttributeError:
         pass
     return hist
+
+
+def rebuild_if_stale(worker: Any, *, required: bool = True) -> None:
+    """Rebuild calc output left stale by an interrupted transaction before a subsequent read."""
+    hist = history_of(worker)
+    if not hist.stale or hist.active is not None:
+        return
+    try:
+        worker.call("pump", {"seconds": 0})
+    except Exception:
+        if required:
+            raise
+        return
+    hist.stale = False

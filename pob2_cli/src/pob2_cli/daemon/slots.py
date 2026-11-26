@@ -11,9 +11,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..bridge_client import BridgeWorker
+from ..errors import DaemonRequestError
 from ..game_profile import GAME_ID, resolve_data_dir_override
 from ..locale_cfg import get_active_lang
-from ..snapshot import SlotHistory, history_of
+from ..snapshot import SlotHistory, history_of, rebuild_if_stale
 from ..updater import (
     OK_STATES,
     get_update_warning,
@@ -41,6 +42,7 @@ from .runtime import (
     _is_offline_env,
     normalize_slot_name,
     resolve_global_idle_sec,
+    same_slot_error,
 )
 from .slot_updates import (
     build_status_payload,
@@ -75,6 +77,16 @@ _STATE_META_ACTIONS = frozenset(
         "rune_rank",
     }
 )
+
+
+_REF_LOAD_KEYS = ("ref_source", "ref_xml_code", "compare_source", "compare_xml_code")
+
+
+def _loads_build(action: str, params: dict[str, Any]) -> bool:
+    """Return True when ``action`` replaces the slot's build so stale calc rebuild is optional."""
+    return action in ("load", "new_build", "undo", "redo") or any(
+        params.get(k) for k in ("source", "xml_code", "char_name")
+    )
 
 
 class DaemonManager:
@@ -405,12 +417,41 @@ class DaemonManager:
         finally:
             self._shutdown_done.set()
 
+    def _sync_slot_history_from_disk(self, slot: str, worker: BridgeWorker) -> SlotHistory:
+        hist = history_of(worker)
+        if not hist.persist:
+            return hist
+        try:
+            cur_mtime = hist.path.stat().st_mtime_ns if hist.path.is_file() else None
+        except OSError:
+            cur_mtime = None
+        if cur_mtime is not None and cur_mtime != getattr(hist, "_disk_mtime_ns", None):
+            reloaded = SlotHistory.load(slot, self.runtime_dir, persist=True)
+            with self._lock:
+                self._histories[slot] = reloaded
+            reloaded.bind(worker)
+            worker.has_build = False
+            self._read_cache.invalidate_slot(slot)
+            return reloaded
+        return hist
+
+    def _rebuild_slot_before_read(self, slot: str, worker: BridgeWorker, *, required: bool) -> None:
+        hist = self._sync_slot_history_from_disk(slot, worker)
+        if required and hist.committed and not getattr(worker, "has_build", False):
+            worker.call("import_code", {"code": hist.committed, "mode": "replace"})
+            worker.last_good_code = hist.committed
+            worker.has_build = True
+            self._read_cache.invalidate_slot(slot)
+        rebuild_if_stale(worker, required=required)
+
     def _slot_has_loaded_build(self, slot: str) -> bool:
         with self._lock:
             worker = self._workers.get(slot)
-            if worker is not None:
-                return worker_has_loaded_build(worker)
             hist = self._histories.get(slot)
+        if worker is not None:
+            hist = self._sync_slot_history_from_disk(slot, worker)
+            if worker_has_loaded_build(worker) or bool(hist.committed):
+                return True
         if hist is None:
             hist = SlotHistory.load(slot, self.runtime_dir)
         return bool(hist.committed)
@@ -455,23 +496,34 @@ class DaemonManager:
         if action == "status":
             return build_status_payload(self)
 
-        if action == "compare" and params.get("ref_target") and not (
-            params.get("ref_source") or params.get("source") or params.get("ref_xml_code") or params.get("xml_code")
-        ):
-            main_slot = normalize_slot_name(params.get("target") or "main")
-            ref_slot = normalize_slot_name(params.get("ref_target"))
-            with self._reader_barrier():
-                locks = [self._get_slot_lock(s) for s in sorted({main_slot, ref_slot})]
-                with contextlib.ExitStack() as stack:
-                    for lk in locks:
-                        stack.enter_context(lk)
-                    if not self._slot_has_loaded_build(main_slot):
-                        raise empty_slot_error(main_slot)
-                    if not self._slot_has_loaded_build(ref_slot):
-                        raise empty_slot_error(ref_slot)
-                    mw = self._get_worker_in_barrier(main_slot)
-                    rw = self._get_worker_in_barrier(ref_slot)
-                    return dispatch_dual_slot_action(self, action, params, mw, rw)
+        if action == "compare":
+            main_slot = normalize_slot_name(params.get("main_target") or params.get("target") or "main")
+            has_inline_ref = bool(
+                params.get("ref_source")
+                or params.get("source")
+                or params.get("ref_xml_code")
+                or params.get("xml_code")
+            )
+            if params.get("ref_target") is not None or not has_inline_ref:
+                default_ref = "ref" if main_slot == "main" else f"{main_slot}_ref"
+                ref_slot = normalize_slot_name(params.get("ref_target") or default_ref)
+                if ref_slot == main_slot:
+                    raise DaemonRequestError(same_slot_error(action, main_slot))
+                if not has_inline_ref:
+                    with self._reader_barrier():
+                        locks = [self._get_slot_lock(s) for s in sorted({main_slot, ref_slot})]
+                        with contextlib.ExitStack() as stack:
+                            for lk in locks:
+                                stack.enter_context(lk)
+                            if not self._slot_has_loaded_build(main_slot):
+                                raise empty_slot_error(main_slot)
+                            if not self._slot_has_loaded_build(ref_slot):
+                                raise empty_slot_error(ref_slot)
+                            mw = self._get_worker_in_barrier(main_slot)
+                            rw = self._get_worker_in_barrier(ref_slot)
+                            self._rebuild_slot_before_read(main_slot, mw, required=True)
+                            self._rebuild_slot_before_read(ref_slot, rw, required=True)
+                            return dispatch_dual_slot_action(self, action, params, mw, rw)
 
         target = normalize_slot_name(params.get("target"))
         prevalidate_slot_action_params(action, params)
@@ -480,10 +532,16 @@ class DaemonManager:
                 if action_requires_loaded_build(action, params) and not self._slot_has_loaded_build(target):
                     raise empty_slot_error(target)
                 worker = self._get_worker_in_barrier(target)
+                self._sync_slot_history_from_disk(target, worker)
                 eff_lang = get_active_lang(self.runtime_dir)[0] if action in READ_CACHE_ACTIONS else ""
                 cache_lang, cached_hit = self._read_cache.check_slot_read(target, worker, eff_lang, action, params)
                 if cached_hit is not None:
                     return cached_hit
+                self._rebuild_slot_before_read(
+                    target,
+                    worker,
+                    required=action_requires_loaded_build(action, params) and not _loads_build(action, params),
+                )
                 res_slot = dispatch_slot_action(self, action, params, worker)
                 if action in _STATE_META_ACTIONS and isinstance(res_slot, dict):
                     res_slot.setdefault("game", GAME_ID)

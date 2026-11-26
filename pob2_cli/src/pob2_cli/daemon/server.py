@@ -24,6 +24,7 @@ from .runtime import (
     redact_secrets,
     resolve_daemon_host,
     resolve_daemon_port,
+    write_private_json,
 )
 from .slots import DaemonManager
 
@@ -105,14 +106,14 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
             except (DaemonRequestError, ValueError) as exc:
                 self._send_json(
                     400,
-                    {"ok": False, "game": GAME_ID, "error": redact_secrets(str(exc)), "type": type(exc).__name__, "errorKind": "request"},
+                    {"ok": False, "game": GAME_ID, "error": _error_text(exc), "type": type(exc).__name__, "errorKind": "request"},
                 )
             except BridgeError as exc:
                 kind = exc.kind if isinstance(exc, BridgeRejectedError) else "daemon"
                 payload: dict[str, Any] = {
                     "ok": False,
                     "game": GAME_ID,
-                    "error": redact_secrets(sanitize_bridge_error(str(exc))),
+                    "error": _error_text(exc, sanitize_bridge=True),
                     "type": type(exc).__name__,
                     "errorKind": kind,
                 }
@@ -123,7 +124,7 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
                 err_payload: dict[str, Any] = {
                     "ok": False,
                     "game": GAME_ID,
-                    "error": redact_secrets(sanitize_bridge_error(str(exc))),
+                    "error": _error_text(exc, sanitize_bridge=True),
                     "type": exc.__class__.__name__,
                     "errorKind": "daemon",
                 }
@@ -132,6 +133,13 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
                 self._send_json(400, err_payload)
 
     return RpcHandler
+
+
+def _error_text(exc: BaseException, *, sanitize_bridge: bool = False) -> str:
+    """Format an exception and any attached ``__notes__`` with secret redaction."""
+    head = sanitize_bridge_error(str(exc)) if sanitize_bridge else str(exc)
+    notes = [str(n) for n in getattr(exc, "__notes__", ()) if str(n).strip()]
+    return redact_secrets("\n".join([head, *notes]))
 
 
 def _serve_daemon(
@@ -154,7 +162,7 @@ def _serve_daemon(
     from .client import _guard_foreign_daemon_state
 
     rt_dir = _get_runtime_dir(runtime_dir)
-    rt_dir.mkdir(parents=True, exist_ok=True)
+    rt_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     boot_err_file = _daemon_boot_error_file(rt_dir)
     state_file = _daemon_state_file(rt_dir)
     existing_state = _daemon_pkg.read_daemon_state(rt_dir)
@@ -196,9 +204,7 @@ def _serve_daemon(
             "ts": time.time(),
         }
         try:
-            tmp_err = boot_err_file.with_suffix(f".{os.getpid()}.tmp")
-            tmp_err.write_text(json.dumps(err_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            os.replace(tmp_err, boot_err_file)
+            write_private_json(boot_err_file, err_payload)
         except OSError:
             pass
         raise
@@ -228,9 +234,7 @@ def _serve_daemon(
         "started_at": manager.started_at,
         "pob_dir": str(manager.pob_dir),
     }
-    tmp_state_file = state_file.with_suffix(f".{os.getpid()}.tmp")
-    tmp_state_file.write_text(json.dumps(state_payload, indent=2), encoding="utf-8")
-    os.replace(tmp_state_file, state_file)
+    write_private_json(state_file, state_payload)
 
     if announce_foreground:
         sys.stderr.write(

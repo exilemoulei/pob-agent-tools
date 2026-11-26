@@ -94,13 +94,18 @@ from .releases import (
     signed_sums,
 )
 from .remote import (
+    ALLOWED_RELEASE_ASSET_EXTS,
     _download_and_stage_release_zip,
     _download_bytes_with_retry,
     _download_pob_files_to_staging,
     _extract_tag_from_location,
     _extract_zip_safely,
+    _network_errors,
+    _safe_asset_name,
     fetch_pob_manifest_remote,
     fetch_pobtools_latest_info,
+    redact_proxy_credentials,
+    validate_release_asset_name,
 )
 from .signature import RELEASE_PUBLIC_KEYS, ed25519_verify, verify_sums
 from .state import (
@@ -115,6 +120,7 @@ from .state import (
 from .sync import check_and_apply_updates
 
 __all__ = [
+    "ALLOWED_RELEASE_ASSET_EXTS",
     "ASSET_MAX_RETRIES",
     "GITHUB_MIRROR_PREFIXES",
     "OK_STATES",
@@ -161,8 +167,10 @@ __all__ = [
     "_is_version_gte",
     "_is_version_newer",
     "_make_http_client",
+    "_network_errors",
     "_parse_semver",
     "_render_local_manifest_xml",
+    "_safe_asset_name",
     "_to_httpx_timeout",
     "_try_download_prebuilt_posix_runtime",
     "asset_url",
@@ -196,6 +204,7 @@ __all__ = [
     "posix_runtime_is_current",
     "probe_engine_gate",
     "recover_idle_engine",
+    "redact_proxy_credentials",
     "release_platform_tag",
     "resolve_bridge_lua",
     "resolve_data_root",
@@ -211,6 +220,7 @@ __all__ = [
     "seed_from_legacy_dir",
     "signed_sums",
     "unrestored_swap",
+    "validate_release_asset_name",
     "verify_pob_sha1",
     "verify_sums",
 ]

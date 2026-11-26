@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 
 from .cli_common import (
@@ -14,6 +16,8 @@ from .cli_common import (
     target_option,
 )
 from .cli_item import run_unique_slot_ranking
+from .daemon.runtime import normalize_slot_name, same_slot_error
+from .errors import DaemonRequestError
 from .formatters import (
     format_audit_md,
     format_compare_md,
@@ -100,6 +104,7 @@ def cmd_uniques(
 
 @pob2_command("compare")
 @click.argument("ref_source", required=False, default=None)
+@click.argument("extra_ref", required=False, default=None)
 @click.option("--ref-target", "ref_target", type=str, default=None, help="Compare against another loaded slot (e.g. ref).")
 @target_option(allow_slot_alias=True, help_text="Primary build slot (default: main).")
 @output_options
@@ -107,18 +112,48 @@ def cmd_uniques(
 def cmd_compare(
     ctx: click.Context,
     ref_source: str | None,
+    extra_ref: str | None,
     ref_target: str | None,
     target: str,
     as_json: bool,
 ) -> None:
     """5-dimension Compare Power Report (Items / Tree / Main Skill / Supports / Config) against a reference build."""
-    params = {"target": resolve_target_slot(target)}
-    if ref_source:
-        params["ref_source"] = ref_source
-    elif ref_target:
-        params["ref_target"] = ref_target
+    main_slot = resolve_target_slot(target)
+    eff_source = ref_source
+    eff_ref_target = ref_target
+    if extra_ref is not None:
+        try:
+            main_slot = normalize_slot_name(ref_source)
+        except ValueError as exc:
+            raise DaemonRequestError(str(exc)) from exc
+        if (
+            "://" in extra_ref
+            or extra_ref.lstrip().startswith("<")
+            or Path(extra_ref).is_file()
+        ):
+            eff_source = extra_ref
+        else:
+            eff_source = None
+            eff_ref_target = extra_ref
+
+    if eff_ref_target is not None:
+        try:
+            norm_ref = normalize_slot_name(eff_ref_target)
+        except ValueError as exc:
+            raise DaemonRequestError(str(exc)) from exc
+        if norm_ref == main_slot:
+            raise DaemonRequestError(same_slot_error("compare", main_slot))
+        eff_ref_target = norm_ref
+    elif eff_source is not None and eff_source.strip().lower() == main_slot and not Path(eff_source).exists():
+        raise DaemonRequestError(same_slot_error("compare", main_slot))
+
+    params: dict[str, str] = {"target": main_slot}
+    if eff_source:
+        params["ref_source"] = eff_source
+    elif eff_ref_target:
+        params["ref_target"] = eff_ref_target
     else:
-        params["ref_target"] = "ref"
+        params["ref_target"] = "ref" if main_slot == "main" else f"{main_slot}_ref"
     res = daemon_call_cli("compare", params)
     emit_output(ctx, res, as_json=as_json, markdown_text=format_compare_md(res))
 

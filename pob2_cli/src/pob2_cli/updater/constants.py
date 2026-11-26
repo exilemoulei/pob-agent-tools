@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 from .. import __version__
 from ..game_profile import ENV_GITHUB_MIRROR, ENV_PROXY, PACKAGE_NAME
+from ..guardrails import redact_secrets, redact_url_credentials
 
 USER_AGENT = f"{PACKAGE_NAME}/{__version__} (+https://github.com/exilemoulei/pob4agents)"
 
@@ -165,7 +166,11 @@ def _make_http_client(
     }
     if eff_proxy:
         kwargs["proxy"] = eff_proxy
-    return httpx.Client(**kwargs)
+    try:
+        return httpx.Client(**kwargs)
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
+        detail = redact_secrets(redact_url_credentials(str(exc).strip())) or type(exc).__name__
+        raise UpdateError(f"Invalid HTTP/proxy configuration: {detail}") from exc
 
 
 def _parse_semver(ver: str | None) -> tuple[int, ...]:

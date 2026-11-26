@@ -33,7 +33,7 @@ from .helpers import (
     stat_float,
     strip_pob_escapes,
 )
-from .history import SlotHistory, compact_source_label, history_of
+from .history import SlotHistory, compact_source_label, history_of, rebuild_if_stale
 from .transaction import BuildScope, BuildTransaction
 from .verify import stat_drift, verify_build, verify_cow_restored
 
@@ -60,6 +60,7 @@ __all__ = [
     "json_safe_stat",
     "load_build",
     "parse_numeric_or_none",
+    "rebuild_if_stale",
     "redo_build",
     "restore_snapshot",
     "run_mutation",

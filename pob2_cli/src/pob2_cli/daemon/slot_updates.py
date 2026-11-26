@@ -12,7 +12,7 @@ from ..game_profile import ENV_LANG, GAME_ID
 from ..locale_cfg import get_active_lang, normalize_lang, set_active_lang
 from ..snapshot import history_of
 from ..updater import is_valid_engine_dir, resolve_data_root, resolve_engine_root
-from .runtime import _daemon_state_file
+from .runtime import _daemon_state_file, write_private_json
 
 if TYPE_CHECKING:
     from ..bridge_client import BridgeWorker
@@ -41,9 +41,7 @@ def update_daemon_state_pob_dir(manager: DaemonManager) -> None:
         data = json.loads(state_file.read_text(encoding="utf-8"))
         if isinstance(data, dict) and data.get("pid") == os.getpid():
             data["pob_dir"] = str(manager.pob_dir)
-            tmp = state_file.with_suffix(f".{os.getpid()}.tmp")
-            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            os.replace(tmp, state_file)
+            write_private_json(state_file, data)
     except Exception:
         pass
 

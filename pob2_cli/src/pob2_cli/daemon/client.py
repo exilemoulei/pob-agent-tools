@@ -227,7 +227,7 @@ def _acquire_start_lock(lock_file: Path) -> bool:
         except OSError:
             pass
     try:
-        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.write(fd, str(os.getpid()).encode("ascii"))
         os.close(fd)
         return True
@@ -244,7 +244,7 @@ def _ensure_daemon(
 
     lock_file = _daemon_lock_file(rt_dir)
     boot_err_file = _daemon_boot_error_file(rt_dir)
-    rt_dir.mkdir(parents=True, exist_ok=True)
+    rt_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     log_path = _daemon_log_file(rt_dir)
     acquired_lock = _acquire_start_lock(lock_file)
 

@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
-import base64
 import collections
 import json
 import os
 import queue
 import subprocess
+import sys
 import time
 import xml.etree.ElementTree as ET
-import zlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .errors import CrossGameHallucinationError
+from .errors import CrossGameHallucinationError, DaemonRequestError
 from .json_io import read_json_dict as read_slot_state  # noqa: F401
+from .share_codec import (
+    MAX_SHARE_XML_BYTES,
+    ShareCodeLimitError,
+    share_code_to_xml,
+    xml_to_share_code,
+)
 
 MAX_UNDO_STEPS = 30
 
@@ -64,37 +69,43 @@ ENGINE_ERROR_KINDS: tuple[tuple[str, str, str], ...] = (
 
 
 def decode_share_code_xml(code: str) -> str | None:
-    """Decode a PoB2 URL-safe Base64 zlib/gzip share code (or pass through raw XML)."""
+    """Decode a PoB2 URL-safe Base64 zlib/gzip share code with a 64 MiB cap (or pass through raw XML)."""
     text = (code or "").strip()
     if not text:
         return None
     if text.startswith("<"):
+        if len(text.encode("utf-8", errors="replace")) > MAX_SHARE_XML_BYTES:
+            return None
         return text
     try:
-        cleaned = text.replace("-", "+").replace("_", "/")
-        pad = (-len(cleaned)) % 4
-        if pad:
-            cleaned += "=" * pad
-        raw = base64.b64decode(cleaned)
-        for wbits in (zlib.MAX_WBITS | 32, -zlib.MAX_WBITS):
-            try:
-                return zlib.decompress(raw, wbits).decode("utf-8", errors="replace")
-            except zlib.error:
-                continue
-    except Exception:
+        return share_code_to_xml(text)
+    except ValueError:
         return None
-    return None
 
 
 def encode_xml_share_code(xml_text: str) -> str:
     """Encode PoB2 XML into a URL-safe Base64 zlib share code."""
-    compressed = zlib.compress(xml_text.encode("utf-8"), level=9)
-    return base64.urlsafe_b64encode(compressed).decode("ascii")
+    return xml_to_share_code(xml_text)
 
 
 def validate_poe2_xml_root(code_or_xml: str) -> None:
-    """Reject PoE1 ``<PathOfBuilding>`` XML before passing to the PoB2 engine."""
-    xml_text = decode_share_code_xml(code_or_xml)
+    """Reject PoE1 ``<PathOfBuilding>`` XML or >64 MiB share-code bombs before touching the PoB2 engine."""
+    raw = (code_or_xml or "").strip()
+    if not raw:
+        return
+    if raw.startswith("<"):
+        if len(raw.encode("utf-8", errors="replace")) > MAX_SHARE_XML_BYTES:
+            raise DaemonRequestError(
+                f"Build XML exceeds {MAX_SHARE_XML_BYTES // (1024 * 1024)} MiB decompression limit."
+            )
+        xml_text: str | None = raw
+    else:
+        try:
+            xml_text = share_code_to_xml(raw)
+        except ShareCodeLimitError as exc:
+            raise DaemonRequestError(str(exc)) from exc
+        except ValueError:
+            xml_text = None
     if not xml_text:
         return
     head = xml_text.lstrip()[:256]
@@ -231,9 +242,11 @@ def write_slot_state(
     redo_stack: list[str],
     source_label: str | None,
     rev: int,
-) -> None:
+) -> bool:
+    """Persist slot build code and undo/redo stacks to disk; False (with stderr warning) on failure."""
+    tmp_path = state_path.with_suffix(f".{os.getpid()}.tmp")
     try:
-        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         payload = {
             "game": "poe2",
             "slot": slot_name,
@@ -244,11 +257,23 @@ def write_slot_state(
             "rev": int(rev),
             "updated_at": time.time(),
         }
-        tmp_path = state_path.with_suffix(f".{os.getpid()}.tmp")
-        tmp_path.write_text(json.dumps(payload), encoding="utf-8")
+        tmp_path.unlink(missing_ok=True)
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload))
         os.replace(tmp_path, state_path)
-    except Exception:
-        pass
+        return True
+    except Exception as exc:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            sys.stderr.write(f"[pob2] WARN: could not save slot '{slot_name}' to {state_path}: {exc}\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+        return False
 
 
 def stdout_reader_loop(

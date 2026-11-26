@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Deterministic lint, architecture-DAG, isolation, and offline test gate for ``pob2_cli``.
+"""Deterministic lint, architecture-DAG, spec-sync, isolation, and test ratchet gate for ``pob2_cli``.
 
 Modes:
-  python pob2_cli/scripts/check.py             # ruff + arch-lint + isolated offline pytest
-  python pob2_cli/scripts/check.py --fast      # ruff + AST arch/isolation/leak lint (<3s)
+  python pob2_cli/scripts/check.py             # ruff + arch-lint + isolated pytest (env-aware ratchet)
+  python pob2_cli/scripts/check.py --fast      # ruff + AST arch/spec-sync/isolation/leak lint (<3s)
   python pob2_cli/scripts/check.py --self-test # mutation proof in %TEMP% that every rule fires
 """
 
@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -24,8 +25,23 @@ if str(_SCRIPT_DIR) not in sys.path:
 
 from arch_lint import SKIP_COPY_DIRS, run_arch_lint  # noqa: E402
 
-MIN_PASSED_TESTS = 1
-MAX_SKIPPED_TESTS = 50
+# Environment-aware real test ratchets (offline >=120 contract; live engine >=180 & <=5 skipped contract).
+MIN_PASSED_OFFLINE = 200
+MAX_SKIPPED_OFFLINE = 22
+MIN_PASSED_LIVE = 215
+MAX_SKIPPED_LIVE = 5
+
+MIN_PASSED_TESTS = MIN_PASSED_OFFLINE
+MAX_SKIPPED_TESTS = MAX_SKIPPED_OFFLINE
+
+
+def detect_test_ratchet(env: Mapping[str, str] | None = None) -> tuple[str, int, int]:
+    """Return ``(mode, min_passed, max_skipped)`` based on whether ``POB2_ENGINE_DIR``/``POB2_ROOT`` is set."""
+    src = env if env is not None else os.environ
+    has_live_engine = bool(src.get("POB2_ENGINE_DIR", "").strip() or src.get("POB2_ROOT", "").strip())
+    if has_live_engine:
+        return ("live-engine", MIN_PASSED_LIVE, MAX_SKIPPED_LIVE)
+    return ("offline", MIN_PASSED_OFFLINE, MAX_SKIPPED_OFFLINE)
 
 
 def _remove_tree_bottom_up(path: Path) -> None:
@@ -138,6 +154,17 @@ def run_isolated_pytest(
         _remove_tree_bottom_up(tmp_dir)
 
 
+def _run_fast_on_staged(check_script: Path, staged: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(check_script), "--fast", "--root", str(staged)],
+        env=_utf8_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
 def run_self_test(pob2_root: Path) -> int:
     """Copy source to %TEMP%, inject mutations for every lint rule, assert each fails with [rule] & Fix:."""
     tmp_root = Path(tempfile.mkdtemp(prefix="pob2_check_selftest_"))
@@ -155,12 +182,13 @@ def run_self_test(pob2_root: Path) -> int:
         cross_pkg_name = "pob" + "_cli"
         detached_flag = "DETACHED" + "_PROCESS"
         leak_path = "C:" + "/Users/" + "mou" + "le" + "/secret"
-        mutations: list[tuple[str, str, Path, str]] = [
+        mutations: list[tuple[str, str, Path, str, str | None]] = [
             (
                 "file-budget",
                 "file-budget (>650L)",
                 pkg / "compat.py",
                 "\n" + "\n".join(f"# pad {i}" for i in range(660)) + "\n",
+                None,
             ),
             (
                 "fn-budget",
@@ -169,12 +197,14 @@ def run_self_test(pob2_root: Path) -> int:
                 "\n\ndef _selftest_huge_fn() -> int:\n"
                 + "".join(f"    _x = {i}\n" for i in range(210))
                 + "    return _x\n",
+                None,
             ),
             (
                 "layer-dag",
                 "layer-dag (top-level L0->L4)",
                 pkg / "errors.py",
                 "\nfrom . import cli as _illegal_cli  # noqa: F401\n",
+                None,
             ),
             (
                 "layer-dag",
@@ -183,18 +213,21 @@ def run_self_test(pob2_root: Path) -> int:
                 "\n\ndef _selftest_lazy_upward() -> object:\n"
                 "    from .cli import main\n\n"
                 "    return main\n",
+                None,
             ),
             (
                 "cross-pkg-import",
                 "cross-pkg-import (import PoE1 pkg)",
                 pkg / "compat.py",
                 f"\nimport {cross_pkg_name}  # noqa: F401\n",
+                None,
             ),
             (
                 "win-subprocess",
                 "win-subprocess (forbidden creation flag)",
                 pkg / "compat.py",
                 f"\nimport subprocess\n_BAD_FLAG = getattr(subprocess, '{detached_flag}', 0)\n",
+                None,
             ),
             (
                 "blocked-rpc",
@@ -202,28 +235,49 @@ def run_self_test(pob2_root: Path) -> int:
                 pkg / "compat.py",
                 '\n\ndef _selftest_rpc(worker: object) -> None:\n'
                 '    worker.call("tj_open", {})  # type: ignore[attr-defined]\n',
+                None,
             ),
             (
                 "local-path-leak",
                 "local-path-leak (hardcoded local path)",
                 pkg / "compat.py",
                 f'\n_LEAK = "{leak_path}"\n',
+                None,
+            ),
+            (
+                "ghost-layer-map",
+                "ghost-layer-map (non-existent LAYER_MAP unit)",
+                staged / "scripts" / "arch_lint.py",
+                '\nLAYER_MAP["ghost_nonexistent_unit"] = 2\n',
+                None,
+            ),
+            (
+                "intra-pkg-cycle",
+                "intra-pkg-cycle (subpackage circular import)",
+                pkg / "craft" / "models.py",
+                "\nfrom .weights_loader import load_mods_view as _cycle_ref  # noqa: E402, F401\n",
+                None,
+            ),
+            (
+                "spec-sync",
+                "spec-sync (asset/module drift in pob2.spec)",
+                staged / "packaging" / "pob2.spec",
+                '    "headless_runner.lua",\n',
+                "",
             ),
         ]
 
         check_script = staged / "scripts" / "check.py"
-        for expected_rule, label, target_file, snippet in mutations:
+        for expected_rule, label, target_file, snippet, replace_with in mutations:
             original = target_file.read_bytes()
             try:
-                target_file.write_bytes(original + snippet.encode("utf-8"))
-                proc = subprocess.run(
-                    [sys.executable, str(check_script), "--fast", "--root", str(staged)],
-                    env=_utf8_env(),
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                )
+                if replace_with is None:
+                    target_file.write_bytes(original + snippet.encode("utf-8"))
+                else:
+                    text = original.decode("utf-8")
+                    assert snippet in text, f"Expected snippet {snippet!r} in {target_file}"
+                    target_file.write_bytes(text.replace(snippet, replace_with, 1).encode("utf-8"))
+                proc = _run_fast_on_staged(check_script, staged)
                 combined = proc.stdout + "\n" + proc.stderr
                 if proc.returncode == 0:
                     print(f"SELF-TEST FAILED: mutation `{label}` unexpectedly passed!")
@@ -235,21 +289,19 @@ def run_self_test(pob2_root: Path) -> int:
             finally:
                 target_file.write_bytes(original)
 
-        clean_proc = subprocess.run(
-            [sys.executable, str(check_script), "--fast", "--root", str(staged)],
-            env=_utf8_env(),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        clean_proc = _run_fast_on_staged(check_script, staged)
         if clean_proc.returncode != 0:
             print(f"SELF-TEST FAILED: clean copy failed --fast:\n{clean_proc.stdout}\n{clean_proc.stderr}")
             return 1
-        print(f"SELF-TEST PASSED: all {len(mutations)} mutation checks + clean baseline verified (0 residue).")
-        return 0
+        total_checks = len(mutations)
     finally:
         _remove_tree_bottom_up(tmp_root)
+
+    if tmp_root.exists():
+        print(f"SELF-TEST FAILED: leftover temp residue at {tmp_root}", file=sys.stderr)
+        return 1
+    print(f"SELF-TEST PASSED: all {total_checks} mutation checks + clean baseline verified (0 residue).")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -259,12 +311,12 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
 
-    parser = argparse.ArgumentParser(description="pob2_cli lint, architecture DAG, and offline test gate.")
+    parser = argparse.ArgumentParser(description="pob2_cli lint, architecture DAG, and test ratchet gate.")
     parser.add_argument("--fast", action="store_true", help="Run ruff + AST arch-lint only (<3s).")
     parser.add_argument("--self-test", action="store_true", help="Run mutation self-test in %%TEMP%%.")
     parser.add_argument("--root", type=Path, default=None, help="Override pob2_cli root directory.")
-    parser.add_argument("--min-passed", type=int, default=MIN_PASSED_TESTS, help="Minimum passed tests.")
-    parser.add_argument("--max-skipped", type=int, default=MAX_SKIPPED_TESTS, help="Maximum skipped tests.")
+    parser.add_argument("--min-passed", type=int, default=None, help="Override minimum passed tests.")
+    parser.add_argument("--max-skipped", type=int, default=None, help="Override maximum skipped tests.")
     args = parser.parse_args(argv)
 
     pob2_root = (args.root or Path(__file__).resolve().parents[1]).resolve()
@@ -278,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
     failed = False
     if not ruff_ok:
         failed = True
-        print("FAIL [ruff] ruff check reported lint violations | Fix: run `python -m ruff check --config pob2_cli/pyproject.toml pob2_cli/src pob2_cli/scripts pob2_cli/tests`")
+        print("FAIL [ruff] ruff check reported lint violations | Fix: run `python -m ruff check --config pob2_cli/pyproject.toml pob2_cli/src pob2_cli/scripts pob2_cli/packaging pob2_cli/tests`")
         if ruff_out:
             print(ruff_out)
     if violations:
@@ -301,18 +353,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.fast:
         return 0
 
+    mode_label, def_min_passed, def_max_skipped = detect_test_ratchet()
+    min_passed = args.min_passed if args.min_passed is not None else def_min_passed
+    max_skipped = args.max_skipped if args.max_skipped is not None else def_max_skipped
+    print(f"INFO: mode={mode_label} | ratchet: min_passed>={min_passed}, max_skipped<={max_skipped}")
+
     pytest_ok, pytest_msg = run_isolated_pytest(
         pob2_root,
-        min_passed=args.min_passed,
-        max_skipped=args.max_skipped,
+        min_passed=min_passed,
+        max_skipped=max_skipped,
     )
     total_elapsed = time.perf_counter() - t0
     if not pytest_ok:
-        print(f"FAIL [pytest] isolated offline test gate failed in {total_elapsed:.2f}s | Fix: inspect failures below.")
+        print(f"FAIL [pytest] isolated {mode_label} test gate failed in {total_elapsed:.2f}s | Fix: inspect failures below.")
         print(pytest_msg)
         return 1
 
-    print(f"FULL GATE OK in {total_elapsed:.2f}s | {pytest_msg}")
+    print(f"FULL GATE OK ({mode_label}) in {total_elapsed:.2f}s | {pytest_msg}")
     return 0
 
 

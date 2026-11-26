@@ -19,10 +19,12 @@ from typing import Any
 import httpx
 
 from ..bridge_client import validate_poe2_spec_class_ids
-from ..bridge_protocol import decode_share_code_xml, encode_xml_share_code
+from ..bridge_protocol import encode_xml_share_code
 from ..errors import DaemonRequestError
-from ..guardrails import validate_build_xml, validate_url
+from ..guardrails import redact_secrets, validate_build_xml, validate_url
+from ..share_codec import MAX_SHARE_XML_BYTES, ShareCodeLimitError, share_code_to_xml
 from ..updater import resolve_proxy
+from .url_guard import check_public_https_url, get_public_https
 from .wegame_convert import convert_wegame_bundle_to_pob2_xml
 from .wegame_fetch import fetch_wegame_share, is_wegame_share_url, parse_wegame_share_url
 
@@ -30,6 +32,7 @@ TextFetcher = Callable[[str, float], str]
 
 _LOCAL_PATH_SUFFIXES: tuple[str, ...] = (".xml", ".pob", ".pob2", ".txt", ".json")
 _WIN_DRIVE_PREFIX_RE = re.compile(r"^[A-Za-z]:[/\\]")
+_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 _SPEC_NODES_RE = re.compile(r"<\s*Spec\b[^>]*\bnodes\s*=\s*[\"']([^\"']*)[\"']", re.IGNORECASE)
 
 
@@ -82,12 +85,12 @@ _DEFAULT_HEADERS = {
 }
 
 _SITE_SPECS: tuple[tuple[str, re.Pattern[str], str], ...] = (
-    ("maxroll", re.compile(r"^https?://(?:www\.)?maxroll\.gg/poe2/(?:api/)?pob/([A-Za-z0-9._-]+?)/?(?:[?#].*)?$", re.I), "https://maxroll.gg/poe2/api/pob/{id}"),
-    ("pobbin", re.compile(r"^https?://(?:www\.)?pobb\.in/(?:pob/)?([A-Za-z0-9._-]+?)(?:/raw)?/?(?:[?#].*)?$", re.I), "https://pobb.in/pob/{id}"),
-    ("poeninja", re.compile(r"^https?://(?:www\.)?(?:poe\.ninja/poe2|poe2\.ninja)/pob/(?:raw/)?([A-Za-z0-9._-]+?)/?(?:[?#].*)?$", re.I), "https://poe.ninja/poe2/pob/raw/{id}"),
-    ("poe2db", re.compile(r"^https?://(?:www\.)?poe2db\.tw/pob/([A-Za-z0-9._-]+?)(?:/raw)?/?(?:[?#].*)?$", re.I), "https://poe2db.tw/pob/{id}/raw"),
-    ("pastebin", re.compile(r"^https?://(?:www\.)?pastebin\.com/(?:raw/)?([A-Za-z0-9]+)/?(?:[?#].*)?$", re.I), "https://pastebin.com/raw/{id}"),
-    ("rentry", re.compile(r"^https?://(?:www\.)?rentry\.co/(?:paste/)?([A-Za-z0-9_-]+)(?:/raw)?/?(?:[?#].*)?$", re.I), "https://rentry.co/paste/{id}/raw"),
+    ("maxroll", re.compile(r"^https://(?:www\.)?maxroll\.gg/poe2/(?:api/)?pob/([A-Za-z0-9._-]+?)/?(?:[?#].*)?$", re.I), "https://maxroll.gg/poe2/api/pob/{id}"),
+    ("pobbin", re.compile(r"^https://(?:www\.)?pobb\.in/(?:pob/)?([A-Za-z0-9._-]+?)(?:/raw)?/?(?:[?#].*)?$", re.I), "https://pobb.in/pob/{id}"),
+    ("poeninja", re.compile(r"^https://(?:www\.)?(?:poe\.ninja/poe2|poe2\.ninja)/pob/(?:raw/)?([A-Za-z0-9._-]+?)/?(?:[?#].*)?$", re.I), "https://poe.ninja/poe2/pob/raw/{id}"),
+    ("poe2db", re.compile(r"^https://(?:www\.)?poe2db\.tw/pob/([A-Za-z0-9._-]+?)(?:/raw)?/?(?:[?#].*)?$", re.I), "https://poe2db.tw/pob/{id}/raw"),
+    ("pastebin", re.compile(r"^https://(?:www\.)?pastebin\.com/(?:raw/)?([A-Za-z0-9]+)/?(?:[?#].*)?$", re.I), "https://pastebin.com/raw/{id}"),
+    ("rentry", re.compile(r"^https://(?:www\.)?rentry\.co/(?:paste/)?([A-Za-z0-9_-]+)(?:/raw)?/?(?:[?#].*)?$", re.I), "https://rentry.co/paste/{id}/raw"),
 )
 
 _POB2_URI_RE = re.compile(r"^pob2:[/\\]*([a-z0-9]+)[/\\]+([A-Za-z0-9._-]+)$", re.I)
@@ -142,10 +145,12 @@ def _default_fetch_text(
     transport: httpx.BaseTransport | None = None,
     proxy: str | None = None,
 ) -> str:
+    check_public_https_url(url)
     kwargs: dict[str, Any] = {
         "headers": _DEFAULT_HEADERS,
         "timeout": httpx.Timeout(timeout, connect=min(timeout, 10.0)),
-        "follow_redirects": True,
+        "follow_redirects": False,
+        "trust_env": False,
     }
     if transport is not None:
         kwargs["transport"] = transport
@@ -155,11 +160,15 @@ def _default_fetch_text(
             kwargs["proxy"] = eff_proxy
     try:
         with httpx.Client(**kwargs) as client:
-            resp = client.get(url)
-    except httpx.HTTPError as exc:
-        raise DaemonRequestError(f"Failed fetching PoE2 build URL `{url}`: {exc}") from exc
+            resp = get_public_https(client, url, max_bytes=MAX_SHARE_XML_BYTES)
+    except DaemonRequestError:
+        raise
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
+        raise DaemonRequestError(
+            f"Failed fetching PoE2 build URL `{redact_secrets(url)}`: {redact_secrets(str(exc))}"
+        ) from exc
     if resp.status_code != 200:
-        raise DaemonRequestError(f"PoE2 build URL `{url}` returned HTTP {resp.status_code}.")
+        raise DaemonRequestError(f"PoE2 build URL `{redact_secrets(url)}` returned HTTP {resp.status_code}.")
     return resp.text
 
 
@@ -167,6 +176,10 @@ def _extract_code_or_xml_from_body(body: str, site_kind: str) -> tuple[str, str]
     text = (body or "").strip()
     if not text:
         raise DaemonRequestError(f"Empty response body from `{site_kind}` build link.")
+    if len(text.encode("utf-8", errors="replace")) > MAX_SHARE_XML_BYTES:
+        raise DaemonRequestError(
+            f"Build XML from `{site_kind}` exceeds {MAX_SHARE_XML_BYTES // (1024 * 1024)} MiB limit."
+        )
     if text.startswith("{"):
         try:
             obj = json.loads(text)
@@ -182,8 +195,15 @@ def _extract_code_or_xml_from_body(body: str, site_kind: str) -> tuple[str, str]
         validate_build_xml(text, expected_game="poe2", source_hint=site_kind)
         validate_poe2_spec_class_ids(text)
         return text, encode_xml_share_code(text)
-    decoded = decode_share_code_xml(text)
-    if decoded is None or "<PathOfBuilding" not in decoded:
+    try:
+        decoded = share_code_to_xml(text)
+    except ShareCodeLimitError as exc:
+        raise DaemonRequestError(str(exc)) from exc
+    except ValueError as exc:
+        raise DaemonRequestError(
+            f"Response from `{site_kind}` did not contain a valid PoB2 share code or XML ({exc})."
+        ) from exc
+    if "<PathOfBuilding" not in decoded:
         raise DaemonRequestError(f"Response from `{site_kind}` did not contain a valid PoB2 share code or XML.")
     validate_build_xml(decoded, expected_game="poe2", source_hint=site_kind)
     validate_poe2_spec_class_ids(decoded)
@@ -225,14 +245,14 @@ def resolve_poe2_build_source(
             summary=res.to_summary_dict(),
         )
 
-    # 2. Supported remote PoE2 build share URLs (pobb.in, poe2db.tw, poe.ninja/poe2, maxroll.gg/poe2, ...)
+    # 2. Supported remote PoE2 build share URLs & generic public-HTTPS share links (anti-SSRF guarded)
     parsed_site = parse_share_url(raw)
     if parsed_site is not None:
         site_kind, dl_url = parsed_site
-        if fetcher is not None:
-            body = fetcher(dl_url, timeout)
-        else:
-            body = _default_fetch_text(dl_url, timeout, transport=transport, proxy=proxy)
+        check_public_https_url(dl_url)
+        body = fetcher(dl_url, timeout) if fetcher is not None else _default_fetch_text(
+            dl_url, timeout, transport=transport, proxy=proxy
+        )
         xml_text, code_str = _extract_code_or_xml_from_body(body, site_kind)
         return ResolvedBuildSource(
             xml=xml_text,
@@ -242,10 +262,33 @@ def resolve_poe2_build_source(
             download_url=dl_url,
         )
 
+    if (
+        not raw.startswith("<")
+        and "\n" not in raw
+        and not _WIN_DRIVE_PREFIX_RE.match(raw)
+        and ("//" in raw or (_URL_SCHEME_RE.match(raw) and not raw.lower().startswith("pob2:")))
+    ):
+        check_public_https_url(raw)
+        body = fetcher(raw, timeout) if fetcher is not None else _default_fetch_text(
+            raw, timeout, transport=transport, proxy=proxy
+        )
+        xml_text, code_str = _extract_code_or_xml_from_body(body, "https_share")
+        return ResolvedBuildSource(
+            xml=xml_text,
+            code=code_str,
+            source_kind="https_share_url",
+            source_label=raw,
+            download_url=raw,
+        )
+
     # 3. Local file (XML or sanitized WeGame JSON bundle)
     if not raw.startswith("<") and len(raw) < 260 and "\n" not in raw:
         cand = Path(raw)
         if cand.is_file():
+            if cand.stat().st_size > MAX_SHARE_XML_BYTES:
+                raise DaemonRequestError(
+                    f"Build file `{cand.name}` exceeds {MAX_SHARE_XML_BYTES // (1024 * 1024)} MiB limit."
+                )
             content = cand.read_text(encoding="utf-8")
             if cand.suffix.lower() == ".json" or content.lstrip().startswith("{"):
                 try:
@@ -276,6 +319,10 @@ def resolve_poe2_build_source(
 
     # 4. Inline PoB2 XML or base64url zlib/gzip share code
     if raw.lstrip().startswith("<"):
+        if len(raw.encode("utf-8", errors="replace")) > MAX_SHARE_XML_BYTES:
+            raise DaemonRequestError(
+                f"Inline build XML exceeds {MAX_SHARE_XML_BYTES // (1024 * 1024)} MiB limit."
+            )
         validate_build_xml(raw, expected_game="poe2")
         validate_poe2_spec_class_ids(raw)
         return ResolvedBuildSource(
@@ -284,7 +331,12 @@ def resolve_poe2_build_source(
             source_kind="pob2_xml",
             source_label="inline_xml",
         )
-    decoded = decode_share_code_xml(raw)
+    try:
+        decoded = share_code_to_xml(raw)
+    except ShareCodeLimitError as exc:
+        raise DaemonRequestError(str(exc)) from exc
+    except ValueError:
+        decoded = None
     if decoded is not None and "<PathOfBuilding" in decoded:
         validate_build_xml(decoded, expected_game="poe2")
         validate_poe2_spec_class_ids(decoded)
