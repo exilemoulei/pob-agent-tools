@@ -400,9 +400,11 @@ def _collect_static_health_issues(
         health_issues.append({"category": "EngineWarning", "severity": "HIGH", "message": w})
 
     primary_slots = {"Weapon 1", "Body Armour", "Helmet", "Gloves", "Boots", "Amulet", "Ring 1", "Ring 2", "Belt"}
-    if _has_hollow_palm_keystone(tree_summary):
-        # Hollow Palm Technique only works with empty weapon and glove slots.
-        primary_slots -= {"Weapon 1", "Gloves"}
+    hollow_slots = {"Weapon 1", "Gloves"}
+    worn = {s.get("name") for s in items_res.get("slots", []) if s.get("selItemId") and not s.get("inactive")}
+    if _has_hollow_palm_keystone(tree_summary) and not (hollow_slots & worn):
+        # Hollow Palm Technique wants both slots empty; with one filled it is off and the other is a real gap.
+        primary_slots -= hollow_slots
     for slot in items_res.get("slots", []):
         if slot.get("name") in primary_slots and not slot.get("inactive") and not slot.get("selItemId"):
             health_issues.append(

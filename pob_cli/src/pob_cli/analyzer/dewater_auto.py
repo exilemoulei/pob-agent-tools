@@ -314,11 +314,17 @@ def best_effort_audit_tree_and_raw(
                     "ascendancyNodes": [],
                     "notables": [],
                 }
+                # A jewel-granted node (One With Nothing's Hollow Palm Technique) is not in the static tree.
+                dyn_map = {
+                    str(n["id"]): n
+                    for n in (t_state.get("dynamicNodes") or [])
+                    if isinstance(n, dict) and n.get("id") is not None
+                }
                 for raw_nid in t_state.get("allocatedNodes") or []:
                     nid = int(raw_nid)
                     sid = str(nid)
                     raw_nd = nodes_db.get(sid) or {}
-                    nd = dict(raw_nd)
+                    nd = {**raw_nd, **dyn_map.get(sid, {})}
                     if sid in ov and isinstance(ov[sid], dict):
                         # A conquered node with no stats must not keep the lines it had before the jewel.
                         apply_node_override(nd, ov[sid], raw_nd)
@@ -336,11 +342,6 @@ def best_effort_audit_tree_and_raw(
                         synth_tree["notables"].append(nd)
                 from .tree_sockets import enrich_tree_sockets
 
-                dyn_map = {
-                    str(n["id"]): n
-                    for n in (t_state.get("dynamicNodes") or [])
-                    if isinstance(n, dict) and n.get("id") is not None
-                }
                 alloc_set = {int(x) for x in (t_state.get("allocatedNodes") or [])}
                 j_socks, s_sum, near_socks = enrich_tree_sockets(t_state, items_res, nodes_db, dyn_map, alloc_set)
                 synth_tree_out: dict[str, Any] = dict(synth_tree)

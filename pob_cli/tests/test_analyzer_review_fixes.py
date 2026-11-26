@@ -104,6 +104,40 @@ def test_hollow_palm_skips_empty_weapon_and_glove_slots() -> None:
     ]
     assert palm == ["Equipment slot 'Helmet' is empty"]
 
+    # With a weapon on, the keystone is off: the empty gloves are a gap again.
+    items_res["slots"][0]["selItemId"] = 7
+    armed = [
+        i["message"]
+        for i in _health({}, items_res=items_res, tree_summary={"keystones": [{"name": "Hollow Palm Technique"}]})
+        if i["category"] == "Equipment"
+    ]
+    assert armed == ["Equipment slot 'Gloves' is empty", "Equipment slot 'Helmet' is empty"]
+
+
+def test_audit_tree_summary_sees_a_jewel_granted_keystone() -> None:
+    """One With Nothing grants Hollow Palm Technique as a cluster node, which the static tree does not hold."""
+    from pob_cli.analyzer.dewater_auto import best_effort_audit_tree_and_raw
+    from pob_cli.analyzer.static_checks import _has_hollow_palm_keystone
+
+    class _Worker:
+        def get_cached_tree_data(self, _version: Any) -> dict[str, Any]:
+            return {"nodes": {"100": {"name": "Static Notable", "type": "Notable", "stats": ["+10 to Strength"]}}}
+
+        def call(self, method: str, _params: dict[str, Any]) -> dict[str, Any]:
+            assert method == "get_tree_state"
+            return {
+                "treeVersion": "3_30",
+                "allocatedNodes": [100, 65856],
+                "dynamicNodes": [
+                    {"id": 65856, "name": "Hollow Palm Technique", "type": "Keystone", "stats": ["You count as Dual Wielding while you are Unencumbered"]}
+                ],
+            }
+
+    summary, _raw, node_stats = best_effort_audit_tree_and_raw(_Worker(), {"slots": [], "items": []})  # type: ignore[arg-type]
+    assert summary is not None and _has_hollow_palm_keystone(summary)
+    assert [n["name"] for n in summary["notables"]] == ["Static Notable"]
+    assert ("Hollow Palm Technique", ["You count as Dual Wielding while you are Unencumbered"]) in node_stats
+
 
 class _RankWorker:
     def __init__(self, node_res: Any) -> None:
