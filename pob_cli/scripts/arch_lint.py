@@ -74,6 +74,7 @@ LAYER_MAP: dict[str, int] = {
     "cli_research": 4,
     "cli_trade": 4,
     "cli_timeless": 4,
+    "cli_timeless_trade": 4,
     "cli_map_regex": 4,
 }
 

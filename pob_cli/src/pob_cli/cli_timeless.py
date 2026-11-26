@@ -21,8 +21,10 @@ from .cli_common import (
 )
 from .errors import CrossGameHallucinationError, DaemonRequestError
 from .formatters import fmt_num, render_table
+from .game_data import fold_han
 from .guardrails import GuardrailScope, check_input, check_poe2_timeless_jewel
-from .timeless import STAT_KEYS, search, set_idle_priority
+from .timeless import _JEWEL_ZH_ALIASES, STAT_KEYS, search, set_idle_priority
+from .timeless.multi_conqueror import search_multi_conqueror
 from .timeless.worker import _check_putrid_seed
 
 
@@ -72,6 +74,19 @@ class _SocketOptionType(click.ParamType):
 
 _SOCKET_OPTION_TYPE = _SocketOptionType()
 
+_ABYSS_TIMELESS_JEWELS: frozenset[str] = frozenset(
+    {
+        "festering vengeance", "extinguishing grasp", "baleful dominion",
+        "destructive aspiration", "reclaimed malevolence",
+    }
+)
+
+
+def _is_abyss_timeless_jewel(jewel: str) -> bool:
+    cleaned = str(jewel or "").strip()
+    mapped = _JEWEL_ZH_ALIASES.get(cleaned) or _JEWEL_ZH_ALIASES.get(fold_han(cleaned)) or cleaned
+    return mapped.strip().lower() in _ABYSS_TIMELESS_JEWELS
+
 
 def _daemon_exit_code() -> int:
     return int(getattr(_cli_mod, "DAEMON_FAILURE_EXIT_CODE", 5))
@@ -98,11 +113,12 @@ def _pct(new: Any, old: Any) -> str:
     return f"{((new - old) / abs(old)) * 100.0:+.1f}%"
 
 
-def _seed_preview(seeds: list[int], limit: int = 6) -> str:
+def _seed_preview(seeds: list[int], limit: int = 6, conqueror: str | None = None) -> str:
     if not seeds:
         return "-"
     head = ", ".join(str(s) for s in seeds[:limit])
-    return f"{head} ..." if len(seeds) > limit else head
+    preview = f"{head} ..." if len(seeds) > limit else head
+    return f"[{conqueror}] {preview}" if conqueror else preview
 
 
 def _notable_preview(entries: list[dict[str, Any]], limit: int = 6) -> str:
@@ -223,7 +239,7 @@ def _format_search_markdown(res: dict[str, Any], stat: str, top: int) -> str:
                 idx, fmt_num(s.get(stat)), _pct(s.get(stat), base.get(stat)),
                 fmt_num(s.get("CombinedDPS")), _pct(s.get("CombinedDPS"), base.get("CombinedDPS")),
                 fmt_num(s.get("TotalEHP")), _pct(s.get("TotalEHP"), base.get("TotalEHP")),
-                fmt_num(s.get("Life")), len(seeds), _seed_preview(seeds),
+                fmt_num(s.get("Life")), len(seeds), _seed_preview(seeds, conqueror=outcome.get("conqueror")),
             ])
     else:
         headers = ["#", "Combined DPS", "vs now", "Total EHP", "vs now", "Life", "Seeds", "Seed numbers"]
@@ -237,7 +253,7 @@ def _format_search_markdown(res: dict[str, Any], stat: str, top: int) -> str:
             rows.append([
                 idx, fmt_num(s.get("CombinedDPS")), _pct(s.get("CombinedDPS"), base.get("CombinedDPS")),
                 fmt_num(s.get("TotalEHP")), _pct(s.get("TotalEHP"), base.get("TotalEHP")),
-                fmt_num(s.get("Life")), len(seeds), _seed_preview(seeds),
+                fmt_num(s.get("Life")), len(seeds), _seed_preview(seeds, conqueror=outcome.get("conqueror")),
             ])
 
     seed_count = int(res.get("seedCount") or 0)
@@ -351,6 +367,52 @@ def cmd_timeless_list(
 )
 @click.option("--exact", is_flag=True, help="Evaluate every seed group without estimation.")
 @click.option("--idle", is_flag=True, help="Lower CPU priority for worker processes.")
+@click.option("--trade", is_flag=True, help="Lookup live in-stock Trade buyout listings for top ranked seeds.")
+@click.option("--budget", type=float, default=None, help="Maximum Trade listing price (used with --trade).")
+@click.option(
+    "--currency",
+    type=click.Choice(["divine", "chaos"], case_sensitive=False),
+    default="divine",
+    show_default=True,
+    help="Currency for --budget (used with --trade).",
+)
+@click.option(
+    "--status",
+    type=click.Choice(["securable", "available", "online", "any"], case_sensitive=False),
+    default="securable",
+    show_default=True,
+    help="Trade listing status filter (used with --trade).",
+)
+@click.option("--securable", is_flag=True, help="Shortcut for --status securable (used with --trade).")
+@click.option(
+    "--max-per-seller",
+    type=int,
+    default=2,
+    show_default=True,
+    help="Max Trade listings retained per seller account (0 = unlimited; used with --trade).",
+)
+@click.option(
+    "--max-trade-batches",
+    type=int,
+    default=3,
+    show_default=True,
+    help="Max Trade API shard batches to execute (0 = offline pre-sharded URLs only).",
+)
+@click.option(
+    "--trade-limit",
+    type=int,
+    default=5,
+    show_default=True,
+    help="Max in-stock matches to return and early-stop target across batches.",
+)
+@click.option("--league", default=None, help="PoE1 trade league (defaults to active challenge league).")
+@click.option(
+    "--realm",
+    type=click.Choice(["global", "tw"], case_sensitive=False),
+    default=None,
+    help="Trade realm (`global` pathofexile.com or `tw` pathofexile.tw).",
+)
+@click.option("--proxy", default=None, help="HTTP/SOCKS5 proxy URL for Trade API requests.")
 @_target_option(allow_slot_alias=False)
 @_output_options
 @click.option("--json", "as_json", is_flag=True, help="Output structured JSON.")
@@ -364,6 +426,17 @@ def cmd_timeless_search(
     workers: int | None,
     exact: bool,
     idle: bool,
+    trade: bool,
+    budget: float | None,
+    currency: str,
+    status: str,
+    securable: bool,
+    max_per_seller: int,
+    max_trade_batches: int,
+    trade_limit: int,
+    league: str | None,
+    realm: str | None,
+    proxy: str | None,
     target: str,
     compact: bool,
     out_path: str | None,
@@ -374,6 +447,20 @@ def cmd_timeless_search(
         raise click.ClickException("--top must be >= 1.")
     if workers is not None and workers < 1:
         raise click.ClickException("--workers must be >= 1.")
+
+    ctx = click.get_current_context()
+    from .cli_timeless_trade import validate_timeless_trade_options
+
+    eff_status = validate_timeless_trade_options(
+        ctx,
+        trade=trade,
+        budget=budget,
+        status=status,
+        securable=securable,
+        max_per_seller=max_per_seller,
+        max_trade_batches=max_trade_batches,
+        trade_limit=trade_limit,
+    )
 
     try:
         _check_putrid_seed(jewel)
@@ -406,8 +493,18 @@ def cmd_timeless_search(
     _, eff_out = _resolve_output_flags(compact=compact, out_path=out_path)
     log = None if (as_json or eff_out is not None) else (lambda msg: _echo_stderr_utf8(f"[timeless] {msg}"))
 
+    if _is_abyss_timeless_jewel(jewel):
+        click.echo(
+            "[timeless] Note: Abyss timeless jewels evaluate ~7,900 ungrouped seeds and may take ~1-3 minutes "
+            "(recommend specifying a single --socket <id>).",
+            err=True,
+        )
+
+    is_any_conq = bool(conqueror and conqueror.strip().lower() in ("any", "*"))
+    eval_top = max(top, 30) if (trade and is_any_conq) else top
+
     try:
-        res = search(
+        res = search_multi_conqueror(
             code,
             exported.get("xml") or "",
             socket,
@@ -415,11 +512,12 @@ def cmd_timeless_search(
             conqueror=conqueror,
             mods=mods,
             stat=stat,
-            top=top,
+            top=eval_top,
             workers=workers,
             exact=exact,
             progress=log,
             pob_dir=exported.get("pobDir"),
+            search_fn=search,
         )
     except CrossGameHallucinationError:
         raise
@@ -428,7 +526,38 @@ def cmd_timeless_search(
     except (BridgeError, RuntimeError, OSError, zlib.error) as exc:
         _raise_engine_failure(exc)
 
+    trade_md: str | None = None
+    trade_exit = 0
+    trade_err: str | None = None
+    if trade:
+        from .cli_timeless_trade import run_timeless_trade_overlay
+
+        trade_res, trade_md, trade_exit, trade_err = run_timeless_trade_overlay(
+            res,
+            conqueror_override=conqueror if is_any_conq else None,
+            budget=budget,
+            currency=currency,
+            status=eff_status,
+            max_per_seller=max_per_seller,
+            max_trade_batches=max_trade_batches,
+            trade_limit=trade_limit,
+            league=league,
+            realm=realm,
+            proxy=proxy,
+            pob_dir=exported.get("pobDir"),
+            progress=log,
+        )
+        res = {**res, "trade": trade_res}
+
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)
-        return
-    _emit_text(_format_search_markdown(res, stat, top), out_path=out_path)
+    else:
+        body = _format_search_markdown(res, stat, top)
+        if trade_md:
+            body = f"{body}\n\n{trade_md}"
+        _emit_text(body, out_path=out_path)
+
+    if trade_exit != 0:
+        if trade_err:
+            _echo_stderr_utf8(trade_err)
+        ctx.exit(trade_exit)
