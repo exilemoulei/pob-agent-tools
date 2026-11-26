@@ -69,6 +69,8 @@ def test_parse_replace_mods_rejects_malformed_entries() -> None:
         ("item_edit", {"op": "item_edit", "slot": "Ring 1", "replaceMods": [{"a": "b"}]}, "replaceMods"),
         ("item_edit", {"op": "item_edit", "slot": "Ring 1", "replaceMods": [["a", "b", "c"]]}, "replaceMods"),
         ("skill_add", {"op": "skill_add", "gem": "Empower", "level": [4]}, "level"),
+        ("set_group", {"op": "set_group", "group": "main", "mainActiveSkill": True}, "mainActiveSkill"),
+        ("set_group", {"op": "set_group", "group": "main", "main_active_skill": [2]}, "main_active_skill"),
     ],
 )
 def test_validate_batch_op_rejects_bad_types_and_empty_steps(kind: str, op: dict[str, Any], match: str) -> None:
@@ -125,6 +127,37 @@ def test_batch_tree_step_resolves_whole_tokens_and_forwards_noop_warnings(monkey
     assert steps[0]["noopWarnings"] == ["Node 1 is already allocated (skipped allocate)."]
     _, noops = batch_sweep._step_warnings(steps)
     assert noops == ["step 1: Node 1 is already allocated (skipped allocate)."]
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_batch_with_a_malformed_later_step_runs_no_step_and_leaves_the_build(apply: bool) -> None:
+    from test_cow_snapshot_sweep import _CowFakeWorker
+
+    from pob_cli.snapshot import history_of
+
+    w = _CowFakeWorker(caps={"cowSnapshot": True, "directCalc": True})
+    w.last_good_code = w._serialize()
+    hist = history_of(w)
+    before = (w._serialize(), hist.committed, hist.rev, len(hist.undo))
+    ran: list[int] = []
+
+    def _edit(worker: Any, _op: dict[str, Any], _cache: Any, idx: int) -> dict[str, Any]:
+        ran.append(idx)
+        worker.dps += 15000.0
+        return {"op": "config"}
+
+    good = {"op": "config", "set": {"enemyIsBoss": "Pinnacle"}}
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(batch_ops._BATCH_OP_HANDLERS, "config", _edit)
+        with pytest.raises(ValueError, match=r"step #2 \(set_level\).*'level' must be an integer"):
+            batch_sweep.run_batch(w, [good, {"op": "set_level", "level": True}], apply=apply)
+        assert ran == []
+        assert (w._serialize(), hist.committed, hist.rev, len(hist.undo)) == before
+        assert hist.active is None and hist.stale is False
+
+        res = batch_sweep.run_batch(w, [good], apply=apply)  # the slot still takes a valid batch
+        assert ran == [1] and res["applied"] is apply
+    assert (w._serialize() != before[0]) is apply
 
 
 def test_rpc_item_edit_rejects_malformed_replace_mods(monkeypatch: pytest.MonkeyPatch) -> None:

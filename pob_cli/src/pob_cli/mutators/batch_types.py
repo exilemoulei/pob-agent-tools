@@ -48,6 +48,8 @@ _INT_KEYS: frozenset[str] = frozenset(
         "mainSkill",
         "mainSkillIndex",
         "main_skill_index",
+        "mainActiveSkill",
+        "main_active_skill",
         "itemIndex",
         "item_index",
     }

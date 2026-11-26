@@ -457,8 +457,11 @@ def _execute_batch_ops(
     ops: list[dict[str, Any]],
     cache: _BatchCache,
 ) -> list[dict[str, Any]]:
-    """Execute a list of batch mutation ops in place with smart per-tab caching."""
-    step_results: list[dict[str, Any]] = []
+    """Execute a list of batch mutation ops in place with smart per-tab caching.
+
+    Every step is checked before the first one runs, so a malformed later step costs no edit to roll back.
+    """
+    planned: list[tuple[int, _BatchOpHandler, dict[str, Any]]] = []
     for idx, op in enumerate(ops, start=1):
         if not isinstance(op, dict):
             raise ValueError(f"Batch op at step {idx} must be a JSON object.")
@@ -470,5 +473,5 @@ def _execute_batch_ops(
                 f"Unsupported batch op type '{raw_kind}' at step {idx}. "
                 f"Example valid ops: {_BATCH_OP_EXAMPLE}"
             )
-        step_results.append(handler(w, validate_batch_op(idx, kind, op), cache, idx))
-    return step_results
+        planned.append((idx, handler, validate_batch_op(idx, kind, op)))
+    return [handler(w, norm, cache, idx) for idx, handler, norm in planned]
