@@ -143,3 +143,21 @@ def history_of(worker: Any) -> SlotHistory:
     except AttributeError:
         pass
     return hist
+
+
+def rebuild_if_stale(worker: Any, *, required: bool = True) -> None:
+    """Rebuild calc output a failed transaction exit left stale, before a request outside one reads it.
+
+    A failure is the engine's (the request fails, exit 5) rather than old numbers passed off as
+    current. `required=False` is for a request that replaces the build anyway.
+    """
+    hist = history_of(worker)
+    if not hist.stale or hist.active is not None:
+        return
+    try:
+        worker.call("pump", {"seconds": 0})
+    except Exception:
+        if required:
+            raise
+        return
+    hist.stale = False

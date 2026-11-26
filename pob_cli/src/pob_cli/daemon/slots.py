@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from ..bridge_client import BridgeWorker
 from ..errors import DaemonRequestError
 from ..locale_cfg import get_active_lang
-from ..snapshot import SlotHistory, history_of
+from ..snapshot import SlotHistory, history_of, rebuild_if_stale
 from ..updater import (
     OK_STATES,
     STATE_BOOTSTRAP_MISSING,
@@ -486,9 +486,10 @@ class DaemonManager:
                         stack.enter_context(lk)
                     mw = self._get_worker_in_barrier(main_slot)
                     rw = self._get_worker_in_barrier(ref_slot)
-                    if action == "compare" and not any(
-                        params.get(k) for k in ("source", "xml_code", "ref_source", "ref_xml_code")
-                    ):
+                    loads = any(params.get(k) for k in ("source", "xml_code", "ref_source", "ref_xml_code"))
+                    for w in (mw, rw):
+                        rebuild_if_stale(w, required=not loads)
+                    if action == "compare" and not loads:
                         eff_lang, _ = get_active_lang(self.runtime_dir)
                         return self._read_cache.run_cached_compare(
                             main_slot,
@@ -532,6 +533,8 @@ class DaemonManager:
                 if cached_hit is not None:
                     return cached_hit
 
+                replaces = action in ("load", "new_build") or bool(params.get("source") or params.get("xml_code"))
+                rebuild_if_stale(worker, required=not replaces)
                 try:
                     res_slot = self._dispatch_slot(action, params, worker)
                 except DaemonRequestError as exc:

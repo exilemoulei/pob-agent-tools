@@ -29,7 +29,7 @@ from .helpers import (
     _safe_min_ele_max_hit,
     _stat_float,
 )
-from .history import SlotHistory, history_of
+from .history import SlotHistory, history_of, rebuild_if_stale
 from .transaction import BuildScope, BuildTransaction
 from .verify import stat_drift, verify_build, verify_cow_restored
 
@@ -54,6 +54,7 @@ __all__ = [
     "fall_back_to_code",
     "history_of",
     "load_build",
+    "rebuild_if_stale",
     "redo_build",
     "restore_snapshot",
     "run_mutation",

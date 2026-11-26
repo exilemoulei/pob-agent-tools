@@ -17,7 +17,7 @@ import pob_cli.snapshot.history as history_mod
 from pob_cli.bridge_boot import _persists
 from pob_cli.daemon.read_cache import _is_hist_unsettled
 from pob_cli.daemon.runtime import write_private_json
-from pob_cli.snapshot import BuildTransaction, SlotHistory, history_of, run_mutation
+from pob_cli.snapshot import BuildTransaction, SlotHistory, history_of, rebuild_if_stale, run_mutation
 
 _CAPS = {"cowSnapshot": True, "directCalc": True}
 
@@ -138,6 +138,37 @@ def test_failed_fresh_marks_history_stale_until_next_rebuild() -> None:
         tx.fresh()
         tx.release()
     assert hist.stale is False
+    assert not _is_hist_unsettled(hist)
+
+
+def test_stale_slot_is_rebuilt_before_a_read_or_the_read_fails() -> None:
+    w = _CowFakeWorker(caps=_CAPS)
+    hist = history_of(w)
+    real_call = w.call
+    pumps: list[str] = []
+    fail_pump = {"on": True}
+
+    def _call(method: str, params: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
+        if method == "pump":
+            pumps.append(method)
+            if fail_pump["on"]:
+                raise RuntimeError("engine busy")
+        return real_call(method, params, timeout)
+
+    w.call = _call  # type: ignore[method-assign]
+    rebuild_if_stale(w)
+    assert pumps == []  # a settled slot costs nothing
+
+    hist.stale = True
+    with pytest.raises(RuntimeError, match="engine busy"):
+        rebuild_if_stale(w)
+    assert hist.stale is True
+    rebuild_if_stale(w, required=False)  # a load replaces the build: it must not be blocked
+    assert hist.stale is True
+
+    fail_pump["on"] = False
+    rebuild_if_stale(w)
+    assert hist.stale is False and len(pumps) == 3
     assert not _is_hist_unsettled(hist)
 
 
