@@ -286,6 +286,27 @@ def _assemble_diagnose_mechanics(
     return build_mechanics, core_synergies, amulet_7th_link, stats_full
 
 
+def _attach_diagnose_socket_fields(
+    out_diag: dict[str, Any],
+    top_nodes: dict[str, Any] | None,
+    tree_summary: dict[str, Any],
+) -> None:
+    sock_summary = (
+        top_nodes.get("socketSummary")
+        if isinstance(top_nodes, dict) and isinstance(top_nodes.get("socketSummary"), dict)
+        else tree_summary.get("socketSummary")
+    )
+    nearby_socks = (
+        top_nodes.get("nearbySockets")
+        if isinstance(top_nodes, dict) and isinstance(top_nodes.get("nearbySockets"), list)
+        else tree_summary.get("nearbySockets")
+    )
+    if isinstance(sock_summary, dict):
+        out_diag["socketSummary"] = sock_summary
+    if isinstance(nearby_socks, list):
+        out_diag["nearbySockets"] = nearby_socks
+
+
 def diagnose_build(
     worker: BridgeWorker,
     *,
@@ -479,4 +500,5 @@ def diagnose_build(
         out_diag["agentProbe"] = build_mechanics["agentProbe"]
     if ask_grounding is not None:
         out_diag["askGrounding"] = ask_grounding
+    _attach_diagnose_socket_fields(out_diag, top_nodes, tree_summary)
     return out_diag

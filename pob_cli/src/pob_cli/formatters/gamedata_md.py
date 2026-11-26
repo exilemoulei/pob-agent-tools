@@ -283,3 +283,47 @@ def format_game_data(res: dict[str, Any], kind: str | None = None, query: str | 
         lines.extend(_fmt_game_data_tattoo(results))
 
     return "\n".join(lines)
+
+
+def format_meta_markdown(res: dict[str, Any]) -> str:
+    """Format `pob meta` snapshot into bilingual Markdown tables."""
+    from ..external_data.meta_resolve import bilingual_meta_label
+    from ..locale_cfg import current_lang
+
+    show_zh = current_lang() != "en"
+    lines = [
+        f"### poe.ninja Meta Snapshot: `{res.get('league')}` — `{res.get('totalBuilds', 0):,}` total builds",
+    ]
+    flt = res.get("filters") if isinstance(res.get("filters"), dict) else {}
+    res_bits: list[str] = []
+    if flt.get("resolvedSkill"):
+        res_bits.append(f"skill `{flt.get('skill')}` -> `{flt['resolvedSkill']}`")
+    if flt.get("resolvedClassName"):
+        res_bits.append(f"class `{flt.get('className')}` -> `{flt['resolvedClassName']}`")
+    if res_bits:
+        lines.append(f"_Resolved filter: {', '.join(res_bits)}_")
+
+    asc_rows = [
+        [
+            bilingual_meta_label(str(a.get("class") or ""), kind="class", show_zh=show_zh),
+            f"{a.get('percentage', 0):.2f}%",
+            f"{a.get('estimatedBuilds', 0):,}",
+            ", ".join(bilingual_meta_label(str(sk), kind="skill", show_zh=show_zh) for sk in (a.get("skills") or [])[:4]),
+        ]
+        for a in res.get("ascendancies", [])
+    ]
+    lines.append("\n#### Top Ascendancies")
+    lines.append(render_table(["Ascendancy", "Share", "Est. Builds", "Top Skills"], asc_rows))
+
+    sk_rows = [
+        [
+            bilingual_meta_label(str(s.get("skill") or ""), kind="skill", show_zh=show_zh),
+            f"{s.get('percentage', 0):.2f}%",
+            f"{s.get('estimatedBuilds', 0):,}",
+            ", ".join(bilingual_meta_label(str(c), kind="class", show_zh=show_zh) for c in (s.get("classes") or [])[:4]),
+        ]
+        for s in res.get("topSkills", [])
+    ]
+    lines.append("\n#### Top Main Skills")
+    lines.append(render_table(["Skill", "Share", "Est. Builds", "Top Classes"], sk_rows))
+    return "\n".join(lines)

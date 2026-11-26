@@ -94,8 +94,10 @@ def query_meta(
     total_builds = int(target_lb.get("total") or 0)
     stats = target_lb.get("statistics", []) or []
 
-    skill_q = skill.strip().lower() if skill and skill.strip() else None
-    class_q = class_name.strip().lower() if class_name and class_name.strip() else None
+    from .meta_resolve import resolve_meta_filter
+
+    skill_q, resolved_skill = resolve_meta_filter(skill, kind="skill", poedb_lookup=_lookup_poedb_local_en)
+    class_q, resolved_class = resolve_meta_filter(class_name, kind="class", poedb_lookup=_lookup_poedb_local_en)
 
     asc_map: dict[str, dict[str, Any]] = {}
     skill_map: dict[str, dict[str, Any]] = {}
@@ -163,12 +165,18 @@ def query_meta(
 
     combinations.sort(key=lambda x: x["percentage"], reverse=True)
 
+    filters_out: dict[str, Any] = {"skill": skill, "className": class_name}
+    if resolved_skill:
+        filters_out["resolvedSkill"] = resolved_skill
+    if resolved_class:
+        filters_out["resolvedClassName"] = resolved_class
+
     out: dict[str, Any] = {
         "league": target_lb.get("leagueName"),
         "leagueUrl": target_lb.get("leagueUrl"),
         "totalBuilds": total_builds,
         "hardcore": bool(target_lb.get("hardcore", False)),
-        "filters": {"skill": skill, "className": class_name},
+        "filters": filters_out,
         "ascendancies": ascendancies,
         "topSkills": top_skills,
         "combinations": combinations[:top],

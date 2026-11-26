@@ -404,6 +404,40 @@ def _collect_static_health_issues(
                     "message": f"Equipment slot '{slot['name']}' is empty",
                 }
             )
+
+    if isinstance(tree_summary, dict):
+        sock_by_id = {
+            int(s["nodeId"]): s
+            for s in (tree_summary.get("jewelSockets") or [])
+            if isinstance(s, dict) and s.get("nodeId") is not None
+        }
+        empty_ids = list((tree_summary.get("socketSummary") or {}).get("allocatedEmptyIds") or [])
+        if not empty_ids:
+            empty_ids = [
+                nid
+                for nid, s in sock_by_id.items()
+                if s.get("allocated")
+                and not s.get("occupied")
+                and not s.get("itemId")
+                and not s.get("name")
+                and s.get("kind") != "charm"
+            ]
+        for nid in sorted({int(x) for x in empty_ids}):
+            s = sock_by_id.get(nid) or {}
+            idx_part = f" (#{s['socketIndex']})" if s.get("socketIndex") else ""
+            kind_part = str(s.get("kind") or "basic")
+            if s.get("sector"):
+                kind_part = f"{kind_part}, {s['sector']}"
+            health_issues.append(
+                {
+                    "category": "PassiveTree",
+                    "severity": "MEDIUM",
+                    "message": (
+                        f"[EMPTY-ALLOCATED-SOCKET] Jewel socket nodeId={nid}{idx_part} ({kind_part}) "
+                        "is allocated on the passive tree with no jewel socketed."
+                    ),
+                }
+            )
     return health_issues
 
 

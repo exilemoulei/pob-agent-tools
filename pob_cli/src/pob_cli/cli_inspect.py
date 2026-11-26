@@ -33,11 +33,11 @@ _DIAGNOSE_JSON_KEYS: dict[str, tuple[str, ...]] = {
         "inflationStripped",
         "topWaterSources",
     ),
-    "gaps": ("healthGaps", "core_synergies", "buildMechanics", "agentProbe"),
+    "gaps": ("healthGaps", "core_synergies", "buildMechanics", "agentProbe", "socketSummary"),
     "items": ("equippedItems",),
     "skills": ("mainGroup", "amulet_7th_link", "skillGroups"),
     "cards": ("factCards", "advisories", "askGrounding"),
-    "upgrades": ("topNodes", "topGems", "rankErrors"),
+    "upgrades": ("topNodes", "topGems", "socketSummary", "nearbySockets", "rankErrors"),
 }
 
 

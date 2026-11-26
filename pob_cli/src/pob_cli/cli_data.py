@@ -321,8 +321,8 @@ def cmd_price(
 
 @click.command("meta")
 @click.option("--league", help="League name or slug (defaults to current primary challenge league).")
-@click.option("--skill", help="Filter by main skill substring.")
-@click.option("--class", "class_name", help="Filter by ascendancy/class substring.")
+@click.option("--skill", help="Filter by main skill (EN substring, ZH/TW name, or slang like 正火).")
+@click.option("--class", "class_name", help="Filter by ascendancy/class (EN substring or ZH/TW like 酋长/圣宗).")
 @click.option("--top", type=int, default=15, show_default=True, help="Number of top entries to show.")
 @click.option("--proxy", help="Optional HTTP/SOCKS proxy URL.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
@@ -339,7 +339,7 @@ def cmd_meta(
 ) -> None:
     """Query poe.ninja league meta snapshot (total builds, ascendancy & main skill share)."""
     from . import external_data as ext
-    from .formatters import render_table
+    from .formatters.gamedata_md import format_meta_markdown
 
     res = _call_with_supported_kwargs(
         ext.query_meta,
@@ -352,35 +352,7 @@ def cmd_meta(
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path, sanitize=False)
         return
-
-    lines = [
-        f"### poe.ninja Meta Snapshot: `{res.get('league')}` — `{res.get('totalBuilds', 0):,}` total builds",
-    ]
-    asc_rows = [
-        [
-            a.get("class"),
-            f"{a.get('percentage', 0):.2f}%",
-            f"{a.get('estimatedBuilds', 0):,}",
-            ", ".join((a.get("skills") or [])[:4]),
-        ]
-        for a in res.get("ascendancies", [])
-    ]
-    lines.append("\n#### Top Ascendancies")
-    lines.append(render_table(["Ascendancy", "Share", "Est. Builds", "Top Skills"], asc_rows))
-
-    sk_rows = [
-        [
-            s.get("skill"),
-            f"{s.get('percentage', 0):.2f}%",
-            f"{s.get('estimatedBuilds', 0):,}",
-            ", ".join((s.get("classes") or [])[:4]),
-        ]
-        for s in res.get("topSkills", [])
-    ]
-    lines.append("\n#### Top Main Skills")
-    lines.append(render_table(["Skill", "Share", "Est. Builds", "Top Classes"], sk_rows))
-
-    _emit_text("\n".join(lines), out_path=out_path)
+    _emit_text(format_meta_markdown(res), out_path=out_path)
 
 
 def register_data_commands(group: click.Group) -> None:

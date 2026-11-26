@@ -131,7 +131,13 @@ def _fmt_diagnose_fact_cards_and_upgrades(res: dict[str, Any], *, compact: bool)
 
     top_nodes = res.get("topNodes")
     top_gems = res.get("topGems")
-    if top_nodes or top_gems:
+    raw_nearby = res.get("nearbySockets")
+    if raw_nearby is None and isinstance(top_nodes, dict):
+        raw_nearby = top_nodes.get("nearbySockets")
+    sock_summary = res.get("socketSummary")
+    if sock_summary is None and isinstance(top_nodes, dict):
+        sock_summary = top_nodes.get("socketSummary")
+    if top_nodes or top_gems or raw_nearby:
         lines.append("\n#### 4. Top ROI Upgrades")
         if isinstance(top_nodes, dict) and (top_nodes.get("byPerPoint") or []):
             n_rows = [
@@ -155,6 +161,39 @@ def _fmt_diagnose_fact_cards_and_upgrades(res: dict[str, Any], *, compact: bool)
                 f"\n**Top Passive Nodes (`{top_nodes.get('stat')}`{n_base}, max dist {top_nodes.get('maxDist')})**:"
             )
             lines.append(render_table(["#", "Node ID", "Name", "Dist", "Gain/Pt", "Total Gain"], n_rows))
+        if isinstance(raw_nearby, list) and raw_nearby:
+            from ..analyzer.tree_sockets import filter_sockets_for_view, socket_display_kind
+
+            b_info = res.get("buildInfo") if isinstance(res.get("buildInfo"), dict) else {}
+            pts_info = b_info.get("points") if isinstance(b_info.get("points"), dict) else {}
+            lvl_val = int(b_info["level"]) if b_info.get("level") is not None else None
+            unspent_val = (
+                max(0, int(pts_info["usedMax"]) - int(pts_info["used"]))
+                if pts_info.get("used") is not None and pts_info.get("usedMax") is not None
+                else None
+            )
+            sock_cands, fold_note = filter_sockets_for_view(
+                raw_nearby,
+                sock_summary if isinstance(sock_summary, dict) else None,
+                mode="diagnose",
+                max_rows=3,
+                level=lvl_val,
+                unspent_points=unspent_val,
+            )
+            if fold_note:
+                lines.append(f"\n> **[Sockets]** {fold_note}")
+            elif sock_cands:
+                s_rows = [
+                    [
+                        s.get("nodeId"),
+                        socket_display_kind(s),
+                        s.get("cost"),
+                        "; ".join(s.get("travelStats") or [])[:65] or "-",
+                    ]
+                    for s in sock_cands
+                ]
+                lines.append("\n**Nearby Unallocated Jewel & Cluster Sockets** (unranked; verify with `pob item try` / `pob batch`):")
+                lines.append(render_table(["Node ID", "Kind / Sector", "Cost", "Travel Stats"], s_rows))
         if isinstance(top_gems, dict) and (
             (top_gems.get("candidates") or []) or (top_gems.get("excludedSupports") or [])
         ):

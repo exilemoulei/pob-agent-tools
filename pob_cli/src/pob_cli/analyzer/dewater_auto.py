@@ -334,7 +334,20 @@ def best_effort_audit_tree_and_raw(
                         synth_tree["keystones"].append(nd)
                     elif ntype == "Notable":
                         synth_tree["notables"].append(nd)
-                tree_summary = synth_tree
+                from .tree_sockets import enrich_tree_sockets
+
+                dyn_map = {
+                    str(n["id"]): n
+                    for n in (t_state.get("dynamicNodes") or [])
+                    if isinstance(n, dict) and n.get("id") is not None
+                }
+                alloc_set = {int(x) for x in (t_state.get("allocatedNodes") or [])}
+                j_socks, s_sum, near_socks = enrich_tree_sockets(t_state, items_res, nodes_db, dyn_map, alloc_set)
+                synth_tree_out: dict[str, Any] = dict(synth_tree)
+                synth_tree_out["jewelSockets"] = j_socks
+                synth_tree_out["socketSummary"] = s_sum
+                synth_tree_out["nearbySockets"] = near_socks
+                tree_summary = synth_tree_out
         except Exception:
             pass
 

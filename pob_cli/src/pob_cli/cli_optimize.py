@@ -299,6 +299,30 @@ def cmd_rank_nodes(
     )
     if res.get("stat_fallback"):
         body += f"\n_Stat fallback applied: `{stat}` -> `{res['stat_fallback']}`_"
+
+    sock_summary = res.get("socketSummary")
+    raw_nearby = res.get("nearbySockets")
+    if isinstance(sock_summary, dict) and (sock_summary.get("allocatedEmptyIds") or []):
+        empty_str = ", ".join(str(x) for x in sock_summary["allocatedEmptyIds"])
+        body += f"\n\n> **[EMPTY-ALLOCATED-SOCKET]** Allocated jewel socket(s) with no jewel: `nodeId={empty_str}`."
+    if isinstance(raw_nearby, list) and raw_nearby:
+        from .analyzer.tree_sockets import filter_sockets_for_view, socket_display_kind
+
+        sock_cands, _ = filter_sockets_for_view(raw_nearby, sock_summary if isinstance(sock_summary, dict) else None, mode="rank_nodes", max_rows=5)
+        if sock_cands:
+            s_rows = [
+                [
+                    s.get("nodeId"),
+                    socket_display_kind(s),
+                    s.get("cost"),
+                    "; ".join(s.get("travelStats") or [])[:70] or "-",
+                ]
+                for s in sock_cands
+            ]
+            body += (
+                "\n\n### Nearby Unallocated Jewel & Cluster Sockets (Unranked — no synthetic DPS)\n"
+                + render_table(["Node ID", "Kind / Sector", "Cost", "Travel Stats"], s_rows)
+            )
     _emit_text(body, out_path=out_path)
 
 

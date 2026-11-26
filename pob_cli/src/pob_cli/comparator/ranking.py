@@ -304,6 +304,10 @@ def rank_nodes(
             out["stat_fallback"] = stat_fallback
         if filtered_masteries:
             out["filteredIncompatibleMasteries"] = filtered_masteries
+        if isinstance(res.get("socketSummary"), dict):
+            out["socketSummary"] = res["socketSummary"]
+        if isinstance(res.get("nearbySockets"), list):
+            out["nearbySockets"] = res["nearbySockets"]
         return out
 
 
