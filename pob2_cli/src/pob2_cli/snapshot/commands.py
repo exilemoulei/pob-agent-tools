@@ -7,8 +7,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from ..bridge_client import BridgeWorker
-from ..bridge_protocol import encode_xml_share_code, validate_poe2_xml_root
+from ..bridge_client import BridgeWorker, validate_poe2_spec_class_ids
+from ..bridge_protocol import decode_share_code_xml, encode_xml_share_code, validate_poe2_xml_root
 from ..errors import DaemonRequestError
 from ..game_profile import GAME_ID
 from .digest import capture_digest, diff_digest
@@ -105,14 +105,23 @@ def _resolve_inline_code(source: str | None, xml_code: str | None) -> tuple[str,
     if not raw:
         raise DaemonRequestError("load requires a PoE2 share code, XML string, or XML file path.")
     label = "inline_code"
-    if not raw.startswith("<") and len(raw) < 260:
+    if not raw.startswith("<") and len(raw) < 260 and "\n" not in raw:
         p = Path(raw)
         if p.is_file():
             raw = p.read_text(encoding="utf-8").strip()
             label = p.name
+        elif p.is_dir():
+            raise DaemonRequestError(f"Build file not found (path is a directory): {raw}")
     validate_poe2_xml_root(raw)
+    validate_poe2_spec_class_ids(raw)
     if raw.lstrip().startswith("<"):
         return encode_xml_share_code(raw), label if label != "inline_code" else "inline_xml"
+    if decode_share_code_xml(raw) is None and (
+        raw.lower().endswith((".xml", ".pob", ".pob2", ".txt", ".json"))
+        or "\\" in raw
+        or ("/" in raw and "://" not in raw)
+    ):
+        raise DaemonRequestError(f"Build file not found: {raw}")
     return raw, label
 
 
@@ -135,12 +144,14 @@ def load_build(
             label_fn = getattr(ext_imp, "load_source_label", None)
             label = label_fn(source, out.get("character")) if callable(label_fn) else (source or "imported")
             tx.commit_load(label)
+            worker.has_build = True
             return out
 
         code, label = _resolve_inline_code(source, xml_code)
         imp_res = worker.call("import_code", {"code": code, "mode": "replace"})
         info = worker.call("get_build_info", {})
         tx.commit_load(label)
+        worker.has_build = True
         out_payload: dict[str, Any] = {
             "game": GAME_ID,
             "loaded": True,

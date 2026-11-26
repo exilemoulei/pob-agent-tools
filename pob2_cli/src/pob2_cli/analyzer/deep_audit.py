@@ -106,6 +106,167 @@ def evaluate_resistances_cap_overcap(
     }
 
 
+def _classify_weapon_set_swap_finding(ws_swap: dict[str, Any]) -> dict[str, Any] | None:
+    """Classify WS1 <-> WS2 swap audit without false-positive criticals on empty WS2 or identical deficits."""
+    if not ws_swap or not ws_swap.get("checked"):
+        return None
+    ws1 = ws_swap.get("ws1") or {}
+    ws2 = ws_swap.get("ws2") or {}
+    active_ws = int(ws_swap.get("activeWeaponSet") or 1)
+    cur = ws1 if active_ws == 1 else ws2
+    oth = ws2 if active_ws == 1 else ws1
+
+    if "ws2Populated" in ws_swap:
+        ws2_populated = bool(ws_swap["ws2Populated"])
+    elif "populated" in ws2:
+        ws2_populated = bool(ws2["populated"])
+    else:
+        ws2_populated = bool((ws2.get("dps") or 0) > 0)
+
+    oth_populated = bool(ws_swap.get("ws1Populated", True)) if active_ws == 2 else ws2_populated
+    cur_def = cur.get("attrDeficits") or {}
+    oth_def = oth.get("attrDeficits") or {}
+    identical_deficits = cur_def == oth_def
+
+    introduces_attr = bool(ws_swap.get("introducesNewAttrDeficit"))
+    if "introducesNewAttrDeficit" not in ws_swap and oth_populated:
+        for attr, o_info in oth_def.items():
+            c_info = cur_def.get(attr)
+            if not c_info or abs(float(o_info.get("deficit") or 0)) > abs(float(c_info.get("deficit") or 0)):
+                introduces_attr = True
+                break
+
+    cur_sp = float(cur.get("spiritUnreserved") or 0)
+    oth_sp = float(oth.get("spiritUnreserved") or 0)
+    introduces_spirit = bool(ws_swap.get("introducesSpiritDeficit"))
+    if "introducesSpiritDeficit" not in ws_swap and oth_populated:
+        introduces_spirit = (cur_sp >= 0 and oth_sp < 0) or (cur_sp < 0 and oth_sp < cur_sp)
+    disables_aura = bool(ws_swap.get("disablesAuraOnSwap")) and oth_populated
+
+    if not ws2_populated:
+        if ws_swap.get("hasSwapAttrRedText") or ws_swap.get("hasSwapSpiritDrop"):
+            return {
+                "category": "weapon_set_swap_gap",
+                "severity": "info",
+                "ws2Empty": True,
+                "hasSwapSpiritDrop": False,
+                "hasSwapAttrRedText": bool(ws_swap.get("hasSwapAttrRedText")),
+                "ws1": ws1,
+                "ws2": ws2,
+                "message": (
+                    "Weapon Set 2 is empty/unconfigured; attribute or Spirit deficits shown are baseline WS1 state, "
+                    "not a weapon-swap regression."
+                ),
+            }
+        return None
+
+    if introduces_attr or introduces_spirit or disables_aura:
+        reasons: list[str] = []
+        if introduces_attr:
+            reasons.append("new attribute deficit")
+        if introduces_spirit:
+            reasons.append(f"SpiritUnreserved drops to {oth_sp:.0f}")
+        if disables_aura:
+            reasons.append("disables active aura/reservation")
+        return {
+            "category": "weapon_set_swap_gap",
+            "severity": "critical",
+            "hasSwapSpiritDrop": bool(introduces_spirit or disables_aura),
+            "hasSwapAttrRedText": bool(introduces_attr),
+            "introducesNewAttrDeficit": introduces_attr,
+            "introducesSpiritDeficit": introduces_spirit,
+            "disablesAuraOnSwap": disables_aura,
+            "ws1": ws1,
+            "ws2": ws2,
+            "message": f"Swapping between Weapon Set 1 and Weapon Set 2 causes {', '.join(reasons)}.",
+        }
+
+    if ws_swap.get("hasSwapSpiritDrop") or ws_swap.get("hasSwapAttrRedText"):
+        note = (
+            "Both weapon sets share identical baseline deficits (no new gap introduced by swapping)."
+            if identical_deficits
+            else "Swapping to the alternate weapon set does not introduce a new attribute deficit or Spirit overload."
+        )
+        return {
+            "category": "weapon_set_swap_gap",
+            "severity": "advisory",
+            "identicalDeficits": identical_deficits,
+            "hasSwapSpiritDrop": False,
+            "hasSwapAttrRedText": bool(ws_swap.get("hasSwapAttrRedText")),
+            "ws1": ws1,
+            "ws2": ws2,
+            "message": note,
+        }
+    return None
+
+
+def _build_resource_and_swap_findings(
+    probe: dict[str, Any],
+    dehydration: dict[str, Any],
+) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+
+    sp = probe.get("spirit") or {}
+    if sp.get("overloaded"):
+        findings.append(
+            {
+                "category": "spirit_overloaded",
+                "severity": "critical",
+                "spiritTotal": sp.get("total"),
+                "spiritUnreserved": sp.get("unreserved"),
+                "message": f"Spirit is overloaded ({sp.get('unreserved'):.0f} unreserved / {sp.get('total'):.0f} total).",
+            }
+        )
+    ws_finding = _classify_weapon_set_swap_finding(probe.get("weaponSetSwapAudit") or {})
+    if ws_finding is not None:
+        findings.append(ws_finding)
+
+    bonded = probe.get("bondedRunes") or {}
+    if bonded.get("affectedItemCount", 0) > 0 and not bonded.get("canUseBonded"):
+        asc = bonded.get("ascendClassName") or "None"
+        slots = [str(it.get("slot") or "") for it in bonded.get("affectedItems") or [] if isinstance(it, dict)]
+        findings.append(
+            {
+                "category": "inactive_bonded_runes",
+                "severity": "warning",
+                "ascendClassName": asc,
+                "isShaman": bool(bonded.get("isShaman")),
+                "canUseBonded": False,
+                "affectedSlots": slots,
+                "message": (
+                    f"Build ({asc}) lacks Shaman's 'Wisdom of the Maji' (CanUseBondedModifiers); "
+                    f"Bonded rune modifiers on {bonded['affectedItemCount']} item(s) ({', '.join(slots)}) are inactive."
+                ),
+            }
+        )
+
+    cb = probe.get("charmBloat") or {}
+    if cb.get("hasForUtopia") or cb.get("conditionUsingCharm"):
+        findings.append(
+            {
+                "category": "charm_for_utopia_bloat",
+                "severity": "warning",
+                "hasForUtopia": bool(cb.get("hasForUtopia")),
+                "conditionUsingCharm": bool(cb.get("conditionUsingCharm")),
+                "message": "Detected `For Utopia` / conditional Charm active config inflating EHP; stripped in PinnacleSustained.",
+            }
+        )
+    if float(dehydration.get("dpsInflationRatio") or 0) >= 1.5 or float(dehydration.get("ehpInflationRatio") or 0) >= 1.5:
+        findings.append(
+            {
+                "category": "panel_inflation",
+                "severity": "warning",
+                "dpsInflationRatio": dehydration.get("dpsInflationRatio"),
+                "ehpInflationRatio": dehydration.get("ehpInflationRatio"),
+                "message": (
+                    f"Raw panel is inflated vs PinnacleSustained "
+                    f"(DPS {dehydration.get('dpsInflationRatio')}x, EHP {dehydration.get('ehpInflationRatio')}x)."
+                ),
+            }
+        )
+    return findings
+
+
 def _build_findings_from_probe(
     probe: dict[str, Any],
     dehydration: dict[str, Any],
@@ -231,57 +392,8 @@ def _build_findings_from_probe(
             }
         )
 
-    # 4b. Spirit overload & WS1/WS2 swap audit
-    sp = probe.get("spirit") or {}
-    if sp.get("overloaded"):
-        findings.append(
-            {
-                "category": "spirit_overloaded",
-                "severity": "critical",
-                "spiritTotal": sp.get("total"),
-                "spiritUnreserved": sp.get("unreserved"),
-                "message": f"Spirit is overloaded ({sp.get('unreserved'):.0f} unreserved / {sp.get('total'):.0f} total).",
-            }
-        )
-    ws_swap = probe.get("weaponSetSwapAudit") or {}
-    if ws_swap.get("hasSwapSpiritDrop") or ws_swap.get("hasSwapAttrRedText"):
-        findings.append(
-            {
-                "category": "weapon_set_swap_gap",
-                "severity": "critical",
-                "hasSwapSpiritDrop": bool(ws_swap.get("hasSwapSpiritDrop")),
-                "hasSwapAttrRedText": bool(ws_swap.get("hasSwapAttrRedText")),
-                "ws1": ws_swap.get("ws1"),
-                "ws2": ws_swap.get("ws2"),
-                "message": "Swapping between Weapon Set 1 and Weapon Set 2 causes Spirit drop or attribute red-text deficit.",
-            }
-        )
-
-    # 4c. Charm / For Utopia bloat & dehydration inflation
-    cb = probe.get("charmBloat") or {}
-    if cb.get("hasForUtopia") or cb.get("conditionUsingCharm"):
-        findings.append(
-            {
-                "category": "charm_for_utopia_bloat",
-                "severity": "warning",
-                "hasForUtopia": bool(cb.get("hasForUtopia")),
-                "conditionUsingCharm": bool(cb.get("conditionUsingCharm")),
-                "message": "Detected `For Utopia` / conditional Charm active config inflating EHP; stripped in PinnacleSustained.",
-            }
-        )
-    if float(dehydration.get("dpsInflationRatio") or 0) >= 1.5 or float(dehydration.get("ehpInflationRatio") or 0) >= 1.5:
-        findings.append(
-            {
-                "category": "panel_inflation",
-                "severity": "warning",
-                "dpsInflationRatio": dehydration.get("dpsInflationRatio"),
-                "ehpInflationRatio": dehydration.get("ehpInflationRatio"),
-                "message": (
-                    f"Raw panel is inflated vs PinnacleSustained "
-                    f"(DPS {dehydration.get('dpsInflationRatio')}x, EHP {dehydration.get('ehpInflationRatio')}x)."
-                ),
-            }
-        )
+    # 4b / 4c. Spirit overload, WS1/WS2 swap audit, inactive Bonded runes, and Charm/panel inflation
+    findings.extend(_build_resource_and_swap_findings(probe, dehydration))
 
     # 5. [PoB2未模拟] honest red cards
     for rc in probe.get("unsimulatedRedCards") or []:
@@ -334,6 +446,7 @@ def run_deep_audit(
         "crossbow": probe.get("crossbow"),
         "spirit": probe.get("spirit"),
         "charmBloat": probe.get("charmBloat"),
+        "bondedRunes": probe.get("bondedRunes"),
         "weaponSetSwapAudit": probe.get("weaponSetSwapAudit"),
         "resistances": res_audit,
         "unsimulatedRedCards": probe.get("unsimulatedRedCards") or [],

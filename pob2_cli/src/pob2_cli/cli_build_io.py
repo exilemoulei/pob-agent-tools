@@ -25,6 +25,16 @@ def cmd_load(ctx: click.Context, source: str, target: str | None, as_json: bool)
         f"Loaded PoE2 build into slot `{slot}` ({res.get('sourceKind') or 'build'}): "
         f"{info.get('className') or '?'} / {info.get('ascendClassName') or 'None'} Lv{info.get('level') or '?'}"
     ]
+    dropped_nodes = int(res.get("disconnectedNodesDropped") or 0)
+    if dropped_nodes > 0:
+        req_cnt = res.get("requestedNodeCount", "?")
+        ld_cnt = res.get("loadedNodeCount", "?")
+        warn_txt = (
+            f"Warning: {dropped_nodes} passive node(s) from input XML were dropped on load "
+            f"({req_cnt} requested -> {ld_cnt} allocated; disconnected from class start or invalid for treeVersion)."
+        )
+        echo_utf8(warn_txt, err=True)
+        lines.append(f"- [tree-disconnected] {warn_txt}")
     for w in res.get("fixupWarnings") or []:
         lines.append(f"- {w}")
     for w in res.get("importWarnings") or []:

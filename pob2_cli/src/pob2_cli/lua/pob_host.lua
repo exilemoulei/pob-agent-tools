@@ -22,6 +22,15 @@ function M.frame()
 	launch:OnFrame()
 end
 
+function M.make_obj(className, ...)
+	local info = debug.getinfo(new, "u")
+	if info and info.isvararg then
+		return new(className, ...)
+	end
+	local obj = new(className)
+	return obj[className](obj, ...)
+end
+
 function M.get_build(opts)
 	local m = type(launch) == "table" and launch.main or nil
 	local b = m and m.modes and m.modes["BUILD"]

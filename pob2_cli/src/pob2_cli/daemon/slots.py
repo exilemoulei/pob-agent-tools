@@ -24,7 +24,13 @@ from ..updater import (
     unrestored_swap,
 )
 from .read_cache import READ_CACHE_ACTIONS, SlotReadCache
-from .rpc_handlers import dispatch_dual_slot_action, dispatch_slot_action
+from .rpc_handlers import (
+    action_requires_loaded_build,
+    dispatch_dual_slot_action,
+    dispatch_slot_action,
+    empty_slot_error,
+    worker_has_loaded_build,
+)
 from .runtime import (
     REF_IDLE_TIMEOUT_SEC,
     UPDATE_RECHECK_INTERVAL_SEC,
@@ -398,6 +404,16 @@ class DaemonManager:
         finally:
             self._shutdown_done.set()
 
+    def _slot_has_loaded_build(self, slot: str) -> bool:
+        with self._lock:
+            worker = self._workers.get(slot)
+            if worker is not None:
+                return worker_has_loaded_build(worker)
+            hist = self._histories.get(slot)
+        if hist is None:
+            hist = SlotHistory.load(slot, self.runtime_dir)
+        return bool(hist.committed)
+
     def _slot_status_entry(self, slot_name: str, worker: BridgeWorker | None) -> dict[str, Any]:
         return slot_status_entry(self, slot_name, worker)
 
@@ -448,6 +464,10 @@ class DaemonManager:
                 with contextlib.ExitStack() as stack:
                     for lk in locks:
                         stack.enter_context(lk)
+                    if not self._slot_has_loaded_build(main_slot):
+                        raise empty_slot_error(main_slot)
+                    if not self._slot_has_loaded_build(ref_slot):
+                        raise empty_slot_error(ref_slot)
                     mw = self._get_worker_in_barrier(main_slot)
                     rw = self._get_worker_in_barrier(ref_slot)
                     return dispatch_dual_slot_action(self, action, params, mw, rw)
@@ -455,6 +475,8 @@ class DaemonManager:
         target = normalize_slot_name(params.get("target"))
         with self._reader_barrier():
             with self._get_slot_lock(target):
+                if action_requires_loaded_build(action, params) and not self._slot_has_loaded_build(target):
+                    raise empty_slot_error(target)
                 worker = self._get_worker_in_barrier(target)
                 eff_lang = get_active_lang(self.runtime_dir)[0] if action in READ_CACHE_ACTIONS else ""
                 cache_lang, cached_hit = self._read_cache.check_slot_read(target, worker, eff_lang, action, params)

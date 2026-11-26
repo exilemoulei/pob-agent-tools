@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 from typing import Any
 
 _POB_COLOR_RE = re.compile(r"\^(?:x[0-9A-Fa-f]{6}|[0-9])")
+_BONDED_LINE_RE = re.compile(r"(?:^|\})Bonded:\s*", re.IGNORECASE)
+_IMPLICITS_HDR_RE = re.compile(r"^Implicits:\s*(\d+)\s*$")
 
 
 def strip_pob_color_codes(text: str | None) -> str:
@@ -161,8 +164,138 @@ def fetch_clean_notes(worker: Any) -> dict[str, Any]:
     }
 
 
+def _strip_bonded_lines_from_item_raw(raw: str) -> tuple[str, list[str]]:
+    """Strip explicit ``Bonded:`` mod lines from raw item text and keep ``Implicits: N`` consistent."""
+    lines = raw.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+    removed: list[str] = []
+    out_lines: list[str] = []
+    impl_idx: int | None = None
+    impl_count: int | None = None
+    impl_removed = 0
+    seen_after_impl = 0
+
+    for ln in lines:
+        stripped = ln.strip()
+        m_imp = _IMPLICITS_HDR_RE.match(stripped)
+        if m_imp:
+            impl_idx = len(out_lines)
+            impl_count = int(m_imp.group(1))
+            out_lines.append(ln)
+            continue
+        if _BONDED_LINE_RE.search(stripped):
+            removed.append(stripped)
+            if impl_count is not None and seen_after_impl < impl_count:
+                impl_removed += 1
+                seen_after_impl += 1
+            continue
+        if impl_count is not None and seen_after_impl < impl_count and stripped:
+            seen_after_impl += 1
+        out_lines.append(ln)
+
+    if impl_idx is not None and impl_count is not None and impl_removed > 0:
+        out_lines[impl_idx] = f"Implicits: {max(0, impl_count - impl_removed)}"
+    return "\n".join(out_lines), removed
+
+
+def _detect_and_sanitize_non_shaman_bonded_runes(
+    worker: Any,
+    *,
+    auto_fix: bool,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Detect (and strip when unbacked by Rune: header) inactive ``Bonded:`` lines on non-Shaman builds."""
+    fixups: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    try:
+        info = worker.call("get_build_info", {}) or {}
+    except Exception:
+        return fixups, warnings
+    asc = str(info.get("ascendClassName") or "").strip()
+    if asc.lower() == "shaman":
+        return fixups, warnings
+
+    try:
+        xml_res = worker.call("save_xml", {}) or {}
+    except Exception:
+        return fixups, warnings
+    xml_text = xml_res.get("xml")
+    if not isinstance(xml_text, str) or "Bonded:" not in xml_text:
+        return fixups, warnings
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return fixups, warnings
+    items_el = root.find("Items")
+    if items_el is None:
+        return fixups, warnings
+
+    equipped_slot_by_id: dict[int, str] = {}
+    for slot_el in items_el.iter("Slot"):
+        sname = (slot_el.attrib.get("name") or "").strip()
+        try:
+            iid = int(slot_el.attrib.get("itemId") or 0)
+        except ValueError:
+            iid = 0
+        if sname and iid > 0 and iid not in equipped_slot_by_id:
+            equipped_slot_by_id[iid] = sname
+
+    affected: list[dict[str, Any]] = []
+    stripped_slots: list[str] = []
+    for item_el in items_el.findall("Item"):
+        try:
+            iid = int(item_el.attrib.get("id") or 0)
+        except ValueError:
+            continue
+        slot_name = equipped_slot_by_id.get(iid)
+        if not slot_name:
+            continue
+        raw_txt = (item_el.text or "").strip()
+        if "Bonded:" not in raw_txt:
+            continue
+        cleaned_raw, removed = _strip_bonded_lines_from_item_raw(raw_txt)
+        if not removed:
+            continue
+        has_rune_header = any(ln.strip().startswith("Rune:") for ln in raw_txt.splitlines())
+        sanitized = False
+        if auto_fix and not has_rune_header:
+            try:
+                worker.call("add_item", {"raw": cleaned_raw, "slotName": slot_name})
+                sanitized = True
+                stripped_slots.append(slot_name)
+            except Exception:
+                sanitized = False
+        affected.append(
+            {
+                "slot": slot_name,
+                "itemId": iid,
+                "bondedLines": removed,
+                "hasRuneHeader": has_rune_header,
+                "stripped": sanitized,
+                "gatedByEngine": has_rune_header and not sanitized,
+            }
+        )
+
+    if not affected:
+        return fixups, warnings
+    fixups.append(
+        {
+            "issue": "non_shaman_bonded_runes",
+            "kind": "inactive_bonded_rune_lines",
+            "ascendClassName": asc or "None",
+            "affectedItems": affected,
+            "strippedSlots": stripped_slots,
+        }
+    )
+    warnings.append(
+        f"[bonded-non-shaman] Non-Shaman build ({asc or 'None'}) has inactive `Bonded:` rune line(s) on "
+        f"{len(affected)} equipped item(s) — Bonded modifiers require Shaman's 'Wisdom of the Maji' "
+        f"(CanUseBondedModifiers){f'; stripped explicit lines on {stripped_slots}' if stripped_slots else ' (gated off by engine)'}."
+    )
+    return fixups, warnings
+
+
 def apply_post_load_fixups(worker: Any, *, auto_fix: bool = True) -> dict[str, Any]:
-    """Run #2401 Spirit check, #2536 main-skill/statSet calibration, and clean Notes extraction."""
+    """Run #2401 Spirit check, #2536 main-skill/statSet calibration, non-Shaman Bonded check, and Notes extraction."""
     fixups: list[dict[str, Any]] = []
     warnings: list[str] = []
 
@@ -173,6 +306,10 @@ def apply_post_load_fixups(worker: Any, *, auto_fix: bool = True) -> dict[str, A
     f2, w2 = _detect_and_fix_2536_main_skill(worker, auto_fix=auto_fix)
     fixups.extend(f2)
     warnings.extend(w2)
+
+    f3, w3 = _detect_and_sanitize_non_shaman_bonded_runes(worker, auto_fix=auto_fix)
+    fixups.extend(f3)
+    warnings.extend(w3)
 
     notes = fetch_clean_notes(worker)
     return {"fixups": fixups, "warnings": warnings, "notes": notes}

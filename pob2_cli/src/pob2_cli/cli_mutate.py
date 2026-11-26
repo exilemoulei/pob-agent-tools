@@ -30,6 +30,38 @@ def _parse_config_value(raw: str | None) -> Any:
         return raw
 
 
+def _format_what_if_with_details_md(payload: dict[str, Any]) -> str:
+    base_md = format_what_if_md(payload)
+    extra: list[str] = []
+    for op in payload.get("detail") or []:
+        if not isinstance(op, dict):
+            continue
+        if op.get("op") == "tree_click":
+            nid = op.get("nodeId")
+            nm = op.get("nodeName") or str(nid)
+            pb = op.get("pointsUsedBefore")
+            pa = op.get("pointsUsedAfter")
+            nd = op.get("nodesDeltaCount")
+            pnodes = op.get("allocatedPathNodes") or []
+            mode_tag = " [anoint/isolated preview]" if op.get("isolatedMode") else ""
+            path_part = f" | path travel nodes: {len(pnodes)} ({pnodes[:8]}{'...' if len(pnodes) > 8 else ''})" if pnodes else ""
+            extra.append(f"- Tree Node `{nid}` ({nm}){mode_tag}: points {pb} -> {pa} (delta {nd:+d}){path_part}")
+            if op.get("connectivityWarning"):
+                extra.append(f"- Warning: {op['connectivityWarning']}")
+            iso = op.get("isolatedNodeEffect")
+            if isinstance(iso, dict) and isinstance(iso.get("delta"), dict):
+                d = iso["delta"]
+                extra.append(
+                    f"- Isolated 1-node effect: dDPS {float(d.get('primaryDps') or 0):+.1f} "
+                    f"({float(d.get('primaryDpsPct') or 0):+.2f}%) | "
+                    f"dEHP {float(d.get('totalEhp') or 0):+.1f} ({float(d.get('totalEhpPct') or 0):+.2f}%) | "
+                    f"dLife {float(d.get('life') or 0):+.0f}"
+                )
+    if not extra:
+        return base_md
+    return base_md + "\n" + "\n".join(extra)
+
+
 @click.command("what-if")
 @click.option("--target", type=str, default=None, help="Target build slot (default: main).")
 @click.option("--apply", "do_apply", is_flag=True, default=False, help="Commit mutation to slot history (default: CoW rollback).")
@@ -41,6 +73,14 @@ def _parse_config_value(raw: str | None) -> Any:
 @click.option("--weapon-swap", "weapon_swap", type=bool, default=None, help="Toggle Weapon Set 2 active state.")
 @click.option("--alloc-mode", "alloc_mode", type=int, default=None, help="Passive tree allocMode (0=shared, 1=WS1, 2=WS2).")
 @click.option("--tree-node", "tree_node", type=int, default=None, help="Toggle allocation of a passive tree node ID.")
+@click.option(
+    "--anoint-preview",
+    "--isolated-node",
+    "anoint_preview",
+    is_flag=True,
+    default=False,
+    help="Preview --tree-node in isolation (like an amulet anoint) without allocating intermediate travel nodes.",
+)
 @click.option("--attribute-node", "attribute_node", type=int, default=None, help="Attribute travel node ID to switch.")
 @click.option("--attribute", type=str, default=None, help="Target attribute (str/dex/int or 1/2/3).")
 @click.option("--gem-group", "gem_group", type=int, default=None, help="Skill socket group index (1-based).")
@@ -67,6 +107,7 @@ def cmd_what_if(
     weapon_swap: bool | None,
     alloc_mode: int | None,
     tree_node: int | None,
+    anoint_preview: bool,
     attribute_node: int | None,
     attribute: str | None,
     gem_group: int | None,
@@ -93,6 +134,7 @@ def cmd_what_if(
         "weapon_swap": weapon_swap,
         "alloc_mode": alloc_mode,
         "tree_node": tree_node,
+        "anoint_preview": True if anoint_preview else None,
         "attribute_node": attribute_node,
         "attribute": attribute,
         "gem_group": gem_group,
@@ -108,7 +150,7 @@ def cmd_what_if(
     }
     clean = {k: v for k, v in params.items() if v is not None}
     res = daemon_call_cli("what_if", clean)
-    emit_output(ctx, res, as_json=as_json, markdown_text=format_what_if_md(res))
+    emit_output(ctx, res, as_json=as_json, markdown_text=_format_what_if_with_details_md(res))
 
 
 @click.command("diff")

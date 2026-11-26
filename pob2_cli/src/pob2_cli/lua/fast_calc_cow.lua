@@ -161,7 +161,7 @@ local function restore_items(b, snap)
 	end
 	for id, orig in pairs(snap.itemsRef) do
 		if type(orig) == "table" and orig.raw ~= snap.itemRaw[id] and type(snap.itemRaw[id]) == "string" then
-			local rb = new("Item"):Item(snap.itemRaw[id])
+			local rb = H.make_obj("Item", snap.itemRaw[id])
 			rb.id = id; rb:BuildModList()
 			itab.items[id], snap.itemsRef[id] = rb, rb
 			if snap.jewelIds[id] then j_dirty = true end

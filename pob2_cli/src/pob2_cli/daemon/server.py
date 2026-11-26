@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..bridge_client import BridgeError, BridgeRejectedError
+from ..bridge_client import BridgeError, BridgeRejectedError, is_debug_enabled, sanitize_bridge_error
 from ..errors import CrossGameHallucinationError, DaemonRequestError, LegacyPatchTrapError
 from .runtime import (
     FOREIGN_TOKEN_HEADER,
@@ -112,7 +112,7 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
                 payload: dict[str, Any] = {
                     "ok": False,
                     "game": GAME_ID,
-                    "error": redact_secrets(str(exc)),
+                    "error": redact_secrets(sanitize_bridge_error(str(exc))),
                     "type": type(exc).__name__,
                     "errorKind": kind,
                 }
@@ -120,17 +120,16 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
                     payload["engineCode"] = exc.code
                 self._send_json(400, payload)
             except Exception as exc:
-                self._send_json(
-                    400,
-                    {
-                        "ok": False,
-                        "game": GAME_ID,
-                        "error": redact_secrets(str(exc)),
-                        "type": exc.__class__.__name__,
-                        "errorKind": "daemon",
-                        "trace": redact_secrets(traceback.format_exc(limit=4)),
-                    },
-                )
+                err_payload: dict[str, Any] = {
+                    "ok": False,
+                    "game": GAME_ID,
+                    "error": redact_secrets(sanitize_bridge_error(str(exc))),
+                    "type": exc.__class__.__name__,
+                    "errorKind": "daemon",
+                }
+                if is_debug_enabled():
+                    err_payload["trace"] = redact_secrets(traceback.format_exc(limit=4))
+                self._send_json(400, err_payload)
 
     return RpcHandler
 

@@ -246,7 +246,10 @@ def test_concurrent_poe1_and_poe2_daemons_zero_port_env_dir_conflict(
         assert p2_status["game"] == "poe2"
         assert p2_status["lang"] == "zh-CN"
 
-        # 4. Read cache serves repeated summary at unchanged rev without re-calling worker
+        # 4. Unloaded slot rejects summary until new_build/load succeeds; read cache then serves repeated summary
+        with pytest.raises(daemon.DaemonRequestError, match="has no build loaded"):
+            daemon.call_daemon("summary", auto_start=False, runtime_dir=poe2_rt, emit_cold_start_alert=False)
+        daemon.call_daemon("new_build", auto_start=False, runtime_dir=poe2_rt, emit_cold_start_alert=False)
         calls_before = len(fake_w.calls)
         s1 = daemon.call_daemon("summary", auto_start=False, runtime_dir=poe2_rt, emit_cold_start_alert=False)
         calls_after_1 = len(fake_w.calls)

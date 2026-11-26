@@ -171,10 +171,106 @@ local function scan_unsimulated_skills(build)
 	return hits
 end
 
+local function scan_bonded_runes(build, mod_db)
+	local spec = build and build.spec
+	local asc_name = tostring((spec and spec.curAscendClassName) or "")
+	local is_shaman = asc_name:lower() == "shaman"
+	local can_use_bonded = (mod_db and mod_db:Flag(nil, "Condition:CanUseBondedModifiers")) and true or false
+	local affected = {}
+	local itab = build and build.itemsTab
+	local rune_db = data and data.itemMods and data.itemMods.Runes or {}
+	local seen_ids = {}
+	for slot_name, sl in pairs((itab and itab.slots) or {}) do
+		local iid = sl and tonumber(sl.selItemId) or 0
+		if iid > 0 and not seen_ids[iid] then
+			seen_ids[iid] = true
+			local it = itab.items and itab.items[iid]
+			if type(it) == "table" then
+				local bonded_lines, runes_with_bonded = {}, {}
+				for _, ml in ipairs(it.runeModLines or {}) do
+					local ln = type(ml) == "table" and tostring(ml.line or "") or ""
+					if (type(ml) == "table" and ml.bonded) or ln:find("Bonded:", 1, true) then
+						bonded_lines[#bonded_lines + 1] = ln
+					end
+				end
+				if #bonded_lines == 0 and type(it.raw) == "string" and it.raw:find("Bonded:", 1, true) then
+					for line in (it.raw:gsub("\r", "") .. "\n"):gmatch("([^\n]*)\n") do
+						if line:find("Bonded:", 1, true) then bonded_lines[#bonded_lines + 1] = line end
+					end
+				end
+				for _, rname in ipairs(it.runes or {}) do
+					local rentry = rune_db[rname]
+					if type(rentry) == "table" then
+						local has_b = false
+						for _, cat in pairs(rentry) do
+							if type(cat) == "table" then
+								for _, ml in ipairs(cat) do
+									if type(ml) == "string" and ml:find("Bonded:", 1, true) then
+										has_b = true
+										break
+									end
+								end
+							end
+							if has_b then break end
+						end
+						if has_b then runes_with_bonded[#runes_with_bonded + 1] = rname end
+					end
+				end
+				if #bonded_lines > 0 or #runes_with_bonded > 0 then
+					affected[#affected + 1] = {
+						slot = slot_name,
+						itemId = iid,
+						itemName = it.name or it.title or "Item",
+						runes = runes_with_bonded,
+						bondedLines = bonded_lines,
+					}
+				end
+			end
+		end
+	end
+	table.sort(affected, function(a, b) return tostring(a.slot) < tostring(b.slot) end)
+	return {
+		ascendClassName = asc_name,
+		isShaman = is_shaman,
+		canUseBonded = can_use_bonded,
+		affectedItemCount = #affected,
+		affectedItems = affected,
+	}
+end
+
 local function check_weapon_set_swap_gaps(build)
-	local aset = build.itemsTab and build.itemsTab.activeItemSet
+	local itab = build.itemsTab
+	local aset = itab and itab.activeItemSet
 	if type(aset) ~= "table" then return { checked = false } end
 	local orig_sw = aset.useSecondWeaponSet and true or false
+
+	local function slot_item_id(sn)
+		local sl = itab.slots and itab.slots[sn]
+		if sl and tonumber(sl.selItemId) and tonumber(sl.selItemId) > 0 then return tonumber(sl.selItemId) end
+		local ss = aset[sn]
+		if type(ss) == "table" and tonumber(ss.selItemId) and tonumber(ss.selItemId) > 0 then return tonumber(ss.selItemId) end
+		return 0
+	end
+	local ws1_has_item = (slot_item_id("Weapon 1") > 0) or (slot_item_id("Weapon 2") > 0)
+	local ws2_has_item = (slot_item_id("Weapon 1 Swap") > 0) or (slot_item_id("Weapon 2 Swap") > 0)
+	local ws1_nodes, ws2_nodes = 0, 0
+	if build.spec and type(build.spec.CountAllocNodes) == "function" then
+		local _, _, _, _, u1, u2 = build.spec:CountAllocNodes()
+		ws1_nodes, ws2_nodes = tonumber(u1) or 0, tonumber(u2) or 0
+	end
+	local ws2_excl_skill = false
+	for _, grp in ipairs((build.skillsTab and build.skillsTab.socketGroupList) or {}) do
+		if grp and grp.enabled ~= false then
+			local sn = tostring(grp.slot or "")
+			if sn:find("Swap", 1, true) or (grp.set2 == true and grp.set1 == false) then
+				ws2_excl_skill = true
+				break
+			end
+		end
+	end
+	local ws1_pop = ws1_has_item or (ws1_nodes > 0)
+	local ws2_pop = ws2_has_item or (ws2_nodes > 0) or ws2_excl_skill
+
 	local function measure(use_second)
 		aset.useSecondWeaponSet = use_second
 		local res_env = calcs.buildOutput(build, "MAIN")
@@ -184,11 +280,26 @@ local function check_weapon_set_swap_gaps(build)
 			local cur, req = tonumber(out[a]) or 0, tonumber(out["Req" .. a]) or 0
 			if cur < req then deficits[a] = { current = cur, required = req, deficit = cur - req } end
 		end
+		local sp_tot = tonumber(out.Spirit) or 0
+		local sp_unres = tonumber(out.SpiritUnreserved) or 0
+		local active_auras = 0
+		for _, sk in ipairs((res_env and res_env.player and res_env.player.activeSkillList) or {}) do
+			local ge = sk and sk.activeEffect and sk.activeEffect.grantedEffect
+			if sk and sk.skillFlags and (sk.skillFlags.aura or sk.skillFlags.buffs or (ge and ge.statSet and ge.statSet.constantStats)) then
+				if (sk.skillData and (tonumber(sk.skillData.spiritReservationFlat) or 0) > 0)
+					or (sk.activeEffect and sk.activeEffect.grantedEffect and sk.activeEffect.grantedEffect.spiritReservationFlat) then
+					active_auras = active_auras + 1
+				end
+			end
+		end
 		return {
 			weaponSet = use_second and 2 or 1,
-			spirit = tonumber(out.Spirit) or 0,
-			spiritUnreserved = tonumber(out.SpiritUnreserved) or 0,
-			spiritNegative = (tonumber(out.SpiritUnreserved) or 0) < 0,
+			populated = use_second and ws2_pop or ws1_pop,
+			spirit = sp_tot,
+			spiritUnreserved = sp_unres,
+			spiritReserved = sp_tot - sp_unres,
+			spiritNegative = sp_unres < 0,
+			activeAuraCount = active_auras,
 			attrDeficits = json_obj(deficits),
 			hasAttrDeficit = next(deficits) ~= nil,
 			dps = primary_dps(out),
@@ -199,10 +310,36 @@ local function check_weapon_set_swap_gaps(build)
 	if type(wipeGlobalCache) == "function" then wipeGlobalCache() end
 	build.calcsTab:BuildOutput()
 	if not ok then return { checked = false, error = tostring(ws1) } end
+	local cur_ws = orig_sw and ws2 or ws1
+	local oth_ws = orig_sw and ws1 or ws2
+	local oth_pop = orig_sw and ws1_pop or ws2_pop
+	local new_attr = false
+	if oth_pop then
+		for _, a in ipairs(ATTRS) do
+			local od = oth_ws.attrDeficits[a]
+			local cd = cur_ws.attrDeficits[a]
+			if od and (not cd or math.abs(od.deficit) > math.abs(cd.deficit)) then
+				new_attr = true
+			end
+		end
+	end
+	local spirit_drop_deficit = oth_pop and (
+		(not cur_ws.spiritNegative and oth_ws.spiritNegative)
+		or (cur_ws.spiritNegative and oth_ws.spiritUnreserved < cur_ws.spiritUnreserved)
+	)
+	local disables_aura = oth_pop and (
+		(cur_ws.activeAuraCount > oth_ws.activeAuraCount)
+		or (cur_ws.spiritReserved > 0 and oth_ws.spiritReserved < cur_ws.spiritReserved and oth_ws.spirit < cur_ws.spirit)
+	)
 	return {
-		checked = true, activeWeaponSet = orig_sw and 2 or 1, ws1 = ws1, ws2 = ws2,
+		checked = true, activeWeaponSet = orig_sw and 2 or 1,
+		ws1Populated = ws1_pop, ws2Populated = ws2_pop, ws2Empty = not ws2_pop,
+		ws1 = ws1, ws2 = ws2,
 		hasSwapSpiritDrop = ws1.spiritNegative or ws2.spiritNegative,
 		hasSwapAttrRedText = ws1.hasAttrDeficit or ws2.hasAttrDeficit,
+		introducesNewAttrDeficit = new_attr,
+		introducesSpiritDeficit = spirit_drop_deficit,
+		disablesAuraOnSwap = disables_aura,
 	}
 end
 
@@ -307,6 +444,7 @@ local function handle_deep_audit_probe(_params)
 			hasForUtopia = has_utopia, charms = active_charms,
 		},
 		unsimulatedRedCards = scan_unsimulated_skills(build),
+		bondedRunes = scan_bonded_runes(build, mod_db),
 		weaponSetSwapAudit = check_weapon_set_swap_gaps(build),
 		elapsedMs = now_ms() - t0,
 	}

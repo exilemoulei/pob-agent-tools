@@ -10,6 +10,7 @@ from typing import Any
 
 import click
 
+from .bridge_client import sanitize_bridge_error
 from .compat import ensure_utf8
 from .daemon import call_daemon
 from .errors import (
@@ -78,7 +79,7 @@ def daemon_call_cli(
         echo_utf8(f"Error: {exc}", err=True)
         raise SystemExit(EXIT_REQUEST_ERROR) from exc
     except Exception as exc:
-        echo_utf8(f"Daemon Error: {exc}", err=True)
+        echo_utf8(f"Daemon Error: {sanitize_bridge_error(str(exc))}", err=True)
         raise SystemExit(EXIT_DAEMON_ERROR) from exc
 
 

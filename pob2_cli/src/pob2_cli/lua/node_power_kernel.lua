@@ -2,6 +2,7 @@
 --   * Strictly PoE2 8-class model (integerIds: 1, 2, 6, 7, 8, 9, 10, 11)
 --   * Dual weapon-set allocMode (0 | 1 | 2) metadata per node and weapon-set summary
 --   * PoE2 passive jewel sockets (no PoE1 cluster jewel subgraphs, 6-class quadrants, or masteries)
+local calcs = require("Modules.Calcs")
 local H = require("pob_host")
 local now_ms, get_build = H.now_ms, H.get_build
 
@@ -183,6 +184,215 @@ local function collect_nearby_sockets(build, max_dist)
 	return summary, nearby
 end
 
+local function primary_dps_pair(out)
+	if (out.FullDPS or 0) > 0 then return out.FullDPS, "FullDPS" end
+	return out.CombinedDPS or out.TotalDPS or 0, "CombinedDPS"
+end
+
+local function find_display_stat_for(build, stat_name)
+	for _, ds in ipairs((build and build.displayStats) or {}) do
+		if ds and ds.stat == stat_name then return ds end
+	end
+	return nil
+end
+
+local function format_power_val(val, display_stat)
+	local fmt = (display_stat and display_stat.fmt) or ".1f"
+	local ok, s = pcall(string.format, "%" .. fmt, val or 0)
+	return ok and s or string.format("%.1f", val or 0)
+end
+
+local function eval_subset_node_power(build, power_stat, raw_ids, include_path_power)
+	local spec = build.spec
+	local spec_nodes = (spec and spec.nodes) or {}
+	local main_env = build.calcsTab and build.calcsTab.mainEnv
+	local granted = (main_env and main_env.grantedPassives) or {}
+	local use_full_dps = (power_stat.stat == "FullDPS")
+	local calc_func, calc_base
+	if build.calcsTab and type(build.calcsTab.GetMiscCalculator) == "function" then
+		calc_func, calc_base = build.calcsTab:GetMiscCalculator()
+	end
+	if type(calc_func) ~= "function" then
+		calc_func, calc_base = calcs.getMiscCalculator(build)
+	end
+	calc_base = calc_base or {}
+
+	local display_stat = find_display_stat_for(build, power_stat.stat)
+	local scale = (display_stat and (display_stat.pc or display_stat.mod)) and 100 or 1
+	local report, seen, requested, missing = {}, {}, {}, {}
+
+	for _, raw_id in ipairs(raw_ids) do
+		local nid = tonumber(raw_id)
+		if nid and not seen[nid] then
+			seen[nid] = true
+			requested[#requested + 1] = nid
+			local node = spec_nodes[nid]
+			if not node then
+				missing[#missing + 1] = nid
+			else
+				local is_alloc = (node.alloc or granted[nid]) and true or false
+				local single_out
+				if is_alloc then
+					single_out = calc_func({ removeNodes = { [node] = true } }, use_full_dps) or {}
+				else
+					single_out = calc_func({ addNodes = { [node] = true } }, use_full_dps) or {}
+				end
+				local raw_single = build.calcsTab:CalculatePowerStat(power_stat, single_out, calc_base) or 0
+				local path_dist
+				local raw_path = raw_single
+				if is_alloc then
+					path_dist = (type(node.depends) == "table" and #node.depends > 0) and #node.depends or 1
+					if include_path_power and type(node.depends) == "table" and #node.depends > 1 and not node.ascendancyName then
+						local dep_set = {}
+						for _, dn in ipairs(node.depends) do dep_set[dn] = true end
+						raw_path = build.calcsTab:CalculatePowerStat(power_stat, calc_func({ removeNodes = dep_set }, use_full_dps) or {}, calc_base) or raw_single
+					end
+				else
+					path_dist = tonumber(node.pathDist) or (type(node.path) == "table" and #node.path > 0 and #node.path) or 1
+					if include_path_power and type(node.path) == "table" and #node.path > 1 and not node.ascendancyName then
+						local path_set = {}
+						for _, pn in ipairs(node.path) do path_set[pn] = true end
+						raw_path = build.calcsTab:CalculatePowerStat(power_stat, calc_func({ addNodes = path_set }, use_full_dps) or {}, calc_base) or raw_single
+					end
+				end
+				local node_power = raw_single * scale
+				local path_power = (raw_path / math.max(path_dist, 1)) * scale
+				report[#report + 1] = {
+					id = nid,
+					name = node.dn,
+					type = node.type,
+					allocated = is_alloc,
+					allocMode = node.allocMode or 0,
+					isAttribute = node.isAttribute and true or false,
+					power = node_power,
+					powerStr = format_power_val(node_power, display_stat),
+					pathPower = path_power,
+					pathPowerStr = format_power_val(path_power, display_stat),
+					pathDist = path_dist,
+					sd = node.sd,
+					x = node.x,
+					y = node.y,
+				}
+			end
+		end
+	end
+	table.sort(report, function(a, b)
+		if a.power ~= b.power then return a.power > b.power end
+		return a.id < b.id
+	end)
+	return report, requested, missing
+end
+
+local function extract_stat_snapshot(out)
+	local dps, dps_key = primary_dps_pair(out)
+	return {
+		primaryDpsKey = dps_key,
+		primaryDps = dps,
+		totalEhp = tonumber(out.TotalEHP) or 0,
+		life = tonumber(out.Life) or 0,
+		energyShield = tonumber(out.EnergyShield) or 0,
+		spirit = tonumber(out.Spirit) or 0,
+		spiritUnreserved = tonumber(out.SpiritUnreserved) or 0,
+		fireResist = tonumber(out.FireResist) or 0,
+		coldResist = tonumber(out.ColdResist) or 0,
+		lightningResist = tonumber(out.LightningResist) or 0,
+		chaosResist = tonumber(out.ChaosResist) or 0,
+		str = tonumber(out.Str) or 0,
+		dex = tonumber(out.Dex) or 0,
+		int = tonumber(out.Int) or 0,
+	}
+end
+
+local function handle_eval_isolated_node(params)
+	params = type(params) == "table" and params or {}
+	local build = get_build()
+	local spec = build.spec
+	local nid = tonumber(params.id)
+	local node = nid and spec and spec.nodes and spec.nodes[nid]
+	if not node then error("no node " .. tostring(params.id), 0) end
+
+	local was_alloc = node.alloc and true or false
+	local req_action = tostring(params.action or "auto")
+	local op = (req_action == "add" or req_action == "remove") and req_action or (was_alloc and "remove" or "add")
+	local calc_func, calc_base
+	if build.calcsTab and type(build.calcsTab.GetMiscCalculator) == "function" then
+		calc_func, calc_base = build.calcsTab:GetMiscCalculator()
+	end
+	if type(calc_func) ~= "function" then
+		calc_func, calc_base = calcs.getMiscCalculator(build)
+	end
+	calc_base = calc_base or {}
+	local use_full_dps = (calc_base.FullDPS or 0) > 0
+	local mod_req = (op == "remove") and { removeNodes = { [node] = true } } or { addNodes = { [node] = true } }
+	local after_out = calc_func(mod_req, use_full_dps) or {}
+
+	local before_s = extract_stat_snapshot(calc_base)
+	local after_s = extract_stat_snapshot(after_out)
+	local ddps = after_s.primaryDps - before_s.primaryDps
+	local dehp = after_s.totalEhp - before_s.totalEhp
+	local path_ids = {}
+	for _, pn in ipairs(node.path or {}) do
+		if type(pn) == "table" and type(pn.id) == "number" then path_ids[#path_ids + 1] = pn.id end
+	end
+	local is_reachable = was_alloc or (type(node.path) == "table" and #node.path > 0)
+	local path_dist = tonumber(node.pathDist)
+	if path_dist and path_dist >= 1000 then path_dist = nil end
+	return {
+		nodeId = nid,
+		name = node.dn,
+		type = node.type,
+		sd = node.sd or {},
+		allocated = was_alloc,
+		op = op,
+		isReachable = is_reachable,
+		connectedToStart = node.connectedToStart and true or false,
+		pathDist = path_dist,
+		pathIds = path_ids,
+		before = before_s,
+		after = after_s,
+		delta = {
+			primaryDps = ddps,
+			primaryDpsPct = before_s.primaryDps > 1e-6 and (ddps / before_s.primaryDps * 100) or 0,
+			totalEhp = dehp,
+			totalEhpPct = before_s.totalEhp > 1e-6 and (dehp / before_s.totalEhp * 100) or 0,
+			life = after_s.life - before_s.life,
+			energyShield = after_s.energyShield - before_s.energyShield,
+			spirit = after_s.spirit - before_s.spirit,
+		},
+	}
+end
+
+local function handle_toggle_isolated_node(params)
+	params = type(params) == "table" and params or {}
+	local build = get_build()
+	local spec = build.spec
+	local nid = tonumber(params.id)
+	local node = nid and spec and spec.nodes and spec.nodes[nid]
+	if not node then error("no node " .. tostring(params.id), 0) end
+	local was_alloc = node.alloc and true or false
+	local op = was_alloc and "remove" or "add"
+	if was_alloc then
+		node.alloc = false
+		node.allocMode = 0
+		spec.allocNodes[nid] = nil
+	else
+		node.alloc = true
+		node.allocMode = 0
+		spec.allocNodes[nid] = node
+	end
+	if type(wipeGlobalCache) == "function" then wipeGlobalCache() end
+	build.buildFlag = true
+	H.frame()
+	return {
+		ok = true,
+		nodeId = nid,
+		name = node.dn,
+		type = node.type,
+		op = op,
+		allocated = node.alloc and true or false,
+	}
+end
+
 local function handle_node_power(params)
 	params = type(params) == "table" and params or {}
 	local build = get_build()
@@ -193,6 +403,9 @@ local function handle_node_power(params)
 	if not power_stat then error("unknown power stat: " .. tostring(req_stat), 0) end
 
 	local max_depth = tonumber(params.maxDepth or params.max_depth)
+	local raw_node_ids = params.nodeIds or params.node_ids
+	local has_subset = type(raw_node_ids) == "table" and #raw_node_ids > 0
+
 	local saved_view = build.viewMode
 	local saved_depth = build.calcsTab.nodePowerMaxDepth
 	if power_stat.stat ~= "FullDPS" then build.viewMode = "CALCS" end
@@ -200,41 +413,49 @@ local function handle_node_power(params)
 	build.calcsTab.nodePowerMaxDepth = max_depth
 
 	local t0 = now_ms()
-	local ok, report_or_err = pcall(function()
-		build.calcsTab:PowerBuilder()
-		return build.treeTab:BuildPowerReportList(power_stat)
-	end)
-	build.viewMode = saved_view
-	build.calcsTab.nodePowerMaxDepth = saved_depth
-	if not ok then error(report_or_err, 0) end
-	local elapsed_ms = now_ms() - t0
-
-	local raw_report = report_or_err or {}
-	local spec_nodes = (build.spec and build.spec.nodes) or {}
-	local report = {}
-	for i, row in ipairs(raw_report) do
-		local nd = spec_nodes[row.id]
-		report[i] = {
-			id = row.id,
-			name = row.name,
-			type = row.type,
-			allocated = row.allocated and true or false,
-			allocMode = (nd and nd.allocMode) or 0,
-			isAttribute = (nd and nd.isAttribute) and true or false,
-			power = row.power or 0,
-			powerStr = row.powerStr,
-			pathPower = row.pathPower or 0,
-			pathPowerStr = row.pathPowerStr,
-			pathDist = row.pathDist,
-			sd = row.sd,
-			x = row.x,
-			y = row.y,
-		}
+	local report, requested_ids, missing_ids
+	if has_subset then
+		local ok, r1, r2, r3 = pcall(eval_subset_node_power, build, power_stat, raw_node_ids, params.includePathPower ~= false)
+		build.viewMode = saved_view
+		build.calcsTab.nodePowerMaxDepth = saved_depth
+		if not ok then error(r1, 0) end
+		report, requested_ids, missing_ids = r1, r2, r3
+	else
+		local ok, report_or_err = pcall(function()
+			build.calcsTab:PowerBuilder()
+			return build.treeTab:BuildPowerReportList(power_stat)
+		end)
+		build.viewMode = saved_view
+		build.calcsTab.nodePowerMaxDepth = saved_depth
+		if not ok then error(report_or_err, 0) end
+		local raw_report = report_or_err or {}
+		local spec_nodes = (build.spec and build.spec.nodes) or {}
+		report = {}
+		for i, row in ipairs(raw_report) do
+			local nd = spec_nodes[row.id]
+			report[i] = {
+				id = row.id,
+				name = row.name,
+				type = row.type,
+				allocated = row.allocated and true or false,
+				allocMode = (nd and nd.allocMode) or 0,
+				isAttribute = (nd and nd.isAttribute) and true or false,
+				power = row.power or 0,
+				powerStr = row.powerStr,
+				pathPower = row.pathPower or 0,
+				pathPowerStr = row.pathPowerStr,
+				pathDist = row.pathDist,
+				sd = row.sd,
+				x = row.x,
+				y = row.y,
+			}
+		end
 	end
+	local elapsed_ms = now_ms() - t0
 
 	local cid, cname, valid_cls = resolve_poe2_class(build.spec)
 	local sock_summary, nearby_sockets = collect_nearby_sockets(build, max_depth)
-	return {
+	local out = {
 		game = "poe2",
 		stat = power_stat.stat,
 		stats = list_power_stat_names(),
@@ -248,6 +469,11 @@ local function handle_node_power(params)
 		nearbySockets = nearby_sockets,
 		elapsedMs = elapsed_ms,
 	}
+	if has_subset then
+		out.filteredNodeIds = requested_ids
+		if #missing_ids > 0 then out.missingNodeIds = missing_ids end
+	end
+	return out
 end
 
 M.POE2_CLASS_IDS = POE2_CLASS_IDS
@@ -257,8 +483,12 @@ M.find_power_stat_exact = find_power_stat_exact
 M.pick_power_stat = pick_power_stat
 M.collect_nearby_sockets = collect_nearby_sockets
 M.handle_node_power = handle_node_power
+M.handle_eval_isolated_node = handle_eval_isolated_node
+M.handle_toggle_isolated_node = handle_toggle_isolated_node
 M.rpc_handlers = {
 	node_power = handle_node_power,
+	eval_isolated_node = handle_eval_isolated_node,
+	toggle_isolated_node = handle_toggle_isolated_node,
 }
 
 return M

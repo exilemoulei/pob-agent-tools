@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import collections
 import json
+import os
 import queue
+import re
 import subprocess
 import threading
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +23,7 @@ from .bridge_protocol import (
     BridgeTimeoutError,
     await_startup_handshake,
     collect_batch_responses,
+    decode_share_code_xml,
     format_rpc_error,
     rpc_rejection,
     stderr_drain_loop,
@@ -28,6 +32,8 @@ from .bridge_protocol import (
     validate_poe2_xml_root,
     validate_rpc_method,
 )
+from .errors import DaemonRequestError
+from .game_profile import POE2_CLASS_IDS
 from .locale_cfg import current_lang, normalize_lang
 from .os_util import win_hidden_subprocess_kwargs
 from .updater import (
@@ -38,6 +44,112 @@ from .updater import (
 )
 
 _RECOVERY_TRIES = 2
+_VALID_POE2_CLASS_ID_SET: frozenset[int] = frozenset(POE2_CLASS_IDS)
+_POE2_CLASS_LABELS = "1=Witch, 2=Ranger, 6=Warrior, 7=Sorceress, 8=Huntress, 9=Mercenary, 10=Monk, 11=Druid"
+_SPEC_CLASS_ID_RE = re.compile(r"<\s*Spec\b[^>]*\bclassId\s*=\s*[\"']([^\"']*)[\"']", re.IGNORECASE)
+_LUA_LOC_PREFIX_RE = re.compile(r"(?:[A-Za-z]:)?[^\s:]+?\.lua:\d+:\s*")
+_REQUEST_ERROR_MARKERS: tuple[str, ...] = (
+    "no node ",
+    "not an attribute node",
+    "attribute must be",
+    "mode must be",
+    "no slot ",
+    "no flask slot",
+    "item does not fit slot",
+    "item base not recognised",
+    "item text too large",
+    "params.",
+    "no socket group",
+    "no item ",
+    "no item set",
+    "no skill",
+    "no config",
+    "unknown power stat",
+    "unknown method",
+    "path:",
+    "not a mastery",
+    "no mastery effect",
+    "cannot delete",
+    "empty code",
+    "code too large",
+    "not a path of building code",
+    "code did not decode",
+    "code is not a build file",
+    "no build is loaded",
+)
+_REMEDIATION_HINTS: tuple[tuple[str, str], ...] = (
+    ("no node ", "Run `pob2 tree` to inspect valid passive node IDs for this tree version."),
+    ("not an attribute node", "Only +5 Attribute travel nodes support `--attribute-node` / `--attribute`."),
+    ("no slot ", 'Use a valid PoE2 slot name such as "Weapon 1", "Body Armour", "Helmet", "Ring 1", "Amulet", "Flask 1", or "Charm 1".'),
+    ("item does not fit slot", "Ensure the item base type matches the target equipment slot."),
+    ("item base not recognised", "Verify the item text uses a valid PoE2 0.5.5 base type."),
+    ("no socket group", "Run `pob2 skills` to inspect valid 1-based socket group indices."),
+    ("unknown power stat", "Omit `--stat` or choose a valid PoB2 power stat such as `CombinedDPS`, `FullDPS`, or `TotalEHP`."),
+    ("unknown method", "Check supported PoB2 bridge RPC methods via `pob2 status`."),
+)
+
+
+def is_debug_enabled() -> bool:
+    return os.environ.get("POB2_DEBUG", "").strip().lower() in ("1", "true", "yes")
+
+
+def sanitize_bridge_error(message: str, *, debug: bool | None = None) -> str:
+    """Collapse multi-line Lua stack tracebacks into a clean single-line message unless POB2_DEBUG=1."""
+    raw = str(message or "").strip()
+    if not raw:
+        return "PoB2 engine request failed."
+    if is_debug_enabled() if debug is None else debug:
+        return raw
+    tb_idx = raw.lower().find("stack traceback:")
+    head = raw[:tb_idx].strip() if tb_idx >= 0 else raw
+    first_line = " ".join(part.strip() for part in head.splitlines() if part.strip()) or "PoB2 engine request failed."
+    cleaned = _LUA_LOC_PREFIX_RE.sub("", first_line).strip()
+    low = cleaned.lower()
+    for marker, hint in _REMEDIATION_HINTS:
+        if marker in low and hint not in cleaned:
+            cleaned = f"{cleaned} ({hint})"
+            break
+    return cleaned
+
+
+def _wrap_rpc_rejection(method: str, err_obj: Any) -> BridgeRejectedError:
+    exc = rpc_rejection(method, err_obj)
+    raw_msg = str(exc)
+    low = raw_msg.lower()
+    is_req = exc.kind == "request" or any(m in low for m in _REQUEST_ERROR_MARKERS)
+    clean_msg = sanitize_bridge_error(raw_msg)
+    return BridgeRejectedError(clean_msg, code=exc.code, kind="request" if is_req else exc.kind)
+
+
+def validate_poe2_spec_class_ids(code_or_xml: str) -> None:
+    """Validate `<Spec classId="...">` against PoE2's 8 valid class IDs `{1,2,6,7,8,9,10,11}` before engine import."""
+    xml_text = decode_share_code_xml(code_or_xml)
+    if not xml_text or "<Spec" not in xml_text:
+        return
+    found_ids: list[str] = []
+    try:
+        root = ET.fromstring(xml_text)
+        for spec_el in root.iter("Spec"):
+            cid_raw = spec_el.attrib.get("classId")
+            if cid_raw is not None and str(cid_raw).strip() != "":
+                found_ids.append(str(cid_raw).strip())
+    except ET.ParseError:
+        found_ids.extend(m.group(1).strip() for m in _SPEC_CLASS_ID_RE.finditer(xml_text) if m.group(1).strip())
+
+    for cid_str in found_ids:
+        try:
+            cid_val = int(cid_str)
+        except ValueError:
+            raise DaemonRequestError(
+                f"[POE2-INVALID-CLASS-ID] Invalid PoE2 passive tree classId={cid_str!r}; "
+                f"valid PoE2 classIds are {_POE2_CLASS_LABELS}."
+            ) from None
+        if cid_val not in _VALID_POE2_CLASS_ID_SET:
+            raise DaemonRequestError(
+                f"[POE2-INVALID-CLASS-ID] Invalid PoE2 passive tree classId={cid_val}; "
+                f"valid PoE2 classIds are {_POE2_CLASS_LABELS}."
+            )
+
 
 __all__ = [
     "FORBIDDEN_METHODS",
@@ -46,6 +158,9 @@ __all__ = [
     "BridgeRejectedError",
     "BridgeTimeoutError",
     "BridgeWorker",
+    "is_debug_enabled",
+    "sanitize_bridge_error",
+    "validate_poe2_spec_class_ids",
 ]
 
 
@@ -86,6 +201,7 @@ class BridgeWorker:
         self.translate_enabled: bool | None = None
         self.last_used: float = time.time()
         self.last_good_code: str | None = None
+        self.has_build: bool = False
         self.generation: int = 0
         self.boot_build_loaded: Any = None
         self.restore_failed: dict[str, Any] | None = None
@@ -123,6 +239,7 @@ class BridgeWorker:
             self._launch_unlocked()
             try:
                 restore_on_boot(self, target_code)
+                self.has_build = bool(self.last_good_code)
                 self.last_used = time.time()
             except BaseException:
                 self._kill_unlocked()
@@ -271,7 +388,7 @@ class BridgeWorker:
                 continue
             self.last_used = time.time()
             if msg.get("ok") is False or ("error" in msg and msg["error"] is not None):
-                raise rpc_rejection(method, msg.get("error"))
+                raise _wrap_rpc_rejection(method, msg.get("error"))
             result = msg.get("result")
             res_dict = result if isinstance(result, dict) else {"value": result}
             sync_worker_state(self, method, params, res_dict)
@@ -302,6 +419,7 @@ class BridgeWorker:
             if method == "import_code":
                 code = str((params or {}).get("code") or "")
                 validate_poe2_xml_root(code)
+                validate_poe2_spec_class_ids(code)
                 self.ensure_alive()
                 gen = self.generation
                 try:
@@ -311,7 +429,9 @@ class BridgeWorker:
                         self._restore_after_failed_import_unlocked()
                     raise
             if method == "load_xml":
-                validate_poe2_xml_root(str((params or {}).get("xml") or ""))
+                xml_raw = str((params or {}).get("xml") or "")
+                validate_poe2_xml_root(xml_raw)
+                validate_poe2_spec_class_ids(xml_raw)
             return self._raw_call_unlocked(method, params, timeout=eff_timeout)
 
     def call_batch(
@@ -334,7 +454,13 @@ class BridgeWorker:
             for idx, (method, raw_params) in enumerate(calls):
                 params = raw_params or {}
                 if method == "import_code":
-                    validate_poe2_xml_root(str(params.get("code") or ""))
+                    c_str = str(params.get("code") or "")
+                    validate_poe2_xml_root(c_str)
+                    validate_poe2_spec_class_ids(c_str)
+                elif method == "load_xml":
+                    x_str = str(params.get("xml") or "")
+                    validate_poe2_xml_root(x_str)
+                    validate_poe2_spec_class_ids(x_str)
                 self._req_counter += 1
                 req_id = self._req_counter
                 id_to_index[req_id] = idx
@@ -356,8 +482,8 @@ class BridgeWorker:
             for idx, _, method, params in send_entries:
                 msg = raw_res[idx]
                 if msg.get("ok") is False or ("error" in msg and msg["error"] is not None):
-                    exc = rpc_rejection(method, msg.get("error"))
-                    err_txt = format_rpc_error(msg.get("error"))
+                    exc = _wrap_rpc_rejection(method, msg.get("error"))
+                    err_txt = sanitize_bridge_error(format_rpc_error(msg.get("error")))
                     results[idx] = {"ok": False, "error": err_txt, "_error": err_txt, "method": method}
                     if method == "import_code":
                         had_import_err = True

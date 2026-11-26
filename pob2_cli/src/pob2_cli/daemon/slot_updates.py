@@ -164,7 +164,7 @@ def slot_status_entry(manager: DaemonManager, slot_name: str, worker: BridgeWork
     entry: dict[str, Any] = {
         "alive": alive,
         "buildInfo": info,
-        "hasLoadedBuild": bool(worker and worker.last_good_code),
+        "hasLoadedBuild": bool(worker and (getattr(worker, "has_build", False) or worker.last_good_code)),
     }
     if busy:
         entry["busy"] = True

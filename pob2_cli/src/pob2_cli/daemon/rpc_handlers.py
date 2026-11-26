@@ -16,7 +16,7 @@ from ..analyzer import (
     inspect_skills,
     inspect_tree,
 )
-from ..bridge_client import BridgeWorker
+from ..bridge_client import BridgeRejectedError, BridgeWorker, sanitize_bridge_error
 from ..bridge_protocol import decode_share_code_xml, validate_rpc_method
 from ..comparator import compare_builds, rank_uniques
 from ..errors import CrossGameHallucinationError, DaemonRequestError
@@ -186,6 +186,11 @@ def _h_node_power(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> 
         rpc_params["maxDepth"] = int(params["max_depth"])
     elif params.get("maxDepth") is not None:
         rpc_params["maxDepth"] = int(params["maxDepth"])
+    raw_ids = params.get("nodeIds") if params.get("nodeIds") is not None else params.get("node_ids")
+    if isinstance(raw_ids, (list, tuple)) and raw_ids:
+        rpc_params["nodeIds"] = [int(x) for x in raw_ids]
+    if params.get("includePathPower") is not None:
+        rpc_params["includePathPower"] = bool(params["includePathPower"])
     res = dict(w.call("node_power", rpc_params, timeout=45.0))
     res["game"] = GAME_ID
     return m._attach_warning_if_degraded(res)
@@ -207,6 +212,7 @@ def _h_new_build(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[
     res = dict(w.call("new_build", {}))
     code = str(w.call("export_code", {}).get("code") or "")
     history_of(w).load_build(code, "new_build")
+    w.has_build = True
     res["game"] = GAME_ID
     return m._attach_warning_if_degraded(res)
 
@@ -225,6 +231,54 @@ def _h_rpc(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[st
     return m._attach_warning_if_degraded(res)
 
 
+REQUIRE_LOADED_BUILD_ACTIONS: frozenset[str] = frozenset(
+    {
+        "summary",
+        "diagnose",
+        "audit",
+        "items",
+        "skills",
+        "tree",
+        "tree_state",
+        "config_list",
+        "what_if",
+        "diff",
+        "compare",
+        "uniques",
+        "notes",
+        "export",
+        "undo",
+        "redo",
+        "stats",
+        "build_info",
+        "weapon_set_state",
+        "node_power",
+        "probe",
+        "fix_gaps",
+        "rank_instill",
+        "rune_rank",
+    }
+)
+
+
+def action_requires_loaded_build(action: str, params: dict[str, Any] | None = None) -> bool:
+    if action in REQUIRE_LOADED_BUILD_ACTIONS:
+        return True
+    if action == "spirit":
+        return (params or {}).get("budget") is None
+    return False
+
+
+def empty_slot_error(slot: str) -> DaemonRequestError:
+    return DaemonRequestError(
+        f"Slot '{slot}' has no build loaded; run `pob2 load <source> --target {slot}` first."
+    )
+
+
+def worker_has_loaded_build(worker: Any) -> bool:
+    return bool(getattr(worker, "has_build", False) or getattr(worker, "last_good_code", None))
+
+
 def dispatch_dual_slot_action(
     manager: DaemonManager,
     action: str,
@@ -233,12 +287,21 @@ def dispatch_dual_slot_action(
     rw: BridgeWorker,
 ) -> dict[str, Any]:
     if action == "compare":
-        res = compare_builds(
-            mw,
-            ref_worker=rw,
-            ref_source=params.get("ref_source") or params.get("source"),
-            ref_xml_code=params.get("ref_xml_code") or params.get("xml_code"),
-        )
+        if not worker_has_loaded_build(mw):
+            raise empty_slot_error(mw.slot_name)
+        if not worker_has_loaded_build(rw):
+            raise empty_slot_error(rw.slot_name)
+        try:
+            res = compare_builds(
+                mw,
+                ref_worker=rw,
+                ref_source=params.get("ref_source") or params.get("source"),
+                ref_xml_code=params.get("ref_xml_code") or params.get("xml_code"),
+            )
+        except BridgeRejectedError as exc:
+            if exc.kind == "request":
+                raise DaemonRequestError(sanitize_bridge_error(str(exc))) from exc
+            raise
         res.setdefault("rev", history_of(mw).rev)
         res.setdefault("targetSlot", mw.slot_name)
         return manager._attach_warning_if_degraded(res)
@@ -289,4 +352,12 @@ def dispatch_slot_action(
     handler = _SLOT_ACTION_HANDLERS.get(action)
     if handler is None:
         raise ValueError(f"Unknown PoE2 daemon action '{action}'.")
-    return handler(manager, params, w)
+    if action_requires_loaded_build(action, params) and not worker_has_loaded_build(w):
+        slot_nm = normalize_slot_name(params.get("target") or getattr(w, "slot_name", None))
+        raise empty_slot_error(slot_nm)
+    try:
+        return handler(manager, params, w)
+    except BridgeRejectedError as exc:
+        if exc.kind == "request":
+            raise DaemonRequestError(sanitize_bridge_error(str(exc))) from exc
+        raise

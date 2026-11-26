@@ -271,7 +271,7 @@ local DEF_MOD_SPECS = {
 }
 
 local function build_probe_mods(dim_name, is_minion)
-	local ml = new("ModList"):ModList()
+	local ml = H.make_obj("ModList")
 	local function add_off(name, mtype, val, flags)
 		if is_minion then
 			ml:NewMod("MinionModifier", "LIST", { mod = modLib.createMod(name, mtype, val, "GradProbe", flags or 0) }, "GradProbe")

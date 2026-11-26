@@ -64,11 +64,13 @@ class SlotHistory:
         self._worker = worker
         worker.slot_history = self
         worker.last_good_code = self.committed
+        worker.has_build = bool(self.committed)
 
     def _changed(self) -> None:
         self.rev += 1
         if self._worker is not None:
             self._worker.last_good_code = self.committed
+            self._worker.has_build = bool(self.committed)
             if getattr(self._worker, "restore_failed", None) is not None:
                 self._worker.restore_failed = None
         self.save()

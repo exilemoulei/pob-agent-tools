@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import Any
 
 import httpx
 
+from ..bridge_client import validate_poe2_spec_class_ids
 from ..bridge_protocol import decode_share_code_xml, encode_xml_share_code
 from ..errors import DaemonRequestError
 from ..guardrails import validate_build_xml, validate_url
@@ -25,6 +27,54 @@ from .wegame_convert import convert_wegame_bundle_to_pob2_xml
 from .wegame_fetch import fetch_wegame_share, is_wegame_share_url, parse_wegame_share_url
 
 TextFetcher = Callable[[str, float], str]
+
+_LOCAL_PATH_SUFFIXES: tuple[str, ...] = (".xml", ".pob", ".pob2", ".txt", ".json")
+_WIN_DRIVE_PREFIX_RE = re.compile(r"^[A-Za-z]:[/\\]")
+_SPEC_NODES_RE = re.compile(r"<\s*Spec\b[^>]*\bnodes\s*=\s*[\"']([^\"']*)[\"']", re.IGNORECASE)
+
+
+def looks_like_local_file_path(raw: str) -> bool:
+    """Return True when ``raw`` resembles a local file path rather than a share code or URL."""
+    s = (raw or "").strip()
+    if not s or s.startswith("<") or "\n" in s or "://" in s or len(s) >= 260:
+        return False
+    low = s.lower()
+    if low.endswith(_LOCAL_PATH_SUFFIXES):
+        return True
+    if _WIN_DRIVE_PREFIX_RE.match(s):
+        return True
+    if "\\" in s:
+        return True
+    if "/" in s and not low.startswith(("www.", "pobb.", "poe.", "poe2", "maxroll.", "mobalytics.")):
+        return True
+    return False
+
+
+def extract_active_spec_node_ids(xml_text: str) -> set[int]:
+    """Extract integer passive node IDs from the active ``<Spec nodes="..."/>`` element in PoB2 XML."""
+    if not xml_text or "<Spec" not in xml_text:
+        return set()
+    nodes_attr = ""
+    try:
+        root = ET.fromstring(xml_text)
+        tree_el = root.find("Tree")
+        if tree_el is not None:
+            specs = tree_el.findall("Spec")
+            if specs:
+                try:
+                    active_idx = int(tree_el.attrib.get("activeSpec") or 1)
+                except ValueError:
+                    active_idx = 1
+                chosen = specs[active_idx - 1] if 1 <= active_idx <= len(specs) else specs[0]
+                nodes_attr = chosen.attrib.get("nodes") or ""
+    except ET.ParseError:
+        m = _SPEC_NODES_RE.search(xml_text)
+        if m:
+            nodes_attr = m.group(1)
+    out: set[int] = set()
+    for tok in re.findall(r"\d+", nodes_attr):
+        out.add(int(tok))
+    return out
 
 _DEFAULT_HEADERS = {
     "User-Agent": "pob24agents/0.1 (PathOfBuilding-PoE2 compatible)",
@@ -130,11 +180,13 @@ def _extract_code_or_xml_from_body(body: str, site_kind: str) -> tuple[str, str]
                     break
     if text.lstrip().startswith("<"):
         validate_build_xml(text, expected_game="poe2", source_hint=site_kind)
+        validate_poe2_spec_class_ids(text)
         return text, encode_xml_share_code(text)
     decoded = decode_share_code_xml(text)
     if decoded is None or "<PathOfBuilding" not in decoded:
         raise DaemonRequestError(f"Response from `{site_kind}` did not contain a valid PoB2 share code or XML.")
     validate_build_xml(decoded, expected_game="poe2", source_hint=site_kind)
+    validate_poe2_spec_class_ids(decoded)
     return decoded, text
 
 
@@ -202,6 +254,7 @@ def resolve_poe2_build_source(
                     raise DaemonRequestError(f"Invalid JSON bundle `{cand}`: {exc}") from exc
                 res = convert_wegame_bundle_to_pob2_xml(bundle, data_dir=data_dir)
                 validate_build_xml(res.xml, expected_game="poe2", source_hint=str(cand))
+                validate_poe2_spec_class_ids(res.xml)
                 return ResolvedBuildSource(
                     xml=res.xml,
                     code=encode_xml_share_code(res.xml),
@@ -218,10 +271,13 @@ def resolve_poe2_build_source(
                 source_kind="pob2_xml_file",
                 source_label=cand.name,
             )
+        if cand.is_dir():
+            raise DaemonRequestError(f"Build file not found (path is a directory): {raw}")
 
     # 4. Inline PoB2 XML or base64url zlib/gzip share code
     if raw.lstrip().startswith("<"):
         validate_build_xml(raw, expected_game="poe2")
+        validate_poe2_spec_class_ids(raw)
         return ResolvedBuildSource(
             xml=raw,
             code=encode_xml_share_code(raw),
@@ -231,12 +287,16 @@ def resolve_poe2_build_source(
     decoded = decode_share_code_xml(raw)
     if decoded is not None and "<PathOfBuilding" in decoded:
         validate_build_xml(decoded, expected_game="poe2")
+        validate_poe2_spec_class_ids(decoded)
         return ResolvedBuildSource(
             xml=decoded,
             code=raw,
             source_kind="pob2_code",
             source_label="inline_code",
         )
+
+    if looks_like_local_file_path(raw):
+        raise DaemonRequestError(f"Build file not found: {raw}")
 
     raise DaemonRequestError(
         "Unsupported PoE2 build source. Provide a PoB2 code, local XML/WeGame JSON file, "
@@ -277,7 +337,9 @@ def load_build_into_worker(
         fetcher=fetcher,
         transport=transport,
     )
+    requested_nodes = extract_active_spec_node_ids(resolved.xml)
     imp_res = worker.call("import_code", {"code": resolved.code, "mode": "replace"})
+    worker.has_build = True
     fixups = apply_post_load_fixups(worker, auto_fix=auto_fix)
     info = worker.call("get_build_info", {})
 
@@ -290,10 +352,31 @@ def load_build_into_worker(
         "postLoadFixups": fixups["fixups"],
         "notes": fixups["notes"],
     }
+    load_warnings: list[str] = []
+    if requested_nodes:
+        try:
+            ts = worker.call("get_tree_state", {}) or {}
+            loaded_nodes = {int(n) for n in (ts.get("allocatedNodes") or []) if isinstance(n, int)}
+            dropped_ids = sorted(requested_nodes - loaded_nodes)
+            if dropped_ids:
+                out["disconnectedNodesDropped"] = len(dropped_ids)
+                out["requestedNodeCount"] = len(requested_nodes)
+                out["loadedNodeCount"] = len(loaded_nodes)
+                out["droppedNodeIds"] = dropped_ids[:20]
+                load_warnings.append(
+                    f"[tree-disconnected] {len(dropped_ids)} passive node(s) from input XML were dropped on load "
+                    f"({len(requested_nodes)} requested -> {len(loaded_nodes)} allocated; disconnected from class start "
+                    "or invalid for active treeVersion)."
+                )
+        except Exception:
+            pass
     if resolved.warnings:
         out["importWarnings"] = list(resolved.warnings)
     if fixups["warnings"]:
         out["fixupWarnings"] = list(fixups["warnings"])
+    all_warnings = [*load_warnings, *list(resolved.warnings), *list(fixups["warnings"])]
+    if all_warnings:
+        out["warnings"] = all_warnings
     if isinstance(imp_res, dict):
         for k in ("droppedItems", "engineWarnings", "mainOutputShield"):
             if imp_res.get(k):
@@ -304,8 +387,10 @@ def load_build_into_worker(
 __all__ = [
     "ResolvedBuildSource",
     "TextFetcher",
+    "extract_active_spec_node_ids",
     "load_build_into_worker",
     "load_source_label",
+    "looks_like_local_file_path",
     "parse_share_url",
     "resolve_poe2_build_source",
 ]
