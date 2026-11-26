@@ -858,7 +858,7 @@ def test_carbon_p1_new_calc_compare_borrow_and_tree_group_propagation(
     # [P1-1] pob new Markdown reads nested detail.buildInfo & detail.level
     r_new = runner.invoke(main, ["new", "--asc", "Hierophant"])
     assert r_new.exit_code == 0, r_new.output
-    assert "圣堂武僧 / 圣宗" in r_new.output
+    assert "圣堂武僧 (Templar) / 圣宗 (Hierophant)" in r_new.output
     assert "| Level" in r_new.output and "92" in r_new.output
 
     # [P1-2] Variadic pob calc renders per-keyword subheaders without truncating 2nd keyword

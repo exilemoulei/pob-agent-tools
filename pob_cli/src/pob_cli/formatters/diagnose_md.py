@@ -6,6 +6,7 @@ import math
 from typing import Any
 
 from ..game_data.fact_cards import normalize_stat_lines
+from .bilingual import format_bilingual
 from .build_md import extract_custom_mods_330_notes
 from .diagnose_compare_md import (
     _fmt_ask_grounding_line,
@@ -53,11 +54,11 @@ def _fmt_diagnose_header(res: dict[str, Any], *, compact: bool) -> list[str]:
     info = res.get("buildInfo") or {}
     pts = info.get("points") or {}
     mg = res.get("mainGroup") or {}
-    cls_str = strip_pob_escapes(info.get("classNameZh") or info.get("className") or "-")
-    asc_str = strip_pob_escapes(info.get("ascendClassNameZh") or info.get("ascendClassName") or "-")
-    mg_lbl = strip_pob_escapes(mg.get("displayLabelZh") or mg.get("displayLabel") or "-")
+    cls_str = format_bilingual(info.get("className"), info.get("classNameZh"), kind="asc") or "-"
+    asc_str = format_bilingual(info.get("ascendClassName"), info.get("ascendClassNameZh"), kind="asc") or "-"
+    mg_lbl = format_bilingual(mg.get("displayLabel"), mg.get("displayLabelZh"), kind="gem") or "-"
     gems_str = ", ".join(
-        f"{strip_pob_escapes(g.get('nameZh') or g.get('name') or '')} ({g.get('level')}/{g.get('quality')}%)"
+        f"{format_bilingual(g.get('name') or g.get('nameSpec'), g.get('nameZh'), kind='gem')} ({g.get('level')}/{g.get('quality')}%)"
         for g in (mg.get("gems") or [])
         if g.get("enabled", True)
     )
@@ -291,7 +292,7 @@ def _fmt_diagnose_skills_and_gear(res: dict[str, Any], *, compact: bool) -> list
                 g_tag += "[Full]"
             g_gems_parts = []
             for gm in g.get("gems") or []:
-                nm = strip_pob_escapes(str(gm.get("nameZh") or gm.get("name") or "-"))
+                nm = format_bilingual(gm.get("name") or gm.get("nameSpec"), gm.get("nameZh"), kind="gem") or "-"
                 lv = gm.get("level")
                 ql = gm.get("quality")
                 meta = f"({lv}/{ql}%)" if lv is not None else ""
@@ -317,9 +318,8 @@ def _fmt_diagnose_skills_and_gear(res: dict[str, Any], *, compact: bool) -> list
         jewel_bits: list[str] = []
         for it in eq_items:
             sn = str(it.get("slot") or "-")
-            nm = strip_pob_escapes(str(it.get("nameZh") or it.get("name") or "-"))
-            en_nm = strip_pob_escapes(str(it.get("name") or ""))
-            disp = f"{nm} ({en_nm})" if (it.get("nameZh") and en_nm and nm != en_nm and it.get("rarity") in ("UNIQUE", "RELIC")) else nm
+            is_uniq = it.get("rarity") in ("UNIQUE", "RELIC")
+            disp = format_bilingual(it.get("name"), it.get("nameZh"), kind="unique" if is_uniq else "item") or "-"
             if it.get("isFlask"):
                 st_tag = "[ON]" if it.get("active") else "[OFF]"
                 t_tag = "[Tincture]" if it.get("isTincture") else ""

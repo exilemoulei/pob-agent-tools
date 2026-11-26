@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from .bilingual import (
+    clear_bilingual_cache,
+    format_bilingual,
+    lookup_localized_name,
+)
 from .build_md import (
     _extract_metrics_block,
     _format_calc_cell,
@@ -55,10 +60,12 @@ __all__ = [
     "_parse_numeric_or_none",
     "_safe_min_ele_max_hit",
     "_sanitize_nonfinite_json",
+    "clear_bilingual_cache",
     "emit_json",
     "fmt_delta",
     "fmt_num",
     "fmt_signed_pct",
+    "format_bilingual",
     "format_cautions",
     "format_compare_markdown",
     "format_diagnose_compare_markdown",
@@ -71,6 +78,7 @@ __all__ = [
     "format_sweep_markdown",
     "format_tree_markdown",
     "keep_rejected_warning",
+    "lookup_localized_name",
     "render_table",
     "render_update_warning",
     "restore_warning",

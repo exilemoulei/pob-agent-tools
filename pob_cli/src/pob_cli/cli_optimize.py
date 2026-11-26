@@ -366,7 +366,13 @@ def cmd_rank_gems(
     out_path: str | None,
 ) -> None:
     """Rank support/active candidate gems for a skill group by DPS gain."""
-    from .formatters import fmt_num, render_table, strip_pob_escapes
+    from .formatters import (
+        fmt_num,
+        format_bilingual,
+        lookup_localized_name,
+        render_table,
+        strip_pob_escapes,
+    )
 
     res = invoke_daemon(
         "rank_gems",
@@ -390,10 +396,12 @@ def cmd_rank_gems(
     for idx, gm in enumerate(cands, start=1):
         pct = gm.get("pct")
         pct_str = f"{float(pct):+.1f}%" if pct is not None else "-"
+        gm_en = strip_pob_escapes(gm.get("name"))
+        gm_zh = lookup_localized_name(gm_en, kind="gem") or strip_pob_escapes(gm.get("nameZh") or gm_en)
         row_g: list[Any] = [
             idx,
-            strip_pob_escapes(gm.get("nameZh") or gm.get("name")),
-            strip_pob_escapes(gm.get("name")),
+            gm_zh,
+            gm_en,
             fmt_num(gm.get("dps")),
             fmt_num(gm.get("delta")),
             pct_str,
@@ -402,8 +410,9 @@ def cmd_rank_gems(
             row_g.append(str(gm.get("caveat") or "-"))
         rows.append(row_g)
     headers_g = ["#", "Gem (ZH)", "Gem (EN)", "New DPS", "Delta", "Gain %"] + (["Caveat"] if has_caveats else [])
+    grp_lbl = format_bilingual(res.get("groupLabel"), res.get("groupLabelZh"), kind="gem") or strip_pob_escapes(res.get("groupLabel"))
     body = (
-        f"### Candidate Gem Ranking — Group #{res.get('groupIndex')} `{strip_pob_escapes(res.get('groupLabel'))}` ({res.get('mode')}, Base `{res.get('dpsField')}`: `{fmt_num(res.get('baseDps'))}`)\n"
+        f"### Candidate Gem Ranking — Group #{res.get('groupIndex')} `{grp_lbl}` ({res.get('mode')}, Base `{res.get('dpsField')}`: `{fmt_num(res.get('baseDps'))}`)\n"
         + render_table(headers_g, rows)
     )
     excluded = res.get("excludedSupports") or []

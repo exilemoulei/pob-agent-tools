@@ -36,7 +36,7 @@ def cmd_new(
     out_path: str | None,
 ) -> None:
     """Create a fresh empty build in the target slot with optional class, ascendancy, and level."""
-    from .formatters import render_table
+    from .formatters import format_bilingual, render_table
     from .guardrails import check_poe2_class_or_ascendancy
 
     check_poe2_class_or_ascendancy(class_name, field="class")
@@ -62,13 +62,11 @@ def cmd_new(
     info = detail.get("buildInfo") or res.get("buildInfo") or (res.get("after") or {}).get("buildInfo") or {}
     pts = info.get("points") or (res.get("after") or {}).get("points") or {}
     eff_level = info.get("level") or detail.get("level") or level or "-"
+    cls_lbl = format_bilingual(info.get("className") or class_name, info.get("classNameZh"), kind="asc") or "-"
+    asc_lbl = format_bilingual(info.get("ascendClassName") or ascendancy, info.get("ascendClassNameZh"), kind="asc") or "-"
     rows = [
         ["Target Slot", target],
-        [
-            "Class / Ascendancy",
-            f"{info.get('classNameZh') or info.get('className') or class_name or '-'} / "
-            f"{info.get('ascendClassNameZh') or info.get('ascendClassName') or ascendancy or '-'}",
-        ],
+        ["Class / Ascendancy", f"{cls_lbl} / {asc_lbl}"],
         ["Level", eff_level],
         [
             "Passive Points",
@@ -151,7 +149,7 @@ def cmd_load(
     """Load a build from local .xml/.txt file (or @file), share/profile URL (pobb.in/poe.ninja/pathofexile.com/poe.game.qq.com), or Base64 code."""
     from .daemon import emit_stderr_update_alert
     from .errors import CrossGameHallucinationError
-    from .formatters import render_table, strip_pob_escapes
+    from .formatters import format_bilingual, render_table, strip_pob_escapes
     from .formatters.tree_diff_md import format_progression_stages_markdown
     from .updater import load_update_state
 
@@ -211,16 +209,15 @@ def cmd_load(
             return "-"
         entry = lst[idx]
         if isinstance(entry, dict):
-            return strip_pob_escapes(entry.get("labelZh") or entry.get("label") or "-")
-        return strip_pob_escapes(str(entry))
+            return format_bilingual(entry.get("label"), entry.get("labelZh"), kind="gem") or "-"
+        return format_bilingual(str(entry), kind="gem") or strip_pob_escapes(str(entry))
 
+    cls_lbl = format_bilingual(info.get("className"), info.get("classNameZh"), kind="asc") or "-"
+    asc_lbl = format_bilingual(info.get("ascendClassName"), info.get("ascendClassNameZh"), kind="asc") or "-"
     rows = [
         ["Target Slot", target],
         ["Import Method", res.get("importMethod")],
-        [
-            "Class / Ascendancy",
-            f"{info.get('classNameZh') or info.get('className')} / {info.get('ascendClassNameZh') or info.get('ascendClassName')}",
-        ],
+        ["Class / Ascendancy", f"{cls_lbl} / {asc_lbl}"],
         ["Level", info.get("level")],
         [
             "Passive Points",

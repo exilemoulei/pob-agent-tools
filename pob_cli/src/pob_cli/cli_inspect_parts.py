@@ -43,7 +43,7 @@ def cmd_items(
     out_path: str | None,
 ) -> None:
     """List equipped items, inspect a single slot, or dump all equipped items & jewels (`--all --raw`)."""
-    from .formatters import render_table, strip_pob_escapes
+    from .formatters import format_bilingual, render_table, strip_pob_escapes
 
     if slot:
         from .guardrails import GuardrailScope, check_input
@@ -65,8 +65,14 @@ def cmd_items(
         if not item:
             _emit_text(_apply_loop_guard(res, f"Slot `{slot_name}` is empty."), out_path=out_path)
             return
+        is_uniq = str(item.get("rarity") or "").upper() in ("UNIQUE", "RELIC")
+        item_title = format_bilingual(
+            item.get("title") or item.get("name"),
+            item.get("titleZh") or item.get("nameZh"),
+            kind="unique" if is_uniq else "item",
+        ) or "-"
         lines = [
-            f"### Slot `{slot_name}`: {strip_pob_escapes(item.get('titleZh') or item.get('title') or item.get('name'))} (`{item.get('rarity')}`)",
+            f"### Slot `{slot_name}`: {item_title} (`{item.get('rarity')}`)",
         ]
         tip = res.get("tooltip") or {}
         for ln in tip.get("lines", []):
@@ -91,8 +97,16 @@ def cmd_items(
             if not it:
                 lines.append(f"\n#### `{slot_disp}` — _(Empty)_")
                 continue
-            title = strip_pob_escapes(it.get("titleZh") or it.get("title") or it.get("nameZh") or it.get("name") or "-")
-            base = strip_pob_escapes(it.get("baseNameZh") or it.get("baseName") or "")
+            is_uniq = str(it.get("rarity") or "").upper() in ("UNIQUE", "RELIC")
+            title = (
+                format_bilingual(
+                    it.get("title") or it.get("name"),
+                    it.get("titleZh") or it.get("nameZh"),
+                    kind="unique" if is_uniq else "item",
+                )
+                or "-"
+            )
+            base = format_bilingual(it.get("baseName"), it.get("baseNameZh"), kind="base")
             status = " [OFF]" if (s.get("isFlask") and not s.get("active")) else ""
             lines.append(f"\n#### `{slot_disp}`{status}: {title} — {base} (`{it.get('rarity') or '-'}`)")
             raw_txt = s.get("raw")
@@ -108,11 +122,17 @@ def cmd_items(
         if s.get("socketIndex"):
             slot_disp = f"{slot_disp} (#{s['socketIndex']})"
         state = "Active" if s.get("active") else ("Flask Off" if s.get("isFlask") else ("Inactive" if s.get("inactive") else "Equipped"))
+        is_uniq = str(it.get("rarity") or "").upper() in ("UNIQUE", "RELIC")
         rows.append(
             [
                 slot_disp,
-                strip_pob_escapes(it.get("titleZh") or it.get("title") or it.get("nameZh") or it.get("name") or "-"),
-                it.get("baseNameZh") or it.get("baseName") or "-",
+                format_bilingual(
+                    it.get("title") or it.get("name"),
+                    it.get("titleZh") or it.get("nameZh"),
+                    kind="unique" if is_uniq else "item",
+                )
+                or "-",
+                format_bilingual(it.get("baseName"), it.get("baseNameZh"), kind="base") or "-",
                 it.get("rarity") or "-",
                 state if it else "Empty",
             ]
@@ -127,7 +147,7 @@ def cmd_items(
 @_output_options
 def cmd_skills(group: str | None, target: str, as_json: bool, compact: bool, out_path: str | None) -> None:
     """List all skill groups or inspect gems and per-gem DPS tooltips in a group."""
-    from .formatters import fmt_num, render_table, strip_pob_escapes
+    from .formatters import fmt_num, format_bilingual, render_table
 
     res = invoke_daemon("skills", {"target": target, "group": group})
     if as_json:
@@ -143,15 +163,16 @@ def cmd_skills(group: str | None, target: str, as_json: bool, compact: bool, out
             rows.append(
                 [
                     gm.get("index"),
-                    strip_pob_escapes(gm.get("nameZh") or gm.get("name") or gm.get("nameSpec")),
+                    format_bilingual(gm.get("name") or gm.get("nameSpec"), gm.get("nameZh"), kind="gem") or "-",
                     "Support" if gm.get("support") else "Active",
                     f"{gm.get('level')}/{gm.get('quality')}%",
                     "Yes" if gm.get("enabled", True) else "No",
                     f"{dps_info.get('pct', 0):+.1f}% ({fmt_num(dps_info.get('delta'))})" if dps_info.get("pct") is not None else "-",
                 ]
             )
+        grp_lbl = format_bilingual(grp.get("displayLabel"), grp.get("displayLabelZh"), kind="gem") or "-"
         body = (
-            f"### Skill Group #{grp.get('index')}: {strip_pob_escapes(grp.get('displayLabelZh') or grp.get('displayLabel'))} (Slot: `{grp.get('slot') or '-'}`)\n"
+            f"### Skill Group #{grp.get('index')}: {grp_lbl} (Slot: `{grp.get('slot') or '-'}`)\n"
             + render_table(["#", "Gem", "Type", "Lv/Qual", "Enabled", "Tooltip DPS Impact"], rows)
         )
         _emit_text(_apply_loop_guard(res, body), out_path=out_path)
@@ -160,13 +181,13 @@ def cmd_skills(group: str | None, target: str, as_json: bool, compact: bool, out
     rows = []
     for g in res.get("groups", []):
         gems_summary = ", ".join(
-            f"{strip_pob_escapes(gm.get('nameZh') or gm.get('name'))}{'' if gm.get('enabled', True) else '[OFF]'}"
+            f"{format_bilingual(gm.get('name') or gm.get('nameSpec'), gm.get('nameZh'), kind='gem')}{'' if gm.get('enabled', True) else '[OFF]'}"
             for gm in g.get("gems", [])
         )
         rows.append(
             [
                 f"#{g['index']}{' *MAIN*' if g.get('isMain') else ''}",
-                strip_pob_escapes(g.get("displayLabelZh") or g.get("displayLabel") or g.get("label")),
+                format_bilingual(g.get("displayLabel") or g.get("label"), g.get("displayLabelZh"), kind="gem") or "-",
                 g.get("slot") or "-",
                 "Yes" if g.get("enabled", True) else "No",
                 "Yes" if g.get("includeInFullDPS") else "No",

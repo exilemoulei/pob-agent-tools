@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .bilingual import format_bilingual
 from .primitives import (
     fmt_delta,
     fmt_num,
@@ -39,10 +40,36 @@ def format_cautions(res: dict[str, Any] | list[str] | tuple[str, ...] | None) ->
     return out
 
 
+def _mutation_subject_line(detail: dict[str, Any]) -> str | None:
+    item = detail.get("item") if isinstance(detail.get("item"), dict) else None
+    if item:
+        rarity = str(item.get("rarity") or "").upper()
+        title = format_bilingual(
+            item.get("title") or item.get("name"),
+            item.get("titleZh") or item.get("nameZh"),
+            kind="unique" if rarity in ("UNIQUE", "RELIC") else "item",
+        )
+        base = format_bilingual(item.get("baseName"), item.get("baseNameZh"), kind="base")
+        if title and base and base != title:
+            return f"- **Item**: {title} — {base}"
+        if title or base:
+            return f"- **Item**: {title or base}"
+    gem = detail.get("gem") if isinstance(detail.get("gem"), dict) else None
+    if gem and (gem.get("name") or gem.get("nameSpec")):
+        lbl = format_bilingual(gem.get("name") or gem.get("nameSpec"), gem.get("nameZh"), kind="gem")
+        if lbl:
+            return f"- **Gem**: {lbl}"
+    return None
+
+
 def format_mutation_report(title: str, res: dict[str, Any], *, target: str | None = None) -> str:
     """Format mutation results (`tree change`, `skill set`, `skill add`, `batch`, etc.) into Markdown."""
     stamp = format_recency_stamp(res, slot=target or res.get("targetSlot"))
     lines = [stamp, f"### {title} — `{res.get('mode', '')}`"]
+    detail = res.get("detail") if isinstance(res.get("detail"), dict) else {}
+    subj = _mutation_subject_line(detail)
+    if subj:
+        lines.append(subj)
     before = res.get("before") or {}
     after = res.get("after") or {}
     no_undo = bool(res.get("noUndo")) or (not before and bool(after))
@@ -102,7 +129,6 @@ def format_mutation_report(title: str, res: dict[str, Any], *, target: str | Non
     else:
         lines.append("\n_(No stat changes detected)_")
 
-    detail = res.get("detail") if isinstance(res.get("detail"), dict) else {}
     raw_noop = detail.get("noopWarnings") or res.get("noopWarnings") or []
     if isinstance(raw_noop, (list, tuple)):
         noop_lines = [f"> [WARN] {strip_pob_escapes(str(w or '')).strip()}" for w in raw_noop if str(w or "").strip()]

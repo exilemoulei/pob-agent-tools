@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..game_data.fact_cards import normalize_stat_lines
+from .bilingual import lookup_localized_name
 from .build_md import format_compare_markdown
 from .primitives import (
     _parse_numeric_or_none,
@@ -206,10 +207,12 @@ def _fmt_diagnose_fact_cards_and_upgrades(res: dict[str, Any], *, compact: bool)
                 has_caveats = any(gm.get("caveat") for gm in cands)
                 g_rows = []
                 for idx, gm in enumerate(cands, start=1):
+                    gm_en = strip_pob_escapes(gm.get("name") or "-")
+                    gm_zh = lookup_localized_name(gm_en, kind="gem") or strip_pob_escapes(gm.get("nameZh") or gm_en)
                     row_g: list[Any] = [
                         idx,
-                        strip_pob_escapes(gm.get("nameZh") or gm.get("name") or "-"),
-                        strip_pob_escapes(gm.get("name") or "-"),
+                        gm_zh,
+                        gm_en,
                         fmt_num(gm.get("delta")),
                         f"{float(gm['pct']):+.1f}%" if gm.get("pct") is not None else "-",
                     ]

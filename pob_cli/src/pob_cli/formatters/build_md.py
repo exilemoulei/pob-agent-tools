@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from .bilingual import format_bilingual
 from .primitives import (
     _parse_numeric_or_none,
     fmt_delta,
@@ -12,7 +13,6 @@ from .primitives import (
     keep_rejected_warning,
     render_table,
     restore_warning,
-    strip_pob_escapes,
 )
 
 
@@ -438,8 +438,10 @@ def format_compare_markdown(
     """Format `pob compare` (3 baselines + tree/skill/equipment diffs) into concise Markdown."""
     m_info = res.get("mainBuildInfo") or {}
     r_info = res.get("refBuildInfo") or {}
+    m_asc = format_bilingual(m_info.get("ascendClassName"), m_info.get("ascendClassNameZh"), kind="asc") or "-"
+    r_asc = format_bilingual(r_info.get("ascendClassName"), r_info.get("ascendClassNameZh"), kind="asc") or "-"
     lines = [
-        f"### A/B Build Comparison: `{target}` (Lv.{m_info.get('level')} {strip_pob_escapes(m_info.get('ascendClassNameZh') or m_info.get('ascendClassName') or '-')}) vs `{ref_target}` (Lv.{r_info.get('level')} {strip_pob_escapes(r_info.get('ascendClassNameZh') or r_info.get('ascendClassName') or '-')})",
+        f"### A/B Build Comparison: `{target}` (Lv.{m_info.get('level')} {m_asc}) vs `{ref_target}` (Lv.{r_info.get('level')} {r_asc})",
     ]
 
     baselines = res.get("baselines") or {}
@@ -531,15 +533,15 @@ def format_compare_markdown(
     sd = res.get("skillDiff") or {}
     m_mg = sd.get("mainGroupMain") or {}
     r_mg = sd.get("refGroupMain") or {}
-    m_mg_lbl = strip_pob_escapes(m_mg.get("displayLabelZh") or m_mg.get("displayLabel") or "-")
-    r_mg_lbl = strip_pob_escapes(r_mg.get("displayLabelZh") or r_mg.get("displayLabel") or "-")
+    m_mg_lbl = format_bilingual(m_mg.get("displayLabel"), m_mg.get("displayLabelZh"), kind="gem") or "-"
+    r_mg_lbl = format_bilingual(r_mg.get("displayLabel"), r_mg.get("displayLabelZh"), kind="gem") or "-"
     lines.append("\n#### Skill & Aura Diff")
     lines.append(
         f"- **`{target}` Primary Skill Group**: `#{m_mg.get('index', '-')}` {m_mg_lbl}\n"
         f"- **`{ref_target}` Primary Skill Group**: `#{r_mg.get('index', '-')}` {r_mg_lbl}\n"
-        f"- **Active Skills Only in `{target}`**: {', '.join(sd.get('activeSkillsOnlyInMain', [])) or '-'}\n"
-        f"- **Active Skills Only in `{ref_target}`**: {', '.join(sd.get('activeSkillsOnlyInRef', [])) or '-'}\n"
-        f"- **Shared Active Skills**: {', '.join(sd.get('sharedActiveSkills', [])) or '-'}"
+        f"- **Active Skills Only in `{target}`**: {', '.join(format_bilingual(x, kind='gem') for x in sd.get('activeSkillsOnlyInMain', [])) or '-'}\n"
+        f"- **Active Skills Only in `{ref_target}`**: {', '.join(format_bilingual(x, kind='gem') for x in sd.get('activeSkillsOnlyInRef', [])) or '-'}\n"
+        f"- **Shared Active Skills**: {', '.join(format_bilingual(x, kind='gem') for x in sd.get('sharedActiveSkills', [])) or '-'}"
     )
 
     slot_diff = res.get("itemSlotDiff") or []
@@ -547,7 +549,14 @@ def format_compare_markdown(
         slot_diff = [s for s in slot_diff if s.get("mainItem") != s.get("refItem")]
     if slot_diff:
         lines.append("\n#### Equipment Slot Diff")
-        slot_rows = [[s["slot"], s["mainItem"], s["refItem"]] for s in slot_diff]
+        slot_rows = [
+            [
+                s["slot"],
+                format_bilingual(s["mainItem"], kind="item") or "-",
+                format_bilingual(s["refItem"], kind="item") or "-",
+            ]
+            for s in slot_diff
+        ]
         lines.append(render_table(["Slot", f"{target} Item", f"{ref_target} Item"], slot_rows))
 
     return "\n".join(lines)
