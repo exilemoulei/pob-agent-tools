@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import difflib
 import random
 import re
 from pathlib import Path
@@ -21,6 +22,7 @@ from .models import (
     PoolEvalResult,
     RemovedLeverError,
     TargetSpec,
+    UnknownTargetError,
     WeightConfidence,
     WhittlingReport,
     WhittlingTarget,
@@ -208,7 +210,12 @@ class ModPoolEngine:
             and (pool_filter is None or m.source_pool == pool_filter)
         ]
         if not candidates:
-            raise ValueError(f"No prefix/suffix modifiers found for base_slug={base_slug!r}")
+            raise UnknownTargetError(
+                query,
+                base_slug,
+                (),
+                detail=f"No prefix/suffix modifiers found for base_slug={base_slug!r}.",
+            )
 
         q_low = query.lower()
         exact_id = [
@@ -247,7 +254,14 @@ class ModPoolEngine:
 
         ilvl_ok = [m for m in by_type if m.required_level <= ilvl]
         if not ilvl_ok:
-            raise ValueError(f"Target {query!r} on {base_slug!r} requires ilvl > {ilvl}")
+            sugs = tuple(self.suggest_targets(base_slug, query, ilvl=ilvl, limit=6))
+            min_req = min(m.required_level for m in by_type)
+            raise UnknownTargetError(
+                query,
+                base_slug,
+                sugs,
+                detail=f"Target {query!r} on `{base_slug}` requires ilvl >= {min_req} (got ilvl={ilvl}).",
+            )
         ilvl_ok.sort(key=lambda m: m.display_tier)
         eff_max_t = max(ilvl_ok[0].display_tier, max_tier) if max_tier is not None else ilvl_ok[-1].display_tier
         chosen = [m for m in ilvl_ok if m.display_tier <= eff_max_t]
@@ -324,10 +338,55 @@ class ModPoolEngine:
                 exact_sub = 50 if any(q_low in x.stat_text.lower() for x in mlist) else 0
                 scored.append((pool_bonus + exact_sub - min(len(x.stat_text) for x in mlist), spool, mtype))
         if not scored:
-            raise ValueError(f"Could not match modifier target {query!r} on {base_slug!r}")
+            sugs = tuple(self.suggest_targets(base_slug, query, limit=6))
+            raise UnknownTargetError(query, base_slug, sugs)
         scored.sort(reverse=True)
         best_pool, best_type = scored[0][1], scored[0][2]
         return [m for m in candidates if m.source_pool == best_pool and m.mod_type == best_type]
+
+    def suggest_targets(
+        self,
+        base_slug: str,
+        query: str,
+        *,
+        ilvl: int = 82,
+        limit: int = 6,
+    ) -> list[str]:
+        """Return Top-*limit* closest valid `--target` query strings from *base_slug*'s modifier pool."""
+        cands = [
+            m
+            for m in self.get_mod_tiers(base_slug)
+            if m.affix_side in (AffixSide.PREFIX, AffixSide.SUFFIX) and m.required_level <= ilvl
+        ]
+        if not cands:
+            cands = [
+                m for m in self.get_mod_tiers(base_slug) if m.affix_side in (AffixSide.PREFIX, AffixSide.SUFFIX)
+            ]
+        # Deduplicate to one clean representative phrase per (source_pool, mod_type)
+        reps: dict[str, tuple[int, str]] = {}
+        for m in cands:
+            first_ln = (m.stat_text.splitlines()[0] if m.stat_text else m.mod_type).strip()
+            clean = re.sub(r"[+-]?\([^)]*\)\s*%?\s*(?:to\s+)?", "", first_ln).strip()
+            clean = re.sub(r"^[+-]?\d+(?:\.\d+)?%?\s*(?:to\s+)?", "", clean).strip()
+            clean = re.sub(r"\s+", " ", clean)
+            if not clean:
+                clean = m.mod_type
+            label = f"T1 {clean}"
+            pool_prio = 2 if m.source_pool == "normal" else (1 if m.source_pool == "desecrated" else 0)
+            prev = reps.get(label.lower())
+            score_w = pool_prio * 100000 + m.weight
+            if prev is None or score_w > prev[0]:
+                reps[label.lower()] = (score_w, label)
+
+        q_low = _translate_zh_target(query or "").lower()
+        q_toks = [t for t in re.split(r"[^a-z0-9]+", q_low) if len(t) >= 2]
+        ranked: list[tuple[float, int, str]] = []
+        for low_lbl, (w_prio, lbl) in reps.items():
+            tok_hits = sum(1 for t in q_toks if t in low_lbl)
+            sim = difflib.SequenceMatcher(None, q_low, low_lbl).ratio() if q_low else 0.0
+            ranked.append((tok_hits * 2.0 + sim, w_prio, lbl))
+        ranked.sort(key=lambda x: (-x[0], -x[1], x[2]))
+        return [lbl for _, _, lbl in ranked[:limit]]
 
     def _is_tag_eligible(self, mod: ModEntry, effective_tags: set[str]) -> bool:
         if "caster" in mod.mod_tags or "Spell" in mod.stat_text:

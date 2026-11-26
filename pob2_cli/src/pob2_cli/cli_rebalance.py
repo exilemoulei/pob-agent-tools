@@ -229,6 +229,9 @@ def cmd_spirit(
 
 
 def _format_fix_gaps_human(data: dict[str, Any]) -> str:
+    ig_r = (data.get("currentInGame") or data["before"])["resistances"]
+    wc_r = (data.get("withoutConditionalAndCharm") or data["before"])["resistances"]
+    bn_r = data["bareNet"]["resistances"]
     after_r = data["afterVerified"]["resistances"]
     after_a = data["afterVerified"]["attributes"]
     after_s = data["afterVerified"]["spirit"]
@@ -236,6 +239,9 @@ def _format_fix_gaps_human(data: dict[str, Any]) -> str:
     lines = [
         f"PoE2 {data['patch']} 5-Stage Fix-Gaps | HardFloorsMet={data['allHardFloorsMet']} | "
         f"Gold={data['totalGoldCost']} | EstCost={data['totalExCost']:.1f} Ex | OvercapTarget=+{data['overcapTarget']}%{applied_tag}",
+        f"  CurrentInGame Res: Fire {ig_r['fire']}/{ig_r['fireMax']}, Cold {ig_r['cold']}/{ig_r['coldMax']}, Light {ig_r['lightning']}/{ig_r['lightningMax']}, Chaos {ig_r['chaos']}",
+        f"  WithoutConditionalAndCharm Res: Fire {wc_r['fire']}/{wc_r['fireMax']}, Cold {wc_r['cold']}/{wc_r['coldMax']}, Light {wc_r['lightning']}/{wc_r['lightningMax']}, Chaos {wc_r['chaos']}",
+        f"  BareNet Res (gear+quests kept, replaceable runes stripped): Fire {bn_r['fire']}/{bn_r['fireMax']}, Cold {bn_r['cold']}/{bn_r['coldMax']}, Light {bn_r['lightning']}/{bn_r['lightningMax']}, Chaos {bn_r['chaos']}",
         f"  After Attrs: Str {after_a['str']}/{after_a['reqStr']}, Dex {after_a['dex']}/{after_a['reqDex']}, Int {after_a['int']}/{after_a['reqInt']}",
         f"  After Res: Fire {after_r['fire']}/{after_r['fireMax']} (+{after_r['fireOvercap']}), "
         f"Cold {after_r['cold']}/{after_r['coldMax']} (+{after_r['coldOvercap']}), "

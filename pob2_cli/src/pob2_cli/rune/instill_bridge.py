@@ -92,12 +92,29 @@ def is_excluded_jewel_emotion(name: str, *, catalog: RuneInstillCatalog | None =
     return any(s == ex.lower() for ex in cat.excluded_jewel_emotions)
 
 
+_LIVE_EMOTION_PREFIXES: tuple[str, ...] = (
+    "concentrated liquid ",
+    "diluted liquid ",
+    "potent liquid ",
+    "liquid ",
+    "distilled ",
+    "浓缩液态",
+    "稀释的液态",
+    "稀释液态",
+    "增幅液态",
+    "液态",
+    "精炼的",
+    "精炼",
+)
+
+
 def normalize_emotion_name(
     raw: str,
     *,
     catalog: RuneInstillCatalog | None = None,
 ) -> EmotionEntry:
-    """Bridge short (`Suffering`), legacy (`Distilled Suffering`), live (`Concentrated Liquid Suffering`),
+    """Bridge short (`Suffering`), legacy (`Distilled Suffering`), any live 0.5.5 tier name
+    (`Diluted Liquid <X>`, `Liquid <X>`, `Concentrated Liquid <X>`, `Potent Liquid <X>`),
     or CN/TW emotion names into canonical `EmotionEntry`.
 
     Strictly rejects the 13 `Ancient ...` (`radiusJewel=true`) Time-Lost Jewel emotions.
@@ -111,7 +128,18 @@ def normalize_emotion_name(
     key = fold_han((raw or "").strip()).lower()
     found = cat.emotions_by_key.get(key)
     if found is None:
-        raise ValueError(f"Unknown amulet Liquid Emotion: {raw!r}")
+        for pref in _LIVE_EMOTION_PREFIXES:
+            if key.startswith(pref):
+                tail = key[len(pref) :].strip()
+                if tail in cat.emotions_by_key:
+                    found = cat.emotions_by_key[tail]
+                    break
+    if found is None:
+        raise ValueError(
+            f"Unknown amulet Liquid Emotion: {raw!r}. "
+            "Accepted forms: short `<X>`, `Distilled <X>`, `Diluted Liquid <X>`, `Liquid <X>`, "
+            "`Concentrated Liquid <X>`, `Potent Liquid <X>`, or CN/TW name."
+        )
     return found
 
 

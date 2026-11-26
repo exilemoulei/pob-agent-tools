@@ -3,27 +3,32 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..craft.price_book import PriceBook
-from ..snapshot import BuildScope, BuildTransaction
 from .catalog import InstillRecipe, RuneEntry, RuneInstillCatalog, load_rune_instill_catalog
 from .instill_bridge import (
     format_ordered_recipe,
     price_instill_recipe,
     resolve_rune_price_ex,
 )
+from .live_eval import (
+    BuildProfile,
+    eval_item_raw_deltas_live,
+    extract_build_profile,
+    get_allocated_node_ids,
+    read_metric_value,
+    score_stat_lines,
+)
 from .socket_rules import (
     apply_anoint_to_amulet_raw,
     apply_runes_to_item_raw,
     eligible_runes_for_item,
     resolve_item_augment_types,
+    strip_anoint_from_amulet_raw,
 )
-
-_NUM_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,31 +161,9 @@ def compute_pareto_frontier(
     return bis_out, champ_out, frontier_out, ranked_out
 
 
-def _offline_stat_score(lines: tuple[str, ...], metric: str) -> float:
-    """Deterministic offline heuristic score when no live BridgeWorker is supplied."""
-    m_low = metric.lower()
-    score = 0.0
-    for ln in lines:
-        low = ln.lower()
-        nums = [float(x) for x in _NUM_RE.findall(ln)]
-        mag = sum(abs(n) for n in nums) / max(1, len(nums)) if nums else 10.0
-        if "ehp" in m_low or "life" in m_low or "res" in m_low or "def" in m_low:
-            if any(k in low for k in ("resistance", "maximum life", "energy shield", "armour", "evasion", "deflection", "block")):
-                score += mag * (1.8 if "all elemental" in low else 1.0)
-        elif "spirit" in m_low:
-            if "spirit" in low:
-                score += mag * 5.0
-        else:
-            if any(
-                k in low
-                for k in (
-                    "damage", "critical", "attack speed", "cast speed", "level of",
-                    "penetrates", "extra", "rage", "skill speed", "ailment", "accuracy",
-                )
-            ):
-                weight = 3.0 if ("more" in low or "extra" in low or "level of" in low or "penetrates" in low) else 1.0
-                score += mag * weight
-    return score
+def _offline_stat_score(lines: tuple[str, ...], metric: str, profile: BuildProfile | None = None) -> float:
+    """Deterministic stat-line scorer (offline heuristic or build-aware live shortlist)."""
+    return score_stat_lines(lines, metric, profile=profile)
 
 
 def _find_equipped_slot_item(worker: Any, slot_name: str) -> tuple[int, str, dict[str, Any]]:
@@ -196,16 +179,6 @@ def _find_equipped_slot_item(worker: Any, slot_name: str) -> tuple[int, str, dic
                 raw = str(worker.call("item_raw", {"id": sel_id}).get("raw") or "")
                 return sel_id, raw, items_by_id[sel_id]
     raise ValueError(f"No equipped item found in slot `{slot_name}`.")
-
-
-def _read_metric(worker: Any, metric: str) -> float:
-    stats = worker.call("get_stats", {}).get("stats") or {}
-    if metric in stats:
-        return float(stats[metric] or 0.0)
-    for k, v in stats.items():
-        if k.lower() == metric.lower():
-            return float(v or 0.0)
-    return float(stats.get("CombinedDPS") or stats.get("TotalDPS") or 0.0)
 
 
 def _select_live_rune_shortlist(
@@ -302,9 +275,9 @@ def rank_runes_for_slot(
     candidates: list[RankedCandidate] = []
     if worker is not None:
         shortlist = _select_live_rune_shortlist(eligible, parity, metric, price_book, top_live_eval)
-        baseline = _read_metric(worker, metric)
+        baseline = read_metric_value(worker, metric)
+        valid_pairs: list[tuple[RuneEntry, tuple[str, ...], str]] = []
         for rune, mods in shortlist:
-            cost_ex, src = resolve_rune_price_ex(rune, price_book=price_book)
             try:
                 mutated_raw = apply_runes_to_item_raw(
                     raw_item_text,
@@ -319,10 +292,12 @@ def rank_runes_for_slot(
                 )
             except ValueError:
                 continue
-            with BuildTransaction(worker, scope=BuildScope.ACTIVE_SETS, will_commit=False):
-                worker.call("add_item", {"raw": mutated_raw, "slotName": slot_name})
-                after = _read_metric(worker, metric)
-            gain = after - baseline
+            valid_pairs.append((rune, mods, mutated_raw))
+        deltas = eval_item_raw_deltas_live(
+            worker, slot_name, [mraw for _, _, mraw in valid_pairs], metric, baseline
+        )
+        for (rune, mods, _mraw), gain in zip(valid_pairs, deltas, strict=False):
+            cost_ex, src = resolve_rune_price_ex(rune, price_book=price_book)
             gain_pct = (gain / baseline * 100.0) if baseline > 0 else 0.0
             candidates.append(
                 RankedCandidate(
@@ -387,44 +362,38 @@ def _select_live_instill_shortlist(
     metric: str,
     top_live_eval: int,
 ) -> list[tuple[InstillRecipe, dict[str, Any]]]:
-    """Use PoB2 `node_power` kernel across all 875 notables to shortlist BiS + high-efficiency Pareto picks."""
-    by_nid = {inst.node_id: (inst, pinfo) for inst, pinfo in priced_pool}
-    try:
-        np_res = worker.call("node_power", {"stat": metric}, timeout=45.0)
-        rows = np_res.get("report") if isinstance(np_res, dict) else None
-    except Exception:
-        rows = None
+    """Fast (<5ms) offline pre-scoring over `priced_pool` (skipping already-allocated nodes).
 
-    if isinstance(rows, list) and rows:
-        scored: list[tuple[float, float, InstillRecipe, dict[str, Any]]] = []
-        for row in rows:
-            if not isinstance(row, dict) or row.get("allocated"):
-                continue
-            nid = int(row.get("id") or 0)
-            pwr = float(row.get("power") or 0.0)
-            pair = by_nid.get(nid)
-            if pair is not None and pwr > 0.0:
-                cost_ex = float(pair[1]["totalCostEx"])
-                scored.append((pwr, pwr / max(0.01, cost_ex), pair[0], pair[1]))
-        if scored:
-            half = max(1, top_live_eval // 2)
-            by_gain = sorted(scored, key=lambda x: (-x[0], x[3]["totalCostEx"]))[:half]
-            by_eff = sorted(scored, key=lambda x: (-x[1], -x[0]))[:top_live_eval]
-            chosen: list[tuple[InstillRecipe, dict[str, Any]]] = []
-            seen: set[int] = set()
-            for _g, _e, inst, pinfo in (*by_gain, *by_eff):
-                if inst.node_id not in seen:
-                    seen.add(inst.node_id)
-                    chosen.append((inst, pinfo))
-                    if len(chosen) >= top_live_eval:
-                        break
-            if chosen:
-                return chosen
+    Takes union of Top-12 offline stat score + Top-12 efficiency (score/cost_ex) + Top-4 budget picks,
+    capped at `top_live_eval` (default 20), avoiding the 35s full-tree `node_power` scan.
+    """
+    alloc_ids = get_allocated_node_ids(worker)
+    profile = extract_build_profile(worker)
+    pool = [(inst, pinfo) for inst, pinfo in priced_pool if inst.node_id not in alloc_ids] or priced_pool
+    k_limit = max(1, int(top_live_eval))
+    if len(pool) <= k_limit:
+        return list(pool)
 
-    return sorted(
-        priced_pool,
-        key=lambda pair: (-_offline_stat_score(pair[0].stats, metric), pair[1]["totalCostEx"]),
-    )[: max(1, top_live_eval)]
+    scored: list[tuple[float, float, float, InstillRecipe, dict[str, Any]]] = []
+    for inst, pinfo in pool:
+        cost_ex = max(0.05, float(pinfo["totalCostEx"]))
+        sc = _offline_stat_score(inst.stats, metric, profile=profile)
+        scored.append((sc, sc / cost_ex, cost_ex, inst, pinfo))
+
+    by_score = sorted(scored, key=lambda x: (-x[0], x[2], x[3].name))[:12]
+    by_eff = sorted(scored, key=lambda x: (-x[1], -x[0], x[3].name))[:12]
+    by_budget = sorted((x for x in scored if x[0] > 0.0), key=lambda x: (x[2], -x[0], x[3].name))[:4]
+    by_all = sorted(scored, key=lambda x: (-x[0], x[2], x[3].name))
+
+    chosen: list[tuple[InstillRecipe, dict[str, Any]]] = []
+    seen: set[int] = set()
+    for _sc, _eff, _cost, inst, pinfo in (*by_score, *by_eff, *by_budget, *by_all):
+        if inst.node_id not in seen:
+            seen.add(inst.node_id)
+            chosen.append((inst, pinfo))
+            if len(chosen) >= k_limit:
+                break
+    return chosen
 
 
 def rank_instillations(
@@ -432,7 +401,7 @@ def rank_instillations(
     metric: str = "CombinedDPS",
     max_budget_ex: float | None = None,
     limit: int = 15,
-    top_live_eval: int = 30,
+    top_live_eval: int = 20,
     price_book: PriceBook | None = None,
     worker: Any | None = None,
     evaluator: Callable[[InstillRecipe], float] | None = None,
@@ -460,27 +429,51 @@ def rank_instillations(
                 warnings=(str(exc),),
             )
         prescored = _select_live_instill_shortlist(worker, priced_pool, metric, top_live_eval)
-        baseline = _read_metric(worker, metric)
+        equipped_baseline = read_metric_value(worker, metric)
+        unanointed_raw, existing_anoint = strip_anoint_from_amulet_raw(am_raw)
+
+        valid_pairs: list[tuple[InstillRecipe, dict[str, Any], str]] = []
         for inst, pinfo in prescored:
             try:
                 mutated = apply_anoint_to_amulet_raw(am_raw, inst.name)
             except ValueError as exc:
                 warnings.append(str(exc))
                 break
-            with BuildTransaction(worker, scope=BuildScope.ACTIVE_SETS, will_commit=False):
-                worker.call("add_item", {"raw": mutated, "slotName": "Amulet"})
-                after = _read_metric(worker, metric)
-            gain = after - baseline
-            gain_pct = (gain / baseline * 100.0) if baseline > 0 else 0.0
+            valid_pairs.append((inst, pinfo, mutated))
+
+        batch_raws = [mraw for _, _, mraw in valid_pairs]
+        if existing_anoint and valid_pairs:
+            batch_raws = [unanointed_raw, *batch_raws]
+        raw_deltas = eval_item_raw_deltas_live(worker, "Amulet", batch_raws, metric, equipped_baseline)
+        if existing_anoint and raw_deltas:
+            delta_unanointed = raw_deltas[0]
+            cand_deltas = raw_deltas[1:]
+            unanointed_baseline = equipped_baseline + delta_unanointed
+            existing_contrib = -delta_unanointed
+            existing_pct = (existing_contrib / unanointed_baseline * 100.0) if unanointed_baseline > 0 else 0.0
+            warnings.append(
+                f"Equipped amulet already allocates `{existing_anoint}` "
+                f"({existing_contrib:+.1f} / {existing_pct:+.2f}% vs unanointed); "
+                "Pareto ranking uses intrinsic `gainVsUnanointed` and reports net `gainVsEquipped` per candidate."
+            )
+        else:
+            delta_unanointed = 0.0
+            cand_deltas = raw_deltas
+            unanointed_baseline = equipped_baseline
+
+        for (inst, pinfo, _mraw), gain_vs_eq in zip(valid_pairs, cand_deltas, strict=False):
+            gain_vs_un = gain_vs_eq - delta_unanointed
+            gain_pct_eq = (gain_vs_eq / equipped_baseline * 100.0) if equipped_baseline > 0 else 0.0
+            gain_pct_un = (gain_vs_un / unanointed_baseline * 100.0) if unanointed_baseline > 0 else 0.0
             cost_ex = float(pinfo["totalCostEx"])
             candidates.append(
                 RankedCandidate(
                     name=inst.name,
                     zh_cn=inst.zh_cn,
                     cost_ex=cost_ex,
-                    gain=gain,
-                    gain_pct=gain_pct,
-                    efficiency_per_ex=gain / cost_ex,
+                    gain=gain_vs_un,
+                    gain_pct=gain_pct_un,
+                    efficiency_per_ex=gain_vs_un / cost_ex,
                     price_source=",".join(pinfo["priceSources"]),
                     details={
                         "nodeId": inst.node_id,
@@ -488,6 +481,11 @@ def rank_instillations(
                         "orderedDisplayEn": pinfo["orderedDisplayEn"],
                         "orderedDisplayZh": pinfo["orderedDisplayZh"],
                         "stats": list(inst.stats),
+                        "existingAnoint": existing_anoint,
+                        "gainVsEquipped": round(gain_vs_eq, 4),
+                        "gainPctVsEquipped": round(gain_pct_eq, 3),
+                        "gainVsUnanointed": round(gain_vs_un, 4),
+                        "gainPctVsUnanointed": round(gain_pct_un, 3),
                     },
                 )
             )

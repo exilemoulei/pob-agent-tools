@@ -93,11 +93,11 @@ def handle_spirit(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> 
 
 
 def handle_rank_instill(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
-    """Pareto-rank 875 ordered amulet instillations via live `node_power` + CoW on hot daemon slot."""
+    """Pareto-rank 875 ordered amulet instillations via fast pre-scored live calc on hot daemon slot."""
     metric = str(params.get("metric") or "CombinedDPS")
     budget = float(params["budget"]) if params.get("budget") is not None else None
     limit = int(params["limit"]) if params.get("limit") is not None else 15
-    top_live = int(params["top_live_eval"]) if params.get("top_live_eval") is not None else 24
+    top_live = int(params["top_live_eval"]) if params.get("top_live_eval") is not None else 20
 
     with w.lock:
         report = rank_instillations(

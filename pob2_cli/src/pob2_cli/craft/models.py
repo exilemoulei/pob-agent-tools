@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from ..errors import DaemonRequestError
+
 MARK_OF_ABYSS_MOD_ID = "MarkOfTheAbyssalLord"
 
 CRAFTED_SOURCE_POOLS: frozenset[str] = frozenset(
@@ -78,6 +80,55 @@ class RemovedLeverError(ValueError):
 
 class CraftedSlotLimitError(ValueError):
     """Raised when violating PoE2 0.5.0+ single Crafted modifier per item limit."""
+
+
+class UnknownBaseError(DaemonRequestError, ValueError):
+    """Raised when an item base or class slug is not in the PoE2 0.5.5 whitelist."""
+
+    error_kind: str = "unknown_base"
+
+    def __init__(self, query: str, suggestions: tuple[str, ...] = ()) -> None:
+        self.query = query
+        self.suggestions = tuple(suggestions)
+        sug_txt = f" Closest valid PoE2 bases: {', '.join(self.suggestions)}" if self.suggestions else ""
+        super().__init__(
+            f"[POE2-UNKNOWN-BASE] Unknown PoE2 0.5.5 base item or class slug: {query!r}.{sug_txt}"
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "game": "poe2",
+            "ok": False,
+            "errorKind": self.error_kind,
+            "query": self.query,
+            "error": str(self),
+            "suggestions": list(self.suggestions),
+        }
+
+
+class UnknownTargetError(DaemonRequestError, ValueError):
+    """Raised when a `--target` modifier query cannot be resolved in the base's 0.5.5 pool."""
+
+    error_kind: str = "unknown_target"
+
+    def __init__(self, query: str, base_slug: str, suggestions: tuple[str, ...] = (), *, detail: str = "") -> None:
+        self.query = query
+        self.base_slug = base_slug
+        self.suggestions = tuple(suggestions)
+        msg = detail or f"Could not match modifier target {query!r} on `{base_slug}`."
+        sug_txt = f" Valid examples for `{base_slug}`: {', '.join(self.suggestions)}" if self.suggestions else ""
+        super().__init__(f"[POE2-UNKNOWN-TARGET] {msg}{sug_txt}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "game": "poe2",
+            "ok": False,
+            "errorKind": self.error_kind,
+            "query": self.query,
+            "baseSlug": self.base_slug,
+            "error": str(self),
+            "suggestions": list(self.suggestions),
+        }
 
 
 @dataclass(frozen=True, slots=True)

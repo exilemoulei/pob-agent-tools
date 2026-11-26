@@ -1,13 +1,19 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Adapted in part from lifan-builds/poe2brain (GPL-3.0-only; see pob2_cli/ATTRIBUTION.md).
-"""Trilingual (zh-CN / zh-TW / EN) PoE2 item clipboard parser, affix inspector, and 0.5.5 health check."""
+"""Trilingual (zh-CN / zh-TW / EN) PoE2 item affix inspector and 0.5.5 health check (L2)."""
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from .clipboard_parser import (
+    detect_domain_and_strip,
+    extract_bounds,
+    extract_values,
+    parse_clipboard_sections,
+    translate_mod_line,
+)
 from .models import (
     AffixSide,
     CraftingMod,
@@ -15,60 +21,18 @@ from .models import (
     ItemRarity,
     ModDomain,
     ModEntry,
+    UnknownBaseError,
     WeightConfidence,
     WhittlingReport,
 )
 from .pool_engine import ModPoolEngine
 from .weights_loader import strip_numbers_to_pattern
+from .zh_lookup import load_craft_l10n
 
-_RICH_LINK_RE = re.compile(r"\[[^\]|]+\|([^\]]+)\]|\[([^\]]+)\]")
-_RANGE_OR_NUM_RE = re.compile(
-    r"\((?P<lo>[+-]?\d+(?:\.\d+)?)\s*-\s*(?P<hi>[+-]?\d+(?:\.\d+)?)\)"
-    r"|(?P<num>[+-]?\d+(?:\.\d+)?)"
-)
-_CTRL_ALT_HEADER_RE = re.compile(
-    r"\{\s*(Prefix|Suffix)\s+Modifier\s+\"([^\"]+)\"\s+\(Tier:\s*(\d+)\)",
-    re.IGNORECASE,
-)
-
-_ZH_RARITY: dict[str, ItemRarity] = {
-    "普通": ItemRarity.NORMAL,
-    "魔法": ItemRarity.MAGIC,
-    "稀有": ItemRarity.RARE,
-    "传奇": ItemRarity.UNIQUE,
-    "傳奇": ItemRarity.UNIQUE,
-    "暗金": ItemRarity.UNIQUE,
-    "normal": ItemRarity.NORMAL,
-    "magic": ItemRarity.MAGIC,
-    "rare": ItemRarity.RARE,
-    "unique": ItemRarity.UNIQUE,
-}
-
-_CATALYST_ZH_MAP: dict[str, str] = {
-    "火焰": "fire",
-    "冰霜": "cold",
-    "闪电": "lightning",
-    "閃電": "lightning",
-    "混沌": "chaos",
-    "物理": "physical",
-    "生命": "life",
-    "魔力": "mana",
-    "防御": "defences",
-    "防禦": "defences",
-    "攻击": "attack",
-    "攻擊": "attack",
-    "施法": "caster",
-    "属性": "attribute",
-    "屬性": "attribute",
-    "速度": "speed",
-}
-
-_POE1_ILLEGAL_LINE_RE = re.compile(
-    r"prefixes cannot be changed|suffixes cannot be changed|can have up to 3 crafted modifiers|"
-    r"cannot roll attack modifiers|cannot roll caster modifiers|前缀无法被改变|后缀无法被改变|"
-    r"最多可以有\s*3\s*个工艺词缀",
-    re.IGNORECASE,
-)
+# Backwards-compatible internal aliases
+_extract_values = extract_values
+_extract_bounds = extract_bounds
+_parse_clipboard_sections = parse_clipboard_sections
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,86 +143,6 @@ class ItemInspectionReport:
         }
 
 
-def _clean_rich_markup(text: str) -> str:
-    return _RICH_LINK_RE.sub(lambda m: m.group(1) or m.group(2) or "", text)
-
-
-def _extract_values(text: str) -> list[float]:
-    vals: list[float] = []
-    for m in _RANGE_OR_NUM_RE.finditer(text):
-        if m.group("num") is not None:
-            vals.append(abs(float(m.group("num"))))
-    return vals
-
-
-def _extract_bounds(stat_text: str) -> list[tuple[float, float]]:
-    bounds: list[tuple[float, float]] = []
-    for m in _RANGE_OR_NUM_RE.finditer(stat_text):
-        if m.group("lo") is not None and m.group("hi") is not None:
-            a, b = abs(float(m.group("lo"))), abs(float(m.group("hi")))
-            bounds.append((min(a, b), max(a, b)))
-        elif m.group("num") is not None:
-            v = abs(float(m.group("num")))
-            bounds.append((v, v))
-    return bounds
-
-
-def _detect_domain_and_strip(raw_line: str) -> tuple[str, ModDomain, bool, bool, bool]:
-    """Return `(cleaned_text, domain, fractured, is_crafted, is_desecrated)`."""
-    s = _clean_rich_markup(raw_line).strip()
-    fractured = False
-    is_crafted = False
-    is_desecrated = False
-    domain = ModDomain.EXPLICIT
-
-    for tag in ("{fractured}", "(fractured)", "(破裂)", "（破裂）"):
-        if tag in s.lower() or tag in s:
-            fractured = True
-            s = re.sub(re.escape(tag), "", s, flags=re.IGNORECASE).strip()
-    for tag in ("{crafted}", "(crafted)", "(工艺)", "（工艺）", "(工藝)", "（工藝）"):
-        if tag in s.lower() or tag in s:
-            is_crafted = True
-            s = re.sub(re.escape(tag), "", s, flags=re.IGNORECASE).strip()
-    for tag in ("{desecrated}", "(desecrated)", "(亵渎)", "（亵渎）", "(褻瀆)", "（褻瀆）"):
-        if tag in s.lower() or tag in s:
-            is_desecrated = True
-            domain = ModDomain.DESECRATED
-            s = re.sub(re.escape(tag), "", s, flags=re.IGNORECASE).strip()
-    for tag, dom in (
-        ("{implicit}", ModDomain.IMPLICIT),
-        ("(implicit)", ModDomain.IMPLICIT),
-        ("(基底)", ModDomain.IMPLICIT),
-        ("(固定词缀)", ModDomain.IMPLICIT),
-        ("(固定詞綴)", ModDomain.IMPLICIT),
-        ("{enchant}", ModDomain.ENCHANT),
-        ("(enchant)", ModDomain.ENCHANT),
-        ("(附魔)", ModDomain.ENCHANT),
-        ("{rune}", ModDomain.RUNE),
-        ("(rune)", ModDomain.RUNE),
-        ("(符文)", ModDomain.RUNE),
-    ):
-        if tag in s.lower() or tag in s:
-            domain = dom
-            s = re.sub(re.escape(tag), "", s, flags=re.IGNORECASE).strip()
-    if fractured and domain == ModDomain.EXPLICIT:
-        domain = ModDomain.FRACTURED
-    elif is_crafted and domain == ModDomain.EXPLICIT:
-        domain = ModDomain.CRAFTED
-    return s.strip(), domain, fractured, is_crafted, is_desecrated
-
-
-def _parse_catalyst_tag(key_raw: str) -> str | None:
-    m = re.search(r"[（(]([^）)]+)[）)]", key_raw)
-    if not m:
-        return None
-    inner = m.group(1).strip().lower()
-    for zh, en in _CATALYST_ZH_MAP.items():
-        if zh in inner:
-            return en
-    word = inner.replace("modifiers", "").replace("词缀", "").replace("詞綴", "").strip()
-    return word.split()[0] if word else None
-
-
 def _pick_best_entry(
     candidates: list[ModEntry],
     *,
@@ -289,7 +173,7 @@ def _pick_best_entry(
             score += 400.0
         if tier_hint is not None:
             score += 300.0 if m.display_tier == tier_hint else -100.0 * abs(m.display_tier - tier_hint)
-        bounds = _extract_bounds(m.stat_text)
+        bounds = extract_bounds(m.stat_text)
         dist = 0.0
         if vals and bounds:
             all_in = True
@@ -312,106 +196,66 @@ def _pick_best_entry(
     return best
 
 
-@dataclass(slots=True)
-class _ParsedClipboard:
-    rarity: ItemRarity
-    ilvl: int
-    quality: int
-    catalyst_tag: str | None
-    corrupted: bool
-    sanctified: bool
-    header_names: list[str]
-    implicits: list[str]
-    raw_mod_lines: list[tuple[str, AffixSide | None, str | None, int | None]]
-    legality_issues: list[str]
+def _global_mod_patterns(eng: ModPoolEngine) -> frozenset[str]:
+    cached = getattr(eng, "_global_pat_cache", None)
+    if cached is not None:
+        return cached
+    pats: set[str] = set()
+    for mods in eng.bundle.mods_by_slug.values():
+        for m in mods:
+            if m.affix_side in (AffixSide.PREFIX, AffixSide.SUFFIX):
+                pats.add(strip_numbers_to_pattern(m.stat_text))
+                for ln in m.stat_text.splitlines():
+                    ln = ln.strip()
+                    if ln:
+                        pats.add(strip_numbers_to_pattern(ln))
+    out = frozenset(pats)
+    eng._global_pat_cache = out  # type: ignore[attr-defined]
+    return out
 
 
-def _parse_clipboard_sections(raw_text: str, ilvl_override: int | None) -> _ParsedClipboard:
-    rarity = ItemRarity.RARE
-    ilvl = ilvl_override or 82
-    quality = 0
-    catalyst_tag: str | None = None
-    corrupted = sanctified = False
-    header_names: list[str] = []
-    implicits: list[str] = []
-    raw_mod_lines: list[tuple[str, AffixSide | None, str | None, int | None]] = []
-    legality_issues: list[str] = []
+def _hybrid_vals_plausible(cands: list[ModEntry], vals: list[float], cat_scalar: float) -> bool:
+    """Return True if *vals* are within plausible (up to 1.25x sanctified) bounds of any candidate hybrid mod."""
+    if not vals or not cands:
+        return True
+    max_per_pos: list[float] = []
+    for m in cands:
+        for i, (_lo, hi) in enumerate(extract_bounds(m.stat_text)):
+            if i >= len(max_per_pos):
+                max_per_pos.append(hi)
+            elif hi > max_per_pos[i]:
+                max_per_pos[i] = hi
+    if not max_per_pos:
+        return True
+    return all(v <= max_hi * cat_scalar * 1.25 + 1e-6 for v, max_hi in zip(vals, max_per_pos, strict=False))
 
-    sections = [
-        [ln.strip() for ln in sec.splitlines() if ln.strip()]
-        for sec in re.split(r"(?m)^-{4,}\s*$", raw_text.strip())
-    ]
-    sections = [s for s in sections if s]
-    pending_side: AffixSide | None = None
-    pending_name: str | None = None
-    pending_tier: int | None = None
-    in_pob_implicits = 0
 
-    for sec_idx, sec in enumerate(sections):
-        for ln in sec:
-            clean_ln = _clean_rich_markup(ln).strip()
-            low = clean_ln.lower()
-            hm = _CTRL_ALT_HEADER_RE.search(clean_ln)
-            if hm:
-                pending_side = AffixSide.PREFIX if hm.group(1).lower() == "prefix" else AffixSide.SUFFIX
-                pending_name = hm.group(2)
-                pending_tier = int(hm.group(3))
-                continue
-            if _POE1_ILLEGAL_LINE_RE.search(clean_ln):
-                legality_issues.append(f"检测到 PoE1 工艺台元词缀（PoE2 0.5.5 不存在）: {clean_ln}")
-                continue
-            if low in ("corrupted", "已腐化", "已污染", "已汙染"):
-                corrupted = True
-                continue
-            if low in ("sanctified", "已神圣化", "已聖化"):
-                sanctified = True
-                continue
-            if ":" in clean_ln or "：" in clean_ln:
-                k_raw, v_raw = clean_ln.replace("：", ":", 1).split(":", 1)
-                k_comp = re.sub(r"\s+", "", k_raw).lower()
-                v_str = v_raw.strip()
-                if k_comp in ("rarity", "稀有度"):
-                    rarity = _ZH_RARITY.get(v_str.lower(), _ZH_RARITY.get(v_str, ItemRarity.RARE))
-                    continue
-                if k_comp in ("itemlevel", "物品等级", "物品等級"):
-                    nm = re.search(r"\d+", v_str)
-                    if nm and ilvl_override is None:
-                        ilvl = int(nm.group(0))
-                    continue
-                if k_comp.startswith(("quality", "品质", "品質")):
-                    nm = re.search(r"\d+", v_str)
-                    if nm:
-                        quality = int(nm.group(0))
-                    cat = _parse_catalyst_tag(k_raw)
-                    if cat:
-                        catalyst_tag = cat
-                    continue
-                if k_comp == "implicits":
-                    nm = re.search(r"\d+", v_str)
-                    in_pob_implicits = int(nm.group(0)) if nm else 0
-                    continue
-                if k_comp in (
-                    "itemclass", "物品类别", "物品類別", "sockets", "插槽", "levelreq", "level",
-                    "str", "dex", "int", "armour", "evasion", "evasionrating", "energyshield",
-                    "ward", "spirit", "uniqueid", "rune", "charmslots", "requirements", "requires",
-                    "物理伤害", "元素伤害", "护甲", "闪避值", "能量护盾", "需求", "等级",
-                ):
-                    continue
-            if sec_idx == 0 and in_pob_implicits == 0 and not clean_ln.startswith(("{", "+", "-")):
-                header_names.append(clean_ln)
-                continue
-            if in_pob_implicits > 0:
-                in_pob_implicits -= 1
-                implicits.append(clean_ln)
-                continue
-            raw_mod_lines.append((clean_ln, pending_side, pending_name, pending_tier))
-            pending_side = pending_name = pending_tier = None
-
-    return _ParsedClipboard(
-        rarity=rarity, ilvl=ilvl, quality=quality, catalyst_tag=catalyst_tag,
-        corrupted=corrupted, sanctified=sanctified, header_names=header_names,
-        implicits=implicits, raw_mod_lines=raw_mod_lines, legality_issues=legality_issues,
-    )
+def _check_out_of_range_warning(
+    lookup_mod: str,
+    cands: list[ModEntry],
+    vals: list[float],
+    cat_scalar: float,
+    all_tiers: list[ModEntry],
+) -> str | None:
+    if not vals or not cands:
+        return None
+    max_per_pos: list[float] = []
+    for m in cands:
+        for i, (_lo, hi) in enumerate(extract_bounds(m.stat_text)):
+            if i >= len(max_per_pos):
+                max_per_pos.append(hi)
+            elif hi > max_per_pos[i]:
+                max_per_pos[i] = hi
+    for v, max_hi in zip(vals, max_per_pos, strict=False):
+        if v > max_hi * cat_scalar + 1e-6:
+            pat = strip_numbers_to_pattern(lookup_mod)
+            has_hybrid = any(
+                "\n" in m.stat_text and any(strip_numbers_to_pattern(ln) == pat for ln in m.stat_text.splitlines())
+                for m in all_tiers
+            )
+            hint = "composite pure+hybrid prefix or sanctified roll" if has_hybrid else "sanctified/corrupted or stacked roll"
+            return f"[out-of-range] `{lookup_mod}` exceeds single-mod max {max_hi:g} ({hint})."
+    return None
 
 
 def inspect_item_text(
@@ -423,7 +267,7 @@ def inspect_item_text(
 ) -> ItemInspectionReport:
     """Parse PoE2 Ctrl+C / Ctrl+Alt+C / PoB2 item text and run full 0.5.5 affix & legality audit."""
     eng = engine or ModPoolEngine()
-    clip = _parse_clipboard_sections(raw_text, ilvl_override)
+    clip = parse_clipboard_sections(raw_text, ilvl_override)
     rarity, ilvl, quality, catalyst_tag = clip.rarity, clip.ilvl, clip.quality, clip.catalyst_tag
     corrupted, sanctified = clip.corrupted, clip.sanctified
     header_names, implicits = clip.header_names, clip.implicits
@@ -433,12 +277,12 @@ def inspect_item_text(
     if base_override:
         base_str = base_override
         item_name = header_names[0] if header_names else base_override
-    elif rarity in (ItemRarity.RARE, ItemRarity.UNIQUE) and len(header_names) >= 2:
+    elif len(header_names) >= 2:
         item_name, base_str = header_names[0], header_names[1]
     elif header_names:
-        item_name = base_str = header_names[-1]
+        item_name = base_str = header_names[0]
     else:
-        raise ValueError("Unable to determine item base type; pass --base explicitly.")
+        raise UnknownBaseError("", tuple(load_craft_l10n().suggest_bases("", limit=5)))
 
     base = eng.resolve_base(base_str)
     all_tiers = eng.get_mod_tiers(base.poe2db_slug)
@@ -455,38 +299,56 @@ def inspect_item_text(
     idx = 0
     while idx < len(raw_mod_lines):
         ln_txt, s_hint, n_hint, t_hint = raw_mod_lines[idx]
-        clean_mod, dom, frac, is_cr, is_des = _detect_domain_and_strip(ln_txt)
+        clean_mod, dom, frac, is_cr, is_des = detect_domain_and_strip(ln_txt)
         if dom in (ModDomain.IMPLICIT, ModDomain.ENCHANT, ModDomain.RUNE):
             implicits.append(ln_txt)
             idx += 1
             continue
+        lookup_mod, zh_ok = translate_mod_line(clean_mod)
         chosen: ModEntry | None = None
+        matched_cands: list[ModEntry] = []
+        matched_vals: list[float] = []
+        matched_lookup = lookup_mod
         consumed = 1
-        # Try 2-line hybrid mod match
+
         if idx + 1 < len(raw_mod_lines):
             nxt_txt, _, _, _ = raw_mod_lines[idx + 1]
-            nxt_clean, nxt_dom, nxt_frac, nxt_cr, nxt_des = _detect_domain_and_strip(nxt_txt)
+            nxt_clean, nxt_dom, nxt_frac, nxt_cr, nxt_des = detect_domain_and_strip(nxt_txt)
             if (nxt_dom, nxt_frac, nxt_cr, nxt_des) == (dom, frac, is_cr, is_des):
-                combo = f"{clean_mod}\n{nxt_clean}"
-                cands = pat_map.get(strip_numbers_to_pattern(combo), [])
+                nxt_lookup, _ = translate_mod_line(nxt_clean)
+                combo_lookup = f"{lookup_mod}\n{nxt_lookup}"
+                cands = pat_map.get(strip_numbers_to_pattern(combo_lookup), [])
                 if cands:
-                    chosen = _pick_best_entry(
-                        cands, ilvl=ilvl, side_hint=s_hint, tier_hint=t_hint, name_hint=n_hint,
-                        is_crafted=is_cr, is_desecrated=is_des,
-                        vals=_extract_values(combo), catalyst_scalar=cat_scalar,
+                    cvals = extract_values(combo_lookup)
+                    both_standalone = bool(
+                        pat_map.get(strip_numbers_to_pattern(lookup_mod))
+                        and pat_map.get(strip_numbers_to_pattern(nxt_lookup))
                     )
-                    if chosen is not None:
-                        clean_mod = combo
-                        consumed = 2
+                    if not both_standalone or _hybrid_vals_plausible(cands, cvals, cat_scalar):
+                        chosen = _pick_best_entry(
+                            cands, ilvl=ilvl, side_hint=s_hint, tier_hint=t_hint, name_hint=n_hint,
+                            is_crafted=is_cr, is_desecrated=is_des,
+                            vals=cvals, catalyst_scalar=cat_scalar,
+                        )
+                        if chosen is not None:
+                            clean_mod = f"{clean_mod}\n{nxt_clean}"
+                            matched_lookup, matched_cands, matched_vals, consumed = combo_lookup, cands, cvals, 2
+
         if chosen is None:
-            cands = pat_map.get(strip_numbers_to_pattern(clean_mod), [])
+            cands = pat_map.get(strip_numbers_to_pattern(lookup_mod), [])
+            cvals = extract_values(lookup_mod)
             chosen = _pick_best_entry(
                 cands, ilvl=ilvl, side_hint=s_hint, tier_hint=t_hint, name_hint=n_hint,
                 is_crafted=is_cr, is_desecrated=is_des,
-                vals=_extract_values(clean_mod), catalyst_scalar=cat_scalar,
+                vals=cvals, catalyst_scalar=cat_scalar,
             )
+            if chosen is not None:
+                matched_cands, matched_vals = cands, cvals
 
         if chosen is not None:
+            oor_warn = _check_out_of_range_warning(matched_lookup, matched_cands, matched_vals, cat_scalar, all_tiers)
+            if oor_warn:
+                warnings.append(oor_warn)
             eff_crafted = is_cr or chosen.is_crafted_pool
             eff_desec = is_des or (chosen.source_pool == "desecrated")
             cm = CraftingMod.from_entry(
@@ -513,7 +375,14 @@ def inspect_item_text(
                 is_crafted=is_cr, fractured=frac, is_desecrated=is_des,
                 resolved=False, weight_confidence=WeightConfidence.UNMEASURED,
             )
-            warnings.append(f"未能从 0.5.5 词缀池精确匹配（保留原文）: {clean_mod}")
+            if not zh_ok:
+                warnings.append(f"[unrecognized] 未能翻译中文词缀（保留原文）: {clean_mod}")
+            elif strip_numbers_to_pattern(lookup_mod) in _global_mod_patterns(eng):
+                warnings.append(
+                    f"[not-in-base-pool] 词缀不在 `{base.poe2db_slug}` 的 0.5.5 可制作词缀池中（保留原文）: {clean_mod}"
+                )
+            else:
+                warnings.append(f"[unrecognized] 未能从 0.5.5 词缀池精确匹配（保留原文）: {clean_mod}")
         craft_mods.append(cm)
         (prefixes if im.affix_side == AffixSide.PREFIX else suffixes).append(im)
         idx += consumed
@@ -532,9 +401,11 @@ def inspect_item_text(
         legality_issues.append(
             f"[0.5.5 违例] 检测到 {state.desecrated_mod_count} 条 Desecrated 亵渎词缀（单件上限 1 条）。"
         )
-    if len(prefixes) > max_p or len(suffixes) > max_s:
+    resolved_p = sum(1 for m in prefixes if m.resolved)
+    resolved_s = sum(1 for m in suffixes if m.resolved)
+    if resolved_p > max_p or resolved_s > max_s:
         legality_issues.append(
-            f"词缀数量超槽位上限: 前缀 {len(prefixes)}/{max_p}，后缀 {len(suffixes)}/{max_s}。"
+            f"词缀数量超槽位上限: 已解析前缀 {resolved_p}/{max_p}，已解析后缀 {resolved_s}/{max_s}。"
         )
     if state.has_fractured_crafted_mod:
         warnings.append(

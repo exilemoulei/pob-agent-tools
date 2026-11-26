@@ -38,10 +38,12 @@ from .socket_rules import (
     apply_anoint_to_amulet_raw,
     apply_runes_to_item_raw,
     eligible_runes_for_item,
+    extract_existing_anoint,
     parse_socketed_augment_override,
     parse_socketed_effect_modifiers,
     resolve_item_augment_types,
     resolve_rune_effects_for_item,
+    strip_anoint_from_amulet_raw,
     strip_replaceable_runes_from_item_raw,
 )
 
@@ -63,6 +65,7 @@ __all__ = [
     "apply_runes_to_item_raw",
     "compute_pareto_frontier",
     "eligible_runes_for_item",
+    "extract_existing_anoint",
     "format_ordered_recipe",
     "is_excluded_jewel_emotion",
     "legacy_to_live_emotion",
@@ -78,5 +81,6 @@ __all__ = [
     "resolve_item_augment_types",
     "resolve_rune_effects_for_item",
     "resolve_rune_price_ex",
+    "strip_anoint_from_amulet_raw",
     "strip_replaceable_runes_from_item_raw",
 ]

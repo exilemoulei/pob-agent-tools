@@ -13,14 +13,15 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from ..han_fold import fold_han
 from .base_catalog import (
-    COMMON_BASE_SUFFIX_TO_SLUG,
     ELEMENT_LOCK_MAP,
     SPECIAL_BASE_SPECS,
     ZH_BASE_ALIASES,
     build_static_levers,
 )
-from .models import AffixSide, BaseItemEntry, LeverEntry, ModEntry, WeightConfidence
+from .models import AffixSide, BaseItemEntry, LeverEntry, ModEntry, UnknownBaseError, WeightConfidence
+from .zh_lookup import check_poe1_base_hallucination, load_craft_l10n
 
 EXPECTED_GAME_PATCH = "0.5.5"
 
@@ -312,75 +313,85 @@ def load_craft_data(data_dir: Path | None = None) -> CraftDataBundle:
     )
 
 
+def _make_base_entry(
+    bundle: CraftDataBundle,
+    *,
+    name: str,
+    slug: str,
+    entry_id: str | None = None,
+    drop_level: int = 1,
+    tags: tuple[str, ...] = ("default",),
+) -> BaseItemEntry:
+    max_p, max_s = _slot_limits_for_slug(slug)
+    return BaseItemEntry(
+        id=entry_id or f"Base/{slug}/{norm_key(name)}",
+        name=name,
+        item_class=slug,
+        poe2db_slug=slug,
+        drop_level=drop_level,
+        max_prefixes=max_p,
+        max_suffixes=max_s,
+        tags=tags,
+        has_measured_weights=slug in bundle.measured_slugs,
+    )
+
+
 def resolve_base_entry(bundle: CraftDataBundle, base_name_or_slug: str) -> BaseItemEntry:
-    """Resolve an English/Chinese base item name or poe2db slug to `BaseItemEntry`."""
-    raw = base_name_or_slug.strip()
+    """Resolve an EN/CN/TW PoE2 0.5.5 base item or class slug strictly against the 1,768-base whitelist."""
+    orig = (base_name_or_slug or "").strip()
+    if not orig:
+        l10n = load_craft_l10n()
+        raise UnknownBaseError(orig, tuple(l10n.suggest_bases("", limit=5)))
+
+    # 1. Hard-block known PoE1-only bases/uniques before any lookup.
+    check_poe1_base_hallucination(orig)
+
+    l10n = load_craft_l10n()
+    raw = orig
+    folded = fold_han(raw)
     if raw in ZH_BASE_ALIASES:
         raw = ZH_BASE_ALIASES[raw]
-    for pref in ("Superior ", "Exceptional ", "Runeforged ", "Runemastered ", "Expert ", "Advanced "):
-        if raw.lower().startswith(pref.lower()):
-            raw = raw[len(pref) :].strip()
+    elif folded in ZH_BASE_ALIASES:
+        raw = ZH_BASE_ALIASES[folded]
 
-    low = raw.lower()
+    # 2. Exact match in bundled 1,768 PoE2 base whitelist (EN / CN / TW / quality-prefixed)
+    exact_wl = l10n.lookup_exact_base(raw)
+    if exact_wl is not None:
+        canon, slug = exact_wl
+        low_c = canon.lower()
+        if low_c in SPECIAL_BASE_SPECS:
+            sname, sslug, dlvl, tags = SPECIAL_BASE_SPECS[low_c]
+            return _make_base_entry(bundle, name=sname, slug=sslug, drop_level=dlvl, tags=tags)
+        return _make_base_entry(bundle, name=canon, slug=slug)
+
+    # 3. Special element-locked bases (with optional EN quality/tier prefix stripped)
+    stripped_en = raw
+    for pref in ("Superior ", "Exceptional ", "Runeforged ", "Runemastered ", "Expert ", "Advanced "):
+        if stripped_en.lower().startswith(pref.lower()):
+            stripped_en = stripped_en[len(pref) :].strip()
+    low = stripped_en.lower()
     if low in SPECIAL_BASE_SPECS:
         name, slug, dlvl, tags = SPECIAL_BASE_SPECS[low]
-        max_p, max_s = _slot_limits_for_slug(slug)
-        return BaseItemEntry(
-            id=f"Base/{slug}/{norm_key(name)}",
-            name=name,
-            item_class=slug,
-            poe2db_slug=slug,
-            drop_level=dlvl,
-            max_prefixes=max_p,
-            max_suffixes=max_s,
-            tags=tags,
-            has_measured_weights=slug in bundle.measured_slugs,
-        )
+        return _make_base_entry(bundle, name=name, slug=slug, drop_level=dlvl, tags=tags)
 
-    slug_probe = raw.replace(" ", "_")
+    # 4. Exact ModsView 81 class slugs (e.g. Wands, Body_Armours_int, Charms, Waystones_top_tier)
+    slug_probe = stripped_en.replace(" ", "_")
     for slug in bundle.mods_by_slug:
         if slug.lower() == slug_probe.lower():
-            max_p, max_s = _slot_limits_for_slug(slug)
-            return BaseItemEntry(
-                id=f"Slug/{slug}",
-                name=raw,
-                item_class=slug,
-                poe2db_slug=slug,
-                drop_level=1,
-                max_prefixes=max_p,
-                max_suffixes=max_s,
-                tags=("default",),
-                has_measured_weights=slug in bundle.measured_slugs,
-            )
+            return _make_base_entry(bundle, name=stripped_en, slug=slug, entry_id=f"Slug/{slug}")
 
+    # 5. Optional runtime PoB2 Data/Bases/*.lua exact match
     if low in bundle.base_name_to_slug:
-        slug = bundle.base_name_to_slug[low]
-        max_p, max_s = _slot_limits_for_slug(slug)
-        return BaseItemEntry(
-            id=f"Base/{slug}/{norm_key(raw)}",
-            name=raw,
-            item_class=slug,
-            poe2db_slug=slug,
-            drop_level=1,
-            max_prefixes=max_p,
-            max_suffixes=max_s,
-            tags=("default",),
-            has_measured_weights=slug in bundle.measured_slugs,
-        )
+        return _make_base_entry(bundle, name=stripped_en, slug=bundle.base_name_to_slug[low])
 
-    for suffix, slug in COMMON_BASE_SUFFIX_TO_SLUG:
-        if low == suffix or low.endswith(f" {suffix}") or suffix in low:
-            max_p, max_s = _slot_limits_for_slug(slug)
-            return BaseItemEntry(
-                id=f"Base/{slug}/{norm_key(raw)}",
-                name=raw,
-                item_class=slug,
-                poe2db_slug=slug,
-                drop_level=1,
-                max_prefixes=max_p,
-                max_suffixes=max_s,
-                tags=("default",),
-                has_measured_weights=slug in bundle.measured_slugs,
-            )
+    # 6. Magic item affix stripping around valid PoE2 bases (e.g. `Analyst's Grounding Charm of the Foliage`)
+    magic_hit = l10n.extract_magic_base(orig)
+    if magic_hit is not None:
+        canon, slug = magic_hit
+        low_c = canon.lower()
+        if low_c in SPECIAL_BASE_SPECS:
+            sname, sslug, dlvl, tags = SPECIAL_BASE_SPECS[low_c]
+            return _make_base_entry(bundle, name=sname, slug=sslug, drop_level=dlvl, tags=tags)
+        return _make_base_entry(bundle, name=canon, slug=slug)
 
-    raise ValueError(f"Could not resolve PoE2 0.5.5 base item or class slug: {base_name_or_slug!r}")
+    raise UnknownBaseError(base_name_or_slug, tuple(l10n.suggest_bases(orig, limit=5)))

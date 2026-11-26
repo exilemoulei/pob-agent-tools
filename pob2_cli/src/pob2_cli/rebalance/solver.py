@@ -92,8 +92,11 @@ class FixGapsReport:
     all_hard_floors_met: bool
     cow_rollback_verified: bool | None
     warnings: tuple[str, ...]
+    current_in_game: StatSnapshot | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        in_game = self.current_in_game or self.before
+        without_charm = self.before.to_dict(chaos_target=self.chaos_target, overcap_target=self.overcap_target)
         return {
             "game": "poe2",
             "patch": "0.5.5",
@@ -104,9 +107,16 @@ class FixGapsReport:
             "totalGoldCost": self.total_gold_cost,
             "totalExCost": round(self.total_ex_cost, 2),
             "cowRollbackVerified": self.cow_rollback_verified,
-            "before": self.before.to_dict(chaos_target=self.chaos_target, overcap_target=self.overcap_target),
+            "currentInGame": in_game.to_dict(chaos_target=self.chaos_target, overcap_target=self.overcap_target),
+            "withoutConditionalAndCharm": without_charm,
+            "before": without_charm,
             "bareNet": self.bare_net.to_dict(chaos_target=self.chaos_target, overcap_target=self.overcap_target),
             "afterVerified": self.after_verified.to_dict(chaos_target=self.chaos_target, overcap_target=self.overcap_target),
+            "snapshotNotes": {
+                "currentInGame": "Live in-game build stats as loaded (including active hit-triggered Charms and current socketed runes).",
+                "withoutConditionalAndCharm": "Permanent stats with hit-triggered Charms deactivated; keeps all equipped gear, socketed runes, passive tree, and permanent campaign quest rewards.",
+                "bareNet": "Equipped gear + passive tree + permanent campaign quest rewards + Mirrored/isSocketBound augments KEPT; only Charms deactivated and replaceable socket runes temporarily stripped to measure free socket capacity (NOT unequipped resistances).",
+            },
             "stages": {
                 "stage1Attributes": self.stage1.to_dict(),
                 "stage2Runes": self.stage2.to_dict(),
@@ -294,6 +304,7 @@ def solve_fix_gaps_offline(
         all_hard_floors_met=_all_hard_met(after, chaos_target=chaos_target),
         cow_rollback_verified=None,
         warnings=all_warnings,
+        current_in_game=audit.current_in_game or audit.current,
     )
 
 
@@ -417,6 +428,7 @@ def solve_fix_gaps_live(
         all_hard_floors_met=_all_hard_met(after_verified, chaos_target=chaos_target),
         cow_rollback_verified=rollback_ok,
         warnings=all_warnings,
+        current_in_game=audit.current_in_game or audit.current,
     )
 
 

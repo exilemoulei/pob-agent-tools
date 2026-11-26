@@ -175,7 +175,16 @@ class EquippedSlotAudit:
 
 @dataclass(frozen=True)
 class NetGapAudit:
-    """Complete Step 0 bare-build net gap analysis before Stages 1-5 run."""
+    """Complete Step 0 bare-build net gap analysis before Stages 1-5 run.
+
+    Snapshot semantics (never strips permanent campaign quest rewards or equipped gear):
+      - `current_in_game`: live in-game stats as loaded (including active hit-triggered Charms).
+      - `current` (`withoutConditionalAndCharm`): permanent stats with Charms deactivated, keeping all
+        equipped gear, socketed runes, passive tree, and permanent campaign quest rewards.
+      - `bare_net`: permanent stats with Charms deactivated AND replaceable socketed runes temporarily
+        stripped (keeping all equipped gear, permanent quest rewards, Mirrored items, and isSocketBound
+        augments) to measure exact free socket budget — NOT unequipped resistances.
+    """
 
     current: StatSnapshot
     bare_net: StatSnapshot
@@ -184,6 +193,20 @@ class NetGapAudit:
     charm_resists_excluded: bool = True
     warnings: tuple[str, ...] = ()
     crafted_slot_hints: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    current_in_game: StatSnapshot | None = None
+
+
+def _resolve_res_max(stats: dict[str, Any], elem: str, capped_res: float, overcap: float) -> float:
+    """Compute real PoE2 MaxRes from PoB2 stats (which omit `*ResistMax` and expose `Missing*Resist` / `*ResistOver75`)."""
+    explicit = stats.get(f"{elem}ResistMax")
+    if isinstance(explicit, (int, float)):
+        return float(explicit)
+    missing = stats.get(f"Missing{elem}Resist")
+    if isinstance(missing, (int, float)) and float(missing) > 0.0:
+        return float(capped_res) + float(missing)
+    over75 = stats.get(f"{elem}ResistOver75")
+    over75_f = float(over75) if isinstance(over75, (int, float)) else 0.0
+    return max(75.0 + over75_f, float(capped_res) if overcap > 0.0 else 75.0)
 
 
 def stat_snapshot_from_pob_stats(
@@ -201,16 +224,20 @@ def stat_snapshot_from_pob_stats(
 
     fire_res = _f(stats, "FireResist")
     fire_over = _f(stats, "FireResistOverCap")
-    fire_max = _f(stats, "FireResistMax", 75.0)
+    fire_max = _resolve_res_max(stats, "Fire", fire_res, fire_over)
+    fire_tot = _f(stats, "FireResistTotal", fire_res + fire_over)
     cold_res = _f(stats, "ColdResist")
     cold_over = _f(stats, "ColdResistOverCap")
-    cold_max = _f(stats, "ColdResistMax", 75.0)
+    cold_max = _resolve_res_max(stats, "Cold", cold_res, cold_over)
+    cold_tot = _f(stats, "ColdResistTotal", cold_res + cold_over)
     light_res = _f(stats, "LightningResist")
     light_over = _f(stats, "LightningResistOverCap")
-    light_max = _f(stats, "LightningResistMax", 75.0)
+    light_max = _resolve_res_max(stats, "Lightning", light_res, light_over)
+    light_tot = _f(stats, "LightningResistTotal", light_res + light_over)
     chaos_res = _f(stats, "ChaosResist")
     chaos_over = _f(stats, "ChaosResistOverCap")
-    chaos_max = _f(stats, "ChaosResistMax", 75.0)
+    chaos_max = _resolve_res_max(stats, "Chaos", chaos_res, chaos_over)
+    chaos_tot = _f(stats, "ChaosResistTotal", chaos_res + chaos_over)
 
     spirit_total = _f(stats, "Spirit")
     spirit_unres = _f(stats, "SpiritUnreserved", spirit_total)
@@ -227,13 +254,13 @@ def stat_snapshot_from_pob_stats(
         req_dex=_f(stats, "ReqDex"),
         int_val=_f(stats, "Int"),
         req_int=_f(stats, "ReqInt"),
-        fire_total=fire_res + fire_over,
+        fire_total=fire_tot,
         fire_max=fire_max,
-        cold_total=cold_res + cold_over,
+        cold_total=cold_tot,
         cold_max=cold_max,
-        lightning_total=light_res + light_over,
+        lightning_total=light_tot,
         lightning_max=light_max,
-        chaos_total=chaos_res + chaos_over,
+        chaos_total=chaos_tot,
         chaos_max=chaos_max,
         spirit_total=spirit_total,
         spirit_reserved=spirit_res,
@@ -379,13 +406,21 @@ def analyze_live_net_gap(
     if has_active_charm:
         warnings.append("Hit-triggered Charm(s) deactivated for permanent resistance & overcap calculation.")
 
+    # Capture live `currentInGame` baseline BEFORE deactivating hit-triggered Charms.
+    # Permanent campaign quest rewards (`quest*`) are NEVER stripped in any snapshot!
+    ingame_ws1 = worker.call("get_stats", {}).get("stats") or {}
+    ingame_snap = stat_snapshot_from_pob_stats(
+        ingame_ws1, level=level, ascendancy=asc, giants_blood=giants_blood
+    )
+
     # Measure permanent baseline (with Charms explicitly turned off) and bare net gap (replaceable runes stripped)
     with BuildTransaction(worker, scope=BuildScope.ACTIVE_SETS, will_commit=False):
-        for cname in sorted(_CHARM_SLOTS):
-            try:
-                worker.call("set_slot_active", {"slotName": cname, "active": False})
-            except Exception:
-                pass
+        if has_active_charm:
+            for cname in sorted(_CHARM_SLOTS):
+                try:
+                    worker.call("set_slot_active", {"slotName": cname, "active": False})
+                except Exception:
+                    pass
         ws1_stats = worker.call("get_stats", {}).get("stats") or {}
         ws2_stats: dict[str, Any] | None = None
         if has_ws2_equip:
@@ -396,7 +431,7 @@ def analyze_live_net_gap(
             ws1_stats, level=level, ascendancy=asc, giants_blood=giants_blood, ws2_stats=ws2_stats
         )
 
-        # Strip all replaceable runes (preserving Mirrored items & 13 isSocketBound augments) for bare net gap
+        # Strip ONLY replaceable socket runes (preserving all gear, permanent campaign quests, Mirrored & isSocketBound)
         any_stripped = False
         for sl_audit in audited_slots:
             if sl_audit.stripped_runes:
@@ -435,6 +470,7 @@ def analyze_live_net_gap(
         charm_resists_excluded=True,
         warnings=tuple(warnings),
         crafted_slot_hints=tuple(crafted_hints),
+        current_in_game=ingame_snap,
     )
 
 

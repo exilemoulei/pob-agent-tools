@@ -16,10 +16,17 @@ from .craft import (
     CraftMdpSolver,
     ModPoolEngine,
     RemovedLeverError,
+    UnknownBaseError,
+    UnknownTargetError,
     fetch_live_price_book,
     inspect_item_text,
 )
-from .errors import LegacyPatchTrapError
+from .errors import CrossGameHallucinationError, DaemonRequestError, LegacyPatchTrapError
+
+_TARGET_HELP = (
+    "目标词缀（可重复指定；示例: 'T1 Spell Damage', 'T2 Cast Speed', "
+    "'+30% Fire Resistance', '最大生命', 'SpellDamageOnWeapon8_'）。"
+)
 
 
 def _echo(text: str, *, err: bool = False) -> None:
@@ -172,6 +179,45 @@ def _raise_removed_as_trap(exc: RemovedLeverError) -> None:
     ) from exc
 
 
+def _handle_craft_error(ctx: click.Context, exc: Exception, *, as_json: bool) -> None:
+    if isinstance(exc, (CrossGameHallucinationError, LegacyPatchTrapError)):
+        raise exc
+    if isinstance(exc, RemovedLeverError):
+        _raise_removed_as_trap(exc)
+    if isinstance(exc, (UnknownBaseError, UnknownTargetError)):
+        _echo(str(exc), err=True)
+        if as_json:
+            _emit_json(ctx, exc.to_dict())
+        ctx.exit(1)
+    if isinstance(exc, ValueError):
+        _echo(f"Error: {exc}", err=True)
+        if as_json:
+            _emit_json(ctx, {"game": "poe2", "ok": False, "errorKind": "invalid_input", "error": str(exc)})
+        ctx.exit(1)
+    raise DaemonRequestError(str(exc)) from exc
+
+
+def _run_inspect_command(
+    ctx: click.Context,
+    item_text: str | None,
+    file_path: str | None,
+    base_override: str | None,
+    ilvl_override: int | None,
+    as_json: bool,
+) -> None:
+    """Unified execution pipeline for `craft inspect` and `item inspect` (`--text` & `--file`)."""
+    raw = _read_item_source(item_text, file_path)
+    try:
+        rep = inspect_item_text(raw, base_override=base_override, ilvl_override=ilvl_override)
+    except Exception as exc:
+        _handle_craft_error(ctx, exc, as_json=as_json)
+        return
+    if as_json:
+        _emit_json(ctx, rep.to_dict())
+        return
+    _echo(_render_inspect_md(rep))
+
+
 @click.group("craft")
 def craft_group() -> None:
     """PoE2 0.5.5 做装求解器（词缀体检、单步概率、MDP 路线规划、半成品接力）。"""
@@ -193,18 +239,13 @@ def cmd_craft_inspect(
     as_json: bool,
 ) -> None:
     """拆解稀有/魔法装备前/后缀、词缀池来源、空槽与 0.5.5 合法性体检。"""
-    raw = _read_item_source(item_text, file_path)
-    rep = inspect_item_text(raw, base_override=base_override, ilvl_override=ilvl_override)
-    if as_json:
-        _emit_json(ctx, rep.to_dict())
-        return
-    _echo(_render_inspect_md(rep))
+    _run_inspect_command(ctx, item_text, file_path, base_override, ilvl_override, as_json)
 
 
 @craft_group.command("odds")
-@click.option("--base", required=True, help="底材名或类别 slug（如 Attuned Wand / Wands / 项链）。")
+@click.option("--base", required=True, help="底材名或类别 slug（如 Attuned Wand / Vile Robe / 项链）。")
 @click.option("--ilvl", type=int, default=82, show_default=True, help="物品等级。")
-@click.option("--target", "targets", multiple=True, required=True, help="目标词缀（可重复指定）。")
+@click.option("--target", "targets", multiple=True, required=True, help=_TARGET_HELP)
 @click.option("--lever", default=None, help="指定单个通货（如 Perfect Orb of Transmutation）。")
 @click.option("--omen", "omens", multiple=True, help="附加预兆（可重复指定）。")
 @click.option("--text", "item_text", default=None, help="可选当前装备 Ctrl+C 文本。")
@@ -254,8 +295,8 @@ def cmd_craft_odds(
             )
             return
         actions = solver.evaluate_next_actions(state, t_specs, pb)
-    except RemovedLeverError as exc:
-        _raise_removed_as_trap(exc)
+    except Exception as exc:
+        _handle_craft_error(ctx, exc, as_json=as_json)
         return
     if as_json:
         _emit_json(ctx, {"game": "poe2", "patch": eng.patch, "base": state.base.name, "ilvl": state.ilvl, "actions": [a.to_dict() for a in actions]})
@@ -268,9 +309,9 @@ def cmd_craft_odds(
 
 
 @craft_group.command("plan")
-@click.option("--base", required=True, help="底材名或类别 slug。")
+@click.option("--base", required=True, help="底材名或类别 slug（如 Attuned Wand / Vile Robe / Breach Ring）。")
 @click.option("--ilvl", type=int, default=82, show_default=True, help="物品等级。")
-@click.option("--target", "targets", multiple=True, required=True, help="目标词缀（可重复指定）。")
+@click.option("--target", "targets", multiple=True, required=True, help=_TARGET_HELP)
 @click.option("--base-cost", "base_cost_ex", type=float, default=2.0, show_default=True, help="白底单价(Ex)。")
 @click.option("--buy-price", "buy_price_ex", type=float, default=None, help="可选市集现货价(Ex)，触发 Buy vs Craft 裁决。")
 @click.option("--exclude", "excluded", multiple=True, help="屏蔽通货/预兆（适配独狼 SSF）。")
@@ -300,8 +341,8 @@ def cmd_craft_plan(
             base=base, ilvl=ilvl, target_mods=list(targets), price_book=pb,
             base_cost_ex=base_cost_ex, buy_price_ex=buy_price_ex, n_sims=n_sims, seed=seed,
         )
-    except RemovedLeverError as exc:
-        _raise_removed_as_trap(exc)
+    except Exception as exc:
+        _handle_craft_error(ctx, exc, as_json=as_json)
         return
     if as_json:
         _emit_json(ctx, plan.to_dict())
@@ -314,7 +355,7 @@ def cmd_craft_plan(
 @click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False), default=None, help="半成品文本文件。")
 @click.option("--base", "base_override", default=None, help="可选底材覆盖。")
 @click.option("--ilvl", "ilvl_override", type=int, default=None, help="可选物品等级覆盖。")
-@click.option("--target", "targets", multiple=True, required=True, help="期望最终词缀（可重复指定）。")
+@click.option("--target", "targets", multiple=True, required=True, help=_TARGET_HELP)
 @click.option("--protect-existing", is_flag=True, default=False, help="锁定当前装备全部已有词缀并计算误伤率。")
 @click.option("--base-cost", "base_cost_ex", type=float, default=2.0, show_default=True, help="重开白底单价(Ex)。")
 @click.option("--buy-price", "buy_price_ex", type=float, default=None, help="可选成品现货价(Ex)。")
@@ -339,18 +380,18 @@ def cmd_craft_next(
     """半成品接力：评估当前半成品下一手最优操作、削切误伤风险与止损判定。"""
     raw = _read_item_source(item_text, file_path)
     eng = ModPoolEngine()
-    rep = inspect_item_text(raw, eng, base_override=base_override, ilvl_override=ilvl_override)
-    assert rep.state is not None
     solver = CraftMdpSolver(eng)
     pb = fetch_live_price_book(offline=offline, excluded=excluded)
     try:
+        rep = inspect_item_text(raw, eng, base_override=base_override, ilvl_override=ilvl_override)
+        assert rep.state is not None
         plan = solver.plan_craft(
             base=rep.state.base, ilvl=rep.state.ilvl, target_mods=list(targets),
             starting_state=rep.state, protect_existing=protect_existing, price_book=pb,
             base_cost_ex=base_cost_ex, buy_price_ex=buy_price_ex, n_sims=400, seed=42,
         )
-    except RemovedLeverError as exc:
-        _raise_removed_as_trap(exc)
+    except Exception as exc:
+        _handle_craft_error(ctx, exc, as_json=as_json)
         return
     if as_json:
         out = plan.to_dict()
@@ -381,12 +422,7 @@ def cmd_item_inspect(
     as_json: bool,
 ) -> None:
     """拆解中/繁/英 Ctrl+C 稀有装前/后缀、空槽与 0.5.5 合法性体检。"""
-    raw = _read_item_source(item_text, file_path)
-    rep = inspect_item_text(raw, base_override=base_override, ilvl_override=ilvl_override)
-    if as_json:
-        _emit_json(ctx, rep.to_dict())
-        return
-    _echo(_render_inspect_md(rep))
+    _run_inspect_command(ctx, item_text, file_path, base_override, ilvl_override, as_json)
 
 
 __all__ = ["craft_group", "item_group"]

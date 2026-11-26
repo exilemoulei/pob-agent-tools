@@ -87,7 +87,8 @@ def cmd_rune_inspect(ctx: click.Context, name: str, as_json: bool) -> None:
     "--type",
     "item_type",
     default="",
-    help="Optional item type (Wand, Quarterstaff, Buckler, Body Armour). Omit to read equipped `--slot` from live daemon.",
+    metavar="ITEM_TYPE",
+    help="Optional item type (Wand, Quarterstaff, Buckler, Body Armour, Helmet, Gloves, Boots, Shield, Focus). Omit to read equipped `--slot` from live daemon.",
 )
 @click.option("--slot", "slot_name", default="Weapon 1", show_default=True, help="Equipped slot label.")
 @click.option("--base", "base_name", default="", help="Optional item base name (for Buckler/subtype parity).")
@@ -201,7 +202,12 @@ def instill_group() -> None:
     "--emotions",
     "emotions_csv",
     default=None,
-    help="Exact ordered 3 emotions `Slot1,Slot2,Slot3` (accepts short/legacy/live/CN names).",
+    metavar="E1,E2,E3",
+    help=(
+        "Exact ordered 3 emotions `Slot1,Slot2,Slot3` (accepts short `<X>`, legacy `Distilled <X>`, "
+        "all 0.5.5 live tier names `Diluted Liquid <X>` / `Liquid <X>` / `Concentrated Liquid <X>` / "
+        "`Potent Liquid <X>`, or CN/TW names)."
+    ),
 )
 @click.option("--limit", type=int, default=10, show_default=True, help="Max matches for substring queries.")
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
@@ -254,7 +260,7 @@ def cmd_instill_lookup(
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
 @click.pass_context
 def cmd_instill_bridge(ctx: click.Context, emotion: str, as_json: bool) -> None:
-    """Bridge legacy `Distilled <X>` <-> live 0.5.5 `Liquid <X>` (rejects Ancient Time-Lost Jewel emotions)."""
+    """Bridge short `<X>`, legacy `Distilled <X>`, and live 0.5.5 `Diluted/Liquid/Concentrated/Potent Liquid <X>` (rejects Ancient jewel emotions)."""
     cat = load_rune_instill_catalog()
     try:
         em = normalize_emotion_name(emotion, catalog=cat)
@@ -289,9 +295,9 @@ def cmd_instill_bridge(ctx: click.Context, emotion: str, as_json: bool) -> None:
     "--top-live",
     "top_live_eval",
     type=int,
-    default=24,
+    default=20,
     show_default=True,
-    help="Number of `node_power`-shortlisted notables verified via live CoW.",
+    help="Max offline-shortlisted notables verified via live PoB2 calc (<2.5s).",
 )
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
 @click.pass_context
