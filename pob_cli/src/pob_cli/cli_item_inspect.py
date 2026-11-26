@@ -29,6 +29,20 @@ from .cli_common import (
     is_flag=True,
     help="Single-mod CoW ablation: toggle each mod line off via PoB to measure marginal DPS/EHP/res/attr deltas (0-residue).",
 )
+@click.option(
+    "--synergy",
+    is_flag=True,
+    default=False,
+    help="With `--ablate`, also run Top-K pairwise joint toggle-off ablation to detect super-additive synergies and joint req collapse.",
+)
+@click.option(
+    "--synergy-top",
+    "synergy_top",
+    type=click.IntRange(2, 8),
+    default=5,
+    show_default=True,
+    help="Number of top single-mod lines (2..8) evaluated pairwise when `--ablate --synergy` is set.",
+)
 @_target_option(allow_slot_alias=False)
 @click.option("--json", "as_json", is_flag=True, help="Output structured JSON.")
 @_output_options
@@ -40,6 +54,8 @@ def cmd_item_inspect(
     wants: tuple[str, ...],
     limit: int,
     ablate: bool,
+    synergy: bool,
+    synergy_top: int,
     target: str,
     as_json: bool,
     compact: bool,
@@ -58,6 +74,8 @@ def cmd_item_inspect(
         raise click.UsageError("Use either --raw or --file, not both.")
     if ablate and (raw_text is not None or file_path is not None):
         raise click.UsageError("--ablate operates on an equipped slot; omit --raw and --file.")
+    if synergy and not ablate:
+        raise click.UsageError("--synergy requires --ablate (e.g. `pob item inspect 'Ring 1' --ablate --synergy`).")
     if slot:
         check_input(slot, scope=GuardrailScope.SLOT, expected_game="poe1")
     for w_val in wants:
@@ -68,7 +86,14 @@ def cmd_item_inspect(
     if ablate:
         if not slot:
             raise click.UsageError("--ablate requires an equipped slot (e.g. `pob item inspect 'Ring 1' --ablate`).")
-        ablation_res = invoke_daemon("item_ablate", {"target": target, "slot": slot}, timeout=90.0)
+        ablation_params: dict[str, Any] = {"target": target, "slot": slot}
+        if synergy:
+            ablation_params["synergy"] = True
+            ablation_params["synergy_top"] = synergy_top
+            timeout_sec = max(150.0, 90.0 + synergy_top * (synergy_top - 1) // 2 * 4.0)
+        else:
+            timeout_sec = 90.0
+        ablation_res = invoke_daemon("item_ablate", ablation_params, timeout=timeout_sec)
         raw_text = str(ablation_res.get("raw") or "") or None
         slot = str(ablation_res.get("slotName") or slot)
 

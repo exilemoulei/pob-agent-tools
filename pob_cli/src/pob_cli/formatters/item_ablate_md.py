@@ -222,4 +222,42 @@ def format_item_ablation_markdown(ablation: dict[str, Any]) -> str:
         lines.append(f"_Note: `{disabled_cnt}` line(s) already disabled on the item were left out._")
     if any(d.get("unsupported") for d in deltas):
         lines.append("_Note: [UNSUPPORTED] lines are ones PoB cannot parse, so their effect was not measured._")
+
+    pairs = ablation.get("pairwiseSynergies")
+    if isinstance(pairs, list):
+        top_k = ablation.get("synergyTop") or 5
+        lines.append(f"\n#### Pairwise Synergy (Top-{top_k} 两两协同消融)")
+        if not pairs:
+            lines.append("- _(Fewer than 2 eligible active mod lines for pairwise synergy.)_")
+        else:
+            p_rows: list[list[Any]] = []
+            for p in pairs:
+                flags: list[str] = []
+                if p.get("jointReqCollapse"):
+                    reasons = "; ".join(str(r) for r in (p.get("jointCollapseReasons") or []))
+                    flags.append(f"[JOINT-REQ-COLLAPSE: {reasons}]" if reasons else "[JOINT-REQ-COLLAPSE]")
+                if p.get("nonTrivialSynergy"):
+                    flags.append("[SYNERGY]")
+                ehp_syn = (
+                    f"{float(p['synergyEhpPct']):+.2f}%"
+                    if p.get("synergyEhpPct") is not None
+                    else "-"
+                )
+                p_rows.append(
+                    [
+                        f"#{p.get('lineIndexA')} + #{p.get('lineIndexB')}",
+                        f"{strip_pob_escapes(str(p.get('modTextA') or ''))} + {strip_pob_escapes(str(p.get('modTextB') or ''))}",
+                        f"{float(p.get('jointDpsDeltaPct') or 0.0):+.2f}%",
+                        f"{float(p.get('additiveDpsDeltaPct') or 0.0):+.2f}%",
+                        f"{float(p.get('synergyDpsPct') or 0.0):+.2f}%",
+                        ehp_syn,
+                        " ".join(flags) or "-",
+                    ]
+                )
+            lines.append(
+                render_table(
+                    ["Pair", "Mods (both OFF)", "Joint ΔDPS%", "Add ΔDPS%", "Synergy ΔDPS%", "Synergy ΔEHP%", "Flags"],
+                    p_rows,
+                )
+            )
     return "\n".join(lines)

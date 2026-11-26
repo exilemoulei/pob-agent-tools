@@ -233,7 +233,18 @@ def _h_item_ablate(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) ->
     slot_val = str(params.get("slot") or params.get("slotName") or "").strip()
     if not slot_val:
         raise DaemonRequestError("Missing required parameter 'slot' for item_ablate.")
-    return m._attach_warning_if_degraded(ablate_item_mods(w, slot_val))
+    synergy = bool(params.get("synergy", False))
+    raw_top = params.get("synergy_top") if "synergy_top" in params else params.get("synergyTop", 5)
+    if raw_top is None:
+        synergy_top = 5
+    elif isinstance(raw_top, bool):
+        raise DaemonRequestError("Parameter 'synergy_top' must be an integer, not boolean.")
+    else:
+        try:
+            synergy_top = int(raw_top)
+        except (ValueError, TypeError) as exc:
+            raise DaemonRequestError(f"Invalid integer parameter 'synergy_top': {raw_top!r}") from exc
+    return m._attach_warning_if_degraded(ablate_item_mods(w, slot_val, synergy=synergy, synergy_top=synergy_top))
 
 
 def _h_interactions_inspect(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:

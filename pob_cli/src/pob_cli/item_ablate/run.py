@@ -23,9 +23,16 @@ from .deltas import (
     _slot_category,
     _slot_is_active,
 )
+from .synergy import evaluate_pairwise_synergies
 
 
-def ablate_item_mods(worker: BridgeWorker, slot_name: str) -> dict[str, Any]:
+def ablate_item_mods(
+    worker: BridgeWorker,
+    slot_name: str,
+    *,
+    synergy: bool = False,
+    synergy_top: int = 5,
+) -> dict[str, Any]:
     """Toggle each mod line off on an equipped item in a 0-residue CoW transaction."""
     caps = get_worker_caps(worker)
     if not caps.get("itemModLineToggle"):
@@ -134,6 +141,19 @@ def ablate_item_mods(worker: BridgeWorker, slot_name: str) -> dict[str, Any]:
                 )
             )
 
+        pairwise_synergies: list[dict[str, Any]] | None = None
+        if synergy:
+            pairwise_synergies = evaluate_pairwise_synergies(
+                worker,
+                tx,
+                item_id=item_id,
+                slot_active=slot_active,
+                base_digest=base_digest,
+                eval_base_digest=eval_base_digest,
+                deltas=deltas,
+                synergy_top=synergy_top,
+            )
+
         restore_check = tx.rollback_verified(base_digest)
         if tx.notes:
             # Every lazy restore that fell back to re-importing the code, not only the last one.
@@ -182,4 +202,7 @@ def ablate_item_mods(worker: BridgeWorker, slot_name: str) -> dict[str, Any]:
         }
         if item_name_zh and item_name_zh != item_name:
             out["itemNameZh"] = item_name_zh
+        if pairwise_synergies is not None:
+            out["synergyTop"] = max(2, min(8, int(synergy_top)))
+            out["pairwiseSynergies"] = pairwise_synergies
         return out
