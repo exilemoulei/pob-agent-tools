@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..bridge_client import BridgeWorker
 from ..errors import DaemonRequestError
+from ..mutators.strict_args import opt_bool
 from ..snapshot import history_of
 from .read_cache import compute_source_hash, is_live_source
 from .rpc_mutate import norm_keep
@@ -71,7 +72,7 @@ def dispatch_dual_slot_action(
             rw,
             item_slots=params.get("item_slots"),
             skill_group=params.get("skill_group"),
-            apply=bool(params.get("apply", False)),
+            apply=opt_bool(params, "apply", default=False),
         )
         return manager._attach_state_meta(b_res, mw)
 

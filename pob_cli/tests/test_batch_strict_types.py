@@ -232,3 +232,21 @@ def test_rpc_tree_change_parses_bools_and_tokens_strictly(monkeypatch: pytest.Mo
         rpc_mutate._h_tree_change(None, {"allocate": ["1"], "allow_cascade": "nah"}, None)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="index"):
         rpc_mutate._h_item_anoint(None, {"notable": "x", "index": [2]}, None)  # type: ignore[arg-type]
+
+
+def test_borrow_reads_apply_strictly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`borrow` is the one two-slot handler that writes to the build."""
+    from types import SimpleNamespace
+
+    from pob_cli import comparator
+    from pob_cli.daemon.rpc_dual import dispatch_dual_slot_action
+
+    seen: list[bool] = []
+    monkeypatch.setattr(comparator, "borrow_from_ref", lambda _m, _r, **kw: seen.append(kw["apply"]) or {})
+    manager = SimpleNamespace(_attach_state_meta=lambda res, _w: res)
+    ref = SimpleNamespace(last_good_code="CODE")
+    for raw, want in (("false", False), ("0", False), (None, False), (True, True), ("true", True)):
+        dispatch_dual_slot_action(manager, "borrow", {"apply": raw, "item_slots": ["Amulet"]}, SimpleNamespace(), ref)  # type: ignore[arg-type]
+        assert seen[-1] is want, raw
+    with pytest.raises(ValueError, match="apply"):
+        dispatch_dual_slot_action(manager, "borrow", {"apply": "maybe", "item_slots": ["Amulet"]}, SimpleNamespace(), ref)  # type: ignore[arg-type]
