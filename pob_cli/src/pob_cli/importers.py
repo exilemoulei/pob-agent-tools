@@ -509,7 +509,7 @@ def load_build_into_worker(
             out["selectedStage"] = sel_stage
             if sel_stage.get("stageNotes"):
                 prof_extra.setdefault("importNotes", []).extend(sel_stage["stageNotes"])
-        for k in ("character", "importNotes", "translateWarnings"):
-            if prof_extra.get(k):
+        for k in ("character", "importNotes", "translateWarnings", "rawHashesCount", "rawHashesExCount"):
+            if k in prof_extra and prof_extra[k] not in (None, [], {}):
                 out[k] = prof_extra[k]
         return out

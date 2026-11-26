@@ -208,12 +208,9 @@ def _h_diagnose(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> di
     if isinstance(diag_res, dict):
         if src_hash:
             diag_res["sourceHash"] = src_hash
-        if load_meta.get("importNotes"):
-            diag_res["importNotes"] = load_meta["importNotes"]
-        if load_meta.get("translateWarnings"):
-            diag_res["translateWarnings"] = load_meta["translateWarnings"]
-        if load_meta.get("character"):
-            diag_res["character"] = load_meta["character"]
+        for key in ("importNotes", "translateWarnings", "character", "rawHashesCount", "rawHashesExCount"):
+            if key in load_meta and load_meta[key] not in (None, [], {}):
+                diag_res[key] = load_meta[key]
     return m._attach_warning_if_degraded(diag_res)
 
 

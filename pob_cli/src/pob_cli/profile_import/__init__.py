@@ -8,6 +8,7 @@ from typing import Any
 
 from ..bridge_client import BridgeWorker
 from ..guardrails import validate_build_xml
+from .cluster_hashes import reconcile_import_integrity, resolve_cluster_hashes
 from .cn_fetch import fetch_cn_character_bundle, fetch_cn_characters, get_env_cn_cookie
 from .cn_zh2en import Zh2EnDictionary, translate_cn_bundle
 from .pob_xml import character_bundle_to_pob_xml
@@ -49,6 +50,8 @@ __all__ = [
     "load_official_profile_into_worker",
     "normalize_account_name",
     "parse_profile_source",
+    "reconcile_import_integrity",
+    "resolve_cluster_hashes",
     "resolve_target_character",
     "should_route_official_profile",
     "sort_profile_characters",
@@ -150,7 +153,8 @@ def _import_english_bundle(
                 },
                 timeout=30.0,
             )
-            return "import_character_json", res, []
+            lua_warns = [str(w) for w in (res.get("warnings") or []) if w] if isinstance(res, dict) else []
+            return "import_character_json", res, lua_warns
         except Exception as exc:
             lua_error = str(exc) or type(exc).__name__
 
@@ -196,7 +200,10 @@ def load_official_profile_into_worker(
         dictionary = Zh2EnDictionary.from_engine_dir(getattr(worker, "pob_root", None))
         en_bundle, translate_warnings = translate_cn_bundle(cn_bundle, dictionary)
         via, res, fallback_notes = _import_english_bundle(worker, en_bundle, source_hint=target.raw_source)
-        notes = [_BANDIT_PANTHEON_NOTE, *fallback_notes]
+        reconcile_notes, raw_h_cnt, raw_ex_cnt = reconcile_import_integrity(
+            en_bundle, res, pob_root=getattr(worker, "pob_root", None)
+        )
+        notes = [_BANDIT_PANTHEON_NOTE, *fallback_notes, *reconcile_notes]
         if translate_warnings:
             notes.append(
                 f"国服本地 3.30 词库反译完成，有 {len(translate_warnings)} 条未命中词缀（详见下方 [CN-TRANSLATE-WARN]），建议核对或用 `pob config set --append-mods` 补齐。"
@@ -212,6 +219,8 @@ def load_official_profile_into_worker(
                 "level": chosen.get("level"),
                 "server": "cn",
             },
+            "rawHashesCount": raw_h_cnt,
+            "rawHashesExCount": raw_ex_cnt,
             "importNotes": notes,
             "translateWarnings": translate_warnings,
         }
@@ -230,7 +239,11 @@ def load_official_profile_into_worker(
         use_cookie=used_cookie,
     )
     via, res, fallback_notes = _import_english_bundle(worker, bundle, source_hint=target.raw_source)
+    reconcile_notes, raw_h_cnt, raw_ex_cnt = reconcile_import_integrity(
+        bundle, res, pob_root=getattr(worker, "pob_root", None)
+    )
     notes.extend(fallback_notes)
+    notes.extend(reconcile_notes)
     return {
         "importMethod": f"official_profile_intl_{via}",
         "importResult": res,
@@ -242,6 +255,8 @@ def load_official_profile_into_worker(
             "level": chosen.get("level"),
             "server": "intl",
         },
+        "rawHashesCount": raw_h_cnt,
+        "rawHashesExCount": raw_ex_cnt,
         "importNotes": notes,
         "translateWarnings": [],
     }
