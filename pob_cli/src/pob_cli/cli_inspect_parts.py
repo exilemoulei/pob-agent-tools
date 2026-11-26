@@ -407,6 +407,7 @@ _DIAGNOSE_JSON_KEYS: dict[str, tuple[str, ...]] = {
         "original",
         "dewateredPinnacle",
         "inflationStripped",
+        "cycleEnvelope",
         "topWaterSources",
         "notes",
         "notesMeta",

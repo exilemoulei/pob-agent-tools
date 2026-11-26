@@ -516,6 +516,8 @@ def diagnose_build(
     }
     if build_mechanics.get("agentProbe") is not None:
         out_diag["agentProbe"] = build_mechanics["agentProbe"]
+    if audit.get("cycleEnvelope") is not None:
+        out_diag["cycleEnvelope"] = audit["cycleEnvelope"]
     if ask_grounding is not None:
         out_diag["askGrounding"] = ask_grounding
     _attach_diagnose_socket_fields(out_diag, top_nodes, tree_summary)

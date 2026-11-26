@@ -173,6 +173,12 @@ def _apply_matrix_scenario_in_place(
             applied_info["stripped"] = dewater_smart_in_place(worker, keep=keep, auto_keep=auto_keep)
         uber_cfg = _apply_config_in_place(worker, [("enemyIsBoss", "Uber")])
         applied_info["config"].extend(uber_cfg.get("assignments", []))
+        if auto_keep:
+            from ..analyzer.dewater_mechanics import reclamp_ailments_for_boss
+
+            applied_info["stripped"] = reclamp_ailments_for_boss(
+                worker, applied_info.get("stripped"), boss_name="Uber"
+            )
 
     if plan["flasks"] is not None:
         active_flag = bool(plan["flasks"])

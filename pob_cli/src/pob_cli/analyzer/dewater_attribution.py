@@ -23,6 +23,8 @@ COUPLED_CONFIG_PAIRS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("conditionEnemyScorched", ("conditionScorchedEffect",)),
     ("conditionEnemyBrittle", ("conditionBrittleEffect",)),
     ("conditionEnemySapped", ("conditionSapEffect",)),
+    ("buffElusive", ("overrideBuffElusive",)),
+    ("buffFortification", ("overrideFortification",)),
 )
 
 

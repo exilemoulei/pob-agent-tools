@@ -108,6 +108,7 @@ def dewater_build_with_records(
     alloc_node_stats: list[tuple[str, list[str]]] | None = None,
     auto_keep_live: bool = True,
     boss: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
     """De-water in place (2 pipelined RPC batches + optional Pass 2 clamp) and return reversible records."""
     keep_set = _normalize_keep(keep)
@@ -133,11 +134,11 @@ def dewater_build_with_records(
             ("get_party", {}),
         ],
     )
-    provenance = fetch_dewater_provenance(worker)
+    eff_provenance = provenance if isinstance(provenance, dict) else fetch_dewater_provenance(worker)
     flask_verdict = evaluate_flask_provenance(
         worker,
         items_res,
-        provenance=provenance,
+        provenance=eff_provenance,
         equipped_slots_raw=equipped_slots_raw,
         has_bloodsoaked_blade=has_bloodsoaked_blade,
         auto_keep_sustain=auto_keep_live,
@@ -156,7 +157,7 @@ def dewater_build_with_records(
         records,
         auto_keep_reasons=eff_auto_keep or None,
         auto_keep_live=auto_keep_live,
-        is_close_range=is_close_range_main_skill(skills_res, provenance),
+        is_close_range=is_close_range_main_skill(skills_res, eff_provenance),
         boss=boss,
     )
     _dewater_flasks(
@@ -180,7 +181,7 @@ def dewater_build_with_records(
         mutations,
         records,
         items_res=items_res,
-        provenance=provenance,
+        provenance=eff_provenance,
     )
 
     party_fields = party_res.get("fields", {})

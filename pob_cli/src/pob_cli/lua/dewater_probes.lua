@@ -264,18 +264,36 @@ local ENVELOPE_SCENARIOS = {
 local function handle_eval_scenario_envelope(_params)
 	local build = get_build()
 	local cfg_in, itab = build.configTab.input, build.itemsTab
+	local main_env = build.calcsTab and build.calcsTab.mainEnv
+	local mod_db = main_env and main_env.player and main_env.player.modDB
+	local main_out = (main_env and main_env.player and main_env.player.output) or {}
+	local mb_info, fl_list = probe_flasks(build, mod_db)
+	local _, cd_skills = probe_corpses_and_cd(build, main_env, main_out)
+	local sust_set = {}
+	for _, f in ipairs(fl_list) do
+		if f.magebloodControlled or f.sustained or (f.isTincture and mb_info.hasBloodsoakedBlade) then sust_set[f.slot] = true end
+	end
 	local saved_cfg, saved_fl, saved_g = {}, {}, {}
 	for k, v in pairs(cfg_in) do saved_cfg[k] = v end
 	for i = 1, 5 do local sl = itab.slots["Flask " .. i]; if sl then saved_fl[i] = sl.active end end
 	for gi, grp in ipairs(build.skillsTab.socketGroupList or {}) do
-		for gemi, gem in ipairs(grp.gemList or {}) do if GUARD_NAMES[gem.nameSpec] then saved_g[#saved_g + 1] = { gi = gi, gemi = gemi, enabled = gem.enabled } end end
+		for gemi, gem in ipairs(grp.gemList or {}) do
+			local nm = tostring(gem.nameSpec or (gem.gemData and gem.gemData.name) or "")
+			local low = nm:lower()
+			local is_temp = GUARD_NAMES[nm] or low:find("^vaal ") ~= nil
+			if not is_temp then for _, p in ipairs(TEMP_CD_PATS) do if low:find(p, 1, true) then is_temp = true; break end end end
+			if is_temp then saved_g[#saved_g + 1] = { gi = gi, gemi = gemi, enabled = gem.enabled, g1 = gem.enableGlobal1, isVaal = low:find("^vaal ") ~= nil and not GUARD_NAMES[nm] } end
+		end
 	end
 	local function set_fg(fl_on, g_on)
 		for i = 1, 5 do
-			local sl = itab.slots["Flask " .. i]; local it = sl and sl.selItemId and sl.selItemId > 0 and itab.items[sl.selItemId]
-			if it and it.base and it.base.subType == "Utility" then sl.active = fl_on end
+			local sn = "Flask " .. i; local sl = itab.slots[sn]
+			if sl and saved_fl[i] ~= nil then sl.active = fl_on and saved_fl[i] or (sust_set[sn] and saved_fl[i] or false) end
 		end
-		for _, g in ipairs(saved_g) do build.skillsTab.socketGroupList[g.gi].gemList[g.gemi].enabled = g_on end
+		for _, g in ipairs(saved_g) do
+			local gm = build.skillsTab.socketGroupList[g.gi].gemList[g.gemi]
+			if g.isVaal then gm.enableGlobal1 = g_on and g.g1 or false else gm.enabled = g_on and g.enabled or false end
+		end
 	end
 	local function reset_cfg(ov)
 		for k in pairs(cfg_in) do cfg_in[k] = nil end; for k, v in pairs(saved_cfg) do cfg_in[k] = v end; for k, v in pairs(ov or {}) do cfg_in[k] = v end
@@ -290,11 +308,14 @@ local function handle_eval_scenario_envelope(_params)
 		end
 	end)
 	reset_cfg(); for i, st in pairs(saved_fl) do local sl = itab.slots["Flask " .. i]; if sl then sl.active = st end end
-	for _, g in ipairs(saved_g) do build.skillsTab.socketGroupList[g.gi].gemList[g.gemi].enabled = g.enabled end
+	for _, g in ipairs(saved_g) do
+		local gm = build.skillsTab.socketGroupList[g.gi].gemList[g.gemi]
+		gm.enabled = g.enabled; if g.isVaal then gm.enableGlobal1 = g.g1 end
+	end
 	build.configTab:BuildModList(); build.calcsTab:BuildOutput()
 	if not ok then error(err, 0) end
 	local rd, pd = (out_sc.Raw and out_sc.Raw.dps) or 0, (out_sc.PinnacleSustained and out_sc.PinnacleSustained.dps) or 0
-	return { scenarios = out_sc, inflationRatio = (pd > 0) and (rd / pd) or 0, elapsedMs = now_ms() - t0 }
+	return { scenarios = out_sc, cycleSkills = cd_skills, inflationRatio = (pd > 0) and (rd / pd) or 0, elapsedMs = now_ms() - t0 }
 end
 
 rawset(_G, "__pob4agents_eval_scenario_envelope", handle_eval_scenario_envelope)

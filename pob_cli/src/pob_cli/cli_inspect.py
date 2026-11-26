@@ -340,6 +340,13 @@ def cmd_ground(
     help="Disable automatic mechanism-based config retention during Pinnacle dewatering.",
 )
 @click.option(
+    "--boss",
+    "boss",
+    type=click.Choice(["Pinnacle", "Uber"], case_sensitive=False),
+    default=None,
+    help="Explicit Boss tier for dewatering (`Pinnacle` default, or `Uber` with Uber ailment clamping).",
+)
+@click.option(
     "--no-attribution",
     "no_attribution",
     is_flag=True,
@@ -351,6 +358,7 @@ def cmd_ground(
 def cmd_audit(
     keep: tuple[str, ...],
     no_auto_keep: bool,
+    boss: str | None,
     no_attribution: bool,
     target: str,
     as_json: bool,
@@ -362,8 +370,8 @@ def cmd_audit(
         fmt_delta,
         fmt_num,
         fmt_signed_pct,
+        format_dewater_summary_lines,
         format_recency_stamp,
-        keep_rejected_warning,
         render_table,
         restore_warning,
     )
@@ -373,6 +381,8 @@ def cmd_audit(
         params["keep"] = list(keep)
     if no_auto_keep:
         params["no_auto_keep"] = True
+    if boss:
+        params["boss"] = "Uber" if boss.lower() == "uber" else "Pinnacle"
     res = invoke_daemon("audit", params)
     if as_json:
         _apply_loop_guard(res)
@@ -400,22 +410,22 @@ def cmd_audit(
             lines.append("\n#### 1b. Threshold Gap Probes")
             lines.extend(p_lines)
 
+    raw_boss = str(res.get("bossTier") or params.get("boss") or "Pinnacle").strip()
+    boss_tier = "Uber" if raw_boss.lower() == "uber" else "Pinnacle"
     stripped = res.get("inflationStripped", {})
-    lines.append("\n#### 2. Inflation ('Water') Stripped for Pinnacle Boss Baseline")
+    lines.append(f"\n#### 2. Inflation ('Water') Stripped for {boss_tier} Boss Baseline")
     s_rows = []
     for dim in ("config", "flasks", "skills", "party"):
         items = stripped.get(dim) or []
         s_rows.append([dim.capitalize(), len(items), "; ".join(items) if items else "_(Clean)_"])
     lines.append(render_table(["Dimension", "Count", "Stripped Items"], s_rows))
-    auto_kept = stripped.get("autoKept") or []
-    if auto_kept:
-        lines.append("\n**Auto-Kept (Build-Guaranteed)**: " + "; ".join(str(x) for x in auto_kept))
-    kept = stripped.get("kept") or []
-    if kept:
-        lines.append("\n**Kept (--keep)**: " + "; ".join(kept))
-    rej_lines = keep_rejected_warning(stripped)
-    if rej_lines:
-        lines.append("\n" + "\n".join(rej_lines))
+    lines.extend(
+        format_dewater_summary_lines(
+            stripped,
+            cycle_envelope=res.get("cycleEnvelope"),
+            boss_tier=boss_tier,
+        )
+    )
 
     attr = res.get("waterAttribution") or []
     if attr:
@@ -451,7 +461,7 @@ def cmd_audit(
 
     orig = res.get("original", {})
     dew = res.get("dewateredPinnacle", {})
-    lines.append("\n#### 3. Original Panel vs True Pinnacle Boss Baseline (De-watered)")
+    lines.append(f"\n#### 3. Original Panel vs True {boss_tier} Boss Baseline (De-watered)")
     comp_rows = [
         [
             f"Primary DPS ({orig.get('primaryDpsKey')})",
@@ -484,7 +494,7 @@ def cmd_audit(
             fmt_delta(orig.get("chaosMaxHit"), dew.get("chaosMaxHit")),
         ],
     ]
-    lines.append(render_table(["Metric", "Original Panel", "Dewatered Pinnacle", "Water Delta"], comp_rows))
+    lines.append(render_table(["Metric", "Original Panel", f"Dewatered {boss_tier}", "Water Delta"], comp_rows))
     _emit_text(_apply_loop_guard(res, "\n".join(lines)), out_path=out_path)
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .bilingual import format_bilingual
+from .dewater_md import format_compare_dewater_lines
 from .primitives import keep_rejected_warning, render_table
 
 
@@ -127,6 +128,7 @@ def format_compare_markdown(
         lines.append(f"\n> [3.30 CustomMods Note] {cn}")
     if auto_parts:
         lines.append("\n**Auto-Kept (Build-Guaranteed)**: " + " | ".join(auto_parts))
+    lines.extend(format_compare_dewater_lines(pin_dew, target, ref_target))
     if kept_parts:
         lines.append("\n**Kept (--keep)**: " + " | ".join(kept_parts))
     if rej_lines:
