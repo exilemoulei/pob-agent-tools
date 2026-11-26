@@ -129,6 +129,14 @@ from .parser import (
     parse_item_text,
     trade_mod_tiers,
 )
+from .tw_reverse import (
+    build_english_item_text,
+    clear_tw_reverse_cache,
+    decode_extended_item_text,
+    has_cjk,
+    reverse_tw_item_text,
+    trade_mod_tiers_english,
+)
 
 __all__ = [
     "CATEGORY_RULES",
@@ -162,19 +170,25 @@ __all__ = [
     "HarvestMatch",
     "Item",
     "Mod",
+    "build_english_item_text",
     "build_item_text",
     "classify_mod",
+    "clear_tw_reverse_cache",
     "conversion_note",
     "conversion_summary",
     "convert_item_text",
     "convert_template",
+    "decode_extended_item_text",
     "escape_ggg_string",
+    "has_cjk",
     "is_convertible_template",
     "make_mod",
     "match_harvest",
     "mods_by_template",
     "normalize_template",
     "parse_item_text",
+    "reverse_tw_item_text",
     "sanitize_text",
     "trade_mod_tiers",
+    "trade_mod_tiers_english",
 ]

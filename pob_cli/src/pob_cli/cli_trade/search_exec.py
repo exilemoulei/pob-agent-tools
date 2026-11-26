@@ -15,7 +15,13 @@ from ..guardrails import GuardrailScope, check_input, validate_url
 from ..locale_cfg import current_realm
 from ..trade_client import TradeError, localize_query_for_tw, seller_url, unmapped_tw_ascii_fields
 from ..trade_eval import Candidate, compare_items, score_deltas, verify_candidates_batch
-from ..trade_item import build_item_text, convert_item_text, parse_item_text, sanitize_text, trade_mod_tiers
+from ..trade_item import (
+    build_english_item_text,
+    convert_item_text,
+    parse_item_text,
+    sanitize_text,
+    trade_mod_tiers_english,
+)
 from ..trade_query import (
     OPEN_AFFIX_ID,
     OPEN_PREFIX_ID,
@@ -125,14 +131,14 @@ def _build_candidates_from_rows(
     for row in rows:
         raw_item = row.get("item") or {}
         try:
-            text = build_item_text(raw_item)
+            text = build_english_item_text(raw_item, realm=realm)
         except ValueError:
             continue
 
         conversions = []
         conversion_warnings: list[str] = []
         if plan.conversions:
-            tiers = trade_mod_tiers(raw_item)
+            tiers = trade_mod_tiers_english(raw_item, realm=realm)
             for conv_plan in plan.conversions:
                 converted = convert_item_text(text, conv_plan.target, group=conv_plan.group, tiers=tiers)
                 text = converted.text

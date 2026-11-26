@@ -244,15 +244,20 @@ def _emit_search_results(
     market = fetched_ctx["market"]
     floor_pool = all_candidates if all_candidates is not None else ordered
     price_floor_note = compute_price_floor_note(floor_pool, status=status)
+    eff_realm = fetched_ctx.get("realm") or "global"
+    rates_source = fetched_ctx.get("rates_source") or (
+        "tw_static_fallback" if eff_realm == "tw" else "poe_ninja"
+    )
     if as_json:
         payload: dict[str, Any] = {
-            "realm": fetched_ctx.get("realm") or "global",
+            "realm": eff_realm,
             "league": fetched_ctx["league_name"],
             "slot": slot,
             "category": resolved_category,
             "status": status,
             "currency": currency,
             "statsSource": fetched_ctx["stats_source"],
+            "ratesSource": rates_source,
             "query": fetched_ctx["query"],
             "searchUrl": fetched_ctx["search_url"],
             "total": fetched_ctx["total"],
@@ -307,6 +312,19 @@ def _emit_search_results(
         seller_capped_dropped=seller_capped_dropped,
         max_per_seller=max_per_seller,
     )
+    if eff_realm == "tw":
+        div_rate = (fetched_ctx.get("rates") or {}).get("divine", 150.0)
+        if rates_source == "tw_env_override":
+            tw_note = (
+                f"Note: TW chaos-equivalent uses POB_TW_DIVINE_CHAOS override (1d={div_rate:g}c) "
+                "since poe.ninja does not index pathofexile.tw."
+            )
+        else:
+            tw_note = (
+                f"Note: TW chaos-equivalent uses static fallback rates (1d={div_rate:g}c; "
+                "override via POB_TW_DIVINE_CHAOS) since poe.ninja does not index pathofexile.tw."
+            )
+        body = f"{body.rstrip()}\n\n{tw_note}"
     _emit_text(_prepend_warning(body, update_warning), out_path=out_path)
     if current_error:
         _err_utf8(f"Equipped item could not be read: {current_error}")

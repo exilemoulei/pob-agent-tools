@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import math
+import os
 import statistics
 from typing import Any
 
@@ -15,10 +17,40 @@ from .common import _is_securable_row, _price_of
 # page of a search that hits it is not the real floor.
 RESULT_CAP = 10000
 
+# Safe fallback chaos ratios when `realm == "tw"` (Global poe.ninja does not index TW leagues).
+DEFAULT_TW_CURRENCY_RATES: dict[str, float] = {
+    "chaos": 1.0,
+    "divine": 150.0,
+    "exalted": 15.0,
+    "vaal": 1.0,
+    "regal": 0.5,
+    "alch": 0.25,
+    "fuse": 0.25,
+    "mirror": 60000.0,
+}
+
+
+def _tw_currency_rates_with_source() -> tuple[dict[str, float], str]:
+    """Return TW fallback currency rates and source (`tw_env_override` or `tw_static_fallback`)."""
+    rates = dict(DEFAULT_TW_CURRENCY_RATES)
+    raw_div = os.environ.get("POB_TW_DIVINE_CHAOS", "").strip()
+    if raw_div:
+        try:
+            div_val = float(raw_div)
+            if math.isfinite(div_val) and div_val > 0:
+                rates["divine"] = div_val
+                return rates, "tw_env_override"
+        except ValueError:
+            pass
+    return rates, "tw_static_fallback"
+
 
 def _chaos_rates(client: Any, league: str, proxy: str | None) -> dict[str, float]:
-    """Trade currency id -> chaos value (poe.ninja); only chaos itself when a source is unreachable."""
+    """Trade currency id -> chaos value (poe.ninja on global; safe TW Chaos/Divine fallback on tw)."""
     import pob_cli.cli_trade as _ct
+
+    if getattr(client, "realm", "global") == "tw":
+        return _tw_currency_rates_with_source()[0]
 
     rates = {"chaos": 1.0}
     try:
@@ -188,7 +220,9 @@ def _fetch_with_fresh_and_market(
 
     search_url = client.search_url(league_name, query_id) if query_id else ""
     # Looked up only when it changes the result, so a plain search needs no extra service.
-    needs_rates = bargain is not None or sort_by == "price"
+    is_tw = getattr(client, "realm", "global") == "tw"
+    needs_rates = is_tw or bargain is not None or sort_by == "price"
+    rates_source = _tw_currency_rates_with_source()[1] if is_tw else "poe_ninja"
     rates = _ct._chaos_rates(client, league_name, proxy) if needs_rates else {"chaos": 1.0}
     market: float | None = None
     market_note = ""
@@ -236,6 +270,7 @@ def _fetch_with_fresh_and_market(
         "stale_fallback": stale_fallback,
         "search_url": search_url,
         "rates": rates,
+        "rates_source": rates_source,
         "market": market,
         "market_note": market_note,
     }
