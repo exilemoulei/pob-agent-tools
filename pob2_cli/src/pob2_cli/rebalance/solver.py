@@ -394,7 +394,9 @@ def solve_fix_gaps_live(
             after_verified.resistance_overcap_needs(overcap_target=overcap_target),
         )
 
-        if not apply:
+        if apply:
+            tx.commit(undoable=True)
+        else:
             chk = tx.rollback_verified(before_digest)
             rollback_ok = bool(chk.get("verified"))
 

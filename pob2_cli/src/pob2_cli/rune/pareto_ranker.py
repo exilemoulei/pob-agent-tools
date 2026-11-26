@@ -72,13 +72,16 @@ class ParetoRankingReport:
     pareto_frontier: tuple[RankedCandidate, ...]
     top_candidates: tuple[RankedCandidate, ...]
     warnings: tuple[str, ...] = ()
+    eval_mode: str = "offline_heuristic"
+    shortlisted_from: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "game": "poe2",
             "patch": "0.5.5",
             "kind": self.kind,
             "metric": self.metric,
+            "evalMode": self.eval_mode,
             "evaluatedCount": self.evaluated_count,
             "bisAnchor": self.bis_anchor.to_dict() if self.bis_anchor else None,
             "budgetChampion": self.budget_champion.to_dict() if self.budget_champion else None,
@@ -86,6 +89,9 @@ class ParetoRankingReport:
             "topCandidates": [c.to_dict() for c in self.top_candidates],
             "warnings": list(self.warnings),
         }
+        if self.shortlisted_from is not None:
+            out["shortlistedFrom"] = self.shortlisted_from
+        return out
 
 
 def compute_pareto_frontier(
@@ -202,6 +208,40 @@ def _read_metric(worker: Any, metric: str) -> float:
     return float(stats.get("CombinedDPS") or stats.get("TotalDPS") or 0.0)
 
 
+def _select_live_rune_shortlist(
+    eligible: list[tuple[RuneEntry, tuple[str, ...]]],
+    parity: Any,
+    metric: str,
+    price_book: PriceBook | None,
+    top_live_eval: int,
+) -> list[tuple[RuneEntry, tuple[str, ...]]]:
+    """Pre-screen legal runes via fast offline score ∪ efficiency (score/cost_ex) to keep live CoW <3s."""
+    if top_live_eval <= 0 or len(eligible) <= top_live_eval:
+        return eligible
+    scored: list[tuple[float, float, float, RuneEntry, tuple[str, ...]]] = []
+    for rune, mods in eligible:
+        cost_ex, _src = resolve_rune_price_ex(rune, price_book=price_book)
+        mult = parity.effect_multiplier(rune.kind)
+        sc = _offline_stat_score(mods, metric) * mult
+        eff = sc / max(0.05, cost_ex)
+        scored.append((sc, eff, cost_ex, rune, mods))
+
+    half = max(1, top_live_eval // 2)
+    by_gain = sorted(scored, key=lambda x: (-x[0], x[2], x[3].name))[:half]
+    by_eff = sorted(scored, key=lambda x: (-x[1], -x[0], x[3].name))[:top_live_eval]
+    by_cheap = sorted((x for x in scored if x[0] > 0.0), key=lambda x: (x[2], -x[0], x[3].name))[:4]
+
+    chosen: list[tuple[RuneEntry, tuple[str, ...]]] = []
+    seen: set[str] = set()
+    for _sc, _eff, _cost, rune, mods in (*by_gain, *by_eff, *by_cheap):
+        if rune.name not in seen:
+            seen.add(rune.name)
+            chosen.append((rune, mods))
+            if len(chosen) >= top_live_eval:
+                break
+    return chosen
+
+
 def rank_runes_for_slot(
     *,
     item_type: str = "",
@@ -214,6 +254,7 @@ def rank_runes_for_slot(
     metric: str = "CombinedDPS",
     max_budget_ex: float | None = None,
     limit: int = 15,
+    top_live_eval: int = 28,
     include_socket_bound: bool = False,
     price_book: PriceBook | None = None,
     worker: Any | None = None,
@@ -242,6 +283,7 @@ def rank_runes_for_slot(
             pareto_frontier=(),
             top_candidates=(),
             warnings=("Target item is Mirrored; socketed runes cannot be changed.",),
+            eval_mode="live_cow" if worker is not None else "offline_heuristic",
         )
 
     eligible = eligible_runes_for_item(
@@ -256,10 +298,12 @@ def rank_runes_for_slot(
             (r, m) for r, m in eligible if resolve_rune_price_ex(r, price_book=price_book)[0] <= max_budget_ex
         ]
 
+    total_eligible = len(eligible)
     candidates: list[RankedCandidate] = []
     if worker is not None:
+        shortlist = _select_live_rune_shortlist(eligible, parity, metric, price_book, top_live_eval)
         baseline = _read_metric(worker, metric)
-        for rune, mods in eligible:
+        for rune, mods in shortlist:
             cost_ex, src = resolve_rune_price_ex(rune, price_book=price_book)
             try:
                 mutated_raw = apply_runes_to_item_raw(
@@ -332,6 +376,8 @@ def rank_runes_for_slot(
         pareto_frontier=tuple(frontier),
         top_candidates=tuple(ranked[: max(1, limit)]),
         warnings=tuple(warnings),
+        eval_mode="live_cow" if worker is not None else "offline_heuristic",
+        shortlisted_from=total_eligible if worker is not None else None,
     )
 
 
@@ -478,6 +524,8 @@ def rank_instillations(
         pareto_frontier=tuple(frontier),
         top_candidates=tuple(ranked[: max(1, limit)]),
         warnings=tuple(warnings),
+        eval_mode="live_cow" if worker is not None else "offline_heuristic",
+        shortlisted_from=len(priced_pool) if worker is not None else None,
     )
 
 

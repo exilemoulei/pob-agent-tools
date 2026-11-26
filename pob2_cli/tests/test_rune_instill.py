@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -267,7 +268,8 @@ def test_anti_poisoning_prices_and_pareto_frontier() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cli_rune_instill_and_rank_instill() -> None:
+def test_cli_rune_instill_and_rank_instill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POB2_RUNTIME_DIR", str(tmp_path / "no_daemon"))
     runner = CliRunner()
 
     r1 = runner.invoke(rune_group, ["inspect", "Passion of Aldur", "--json"])
@@ -275,10 +277,22 @@ def test_cli_rune_instill_and_rank_instill() -> None:
     d1 = json.loads(r1.output)
     assert d1["isSocketBound"] is True and d1["priceEx"] > 0.0
 
+    # Without a running daemon and without --type, `rune rank` fails cleanly with actionable hint
+    r_missing = runner.invoke(rune_group, ["rank", "--slot", "Weapon 1"])
+    assert r_missing.exit_code != 0
+
     r2 = runner.invoke(rune_group, ["rank", "--type", "Wand", "--level", "90", "--json"])
     assert r2.exit_code == 0, r2.output
     d2 = json.loads(r2.output)
-    assert d2["game"] == "poe2" and d2["evaluatedCount"] > 10 and d2["bisAnchor"] is not None
+    assert d2["game"] == "poe2" and d2["evalMode"] == "offline_heuristic"
+    assert d2["evaluatedCount"] > 10 and d2["bisAnchor"] is not None
+    assert any("offline heuristic" in w for w in d2.get("warnings") or [])
+
+    r2_explicit = runner.invoke(rune_group, ["rank", "--type", "Wand", "--offline-heuristic", "--json"])
+    assert r2_explicit.exit_code == 0, r2_explicit.output
+    d2_explicit = json.loads(r2_explicit.output)
+    assert d2_explicit["evalMode"] == "offline_heuristic"
+    assert not any("fell back" in w for w in d2_explicit.get("warnings") or [])
 
     r3 = runner.invoke(instill_group, ["lookup", "Storm Swell", "--json"])
     assert r3.exit_code == 0, r3.output
@@ -291,7 +305,9 @@ def test_cli_rune_instill_and_rank_instill() -> None:
     r5 = runner.invoke(cmd_rank_instill, ["--metric", "CombinedDPS", "--limit", "5", "--json"])
     assert r5.exit_code == 0, r5.output
     d5 = json.loads(r5.output)
+    assert d5["evalMode"] == "offline_heuristic"
     assert d5["evaluatedCount"] == 875 and d5["bisAnchor"] is not None
+    assert any("offline heuristic" in w for w in d5.get("warnings") or [])
 
 
 # ---------------------------------------------------------------------------
@@ -317,11 +333,11 @@ def test_live_pob2_rune_and_instill_pareto_ranking_cow_idempotent(tmp_path: Path
         before_dps = float(before_stats.get("CombinedDPS") or 0.0)
         assert before_dps > 0.0
 
-        # Live CoW rune ranking on Wand (Weapon 1)
+        # Live CoW rune ranking on Wand (Weapon 1) with default top_live_eval=28 shortlist (<3s)
         wand_elig = eligible_runes_for_item(resolve_item_augment_types("Wand"), char_level=90)
         assert len(wand_elig) >= 5
+        t0 = time.perf_counter()
         r_rep = rank_runes_for_slot(
-            item_type="Wand",
             slot_name="Weapon 1",
             char_level=90,
             metric="CombinedDPS",
@@ -329,12 +345,18 @@ def test_live_pob2_rune_and_instill_pareto_ranking_cow_idempotent(tmp_path: Path
             limit=8,
             worker=worker,
         )
-        assert r_rep.evaluated_count >= 5
+        rune_elapsed = time.perf_counter() - t0
+        assert r_rep.eval_mode == "live_cow"
+        assert 5 <= r_rep.evaluated_count <= 28
+        assert r_rep.shortlisted_from is not None and r_rep.shortlisted_from >= r_rep.evaluated_count
         assert r_rep.bis_anchor is not None and r_rep.bis_anchor.gain > 0.0
+        assert rune_elapsed < 5.0, f"Live rune rank shortlist exceeded latency budget: {rune_elapsed:.2f}s"
 
         # Live CoW instillation ranking on Amulet (top 8 prescored notables)
         i_rep = rank_instillations(metric="CombinedDPS", top_live_eval=8, limit=5, worker=worker)
+        assert i_rep.eval_mode == "live_cow"
         assert i_rep.evaluated_count == 8
+        assert i_rep.shortlisted_from == 875
         assert i_rep.bis_anchor is not None and i_rep.bis_anchor.gain > 0.0
         assert "[Slot 1:" in i_rep.bis_anchor.details["orderedDisplayEn"]
 

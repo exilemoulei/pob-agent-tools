@@ -62,6 +62,10 @@ _STATE_META_ACTIONS = frozenset(
         "redo",
         "new_build",
         "rpc",
+        "fix_gaps",
+        "spirit",
+        "rank_instill",
+        "rune_rank",
     }
 )
 

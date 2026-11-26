@@ -6,12 +6,14 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
-from pob2_cli import bridge_protocol, updater
+from pob2_cli import bridge_protocol, cli, daemon, updater
 from pob2_cli.bridge_client import BridgeWorker
 from pob2_cli.cli_rebalance import cmd_fix_gaps, cmd_spirit
 from pob2_cli.rebalance import (
@@ -406,5 +408,162 @@ def test_live_pob2_fix_gaps_and_spirit_e2e_cow_verified(tmp_path: Path) -> None:
     assert cli_res.exit_code == 0, cli_res.output
     cli_data = json.loads(cli_res.output)
     assert cli_data["game"] == "poe2"
+    assert cli_data["evalMode"] == "live_cow"
+    assert cli_data["applied"] is False
     assert cli_data["allHardFloorsMet"] is True
     assert cli_data["cowRollbackVerified"] is True
+
+
+def test_cli_rebalance_flag_guards_and_poe1_url_rejection() -> None:
+    runner = CliRunner()
+    assert runner.invoke(cmd_fix_gaps, ["--build", "x.xml", "--apply"]).exit_code != 0
+    assert runner.invoke(cmd_spirit, ["--budget", "100", "--apply"]).exit_code != 0
+    assert runner.invoke(cmd_spirit, ["--build", "x.xml", "--apply"]).exit_code != 0
+    # PoE1 share URL rejected cleanly via universal build resolver + guardrail (exit 1)
+    poe1_res = runner.invoke(cli.main, ["fix-gaps", "--build", "https://maxroll.gg/poe/pob/abc123"])
+    assert poe1_res.exit_code != 0
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native lua51.dll live daemon CLI chain E2E")
+def test_live_daemon_cli_chain_load_rune_instill_fix_gaps_spirit_and_undo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    eng_raw = os.environ.get("POB2_ENGINE_DIR", "").strip() or os.environ.get("POB2_ROOT", "").strip()
+    data_raw = os.environ.get("POB2_DATA_DIR", "").strip()
+    eng = Path(eng_raw) if eng_raw else None
+    data_dir = Path(data_raw) if data_raw else None
+    if eng is None or not updater.is_valid_engine_dir(eng, data_dir=data_dir):
+        pytest.skip("Set POB2_ENGINE_DIR to run live daemon hot-slot CLI chain E2E test.")
+
+    # Extend _LIVE_GAP_BUILD_XML with Sockets: S on Weapon 1 and an equipped Gold Amulet (neutral to Str/Res/Spirit deficits)
+    chain_xml = (
+        _LIVE_GAP_BUILD_XML.replace(
+            "Attuned Wand\nItem Level: 75\nImplicits: 0",
+            "Attuned Wand\nItem Level: 75\nSockets: S\nImplicits: 0",
+            1,
+        )
+        .replace(
+            '\t\t<ItemSet id="1"',
+            '\t\t<Item id="6">\nRarity: RARE\nChain Amulet\nGold Amulet\nItem Level: 80\nImplicits: 0\n+40 to maximum Life\n\t\t</Item>\n\t\t<ItemSet id="1"',
+            1,
+        )
+        .replace(
+            '\t\t\t<Slot name="Ring 1" itemId="5"/>',
+            '\t\t\t<Slot name="Ring 1" itemId="5"/>\n\t\t\t<Slot name="Amulet" itemId="6"/>',
+            1,
+        )
+    )
+    xml_file = tmp_path / "daemon_chain_build.xml"
+    xml_file.write_text(chain_xml, encoding="utf-8")
+
+    rt_dir = tmp_path / "rt"
+    monkeypatch.setenv("POB2_RUNTIME_DIR", str(rt_dir))
+    monkeypatch.setenv("POB2_OFFLINE", "1")
+
+    srv_err: list[BaseException] = []
+
+    def _run_srv() -> None:
+        try:
+            daemon._serve_daemon(
+                pob_dir=eng,
+                port=0,
+                data_dir=data_dir,
+                runtime_dir=rt_dir,
+                offline=True,
+                skip_update_check=True,
+                disable_global_idle=True,
+            )
+        except BaseException as exc:
+            srv_err.append(exc)
+
+    srv_thread = threading.Thread(target=_run_srv, name="pob2-test-daemon", daemon=True)
+    srv_thread.start()
+
+    deadline = time.time() + 45.0
+    while time.time() < deadline:
+        if srv_err:
+            raise srv_err[0]
+        st = daemon.read_daemon_state(rt_dir)
+        if st is not None and daemon._probe_daemon(st):
+            break
+        time.sleep(0.15)
+    else:
+        raise AssertionError("Timed out waiting for local test PoB2 daemon to start.")
+
+    runner = CliRunner()
+    try:
+        # 1. `pob2 load`
+        res_load = runner.invoke(cli.main, ["load", str(xml_file), "--json"])
+        assert res_load.exit_code == 0, res_load.output
+
+        # 2. `pob2 rune rank --slot "Weapon 1" --json` (NO --type! Must use hot daemon slot & finish <3s)
+        t0 = time.perf_counter()
+        res_rune = runner.invoke(cli.main, ["rune", "rank", "--slot", "Weapon 1", "--json"])
+        rune_sec = time.perf_counter() - t0
+        assert res_rune.exit_code == 0, res_rune.output
+        d_rune = json.loads(res_rune.output)
+        assert d_rune["evalMode"] == "live_cow"
+        assert 5 <= d_rune["evaluatedCount"] <= 28
+        assert d_rune["shortlistedFrom"] >= d_rune["evaluatedCount"]
+        assert d_rune["bisAnchor"] is not None and d_rune["bisAnchor"]["gain"] > 0.0
+        assert rune_sec < 5.0, f"`pob2 rune rank --slot 'Weapon 1'` took {rune_sec:.2f}s"
+
+        # 3. `pob2 rank-instill --json` (live node_power + CoW on equipped Amulet)
+        res_inst = runner.invoke(cli.main, ["rank-instill", "--top-live", "10", "--json"])
+        assert res_inst.exit_code == 0, res_inst.output
+        d_inst = json.loads(res_inst.output)
+        assert d_inst["evalMode"] == "live_cow"
+        assert d_inst["evaluatedCount"] == 10
+        assert d_inst["bisAnchor"] is not None and d_inst["bisAnchor"]["gain"] > 0.0
+        assert "[Slot 1:" in d_inst["bisAnchor"]["orderedDisplayEn"]
+
+        # 4. `pob2 fix-gaps --json` (NO --build! Dry-run with CoW rollback verified)
+        res_fg = runner.invoke(cli.main, ["fix-gaps", "--json"])
+        assert res_fg.exit_code == 0, res_fg.output
+        d_fg = json.loads(res_fg.output)
+        assert d_fg["evalMode"] == "live_cow"
+        assert d_fg["applied"] is False
+        assert d_fg["allHardFloorsMet"] is True
+        assert d_fg["cowRollbackVerified"] is True
+
+        # 5. `pob2 spirit --json` (NO --build / --budget! Live hot-slot deficit rescue)
+        res_sp = runner.invoke(cli.main, ["spirit", "--json"])
+        assert res_sp.exit_code == 0, res_sp.output
+        d_sp = json.loads(res_sp.output)
+        assert d_sp["evalMode"] == "live_cow"
+        assert d_sp["applied"] is False
+        assert d_sp["targetSpirit"] > 0 and d_sp["achievedSpirit"] >= d_sp["targetSpirit"]
+
+        # 6. `pob2 fix-gaps --apply --json` -> commits to hot slot with undo history!
+        res_apply = runner.invoke(cli.main, ["fix-gaps", "--apply", "--json"])
+        assert res_apply.exit_code == 0, res_apply.output
+        d_apply = json.loads(res_apply.output)
+        assert d_apply["applied"] is True
+        assert d_apply["allHardFloorsMet"] is True
+        assert d_apply["undoDepth"] >= 1
+
+        # 7. Confirm hot slot actually changed (`pob2 spirit` now sees 0 Spirit deficit!)
+        res_sp_after = runner.invoke(cli.main, ["spirit", "--json"])
+        assert res_sp_after.exit_code == 0, res_sp_after.output
+        d_sp_after = json.loads(res_sp_after.output)
+        assert d_sp_after["targetSpirit"] == 0 and d_sp_after["remainingDeficit"] == 0
+
+        # 8. `pob2 undo --json` -> restores original build (Spirit deficit returns!)
+        res_undo = runner.invoke(cli.main, ["undo", "--json"])
+        assert res_undo.exit_code == 0, res_undo.output
+        res_sp_restored = runner.invoke(cli.main, ["spirit", "--json"])
+        assert res_sp_restored.exit_code == 0, res_sp_restored.output
+        assert json.loads(res_sp_restored.output)["targetSpirit"] == d_sp["targetSpirit"]
+
+        # 9. `pob2 spirit --apply --json` -> commits Spirit rescue & `pob2 undo` reverts it!
+        res_sp_apply = runner.invoke(cli.main, ["spirit", "--apply", "--json"])
+        assert res_sp_apply.exit_code == 0, res_sp_apply.output
+        d_sp_apply = json.loads(res_sp_apply.output)
+        assert d_sp_apply["applied"] is True and d_sp_apply["afterSpiritUnreserved"] >= 0.0
+        assert d_sp_apply["undoDepth"] >= 1
+        assert runner.invoke(cli.main, ["undo", "--json"]).exit_code == 0
+    finally:
+        runner.invoke(cli.main, ["stop"])
+        daemon.stop_daemon(rt_dir)
+        srv_thread.join(timeout=15.0)

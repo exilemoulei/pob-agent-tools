@@ -3,14 +3,13 @@
 
 from __future__ import annotations
 
-import json
-import sys
 from typing import Any
 
 import click
 
-from .compat import ensure_utf8
-from .errors import DaemonRequestError
+from .cli_common import emit_output, resolve_target_slot
+from .daemon import call_daemon, read_daemon_state
+from .errors import CrossGameHallucinationError, DaemonRequestError, LegacyPatchTrapError
 from .game_profile import stamp_game
 from .guardrails import GuardrailScope, check_input
 from .rune import (
@@ -23,21 +22,16 @@ from .rune import (
 )
 
 
-def _echo(text: str, *, err: bool = False) -> None:
-    ensure_utf8(sys.stderr if err else sys.stdout)
-    click.echo(text, err=err)
-
-
-def _emit_json(ctx: click.Context | None, payload: dict[str, Any]) -> None:
-    root_obj = (ctx.find_root().obj or {}) if ctx is not None else {}
-    compact = bool(root_obj.get("compact"))
-    text = json.dumps(
-        stamp_game(payload),
-        ensure_ascii=False,
-        separators=(",", ":") if compact else None,
-        indent=None if compact else 2,
-    )
-    _echo(text)
+def _try_live_daemon_slot(action: str, params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """Attempt live CoW ranking against an already-running PoB2 daemon slot without spawning a cold process."""
+    if read_daemon_state() is None:
+        return None, "No running PoB2 daemon found; fell back to offline heuristic ranking."
+    try:
+        return call_daemon(action, params, auto_start=False, timeout=90.0), None
+    except (CrossGameHallucinationError, LegacyPatchTrapError):
+        raise
+    except Exception as exc:
+        return None, f"Live daemon slot unavailable ({exc}); fell back to offline heuristic ranking."
 
 
 @click.group("rune")
@@ -79,27 +73,55 @@ def cmd_rune_inspect(ctx: click.Context, name: str, as_json: bool) -> None:
             for k, v in sorted(entry.slots.items())
         },
     }
-    if as_json:
-        _emit_json(ctx, payload)
-        return
     bound_tag = " [isSocketBound=true: 不可覆盖]" if entry.is_socket_bound else ""
     lines = [f"{entry.name} ({entry.zh_cn}) | {entry.kind} | ReqLv={entry.req_level} | ~{px:.1f} Ex{bound_tag}"]
     for skey, sval in sorted(entry.slots.items()):
         lines.append(f"  [{skey}] {'; '.join(sval.stats)}")
         if sval.bonded:
             lines.append(f"    (Shaman) {'; '.join(sval.bonded)}")
-    _echo("\n".join(lines))
+    emit_output(ctx, stamp_game(payload), as_json=as_json, markdown_text="\n".join(lines))
 
 
 @rune_group.command("rank")
-@click.option("--type", "item_type", required=True, help="Item type (e.g. Wand, Quarterstaff, Buckler, Helmet, Body Armour).")
-@click.option("--slot", "slot_name", default="Body Armour", show_default=True, help="Equipment slot label.")
+@click.option(
+    "--type",
+    "item_type",
+    default="",
+    help="Optional item type (Wand, Quarterstaff, Buckler, Body Armour). Omit to read equipped `--slot` from live daemon.",
+)
+@click.option("--slot", "slot_name", default="Weapon 1", show_default=True, help="Equipped slot label.")
 @click.option("--base", "base_name", default="", help="Optional item base name (for Buckler/subtype parity).")
-@click.option("--level", "char_level", type=int, default=90, show_default=True, help="Character level cap (req_level <= level).")
-@click.option("--shaman", "is_shaman", is_flag=True, default=False, help="Include Shaman-only Bonded rune bonuses.")
+@click.option(
+    "--level",
+    "char_level",
+    type=int,
+    default=None,
+    help="Character level cap (auto-read from live daemon build, or 90 offline).",
+)
+@click.option(
+    "--shaman/--no-shaman",
+    "is_shaman",
+    default=None,
+    help="Include Shaman-only Bonded rune bonuses (auto-detected from live daemon build when omitted).",
+)
+@click.option("--target", default=None, help="Target daemon build slot (default: main).")
+@click.option(
+    "--offline-heuristic",
+    is_flag=True,
+    default=False,
+    help="Skip live daemon CoW evaluation and run deterministic offline heuristic ranking.",
+)
 @click.option("--metric", default="CombinedDPS", show_default=True, help="Target metric (CombinedDPS | TotalEHP | Spirit).")
 @click.option("--budget", "max_budget_ex", type=float, default=None, help="Optional max price cap in Exalted Orbs.")
 @click.option("--limit", type=int, default=12, show_default=True, help="Maximum top candidates to output.")
+@click.option(
+    "--top-live",
+    "top_live_eval",
+    type=int,
+    default=28,
+    show_default=True,
+    help="Max shortlisted runes evaluated via live CoW (keeps weapon-slot ranking <3s).",
+)
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
 @click.pass_context
 def cmd_rune_rank(
@@ -107,29 +129,65 @@ def cmd_rune_rank(
     item_type: str,
     slot_name: str,
     base_name: str,
-    char_level: int,
-    is_shaman: bool,
+    char_level: int | None,
+    is_shaman: bool | None,
+    target: str | None,
+    offline_heuristic: bool,
     metric: str,
     max_budget_ex: float | None,
     limit: int,
+    top_live_eval: int,
     as_json: bool,
 ) -> None:
-    """Rank legal runes/soul cores/idols for an item type with BiS anchor + Pareto budget frontier."""
-    check_input(item_type, GuardrailScope.CATEGORY, expected_game="poe2")
-    report = rank_runes_for_slot(
-        item_type=item_type,
-        slot_name=slot_name,
-        base_name=base_name,
-        char_level=char_level,
-        is_shaman=is_shaman,
-        metric=metric,
-        max_budget_ex=max_budget_ex,
-        limit=limit,
+    """Rank legal runes/soul cores/idols for a slot (live daemon CoW by default, offline fallback with `--type`)."""
+    if item_type:
+        check_input(item_type, GuardrailScope.CATEGORY, expected_game="poe2")
+
+    data_out: dict[str, Any] | None = None
+    fallback_note: str | None = None
+    if not offline_heuristic:
+        rpc_params: dict[str, Any] = {
+            "target": resolve_target_slot(target),
+            "slot": slot_name,
+            "item_type": item_type,
+            "base_name": base_name,
+            "metric": metric,
+            "budget": max_budget_ex,
+            "limit": limit,
+            "top_live_eval": top_live_eval,
+        }
+        if char_level is not None:
+            rpc_params["level"] = char_level
+        if is_shaman is not None:
+            rpc_params["shaman"] = is_shaman
+        data_out, fallback_note = _try_live_daemon_slot("rune_rank", rpc_params)
+
+    if data_out is None:
+        if not item_type:
+            reason = fallback_note or "Offline heuristic mode requires `--type`."
+            raise DaemonRequestError(
+                f"{reason} Load a build via `pob2 load <source>` or specify `--type <ItemType>` (e.g. `--type Wand`)."
+            )
+        report = rank_runes_for_slot(
+            item_type=item_type,
+            slot_name=slot_name,
+            base_name=base_name,
+            char_level=char_level if char_level is not None else 90,
+            is_shaman=bool(is_shaman),
+            metric=metric,
+            max_budget_ex=max_budget_ex,
+            limit=limit,
+        )
+        data_out = report.to_dict()
+        if fallback_note and not offline_heuristic:
+            data_out["warnings"] = [*list(data_out.get("warnings") or []), fallback_note]
+
+    emit_output(
+        ctx,
+        stamp_game(data_out),
+        as_json=as_json,
+        markdown_text=_format_pareto_human(data_out),
     )
-    if as_json:
-        _emit_json(ctx, report.to_dict())
-        return
-    _echo(_format_pareto_human(report.to_dict()))
 
 
 @click.group("instill")
@@ -177,20 +235,18 @@ def cmd_instill_lookup(
         for inst in matches
     ]
     payload = {"ok": True, "patch": cat.version, "count": len(priced), "instills": priced}
-    if as_json:
-        _emit_json(ctx, payload)
-        return
     if not priced:
-        _echo("No matching PoE2 amulet instillation found.")
-        return
-    lines = []
-    for item in priced:
-        lines.append(
-            f"{item['name']} ({item['zhCn']}) [node={item['nodeId']}] | ~{item['totalCostEx']:.1f} Ex\n"
-            f"  Order: {item['orderedDisplayEn']}\n"
-            f"  Stats: {'; '.join(item['stats'])}"
-        )
-    _echo("\n".join(lines))
+        md = "No matching PoE2 amulet instillation found."
+    else:
+        lines = []
+        for item in priced:
+            lines.append(
+                f"{item['name']} ({item['zhCn']}) [node={item['nodeId']}] | ~{item['totalCostEx']:.1f} Ex\n"
+                f"  Order: {item['orderedDisplayEn']}\n"
+                f"  Stats: {'; '.join(item['stats'])}"
+            )
+        md = "\n".join(lines)
+    emit_output(ctx, stamp_game(payload), as_json=as_json, markdown_text=md)
 
 
 @instill_group.command("bridge")
@@ -214,16 +270,29 @@ def cmd_instill_bridge(ctx: click.Context, emotion: str, as_json: bool) -> None:
         "zhTw": em.zh_tw,
         "radiusJewel": False,
     }
-    if as_json:
-        _emit_json(ctx, payload)
-        return
-    _echo(f"{em.legacy_name} <-> {em.live_name} ({em.zh_cn}, tierLevel={em.tier_level}, amulet-valid)")
+    md = f"{em.legacy_name} <-> {em.live_name} ({em.zh_cn}, tierLevel={em.tier_level}, amulet-valid)"
+    emit_output(ctx, stamp_game(payload), as_json=as_json, markdown_text=md)
 
 
 @click.command("rank-instill")
 @click.option("--metric", default="CombinedDPS", show_default=True, help="Target metric (CombinedDPS | TotalEHP).")
 @click.option("--budget", "max_budget_ex", type=float, default=None, help="Optional max instillation cost in Exalted Orbs.")
 @click.option("--limit", type=int, default=15, show_default=True, help="Maximum top candidates to output.")
+@click.option("--target", default=None, help="Target daemon build slot (default: main).")
+@click.option(
+    "--offline-heuristic",
+    is_flag=True,
+    default=False,
+    help="Skip live daemon CoW evaluation and run deterministic offline heuristic ranking across all 875 notables.",
+)
+@click.option(
+    "--top-live",
+    "top_live_eval",
+    type=int,
+    default=24,
+    show_default=True,
+    help="Number of `node_power`-shortlisted notables verified via live CoW.",
+)
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
 @click.pass_context
 def cmd_rank_instill(
@@ -231,21 +300,50 @@ def cmd_rank_instill(
     metric: str,
     max_budget_ex: float | None,
     limit: int,
+    target: str | None,
+    offline_heuristic: bool,
+    top_live_eval: int,
     as_json: bool,
 ) -> None:
-    """Pareto cost-efficiency ranking for all 875 ordered PoE2 amulet instillations."""
-    report = rank_instillations(metric=metric, max_budget_ex=max_budget_ex, limit=limit)
-    if as_json:
-        _emit_json(ctx, report.to_dict())
-        return
-    _echo(_format_pareto_human(report.to_dict()))
+    """Pareto cost-efficiency ranking for all 875 ordered PoE2 amulet instillations (live daemon CoW when loaded)."""
+    data_out: dict[str, Any] | None = None
+    fallback_note: str | None = None
+    if not offline_heuristic:
+        data_out, fallback_note = _try_live_daemon_slot(
+            "rank_instill",
+            {
+                "target": resolve_target_slot(target),
+                "metric": metric,
+                "budget": max_budget_ex,
+                "limit": limit,
+                "top_live_eval": top_live_eval,
+            },
+        )
+
+    if data_out is None:
+        report = rank_instillations(metric=metric, max_budget_ex=max_budget_ex, limit=limit)
+        data_out = report.to_dict()
+        if fallback_note and not offline_heuristic:
+            data_out["warnings"] = [*list(data_out.get("warnings") or []), fallback_note]
+
+    emit_output(
+        ctx,
+        stamp_game(data_out),
+        as_json=as_json,
+        markdown_text=_format_pareto_human(data_out),
+    )
 
 
 instill_group.add_command(cmd_rank_instill, name="rank")
 
 
 def _format_pareto_human(data: dict[str, Any]) -> str:
-    lines = [f"PoE2 {data['patch']} Pareto Ranking ({data['kind']} | metric={data['metric']} | evaluated={data['evaluatedCount']})"]
+    mode = data.get("evalMode", "offline_heuristic")
+    shortlist_tag = f"/{data['shortlistedFrom']}" if data.get("shortlistedFrom") else ""
+    lines = [
+        f"PoE2 {data['patch']} Pareto Ranking ({data['kind']} | mode={mode} | "
+        f"metric={data['metric']} | evaluated={data['evaluatedCount']}{shortlist_tag})"
+    ]
     bis = data.get("bisAnchor")
     if bis:
         lines.append(f"  [BiS Anchor] {bis['name']} ({bis['zhCn']}) | gain={bis['gain']:.2f} | cost={bis['costEx']:.1f} Ex")
@@ -257,6 +355,8 @@ def _format_pareto_human(data: dict[str, Any]) -> str:
     for row in data.get("paretoFrontier") or []:
         order = f" | {row['orderedDisplayEn']}" if "orderedDisplayEn" in row else ""
         lines.append(f"  - {row['name']}: gain={row['gain']:.2f} ({row['pctOfBis']:.1f}% BiS), cost={row['costEx']:.1f} Ex{order}")
+    for warn in data.get("warnings") or []:
+        lines.append(f"  [note] {warn}")
     return "\n".join(lines)
 
 

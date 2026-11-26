@@ -3,20 +3,18 @@
 
 from __future__ import annotations
 
-import json
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
 import click
 
-from . import bridge_protocol, updater
+from . import updater
 from .bridge_client import BridgeWorker
-from .compat import ensure_utf8
+from .cli_common import daemon_call_cli, emit_output, resolve_target_slot
 from .errors import DaemonRequestError
 from .game_profile import stamp_game
-from .guardrails import validate_build_xml
+from .importers.share_urls import resolve_poe2_build_source
 from .rebalance import (
     SpiritKnapsackPlan,
     build_offline_pack_catalog_options,
@@ -26,25 +24,12 @@ from .rebalance import (
 )
 
 
-def _echo(text: str, *, err: bool = False) -> None:
-    ensure_utf8(sys.stderr if err else sys.stdout)
-    click.echo(text, err=err)
-
-
-def _emit_json(ctx: click.Context | None, payload: dict[str, Any]) -> None:
-    root_obj = (ctx.find_root().obj or {}) if ctx is not None else {}
-    compact = bool(root_obj.get("compact"))
-    text = json.dumps(
-        stamp_game(payload),
-        ensure_ascii=False,
-        separators=(",", ":") if compact else None,
-        indent=None if compact else 2,
-    )
-    _echo(text)
-
-
 def _resolve_engine_dir(engine_dir: Path | None) -> tuple[Path, Path | None]:
-    raw_eng = str(engine_dir) if engine_dir else (os.environ.get("POB2_ENGINE_DIR", "").strip() or os.environ.get("POB2_ROOT", "").strip())
+    raw_eng = (
+        str(engine_dir)
+        if engine_dir
+        else (os.environ.get("POB2_ENGINE_DIR", "").strip() or os.environ.get("POB2_ROOT", "").strip())
+    )
     raw_data = os.environ.get("POB2_DATA_DIR", "").strip()
     if not raw_eng:
         raise DaemonRequestError("Live PoB2 engine required: set `POB2_ENGINE_DIR` or pass `--engine-dir`.")
@@ -55,21 +40,19 @@ def _resolve_engine_dir(engine_dir: Path | None) -> tuple[Path, Path | None]:
     return eng, data
 
 
-def _load_build_xml_into_worker(worker: BridgeWorker, build_xml_path: Path) -> None:
-    xml_text = build_xml_path.read_text(encoding="utf-8")
-    validate_build_xml(xml_text, expected_game="poe2", source_hint=str(build_xml_path))
-    code = bridge_protocol.encode_xml_share_code(xml_text)
-    worker.call("import_code", {"code": code, "mode": "replace"})
+def _load_source_into_worker(worker: BridgeWorker, build_source: str, *, data_dir: Path | None = None) -> None:
+    resolved = resolve_poe2_build_source(build_source, data_dir=data_dir)
+    worker.call("import_code", {"code": resolved.code, "mode": "replace"})
 
 
 @click.command("fix-gaps")
 @click.option(
     "--build",
-    "build_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=True,
-    help="PoB2 XML build file to audit and solve across Stages 1-5.",
+    "build_source",
+    default=None,
+    help="Optional standalone PoE2 build source (XML file, share code, pobb.in, poe2db, WeGame). Omit to use active daemon slot.",
 )
+@click.option("--target", default=None, help="Target daemon build slot (default: main).")
 @click.option(
     "--overcap",
     "overcap_target",
@@ -87,41 +70,69 @@ def _load_build_xml_into_worker(worker: BridgeWorker, build_xml_path: Path) -> N
     help="Hard floor target for Chaos Resistance.",
 )
 @click.option(
+    "--apply",
+    "apply_flag",
+    is_flag=True,
+    default=False,
+    help="Commit Stages 1-4 edits to the active daemon slot (undoable via `pob2 undo`).",
+)
+@click.option(
     "--engine-dir",
     type=click.Path(file_okay=False, path_type=Path),
     default=None,
-    help="Optional PoB2 engine root directory (defaults to POB2_ENGINE_DIR).",
+    help="Optional PoB2 engine root directory for standalone `--build` runs (defaults to POB2_ENGINE_DIR).",
 )
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
 @click.pass_context
 def cmd_fix_gaps(
     ctx: click.Context,
-    build_path: Path,
+    build_source: str | None,
+    target: str | None,
     overcap_target: int,
     chaos_target: int,
+    apply_flag: bool,
     engine_dir: Path | None,
     as_json: bool,
 ) -> None:
     """5-stage zero-buy PoE2 attribute, resistance cap+overcap, and Spirit deficit solver."""
-    eng, data = _resolve_engine_dir(engine_dir)
-    worker = BridgeWorker(slot_name="fix_gaps_cli", pob_dir=eng, data_dir=data)
-    try:
-        worker.start()
-        _load_build_xml_into_worker(worker, build_path)
-        report = solve_fix_gaps_live(
-            worker,
-            overcap_target=overcap_target,
-            chaos_target=chaos_target,
-            apply=False,
+    if build_source is None:
+        data_out = daemon_call_cli(
+            "fix_gaps",
+            {
+                "target": resolve_target_slot(target),
+                "overcap": overcap_target,
+                "chaos_target": chaos_target,
+                "apply": apply_flag,
+            },
         )
-    finally:
-        worker.stop()
+    else:
+        if apply_flag:
+            raise DaemonRequestError(
+                "`--apply` commits to the running daemon slot; omit `--build` (load first with `pob2 load <source>`)."
+            )
+        eng, data = _resolve_engine_dir(engine_dir)
+        worker = BridgeWorker(slot_name="fix_gaps_cli", pob_dir=eng, data_dir=data)
+        try:
+            worker.start()
+            _load_source_into_worker(worker, build_source, data_dir=data)
+            report = solve_fix_gaps_live(
+                worker,
+                overcap_target=overcap_target,
+                chaos_target=chaos_target,
+                apply=False,
+            )
+        finally:
+            worker.stop()
+        data_out = stamp_game(report.to_dict())
+        data_out["evalMode"] = "live_cow"
+        data_out["applied"] = False
 
-    data_out = report.to_dict()
-    if as_json:
-        _emit_json(ctx, data_out)
-        return
-    _echo(_format_fix_gaps_human(data_out))
+    emit_output(
+        ctx,
+        stamp_game(data_out),
+        as_json=as_json,
+        markdown_text=_format_fix_gaps_human(data_out),
+    )
 
 
 @click.command("spirit")
@@ -129,34 +140,45 @@ def cmd_fix_gaps(
     "--budget",
     type=int,
     default=None,
-    help="Forward packing mode: total Spirit budget (e.g. --budget 220) to pack optimal buffs/supports.",
+    help="Forward packing mode: total Spirit budget (e.g. --budget 220) to pack optimal buffs/supports offline.",
 )
 @click.option(
     "--build",
-    "build_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    "build_source",
     default=None,
-    help="Optional PoB2 XML build file for live CoW Spirit deficit rescue.",
+    help="Optional standalone PoE2 build source (XML file, share code, URL) for live CoW Spirit deficit rescue.",
+)
+@click.option("--target", default=None, help="Target daemon build slot when rescuing active slot (default: main).")
+@click.option(
+    "--apply",
+    "apply_flag",
+    is_flag=True,
+    default=False,
+    help="Commit Spirit deficit rescue edits to the active daemon slot (undoable via `pob2 undo`).",
 )
 @click.option("--metric", default="CombinedDPS", show_default=True, help="Target metric (CombinedDPS | TotalEHP).")
 @click.option(
     "--engine-dir",
     type=click.Path(file_okay=False, path_type=Path),
     default=None,
-    help="Optional PoB2 engine root directory (defaults to POB2_ENGINE_DIR).",
+    help="Optional PoB2 engine root directory for standalone `--build` runs (defaults to POB2_ENGINE_DIR).",
 )
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON.")
 @click.pass_context
 def cmd_spirit(
     ctx: click.Context,
     budget: int | None,
-    build_path: Path | None,
+    build_source: str | None,
+    target: str | None,
+    apply_flag: bool,
     metric: str,
     engine_dir: Path | None,
     as_json: bool,
 ) -> None:
-    """PoE2 discrete Spirit knapsack solver: rescue negative Spirit or pack optimal buffs within `--budget`."""
+    """PoE2 discrete Spirit knapsack solver: rescue active slot Spirit deficit or pack optimal buffs within `--budget`."""
     if budget is not None:
+        if apply_flag:
+            raise DaemonRequestError("`--apply` cannot be combined with offline `--budget` forward packing.")
         if budget <= 0:
             raise DaemonRequestError("`--budget` must be a positive integer (e.g. `--budget 220`).")
         opts = build_offline_pack_catalog_options(metric=metric)
@@ -169,32 +191,51 @@ def cmd_spirit(
             selected=tuple(chosen),
             all_evaluated=tuple(opts),
         )
-    elif build_path is not None:
+        out = stamp_game(plan.to_dict())
+        out["evalMode"] = "catalog_knapsack"
+        out["applied"] = False
+    elif build_source is not None:
+        if apply_flag:
+            raise DaemonRequestError(
+                "`--apply` commits to the running daemon slot; omit `--build` (load first with `pob2 load <source>`)."
+            )
         eng, data = _resolve_engine_dir(engine_dir)
         worker = BridgeWorker(slot_name="spirit_cli", pob_dir=eng, data_dir=data)
         try:
             worker.start()
-            _load_build_xml_into_worker(worker, build_path)
+            _load_source_into_worker(worker, build_source, data_dir=data)
             plan = solve_live_spirit_deficit(worker)
         finally:
             worker.stop()
+        out = stamp_game(plan.to_dict())
+        out["evalMode"] = "live_cow"
+        out["applied"] = False
     else:
-        raise DaemonRequestError("Provide `--budget <N>` for forward Spirit packing or `--build <file.xml>` for live deficit rescue.")
+        out = daemon_call_cli(
+            "spirit",
+            {
+                "target": resolve_target_slot(target),
+                "metric": metric,
+                "apply": apply_flag,
+            },
+        )
 
-    out = plan.to_dict()
-    if as_json:
-        _emit_json(ctx, out)
-        return
-    _echo(_format_spirit_human(out))
+    emit_output(
+        ctx,
+        stamp_game(out),
+        as_json=as_json,
+        markdown_text=_format_spirit_human(out),
+    )
 
 
 def _format_fix_gaps_human(data: dict[str, Any]) -> str:
     after_r = data["afterVerified"]["resistances"]
     after_a = data["afterVerified"]["attributes"]
     after_s = data["afterVerified"]["spirit"]
+    applied_tag = f" | Applied(rev={data.get('rev')})" if data.get("applied") else ""
     lines = [
         f"PoE2 {data['patch']} 5-Stage Fix-Gaps | HardFloorsMet={data['allHardFloorsMet']} | "
-        f"Gold={data['totalGoldCost']} | EstCost={data['totalExCost']:.1f} Ex | OvercapTarget=+{data['overcapTarget']}%",
+        f"Gold={data['totalGoldCost']} | EstCost={data['totalExCost']:.1f} Ex | OvercapTarget=+{data['overcapTarget']}%{applied_tag}",
         f"  After Attrs: Str {after_a['str']}/{after_a['reqStr']}, Dex {after_a['dex']}/{after_a['reqDex']}, Int {after_a['int']}/{after_a['reqInt']}",
         f"  After Res: Fire {after_r['fire']}/{after_r['fireMax']} (+{after_r['fireOvercap']}), "
         f"Cold {after_r['cold']}/{after_r['coldMax']} (+{after_r['coldOvercap']}), "
@@ -220,8 +261,10 @@ def _format_fix_gaps_human(data: dict[str, Any]) -> str:
 
 
 def _format_spirit_human(data: dict[str, Any]) -> str:
+    applied_tag = f" | Applied(rev={data.get('rev')})" if data.get("applied") else ""
     lines = [
-        f"PoE2 Spirit Knapsack ({data['mode']}) | target={data['targetSpirit']} | achieved={data['achievedSpirit']} | remaining={data['remainingDeficit']}"
+        f"PoE2 Spirit Knapsack ({data['mode']}) | target={data['targetSpirit']} | "
+        f"achieved={data['achievedSpirit']} | remaining={data['remainingDeficit']}{applied_tag}"
     ]
     for item in data["selected"]:
         lines.append(f"  - {item['label']} (dDPS={item['deltaDps']:+.1f}, dEHP={item['deltaEhp']:+.1f})")

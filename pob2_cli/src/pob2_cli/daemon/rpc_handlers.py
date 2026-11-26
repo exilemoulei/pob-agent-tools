@@ -24,6 +24,7 @@ from ..game_profile import GAME_ID
 from ..mutators import diff_against_source, run_what_if
 from ..snapshot import history_of, load_build, redo_build, undo_build
 from .read_cache import compute_source_hash, is_live_source
+from .rpc_rebalance import REBALANCE_SLOT_HANDLERS
 from .runtime import normalize_slot_name
 
 if TYPE_CHECKING:
@@ -270,6 +271,7 @@ _SLOT_ACTION_HANDLERS: dict[str, SlotHandler] = {
     "diagnostics": _h_diagnostics,
     "new_build": _h_new_build,
     "rpc": _h_rpc,
+    **REBALANCE_SLOT_HANDLERS,
 }
 
 
