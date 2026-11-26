@@ -445,13 +445,7 @@ def cmd_tree_set_class(
 
 
 @grp_tree.command("diff")
-@click.option(
-    "--slot",
-    "--target",
-    "slot",
-    default=None,
-    help="Base build slot slug (`current`/`main` by default).",
-)
+@_target_option(allow_slot_alias=True)
 @click.option(
     "--against",
     "against",
@@ -460,14 +454,14 @@ def cmd_tree_set_class(
     show_default=True,
     help="Reference build slot slug to diff against (ignored when --spec-a/--spec-b are passed).",
 )
-@click.option("--spec-a", "spec_a", default=None, help="First `<Spec>` index or title within `--slot` for intra-build diff.")
-@click.option("--spec-b", "spec_b", default=None, help="Second `<Spec>` index or title within `--slot` for intra-build diff.")
+@click.option("--spec-a", "spec_a", default=None, help="First `<Spec>` index or title within `--target` for intra-build diff.")
+@click.option("--spec-b", "spec_b", default=None, help="Second `<Spec>` index or title within `--target` for intra-build diff.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @_output_options
 @click.pass_context
 def cmd_tree_diff(
     ctx: click.Context,
-    slot: str | None,
+    target: str,
     against: str,
     spec_a: str | None,
     spec_b: str | None,
@@ -478,10 +472,10 @@ def cmd_tree_diff(
     """Structured passive tree diff (points, ascendancy, keystones, wheels, masteries, clusters & sockets)."""
     from .formatters.tree_diff_md import format_tree_diff_markdown
 
-    base_slot = _normalize_positional_slot(slot, _default_target(), False) if slot else _default_target()
     base_slot, as_json, compact, out_path = _resolve_tree_subcommand_opts(
-        ctx, target=base_slot, as_json=as_json, compact=compact, out_path=out_path
+        ctx, target=target, as_json=as_json, compact=compact, out_path=out_path
     )
+    base_slot = _normalize_positional_slot(base_slot, _default_target(), False)  # `current` / `active`
     if bool(spec_a) != bool(spec_b):
         raise click.UsageError("Provide both `--spec-a` and `--spec-b` together for multi-spec diff.")
 

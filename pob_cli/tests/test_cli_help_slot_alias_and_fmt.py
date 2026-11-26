@@ -73,6 +73,26 @@ def test_slot_alias_overrides_an_invalid_pob_slot_default(monkeypatch: pytest.Mo
     assert res.exit_code == 2 and "Invalid slot slug" in res.output
 
 
+def test_tree_diff_slot_follows_the_build_slot_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict] = []
+    monkeypatch.setattr("pob_cli.cli._daemon_call", lambda action, params=None, **_: seen.append(dict(params or {})) or {})
+    res = CliRunner().invoke(cli, ["tree", "diff", "--slot", "gloves"])
+    assert res.exit_code == 1 and "selects a build slot" in res.output and seen == []
+    res = CliRunner().invoke(cli, ["tree", "diff", "--target", "a", "--slot", "b"])
+    assert res.exit_code == 1 and "pass only --target" in res.output and seen == []
+    for args, want in ((["--slot", "alpha"], "alpha"), (["--target", "alpha"], "alpha"), (["--slot", "current"], "main"), ([], "main")):
+        seen.clear()
+        CliRunner().invoke(cli, ["tree", "diff", *args, "--json"])
+        assert seen and seen[0].get("target") == want and seen[0].get("ref_target") == "ref", args
+    # The group's target reaches the subcommand unless the subcommand names its own.
+    seen.clear()
+    CliRunner().invoke(cli, ["tree", "--target", "alpha", "diff", "--json"])
+    assert seen and seen[0].get("target") == "alpha"
+    seen.clear()
+    CliRunner().invoke(cli, ["tree", "--target", "alpha", "diff", "--slot", "beta", "--json"])
+    assert seen and seen[0].get("target") == "beta"
+
+
 def test_slot_alias_and_target_conflict_exits_1() -> None:
     res = CliRunner().invoke(cli, ["summary", "--target", "a", "--slot", "b"])
     assert res.exit_code == 1
