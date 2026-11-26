@@ -31,7 +31,7 @@ MIN_PASSED_TESTS = 905
 # explicit counts so CI keeps an exact ratchet.
 MAX_SKIPPED_TESTS = 25  # engine plus the legacy PobTools seed: the strict tier
 _MAX_SKIPPED_BOOTSTRAPPED = 34  # engine from `pob bootstrap`: Windows keeps POSIX-only + slim LUT + Py<3.12 skips
-_MAX_SKIPPED_NO_ENGINE = 120  # no engine at all: every real-engine test skips
+_MAX_SKIPPED_NO_ENGINE = 155  # no engine at all: every real-engine test skips (plus POSIX-only skips on Windows)
 
 
 def _engine_tier(repo_root: Path) -> tuple[str, int]:

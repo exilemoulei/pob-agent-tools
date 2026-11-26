@@ -14,6 +14,19 @@ from ..game_data.zh_match import english_for_zh
 
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _ASCII_LETTER_RE = re.compile(r"[A-Za-z]")
+_TW_LEAGUE_MAP: dict[str, str] = {
+    "standard": "標準模式",
+    "hardcore": "專家模式",
+    "covens": "巫影密會",
+}
+
+
+def map_tw_league(league: str) -> str:
+    """Map known English PoE1 league names to official `pathofexile.tw` league identifiers."""
+    cleaned = str(league or "").strip()
+    if not cleaned:
+        return cleaned
+    return _TW_LEAGUE_MAP.get(cleaned.lower(), cleaned)
 _TW_GEM_FILES: tuple[str, ...] = (
     "gems.json",
     "gem_names.json",

@@ -37,6 +37,7 @@ from .ratelimit import TradeRateLimiter
 from .tw_names import (
     clear_tw_name_cache,
     localize_query_for_tw,
+    map_tw_league,
     to_tw_trade_name,
     unmapped_tw_ascii_fields,
 )
@@ -131,6 +132,7 @@ __all__ = [
     "_make_httpx_client",
     "clear_tw_name_cache",
     "localize_query_for_tw",
+    "map_tw_league",
     "redact",
     "seller_url",
     "tempfile",
