@@ -46,7 +46,29 @@ from .game_profile import (
 from .locale_cfg import SUPPORTED_LANGS, get_active_lang, set_active_lang
 
 # Core engine/lifecycle subcommands registered lazily (must exist when listed here).
-_LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {}
+_LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
+    "bootstrap": (".cli_lifecycle", "cmd_bootstrap", "Install or seed the headless PoB2 Slim LuaJIT engine."),
+    "status": (".cli_lifecycle", "cmd_status", "Show PoB2 daemon status, capabilities, and loaded slots."),
+    "stop": (".cli_lifecycle", "cmd_stop", "Stop the running local PoB2 daemon cleanly."),
+    "serve": (".cli_lifecycle", "cmd_serve", "Run the PoB2 headless HTTP daemon in the foreground."),
+    "update": (".cli_lifecycle", "cmd_update", "Check for or hot-reload PoB2 / PobTools-zh updates."),
+    "load": (".cli_build_io", "cmd_load", "Load a PoE2 build (code, XML, pobb.in, poe2db, poe.ninja, maxroll, WeGame)."),
+    "export": (".cli_build_io", "cmd_export", "Export the current PoE2 build as a share code or XML."),
+    "notes": (".cli_build_io", "cmd_notes", "Show author build Notes with PoB colour codes stripped."),
+    "undo": (".cli_build_io", "cmd_undo", "Undo the last committed edit on the target build slot."),
+    "redo": (".cli_build_io", "cmd_redo", "Redo the previously undone edit on the target build slot."),
+    "summary": (".cli_inspect", "cmd_summary", "Show PoE2 build summary with version & patch stamp."),
+    "audit": (".cli_inspect", "cmd_audit", "Run S4/T3.4 PoE2 deep audit, 4-dim dehydration, and [PoB2未模拟] red cards."),
+    "diagnose": (".cli_inspect", "cmd_diagnose", "One-shot PoE2 build diagnosis (summary + deep audit + notes)."),
+    "uniques": (".cli_inspect", "cmd_uniques", "Keyword-free full-slot unique ranking (incl. Flask/Charm) + Sanctified 1.22x."),
+    "compare": (".cli_inspect", "cmd_compare", "5-dimension Compare Power Report against a reference build."),
+    "items": (".cli_inspect", "cmd_items", "Inspect equipped PoE2 items and slots."),
+    "skills": (".cli_inspect", "cmd_skills", "Inspect PoE2 skill groups, gems, and weapon-set bindings."),
+    "tree": (".cli_inspect", "cmd_tree", "Inspect allocated PoE2 passive tree nodes and attribute overrides."),
+    "config": (".cli_inspect", "cmd_config", "Inspect PoB2 Configuration toggles and custom modifiers."),
+    "what-if": (".cli_mutate", "cmd_what_if", "Run CoW what-if gear/tree/gem/config mutations (or --apply)."),
+    "diff": (".cli_mutate", "cmd_diff", "Diff the active build against another PoE2 build source."),
+}
 
 # Optional extension subcommands discovered dynamically when their module is present
 # in the package tree (enables conflict-free parallel feature branch merges).
@@ -55,6 +77,11 @@ _OPTIONAL_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
     "item": (".cli_craft", "item_group", "Inspect PoE2 item modifiers, open slots, and 0.5.5 legality."),
     "ground": (".cli_ground", "cmd_ground", "Fast (<15ms, daemon-free) PoE2 entity & mechanic grounding."),
     "import": (".cli_import", "cmd_import", "Import PoE2 builds (PoB2 code, share URL, CN WeGame link)."),
+    "rune": (".cli_rune", "rune_group", "Rank PoE2 runes, soul cores, and idols with socket parity."),
+    "instill": (".cli_rune", "instill_group", "Lookup and Pareto-rank 875 PoE2 amulet instillations."),
+    "rank-instill": (".cli_rune", "cmd_rank_instill", "Pareto cost-efficiency ranking for 875 amulet instillations."),
+    "fix-gaps": (".cli_rebalance", "cmd_fix_gaps", "5-stage zero-buy attribute & resistance cap/overcap gap solver."),
+    "spirit": (".cli_rebalance", "cmd_spirit", "PoE2 discrete Spirit reservation & support-tier knapsack solver."),
 }
 
 _HIDDEN_LAZY_SUBCOMMANDS: dict[str, tuple[str, str]] = {}

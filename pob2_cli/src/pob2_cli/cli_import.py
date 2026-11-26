@@ -1,46 +1,24 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""Click CLI subcommand `pob2 import` for CN WeGame share links and PoB2 build validation (L4)."""
+"""Click CLI subcommand `pob2 import` for multi-source PoE2 URLs, WeGame shares, and PoB2 codes/XML (L4)."""
 
 from __future__ import annotations
 
-import base64
 import json
 import sys
-import zlib
 from pathlib import Path
 from typing import Any
 
 import click
 
+from .cli_common import daemon_call_cli, resolve_target_slot
 from .compat import ensure_utf8
-from .errors import DaemonRequestError
 from .game_profile import stamp_game
-from .guardrails import validate_build_xml, validate_url
-from .importers import (
-    convert_wegame_bundle_to_pob2_xml,
-    fetch_wegame_share,
-    is_wegame_share_url,
-    parse_wegame_share_url,
-)
+from .importers import resolve_poe2_build_source
 
 
 def _echo(text: str, *, err: bool = False) -> None:
     ensure_utf8(sys.stderr if err else sys.stdout)
     click.echo(text, err=err)
-
-
-def _try_decode_pob_code(raw: str) -> str | None:
-    """Decode a base64url + zlib PoB/PoB2 share code into XML text if valid."""
-    token = raw.strip()
-    if len(token) < 24 or " " in token or "\n" in token:
-        return None
-    try:
-        padded = token + "=" * ((4 - len(token) % 4) % 4)
-        compressed = base64.urlsafe_b64decode(padded.encode("ascii"))
-        xml = zlib.decompress(compressed).decode("utf-8")
-        return xml if "<PathOfBuilding" in xml else None
-    except Exception:
-        return None
 
 
 def _emit_json(payload: dict[str, Any], *, compact: bool, out_path: str | None) -> None:
@@ -74,7 +52,9 @@ def _emit_json(payload: dict[str, Any], *, compact: bool, out_path: str | None) 
     default=None,
     help="Optional Data/poe2 localization directory (zh-rCN / zh-rTW).",
 )
-@click.option("--timeout", type=float, default=15.0, show_default=True, help="HTTP timeout per WeGame endpoint (s).")
+@click.option("--load", "load_slot", is_flag=True, default=False, help="Also load the imported build into the active PoB2 daemon slot.")
+@click.option("--target", type=str, default=None, help="Target daemon slot when --load is set (default: main).")
+@click.option("--timeout", type=float, default=15.0, show_default=True, help="HTTP timeout per endpoint (s).")
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON result.")
 @click.pass_context
 def cmd_import(
@@ -82,82 +62,30 @@ def cmd_import(
     source: str,
     xml_out: str | None,
     data_dir: Path | None,
+    load_slot: bool,
+    target: str | None,
     timeout: float,
     as_json: bool,
 ) -> None:
-    """Import a PoE2 build from a CN WeGame share link, sanitized WeGame JSON bundle, or PoB2 XML/code."""
-    src = source.strip()
-    # Always run bidirectional URL gate first so PoE1 URLs exit with code 1.
-    if "://" in src or src.lower().startswith(("pob:", "pob2:", "www.", "poe")):
-        validate_url(src, expected_game="poe2", cli_subcommand="import")
-
+    """Import a PoE2 build from pobb.in, poe2db.tw, poe.ninja/poe2, maxroll.gg/poe2, WeGame, XML, or PoB2 code."""
     root_obj = (ctx.find_root().obj or {}) if ctx is not None else {}
     compact = bool(root_obj.get("compact"))
     effective_out = xml_out or root_obj.get("out")
 
-    # 1. CN WeGame cookie-free share URL
-    if is_wegame_share_url(src):
-        parse_wegame_share_url(src)
-        bundle = fetch_wegame_share(src, timeout=timeout)
-        res = convert_wegame_bundle_to_pob2_xml(bundle, data_dir=data_dir)
-        _deliver_import_result(
-            res.xml,
-            summary=res.to_summary_dict(),
-            source_kind="wegame_url",
-            as_json=as_json,
-            compact=compact,
-            xml_out=effective_out,
-        )
-        return
+    resolved = resolve_poe2_build_source(source=source, data_dir=data_dir, timeout=timeout)
+    summary: dict[str, Any] = {**resolved.summary, "warnings": list(resolved.warnings), "stats": dict(resolved.stats)}
 
-    # 2. Local file: sanitized WeGame JSON bundle or PoB2 XML
-    cand_path = Path(src)
-    if cand_path.is_file():
-        raw_text = cand_path.read_text(encoding="utf-8")
-        if cand_path.suffix.lower() == ".json" or raw_text.lstrip().startswith("{"):
-            try:
-                bundle = json.loads(raw_text)
-            except json.JSONDecodeError as exc:
-                raise DaemonRequestError(f"Invalid JSON bundle `{cand_path}`: {exc}") from exc
-            res = convert_wegame_bundle_to_pob2_xml(bundle, data_dir=data_dir)
-            _deliver_import_result(
-                res.xml,
-                summary=res.to_summary_dict(),
-                source_kind="wegame_bundle",
-                as_json=as_json,
-                compact=compact,
-                xml_out=effective_out,
-            )
-            return
-        validate_build_xml(raw_text, expected_game="poe2", source_hint=str(cand_path))
-        _deliver_import_result(
-            raw_text,
-            summary={"warnings": [], "stats": {}},
-            source_kind="pob2_xml_file",
-            as_json=as_json,
-            compact=compact,
-            xml_out=effective_out,
-        )
-        return
+    if load_slot:
+        load_res = daemon_call_cli("load", {"xml_code": resolved.code, "target": resolve_target_slot(target)})
+        summary["loaded"] = load_res
 
-    # 3. Direct PoB2 XML or base64/zlib PoB2 share code
-    decoded_xml = src if src.lstrip().startswith("<") else _try_decode_pob_code(src)
-    if decoded_xml is not None:
-        validate_build_xml(decoded_xml, expected_game="poe2")
-        _deliver_import_result(
-            decoded_xml,
-            summary={"warnings": [], "stats": {}},
-            source_kind="pob2_code",
-            as_json=as_json,
-            compact=compact,
-            xml_out=effective_out,
-        )
-        return
-
-    raise DaemonRequestError(
-        "Unsupported import source. Provide a CN WeGame PoE2 share URL "
-        "(`https://www.wegame.com.cn/helper/poe2/#/share/<code>`), "
-        "a sanitized WeGame JSON bundle, or a PoB2 XML file / share code."
+    _deliver_import_result(
+        resolved.xml,
+        summary=summary,
+        source_kind=resolved.source_kind,
+        as_json=as_json,
+        compact=compact,
+        xml_out=effective_out,
     )
 
 
