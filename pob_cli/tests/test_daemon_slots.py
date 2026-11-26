@@ -172,6 +172,38 @@ def test_tree_diff_of_a_slot_against_itself_names_its_own_flags(tmp_path: Path, 
     assert "--ref-target" not in text and "overwrite" not in text
 
 
+def test_stale_rebuild_is_required_only_for_a_slot_the_call_does_not_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pob_cli.daemon.slots as slots_mod
+
+    mgr = _make_manager(tmp_path, monkeypatch)
+    seen: list[tuple[str, bool]] = []
+    monkeypatch.setattr(slots_mod, "rebuild_if_stale", lambda w, *, required=True: seen.append((w.slot_name, required)))
+    monkeypatch.setattr(slots_mod, "dispatch_dual_slot_action", lambda *_a, **_k: {})
+    monkeypatch.setattr(mgr, "_dispatch_slot", lambda *_a, **_k: {})
+
+    def required(action: str, params: dict[str, Any]) -> dict[str, bool]:
+        seen.clear()
+        mgr.dispatch(action, params)
+        return dict(seen)
+
+    assert required("export", {}) == {"main": True}
+    for action, params in (
+        ("load", {"source": "pob://x"}),
+        ("new_build", {}),
+        ("undo", {}),  # re-imports a committed code: the way out of a slot that cannot be rebuilt
+        ("redo", {}),
+        ("diagnose", {"source": "https://www.pathofexile.com/account/view-profile/a", "char_name": "C"}),
+    ):
+        assert required(action, params) == {"main": False}, action
+    # Two slots: each is judged by whether this call loads into it.
+    assert required("compare", {"ref_source": "pob://r"}) == {"main": True, "ref": False}
+    assert required("diagnose", {"compare_source": "pob://r"}) == {"main": True, "ref": False}
+    assert required("diagnose", {"source": "pob://m", "compare_source": "pob://r"}) == {"main": False, "ref": False}
+    assert required("borrow", {"item_slots": ["Amulet"]}) == {"main": True, "ref": True}
+
+
 def test_cli_slot_slug_types_and_defaults_lowercase(monkeypatch: pytest.MonkeyPatch) -> None:
     from pob_cli.cli_common import _SLOT_SLUG_TYPE, _default_target
     from pob_cli.cli_trade.common import _TARGET_SLOT_TYPE, _default_target_slot

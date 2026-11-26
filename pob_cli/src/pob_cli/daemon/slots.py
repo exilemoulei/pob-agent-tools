@@ -83,6 +83,16 @@ _STATE_META_ACTIONS = frozenset(
 )
 
 
+_REF_LOAD_KEYS = ("ref_source", "ref_xml_code", "compare_source", "compare_xml_code")
+
+
+def _loads_build(action: str, params: dict[str, Any]) -> bool:
+    """Whether the call re-imports the slot's build, so a failed rebuild of the stale one must not block it."""
+    return action in ("load", "new_build", "undo", "redo") or any(
+        params.get(k) for k in ("source", "xml_code", "char_name")
+    )
+
+
 class DaemonManager:
     """Manages named headless PoB BridgeWorkers with per-slot locks, idle recycling, and hot-reload barriers."""
 
@@ -484,8 +494,8 @@ class DaemonManager:
                     mw = self._get_worker_in_barrier(main_slot)
                     rw = self._get_worker_in_barrier(ref_slot)
                     loads = any(params.get(k) for k in ("source", "xml_code", "ref_source", "ref_xml_code"))
-                    for w in (mw, rw):
-                        rebuild_if_stale(w, required=not loads)
+                    rebuild_if_stale(mw, required=not _loads_build(action, params))
+                    rebuild_if_stale(rw, required=not any(params.get(k) for k in _REF_LOAD_KEYS))
                     if action == "compare" and not loads:
                         eff_lang, _ = get_active_lang(self.runtime_dir)
                         return self._read_cache.run_cached_compare(
@@ -530,8 +540,7 @@ class DaemonManager:
                 if cached_hit is not None:
                     return cached_hit
 
-                replaces = action in ("load", "new_build") or bool(params.get("source") or params.get("xml_code"))
-                rebuild_if_stale(worker, required=not replaces)
+                rebuild_if_stale(worker, required=not _loads_build(action, params))
                 try:
                     res_slot = self._dispatch_slot(action, params, worker)
                 except DaemonRequestError as exc:
