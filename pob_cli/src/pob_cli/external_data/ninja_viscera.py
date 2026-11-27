@@ -37,18 +37,18 @@ def apply_viscera_price_fallback(
         return primary_result
 
     stripped_q = res_q[8:].strip() if res_q.lower().startswith("greater ") else ""
+    fetched_stale_types: set[str] = set()
 
     def _source_for(types: tuple[str, ...]) -> tuple[dict[str, list[dict[str, Any]]], bool]:
-        stale_flag = is_stale
         if is_detailed:
             missing = [t for t in types if t not in fetched_stash]
             if missing:
                 new_stash, new_stale, new_failed = fetch_stash_fn(resolved_league, missing, proxy=proxy)
                 fetched_stash.update(new_stash)
-                if any(t in new_stale or t in new_failed for t in missing):
-                    stale_flag = True
+                fetched_stale_types.update((new_stale | new_failed) & set(missing))
+            stale_flag = is_stale or any(t in fetched_stale_types for t in types)
             return {t: (fetched_stash.get(t) or overviews.get(t, [])) for t in types}, stale_flag
-        return {t: overviews.get(t, []) for t in types}, stale_flag
+        return {t: overviews.get(t, []) for t in types}, is_stale
 
     def _try(
         search_q: str,

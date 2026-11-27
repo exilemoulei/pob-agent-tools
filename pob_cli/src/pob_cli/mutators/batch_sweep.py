@@ -257,13 +257,12 @@ def _validate_sweep_variants(variants: list[Any]) -> None:
         v_name = str(var.get("name") or f"Variant {idx + 1}").strip()
         if "ops" in var and var["ops"] is not None and not isinstance(var["ops"], list):
             raise ValueError(f"Sweep variant '{v_name}' 'ops' must be a list of batch operations.")
-        if "ops" not in var or var.get("ops") is None:
-            misplaced = sorted(k for k in var if k not in _VARIANT_META_KEYS and not str(k).startswith("_"))
-            if misplaced:
-                raise ValueError(
-                    f"Sweep variant '{v_name}' has step fields ({', '.join(misplaced)}) at top level "
-                    f'without an \'ops\' list; wrap as {{"name": {v_name!r}, "ops": [{{"op": ...}}]}}.'
-                )
+        misplaced = sorted(k for k in var if k not in _VARIANT_META_KEYS and not str(k).startswith("_"))
+        if misplaced:
+            raise ValueError(
+                f"Sweep variant '{v_name}' has step fields ({', '.join(misplaced)}) at top level "
+                f'outside \'ops\'; wrap as {{"name": {v_name!r}, "ops": [{{"op": ...}}]}}.'
+            )
 
 
 def run_sweep(

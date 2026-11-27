@@ -208,9 +208,16 @@ def reconcile_transplanted_tree(
                     new_alloc = actual_alloc - {eid}
                 lost = sorted((ref_alloc_set & actual_alloc) - new_alloc)
                 if lost:
+                    cur_repair_alloc = set(new_alloc)
                     for lid in lost:
+                        if lid in cur_repair_alloc:
+                            continue
                         try:
-                            main_worker.call("tree_click", {"id": lid})
+                            r_res = main_worker.call("tree_click", {"id": lid})
+                            if isinstance(r_res, dict) and "allocatedNodes" in r_res:
+                                cur_repair_alloc = {int(n) for n in r_res.get("allocatedNodes") or []}
+                            else:
+                                cur_repair_alloc.add(lid)
                         except Exception:
                             pass
                     final_tree = main_worker.call("get_tree_state", {})
@@ -228,10 +235,11 @@ def reconcile_transplanted_tree(
         missing = sorted(ref_alloc_set - actual_alloc)
         if missing:
             borrowed_tree_info["missingNodes"] = missing
+            matched_count = len(actual_alloc & ref_alloc_set)
             preview = ", ".join(str(x) for x in missing[:8])
             ellipsis = "..." if len(missing) > 8 else ""
             notices.append(
-                f"Tree transplant allocated {len(actual_alloc)}/{len(ref_alloc_set)} reference nodes; "
+                f"Tree transplant allocated {matched_count}/{len(ref_alloc_set)} reference nodes; "
                 f"{len(missing)} node(s) could not be allocated (missing: {preview}{ellipsis})."
             )
 

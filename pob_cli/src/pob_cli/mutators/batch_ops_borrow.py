@@ -6,9 +6,26 @@ from typing import Any
 
 from ..bridge_client import BridgeWorker
 from .common import _BatchCache
-from .strict_args import opt_bool
+from .strict_args import parse_bool
 
 BORROW_OP_KINDS: frozenset[str] = frozenset({"borrow", "transplant"})
+
+
+def resolve_bool_alias_group(
+    op: dict[str, Any],
+    keys: tuple[str, ...],
+    *,
+    default: bool,
+    group_label: str | None = None,
+) -> bool:
+    """Resolve a boolean alias group, skipping `None` values and rejecting disagreeing non-`None` aliases."""
+    vals = [(k, parse_bool(op[k], k)) for k in keys if op.get(k) is not None]
+    if not vals:
+        return default
+    if len({v for _, v in vals}) > 1:
+        lbl = group_label or keys[0]
+        raise ValueError(f"conflicting {lbl} aliases {dict(vals)}; pass only one or matching booleans.")
+    return vals[0][1]
 
 
 def _op_kind(op: Any) -> str:
@@ -61,8 +78,12 @@ def _op_borrow(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int
     skill_group = op.get("skill_group")
     if skill_group is None or (isinstance(skill_group, str) and not skill_group.strip()):
         skill_group = op.get("skillGroup")
-    borrow_tree = opt_bool(op, "tree", "borrow_tree", "borrowTree", default=False)
-    borrow_tree_jewels = opt_bool(op, "tree_jewels", "treeJewels", default=True)
+    borrow_tree = resolve_bool_alias_group(
+        op, ("tree", "borrow_tree", "borrowTree"), default=False, group_label="tree"
+    )
+    borrow_tree_jewels = resolve_bool_alias_group(
+        op, ("tree_jewels", "treeJewels"), default=True, group_label="tree_jewels"
+    )
 
     from ..comparator.borrow import apply_borrow_in_place
 
