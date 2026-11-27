@@ -54,6 +54,7 @@ LAYER_MAP: dict[str, int] = {
     # L4: CLI entry points
     "__main__": 4,
     "cli_common": 4,
+    "cli_inputs": 4,
     "cli": 4,
     "cli_help": 4,
     "cli_lifecycle": 4,

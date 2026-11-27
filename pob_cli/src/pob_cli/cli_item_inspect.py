@@ -12,6 +12,7 @@ from .cli_common import (
     _emit_text,
     _output_options,
     _target_option,
+    enforce_safe_input_path,
     invoke_daemon,
 )
 
@@ -20,7 +21,7 @@ from .cli_common import (
 @click.argument("slot_arg", metavar="[SLOT]", required=False, default=None)
 @click.option("--slot", "slot_opt", help="Equipped slot, or the item type for pasted text (e.g. 'Ring 1').")
 @click.option("--raw", "raw_text", help="Pasted PoE/PoB item text.")
-@click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False), help="File containing item text.")
+@click.option("--file", "file_path", type=str, help="File containing item text.")
 @click.option("--want", "wants", multiple=True, help="Bench target, e.g. 'Cold Resistance' (repeatable).")
 @click.option("--limit", type=click.IntRange(min=1), default=8, show_default=True)
 @click.option(
@@ -72,7 +73,11 @@ def cmd_item_inspect(
         slot = str(ablation_res.get("slotName") or slot)
 
     if file_path is not None:
-        raw_text = Path(file_path).read_text(encoding="utf-8-sig", errors="replace")
+        enforce_safe_input_path(file_path)
+        p = Path(file_path)
+        if not p.is_file():
+            raise click.UsageError(f"Item file not found: {file_path}")
+        raw_text = p.read_text(encoding="utf-8-sig", errors="replace")
     if raw_text is None:
         if not slot:
             raise click.UsageError("Pass SLOT / --slot, --raw, or --file.")
