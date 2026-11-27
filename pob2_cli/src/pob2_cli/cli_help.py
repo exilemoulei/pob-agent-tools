@@ -95,8 +95,9 @@ def format_brief_help(root: click.Group, root_ctx: click.Context) -> str:
     entries = build_brief_entries(root, root_ctx)
     lines = [
         f"{CLI_NAME} — Headless Path of Exile 2 (0.5.5+) CLI (run `{CLI_NAME} <cmd> --help` for full details)",
-        "Global: [--offline] [--json] [--compact] [--out FILE] | Daemon build slot: [--target SLUG] (default POB2_SLOT or 'main')",
+        "Global: [--offline] [--json] [--compact] [--out PATH (writes file instead of stdout)] | Daemon build slot: [--target SLUG] (default POB2_SLOT or 'main')",
         "Equipment slot: [--slot SLOT] (Weapon 1..2, Weapon 1..2 Swap, Helmet, Body Armour, Gloves, Boots, Amulet, Ring 1..3, Belt, Flask 1..2, Charm 1..3)",
+        "Unique ranking: `pob2 uniques` and `pob2 item db` are identical aliases ranking PoE2 uniques against the loaded build in `--target` (JSON key: `results`)",
         "Crafting target mods: use `--want <mod>` (repeatable) on `pob2 craft odds|plan|next` (`--target` is strictly for daemon build slots)",
     ]
     rows: list[tuple[str, str]] = []

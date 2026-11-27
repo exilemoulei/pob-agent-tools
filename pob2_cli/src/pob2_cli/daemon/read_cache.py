@@ -203,7 +203,7 @@ class SlotReadCache:
                 return
             kept_meta: dict[str, Any] = {}
             if isinstance(load_meta, dict):
-                for key in ("importNotes", "translateWarnings", "character", "droppedItems"):
+                for key in ("importNotes", "translateWarnings", "character", "droppedItems", "fixupWarnings", "warnings"):
                     if load_meta.get(key):
                         kept_meta[key] = copy.deepcopy(load_meta[key])
             self._slot_sources[slot] = {

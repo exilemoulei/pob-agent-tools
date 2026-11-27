@@ -188,6 +188,7 @@ def cmd_craft_odds(
     """计算单步通货 + 预兆精确命中率、误伤率、置信度，或完整词缀族(`--outcomes`)概率分布。"""
     from .craft import CraftMdpSolver, ModPoolEngine, fetch_live_price_book
     from .craft.pool_outcomes import (
+        compute_matched_tiers_for_state,
         compute_next_step_outcomes,
         default_rarity_for_lever,
         render_outcomes_md,
@@ -230,12 +231,14 @@ def cmd_craft_odds(
         t_ids = {mid for ts in t_specs for mid in ts.matching_mod_ids}
         if lever:
             res = eng.evaluate_action(state, t_ids, lever, list(omens))
+            eval_dict = res.to_dict()
             payload: dict[str, Any] = {
                 "game": "poe2",
                 "patch": eng.patch,
                 "base": state.base.name,
                 "ilvl": state.ilvl,
-                "evaluation": res.to_dict(),
+                "matchedTiers": eval_dict["matchedTiers"],
+                "evaluation": eval_dict,
             }
             if outcomes_payload is not None:
                 payload["totalPoolWeight"] = outcomes_payload["totalPoolWeight"]
@@ -255,6 +258,7 @@ def cmd_craft_odds(
         solver = CraftMdpSolver(eng)
         pb = fetch_live_price_book(offline=offline, excluded=excluded)
         actions = solver.evaluate_next_actions(state, t_specs, pb)
+        matched_tiers = compute_matched_tiers_for_state(eng, state, t_specs, omens=list(omens))
     except Exception as exc:
         handle_craft_or_inspect_error(ctx, exc, as_json=as_json)
         return
@@ -264,6 +268,7 @@ def cmd_craft_odds(
         "patch": eng.patch,
         "base": state.base.name,
         "ilvl": state.ilvl,
+        "matchedTiers": matched_tiers,
         "actions": [a.to_dict() for a in actions],
     }
     if pb.warnings:

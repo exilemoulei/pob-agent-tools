@@ -70,7 +70,7 @@ def diagnose_build(
     audit = run_deep_audit(worker, overcap_target=overcap_target, chaos_floor=chaos_floor)
     notes = fetch_clean_notes(worker)
     node_power: dict[str, Any] | None = None
-    diag_warnings: list[str] = []
+    diag_warnings: list[str] = list(audit.get("warnings") or [])
     if include_node_power:
         try:
             np_raw = worker.call("node_power", {"maxDepth": max_depth}, timeout=45.0)

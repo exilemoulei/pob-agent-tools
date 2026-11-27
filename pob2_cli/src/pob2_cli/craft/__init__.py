@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """PoE2 0.5.5 zero-engine crafting solver, pool probability engine, and item inspector."""
 
-from .item_inspector import InspectedMod, ItemInspectionReport, inspect_item_text
-from .mdp_solver import CraftMdpSolver
+from __future__ import annotations
+
+from typing import Any
+
 from .models import (
     ActionEval,
     AffixSide,
@@ -25,16 +27,42 @@ from .models import (
     WhittlingReport,
     WhittlingTarget,
 )
-from .pool_engine import ModPoolEngine, exact_three_choice_unveil_prob
-from .pool_outcomes import compute_next_step_outcomes, filter_pool_with_family_exemption
-from .price_book import (
-    DEFAULT_CRAFTING_PRICES_EX,
-    PriceBook,
-    fetch_live_price_book,
-    parse_ggg_cx_snapshot,
-    parse_poeninja_exchange_payload,
+
+_INSPECTOR_EXPORTS: frozenset[str] = frozenset({"InspectedMod", "ItemInspectionReport", "inspect_item_text"})
+_PRICE_BOOK_EXPORTS: frozenset[str] = frozenset(
+    {
+        "DEFAULT_CRAFTING_PRICES_EX",
+        "PriceBook",
+        "fetch_live_price_book",
+        "parse_ggg_cx_snapshot",
+        "parse_poeninja_exchange_payload",
+    }
 )
-from .weights_loader import EXPECTED_GAME_PATCH, load_craft_data
+
+
+def __getattr__(name: str) -> Any:
+    if name in _INSPECTOR_EXPORTS:
+        from . import item_inspector as _mod
+    elif name == "CraftMdpSolver":
+        from . import mdp_solver as _mod
+    elif name in ("ModPoolEngine", "exact_three_choice_unveil_prob"):
+        from . import pool_engine as _mod
+    elif name in ("compute_next_step_outcomes", "filter_pool_with_family_exemption"):
+        from . import pool_outcomes as _mod
+    elif name in _PRICE_BOOK_EXPORTS:
+        from . import price_book as _mod
+    elif name in ("EXPECTED_GAME_PATCH", "load_craft_data"):
+        from . import weights_loader as _mod
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    val = getattr(_mod, name)
+    globals()[name] = val
+    return val
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
+
 
 __all__ = [
     "DEFAULT_CRAFTING_PRICES_EX",

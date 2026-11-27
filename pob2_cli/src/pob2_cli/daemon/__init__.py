@@ -4,26 +4,9 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from typing import Any
 
-from ..bridge_client import BridgeError, BridgeWorker
 from ..errors import CrossGameHallucinationError, DaemonRequestError, LegacyPatchTrapError
-from ..updater import check_and_apply_updates
-from .client import (
-    _ensure_daemon,
-    _guard_foreign_daemon_state,
-    _http_post_rpc,
-    _parse_daemon_endpoint,
-    _probe_daemon,
-    _read_boot_error,
-    _rpc_result,
-    _spawn_daemon_process,
-    call_daemon,
-    main,
-    read_daemon_state,
-    stop_daemon,
-)
-from .read_cache import LOOP_GUARD_WARNING, READ_CACHE_ACTIONS, SlotReadCache
-from .rpc_handlers import dispatch_slot_action, register_slot_handler
 from .runtime import (
     _CREATE_BREAKAWAY_FROM_JOB,
     DAEMON_BOOT_ERROR_FILENAME,
@@ -52,8 +35,53 @@ from .runtime import (
     redact_secrets,
     reset_stderr_alert_flag,
 )
-from .server import _serve_daemon, make_handler, run_daemon_forever, run_daemon_server
-from .slots import DaemonManager
+
+_CLIENT_EXPORTS: frozenset[str] = frozenset(
+    {
+        "_ensure_daemon",
+        "_guard_foreign_daemon_state",
+        "_http_post_rpc",
+        "_parse_daemon_endpoint",
+        "_probe_daemon",
+        "_read_boot_error",
+        "_rpc_result",
+        "_spawn_daemon_process",
+        "call_daemon",
+        "main",
+        "read_daemon_state",
+        "stop_daemon",
+    }
+)
+_READ_CACHE_EXPORTS: frozenset[str] = frozenset({"LOOP_GUARD_WARNING", "READ_CACHE_ACTIONS", "SlotReadCache"})
+_RPC_HANDLER_EXPORTS: frozenset[str] = frozenset({"dispatch_slot_action", "register_slot_handler"})
+_SERVER_EXPORTS: frozenset[str] = frozenset({"_serve_daemon", "make_handler", "run_daemon_forever", "run_daemon_server"})
+
+
+def __getattr__(name: str) -> Any:
+    if name in _CLIENT_EXPORTS:
+        from . import client as _mod
+    elif name in _READ_CACHE_EXPORTS:
+        from . import read_cache as _mod
+    elif name in _RPC_HANDLER_EXPORTS:
+        from . import rpc_handlers as _mod
+    elif name in _SERVER_EXPORTS:
+        from . import server as _mod
+    elif name == "DaemonManager":
+        from . import slots as _mod
+    elif name in ("BridgeError", "BridgeWorker"):
+        from .. import bridge_client as _mod
+    elif name == "check_and_apply_updates":
+        from .. import updater as _mod
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    val = getattr(_mod, name)
+    globals()[name] = val
+    return val
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
+
 
 __all__ = [
     "DAEMON_BOOT_ERROR_FILENAME",

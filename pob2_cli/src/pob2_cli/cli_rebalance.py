@@ -270,6 +270,9 @@ def _format_fix_gaps_human(data: dict[str, Any]) -> str:
     s5 = data["stages"]["stage5Fallback"]
     if s5["needed"]:
         lines.append(f"  [Stage 5 Fallback] replace `{s5['targetSlot']}` for remaining hard gaps: {s5['requiredStats']}")
+    for w in data.get("warnings") or ():
+        if "[res-override-line]" in str(w):
+            lines.append(f"  [Warning] {w}")
     return "\n".join(lines)
 
 

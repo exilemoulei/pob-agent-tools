@@ -13,7 +13,9 @@ from .models import (
     ItemRarity,
     LeverEntry,
     ModEntry,
+    TargetSpec,
     WeightConfidence,
+    extract_mod_value_range,
     lowest_confidence,
 )
 from .pool_actions import (
@@ -134,6 +136,23 @@ def _group_weighted_outcomes(
         min_t, max_t = min(tiers_num), max(tiers_num)
         min_req, max_req = min(reqs), max(reqs)
         rep = members[0][0]
+        tiers_detail = [
+            {
+                "modId": m.mod_id,
+                "tier": f"T{m.display_tier}",
+                "ilvlReq": m.required_level,
+                "valueRange": extract_mod_value_range(m.stat_text),
+                "statText": m.stat_text,
+                "weight": round(w, 4) if isinstance(w, float) and not w.is_integer() else round(w),
+                "probability": round(w / tot_w, 8),
+            }
+            for m, w in members
+        ]
+        fam_w_fmt = sum(t["weight"] for t in tiers_detail)
+        if isinstance(fam_w_fmt, float) and fam_w_fmt.is_integer():
+            fam_w_fmt = int(fam_w_fmt)
+        else:
+            fam_w_fmt = round(fam_w_fmt, 4) if isinstance(fam_w_fmt, float) else fam_w_fmt
         entry: dict[str, Any] = {
             "familyId": fam_id,
             "modType": rep.mod_type,
@@ -141,17 +160,19 @@ def _group_weighted_outcomes(
             "statPattern": pat or rep.stat_text,
             "slot": side.value,
             "sourcePool": spool,
-            "weight": round(fam_w, 4) if isinstance(fam_w, float) and not fam_w.is_integer() else round(fam_w),
+            "weight": fam_w_fmt,
             "probability": round(prob, 8),
             "tierCount": len(members),
             "tierRange": f"T{min_t}-T{max_t}" if min_t != max_t else f"T{min_t}",
             "reqLevelRange": [min_req, max_req],
             "exemptedBelowFloor": bool(floor > 1 and max_req < floor),
+            "tiers": tiers_detail,
             "availableTiers": [
                 {
                     "modId": m.mod_id,
                     "tier": m.display_tier,
                     "requiredLevel": m.required_level,
+                    "valueRange": extract_mod_value_range(m.stat_text),
                     "weight": round(w, 4) if isinstance(w, float) and not w.is_integer() else round(w),
                     "probability": round(w / tot_w, 8),
                     "statText": m.stat_text,
@@ -291,6 +312,77 @@ def compute_next_step_outcomes(
     }
 
 
+def _fmt_top_tier_roll(outcome: dict[str, Any]) -> str:
+    tiers = outcome.get("tiers") or ()
+    if not tiers:
+        return "-"
+    top = tiers[0]
+    vr = top.get("valueRange")
+    if vr is None:
+        return str(top.get("tier") or "-")
+    if vr and isinstance(vr[0], list):
+        parts = [f"{p[0]}..{p[1]}" if p[0] != p[1] else f"{p[0]}" for p in vr]
+        return f"{top['tier']}: {' / '.join(parts)}"
+    lo, hi = vr[0], vr[1]
+    span = f"{lo}..{hi}" if lo != hi else f"{lo}"
+    return f"{top['tier']}: {span}"
+
+
+def compute_matched_tiers_for_state(
+    eng: ModPoolEngine,
+    state: CraftingState,
+    targets: tuple[TargetSpec, ...],
+    *,
+    lever_name: str | None = None,
+    omens: list[str] | tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    """Build per-tier roll/weight/probability details for `--want` targets against active/default pool."""
+    wanted_ids = {mid for ts in targets for mid in ts.matching_mod_ids}
+    weight_by_id: dict[str, tuple[int | float, float]] = {}
+    try:
+        dist = compute_next_step_outcomes(eng, state, lever_name=lever_name, omens=omens)
+        for fam in dist.get("outcomes") or ():
+            for t in fam.get("tiers") or ():
+                mid = t.get("modId")
+                if mid in wanted_ids:
+                    weight_by_id[mid] = (t["weight"], t["probability"])
+    except Exception:
+        weight_by_id = {}
+
+    if not weight_by_id:
+        eff_rar = ItemRarity.MAGIC if state.rarity == ItemRarity.NORMAL else state.rarity
+        elig = eng.eligible_pool(state, target_rarity=eff_rar)
+        tot_w = sum(w for _, w in elig)
+        for m, w in elig:
+            if m.mod_id in wanted_ids:
+                weight_by_id[m.mod_id] = (w, round(w / tot_w, 8) if tot_w > 0 else 0.0)
+
+    seen: set[str] = set()
+    ordered_entries: list[ModEntry] = []
+    for ts in targets:
+        for m in sorted(ts.matching_entries, key=lambda x: (x.display_tier, -x.required_level, x.mod_id)):
+            if m.mod_id not in seen:
+                seen.add(m.mod_id)
+                ordered_entries.append(m)
+    ordered_entries.sort(key=lambda x: (x.display_tier, -x.required_level, x.mod_id))
+
+    out: list[dict[str, Any]] = []
+    for m in ordered_entries:
+        w, prob = weight_by_id.get(m.mod_id, (m.weight, 0.0))
+        out.append(
+            {
+                "modId": m.mod_id,
+                "tier": f"T{m.display_tier}",
+                "ilvlReq": m.required_level,
+                "valueRange": extract_mod_value_range(m.stat_text),
+                "statText": m.stat_text,
+                "weight": w,
+                "probability": prob,
+            }
+        )
+    return out
+
+
 def render_outcomes_md(data: dict[str, Any], *, max_rows: int = 40) -> str:
     """Render Markdown summary and probability table for `craft odds --outcomes`."""
     from tabulate import tabulate
@@ -313,6 +405,7 @@ def render_outcomes_md(data: dict[str, Any], *, max_rows: int = 40) -> str:
             o["familyId"],
             o["name"],
             o["tierRange"] + (" [豁免]" if o.get("exemptedBelowFloor") else ""),
+            _fmt_top_tier_roll(o),
             f"{o['reqLevelRange'][0]}-{o['reqLevelRange'][1]}",
             o["weight"],
             f"{o['probability'] * 100:.3f}%",
@@ -323,7 +416,7 @@ def render_outcomes_md(data: dict[str, Any], *, max_rows: int = 40) -> str:
     lines.append(
         tabulate(
             rows,
-            headers=["槽位", "FamilyId", "词缀描述", "可用阶位", "req_lvl", "权重", "单抽命中率"],
+            headers=["槽位", "FamilyId", "词缀描述", "可用阶位", "最佳阶数值", "req_lvl", "权重", "单抽命中率"],
             tablefmt="github",
         )
     )
@@ -417,6 +510,7 @@ def rank_target_suggestions(
 
 
 __all__ = [
+    "compute_matched_tiers_for_state",
     "compute_next_step_outcomes",
     "default_rarity_for_lever",
     "filter_pool_with_family_exemption",

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 import sys
@@ -12,9 +13,7 @@ from typing import Any
 import click
 from click.core import ParameterSource
 
-from .bridge_client import sanitize_bridge_error
 from .compat import ensure_utf8
-from .daemon import call_daemon
 from .errors import (
     EXIT_DAEMON_ERROR,
     EXIT_REQUEST_ERROR,
@@ -24,11 +23,34 @@ from .errors import (
     LegacyPatchTrapError,
 )
 from .game_profile import GAME_ID, default_slot
-from .guardrails import GuardrailScope, check_input, resolve_poe2_slot_name
 
 _SLOT_SLUG_RE = re.compile(r"^[a-zA-Z0-9._-]{1,48}$")
+_BRACKET_CODE_RE = re.compile(r"^(?:Error:\s*)?\[([A-Za-z0-9_.-]+)\]")
 _SLOT_ALIAS_META_KEY = "pob2_build_slot_alias"
 SLOT_ALIAS_PARAM = "pob2_build_slot_alias"
+_RAW_ARGV_VAR: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar("pob2_raw_argv", default=())
+
+
+def _sanitize_err(message: str) -> str:
+    from .bridge_client import sanitize_bridge_error
+
+    return sanitize_bridge_error(message)
+
+
+def _single_line(text: str) -> str:
+    collapsed = " ".join(part.strip() for part in str(text or "").splitlines() if part.strip())
+    if collapsed.startswith("Error:"):
+        collapsed = collapsed[len("Error:") :].strip()
+    return collapsed or "Request failed."
+
+
+def _option_tokens_before_ddash(raw_args: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    out: list[str] = []
+    for tok in raw_args:
+        if tok == "--":
+            break
+        out.append(tok)
+    return tuple(out)
 
 
 def echo_utf8(text: str, *, err: bool = False) -> None:
@@ -36,8 +58,8 @@ def echo_utf8(text: str, *, err: bool = False) -> None:
     click.echo(text, err=err)
 
 
-def ctx_wants_json(ctx: click.Context | None) -> bool:
-    """Return True if `--json` was passed on either the root group or leaf subcommand."""
+def ctx_wants_json(ctx: click.Context | None = None) -> bool:
+    """Return True if `--json` was passed on root group, leaf subcommand, or raw CLI args."""
     cur = ctx
     while cur is not None:
         if cur.params.get("as_json") or cur.meta.get("pob2_as_json"):
@@ -45,16 +67,18 @@ def ctx_wants_json(ctx: click.Context | None) -> bool:
         if isinstance(cur.obj, dict) and cur.obj.get("as_json"):
             return True
         raw_args = cur.meta.get("pob2_raw_args")
-        if isinstance(raw_args, (list, tuple)) and "--json" in raw_args:
+        if isinstance(raw_args, (list, tuple)) and "--json" in _option_tokens_before_ddash(raw_args):
             return True
         cur = cur.parent
-    return False
+    active_raw = _RAW_ARGV_VAR.get()
+    return bool(active_raw and "--json" in _option_tokens_before_ddash(active_raw))
 
 
 def _extract_raw_opt_value(raw_args: list[str] | tuple[str, ...], flag: str) -> str | None:
-    for idx, tok in enumerate(raw_args):
-        if tok == flag and idx + 1 < len(raw_args):
-            return raw_args[idx + 1]
+    opts = _option_tokens_before_ddash(raw_args)
+    for idx, tok in enumerate(opts):
+        if tok == flag and idx + 1 < len(opts):
+            return opts[idx + 1]
         if tok.startswith(f"{flag}="):
             return tok.split("=", 1)[1]
     return None
@@ -85,13 +109,21 @@ def resolve_output_flags(
                 eff_out = cur.obj.get("out")
         raw_args = cur.meta.get("pob2_raw_args")
         if isinstance(raw_args, (list, tuple)):
-            if "--compact" in raw_args:
+            if "--compact" in _option_tokens_before_ddash(raw_args):
                 eff_compact = True
             if not ignore_ctx_out and eff_out is None:
                 raw_out = _extract_raw_opt_value(raw_args, "--out")
                 if raw_out:
                     eff_out = raw_out
         cur = cur.parent
+    active_raw = _RAW_ARGV_VAR.get()
+    if active_raw:
+        if "--compact" in _option_tokens_before_ddash(active_raw):
+            eff_compact = True
+        if not ignore_ctx_out and eff_out is None:
+            raw_out = _extract_raw_opt_value(active_raw, "--out")
+            if raw_out:
+                eff_out = raw_out
     return eff_compact, (Path(eff_out) if eff_out is not None else None)
 
 
@@ -139,6 +171,7 @@ def emit_output(
     if eff_out is not None:
         eff_out.parent.mkdir(parents=True, exist_ok=True)
         eff_out.write_text(text + "\n", encoding="utf-8", newline="\n")
+        echo_utf8(f"Wrote {eff_out}", err=True)
         return
     echo_utf8(text)
 
@@ -154,6 +187,7 @@ def emit_text(
     if eff_out is not None:
         eff_out.parent.mkdir(parents=True, exist_ok=True)
         eff_out.write_text(text + "\n", encoding="utf-8", newline="\n")
+        echo_utf8(f"Wrote {eff_out}", err=True)
         return
     echo_utf8(text)
 
@@ -187,7 +221,7 @@ def output_options(fn: Any) -> Any:
         default=None,
         expose_value=False,
         callback=_out_opt_callback,
-        help="Write output to a UTF-8 (no BOM) file.",
+        help="Write output to PATH instead of stdout.",
     )(fn)
     fn = click.option(
         "--compact",
@@ -222,6 +256,8 @@ def _validate_build_slot_slug(raw: str, *, ctx: click.Context | None = None, par
 def _slot_alias_callback(ctx: click.Context, param: click.Parameter, value: str | None) -> None:
     if value is None or ctx.resilient_parsing:
         return
+    from .guardrails import GuardrailScope, check_input, resolve_poe2_slot_name
+
     raw = str(value).strip()
     check_input(raw, GuardrailScope.SLOT, expected_game="poe2", emit_stderr=False)
     if resolve_poe2_slot_name(raw) is not None:
@@ -285,44 +321,153 @@ def resolve_target_slot(target: str | None) -> str:
     return (target or "").strip().lower() or default_slot()
 
 
+def _classify_daemon_request_error(msg: str) -> tuple[str, str | None]:
+    m_code = _BRACKET_CODE_RE.match(msg)
+    code = m_code.group(1) if m_code else None
+    low = msg.lower()
+    if code == "POE2-INVALID-SLOT":
+        return "invalid_slot", code
+    if "has no build loaded" in low or "is empty in build slot" in low:
+        return "empty_slot", code or "POE2-EMPTY-SLOT"
+    if "file not found" in low or "no such file" in low:
+        return "file_not_found", code or "POE2-FILE-NOT-FOUND"
+    if "against itself" in low or ("both `--target" in low and "`--slot" in low):
+        return "same_slot", code or "POE2-SAME-SLOT"
+    return "request_error", code
+
+
+def _emit_error_and_resolve_code(ctx: click.Context | None, exc: BaseException) -> int:
+    wants_json = ctx_wants_json(ctx)
+    if isinstance(exc, (CrossGameHallucinationError, LegacyPatchTrapError)):
+        echo_utf8(exc.format_human(), err=True)
+        if wants_json:
+            payload = dict(exc.to_dict())
+            payload.setdefault(
+                "code",
+                "POE2-CROSS-GAME-BLOCK" if isinstance(exc, CrossGameHallucinationError) else "POE2-PATCH-BLOCK",
+            )
+            payload["error"] = _single_line(str(payload.get("error") or exc))
+            emit_output(ctx, payload, as_json=True, ok=False, ignore_ctx_out=True)
+        return EXIT_REQUEST_ERROR
+
+    if isinstance(exc, DaemonRequestError):
+        exit_code = int(getattr(exc, "exit_code", EXIT_REQUEST_ERROR))
+        to_dict_fn = getattr(exc, "to_dict", None)
+        single = _single_line(str(exc))
+        echo_utf8(f"Error: {single}", err=True)
+        if wants_json:
+            if callable(to_dict_fn):
+                payload = dict(to_dict_fn())
+                m_code = _BRACKET_CODE_RE.match(single)
+                if m_code:
+                    payload.setdefault("code", m_code.group(1))
+                payload["error"] = _single_line(str(payload.get("error") or single))
+            else:
+                kind, code = _classify_daemon_request_error(single)
+                payload = {"errorKind": kind, **({"code": code} if code else {}), "error": single}
+            emit_output(ctx, payload, as_json=True, ok=False, ignore_ctx_out=True)
+        return exit_code
+
+    if isinstance(exc, BootstrapMissingError):
+        single = _single_line(str(exc))
+        echo_utf8(f"Error: {single}", err=True)
+        if wants_json:
+            emit_output(
+                ctx,
+                {"errorKind": "bootstrap_missing", "code": "POE2-BOOTSTRAP-MISSING", "error": single},
+                as_json=True,
+                ok=False,
+                ignore_ctx_out=True,
+            )
+        return EXIT_REQUEST_ERROR
+
+    if isinstance(exc, FileNotFoundError):
+        single = _single_line(str(exc))
+        echo_utf8(f"Error: {single}", err=True)
+        if wants_json:
+            emit_output(
+                ctx,
+                {"errorKind": "file_not_found", "code": "POE2-FILE-NOT-FOUND", "error": single},
+                as_json=True,
+                ok=False,
+                ignore_ctx_out=True,
+            )
+        return EXIT_REQUEST_ERROR
+
+    if isinstance(exc, click.ClickException):
+        exc.exit_code = EXIT_REQUEST_ERROR
+        if wants_json:
+            single = _single_line(exc.format_message())
+            echo_utf8(f"Error: {single}", err=True)
+            kind = "usage_error" if isinstance(exc, click.UsageError) else "cli_error"
+            code = "POE2-USAGE-ERROR" if isinstance(exc, click.UsageError) else "POE2-CLI-ERROR"
+            emit_output(
+                ctx,
+                {"errorKind": kind, "code": code, "error": single},
+                as_json=True,
+                ok=False,
+                ignore_ctx_out=True,
+            )
+        else:
+            exc.show()
+        return EXIT_REQUEST_ERROR
+
+    single = _single_line(_sanitize_err(str(exc)))
+    echo_utf8(f"Error: {single}", err=True)
+    if wants_json:
+        emit_output(
+            ctx,
+            {"errorKind": "daemon_error", "code": "POE2-DAEMON-ERROR", "error": single},
+            as_json=True,
+            ok=False,
+            ignore_ctx_out=True,
+        )
+    return EXIT_DAEMON_ERROR
+
+
 def _invoke_with_exit_contract(ctx: click.Context, fn: Any) -> Any:
-    """Enforce unified `0 / 1 / 5` exit-code contract across all `pob2` commands and groups."""
+    """Enforce unified `0 / 1 / 5` exit-code and `--json` error envelope contract."""
     try:
         return fn()
     except (click.exceptions.Exit, click.Abort, KeyboardInterrupt, SystemExit):
         raise
-    except click.UsageError as exc:
-        exc.exit_code = EXIT_REQUEST_ERROR
-        raise
-    except click.ClickException:
-        raise
-    except (CrossGameHallucinationError, LegacyPatchTrapError) as exc:
-        echo_utf8(exc.format_human(), err=True)
-        if ctx_wants_json(ctx):
-            emit_output(ctx, exc.to_dict(), as_json=True, ok=False)
-        ctx.exit(EXIT_REQUEST_ERROR)
-    except DaemonRequestError as exc:
-        to_dict_fn = getattr(exc, "to_dict", None)
-        if callable(to_dict_fn):
-            echo_utf8(str(exc), err=True)
-            if ctx_wants_json(ctx):
-                emit_output(ctx, to_dict_fn(), as_json=True, ok=False)
-            ctx.exit(getattr(exc, "exit_code", EXIT_REQUEST_ERROR))
-        msg = str(exc)
-        echo_utf8(msg if msg.startswith("Error:") else f"Error: {msg}", err=True)
-        ctx.exit(getattr(exc, "exit_code", EXIT_REQUEST_ERROR))
-    except BootstrapMissingError as exc:
-        echo_utf8(f"Error: {exc}", err=True)
-        ctx.exit(EXIT_REQUEST_ERROR)
-    except FileNotFoundError as exc:
-        echo_utf8(f"Error: {exc}", err=True)
-        ctx.exit(EXIT_REQUEST_ERROR)
     except Exception as exc:
-        echo_utf8(f"Error: {sanitize_bridge_error(str(exc))}", err=True)
-        ctx.exit(EXIT_DAEMON_ERROR)
+        ctx.exit(_emit_error_and_resolve_code(ctx, exc))
 
 
-class Pob2Command(click.Command):
+class _Pob2CliMixin:
+    """Shared Click Command/Group mixin tracking raw CLI args and unifying error envelopes."""
+
+    def main(  # type: ignore[misc]
+        self,
+        args: Any = None,
+        prog_name: str | None = None,
+        complete_var: str | None = None,
+        standalone_mode: bool = True,
+        **extra: Any,
+    ) -> Any:
+        raw_tuple = tuple(str(a) for a in (args if args is not None else sys.argv[1:]))
+        tok = _RAW_ARGV_VAR.set(raw_tuple)
+        try:
+            return super().main(  # type: ignore[misc]
+                args=args,
+                prog_name=prog_name,
+                complete_var=complete_var,
+                standalone_mode=standalone_mode,
+                **extra,
+            )
+        except (click.exceptions.Exit, click.Abort, KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:
+            if not standalone_mode:
+                raise
+            code = _emit_error_and_resolve_code(click.get_current_context(silent=True), exc)
+            raise SystemExit(code) from exc
+        finally:
+            _RAW_ARGV_VAR.reset(tok)
+
+
+class Pob2Command(_Pob2CliMixin, click.Command):
     """Click Command enforcing `0 / 1 / 5` exit codes and recording raw CLI args."""
 
     def make_context(
@@ -345,7 +490,7 @@ class Pob2Command(click.Command):
         return _invoke_with_exit_contract(ctx, lambda: super(Pob2Command, self).invoke(ctx))
 
 
-class Pob2Group(click.Group):
+class Pob2Group(_Pob2CliMixin, click.Group):
     """Click Group defaulting child commands to `Pob2Command` and enforcing `0 / 1 / 5` exit codes."""
 
     command_class = Pob2Command
@@ -398,14 +543,10 @@ def daemon_call_cli(
     auto_start: bool = True,
     timeout: float = 150.0,
 ) -> dict[str, Any]:
-    """Invoke local PoE2 daemon and translate transport/fault errors to exit code 5."""
-    try:
-        return call_daemon(action, params or {}, auto_start=auto_start, timeout=timeout)
-    except (CrossGameHallucinationError, LegacyPatchTrapError, DaemonRequestError, BootstrapMissingError):
-        raise
-    except Exception as exc:
-        echo_utf8(f"Daemon Error: {sanitize_bridge_error(str(exc))}", err=True)
-        raise SystemExit(EXIT_DAEMON_ERROR) from exc
+    """Invoke local PoE2 daemon (letting request errors exit 1 and daemon/transport faults exit 5)."""
+    from .daemon.client import call_daemon
+
+    return call_daemon(action, params or {}, auto_start=auto_start, timeout=timeout)
 
 
 __all__ = [

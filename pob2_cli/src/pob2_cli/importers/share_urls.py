@@ -172,7 +172,12 @@ def _default_fetch_text(
     return resp.text
 
 
-def _extract_code_or_xml_from_body(body: str, site_kind: str) -> tuple[str, str]:
+def _extract_code_or_xml_from_body(
+    body: str,
+    site_kind: str,
+    *,
+    source_hint: str | None = None,
+) -> tuple[str, str]:
     text = (body or "").strip()
     if not text:
         raise DaemonRequestError(f"Empty response body from `{site_kind}` build link.")
@@ -191,8 +196,9 @@ def _extract_code_or_xml_from_body(body: str, site_kind: str) -> tuple[str, str]
                 if isinstance(val, str) and val.strip():
                     text = val.strip()
                     break
+    eff_hint = source_hint or site_kind
     if text.lstrip().startswith("<"):
-        validate_build_xml(text, expected_game="poe2", source_hint=site_kind)
+        validate_build_xml(text, expected_game="poe2", source_hint=eff_hint)
         validate_poe2_spec_class_ids(text)
         return text, encode_xml_share_code(text)
     try:
@@ -205,7 +211,7 @@ def _extract_code_or_xml_from_body(body: str, site_kind: str) -> tuple[str, str]
         ) from exc
     if "<PathOfBuilding" not in decoded:
         raise DaemonRequestError(f"Response from `{site_kind}` did not contain a valid PoB2 share code or XML.")
-    validate_build_xml(decoded, expected_game="poe2", source_hint=site_kind)
+    validate_build_xml(decoded, expected_game="poe2", source_hint=eff_hint)
     validate_poe2_spec_class_ids(decoded)
     return decoded, text
 
@@ -253,7 +259,7 @@ def resolve_poe2_build_source(
         body = fetcher(dl_url, timeout) if fetcher is not None else _default_fetch_text(
             dl_url, timeout, transport=transport, proxy=proxy
         )
-        xml_text, code_str = _extract_code_or_xml_from_body(body, site_kind)
+        xml_text, code_str = _extract_code_or_xml_from_body(body, site_kind, source_hint=raw)
         return ResolvedBuildSource(
             xml=xml_text,
             code=code_str,
@@ -272,7 +278,7 @@ def resolve_poe2_build_source(
         body = fetcher(raw, timeout) if fetcher is not None else _default_fetch_text(
             raw, timeout, transport=transport, proxy=proxy
         )
-        xml_text, code_str = _extract_code_or_xml_from_body(body, "https_share")
+        xml_text, code_str = _extract_code_or_xml_from_body(body, "https_share", source_hint=raw)
         return ResolvedBuildSource(
             xml=xml_text,
             code=code_str,

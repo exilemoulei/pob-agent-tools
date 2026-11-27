@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..craft.item_inspector import inspect_item_text
+from ..importers.post_load_fixups import scan_res_override_lines_in_items
 from ..rune.catalog import RuneInstillCatalog, load_rune_instill_catalog
 from ..rune.socket_rules import (
     SocketParityResult,
@@ -413,6 +414,10 @@ def analyze_live_net_gap(
 
     if has_active_charm:
         warnings.append("Hit-triggered Charm(s) deactivated for permanent resistance & overcap calculation.")
+    res_ov = scan_res_override_lines_in_items(
+        [(s.slot_name, s.name or s.base_name, s.raw_text) for s in audited_slots]
+    )
+    warnings.extend(res_ov["warnings"])
 
     # Capture live `currentInGame` baseline BEFORE deactivating hit-triggered Charms.
     # Permanent campaign quest rewards (`quest*`) are NEVER stripped in any snapshot!

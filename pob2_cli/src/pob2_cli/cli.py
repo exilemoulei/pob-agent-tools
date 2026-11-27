@@ -54,7 +54,7 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
     "summary": (".cli_inspect", "cmd_summary", "Show PoE2 build summary with version & patch stamp."),
     "audit": (".cli_inspect", "cmd_audit", "Run S4/T3.4 PoE2 deep audit, 4-dim dehydration, and [PoB2未模拟] red cards."),
     "diagnose": (".cli_inspect", "cmd_diagnose", "One-shot PoE2 build diagnosis (summary + deep audit + notes)."),
-    "uniques": (".cli_inspect", "cmd_uniques", "Keyword-free full-slot unique ranking (incl. Flask/Charm) + Sanctified 1.22x."),
+    "uniques": (".cli_inspect", "cmd_uniques", "Rank PoE2 uniques against loaded build (--target, alias of item db; key: results)."),
     "compare": (".cli_inspect", "cmd_compare", "5-dimension Compare Power Report against a reference build."),
     "items": (".cli_inspect", "cmd_items", "Inspect equipped PoE2 items and slots."),
     "skills": (".cli_inspect", "cmd_skills", "Inspect PoE2 skill groups, gems, and weapon-set bindings."),
@@ -68,7 +68,7 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
 # in the package tree (enables conflict-free parallel feature branch merges).
 _OPTIONAL_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
     "craft": (".cli_craft", "craft_group", "PoE2 crafting odds, MDP solver, and step-by-step plans."),
-    "item": (".cli_item", "item_group", "Inspect PoE2 items (--slot/--text/--file) and rank slot uniques (item db)."),
+    "item": (".cli_item", "item_group", "Inspect PoE2 items (--slot/--text/--file) and rank uniques against loaded build (item db == uniques)."),
     "ground": (".cli_ground", "cmd_ground", "Fast (<15ms, daemon-free) PoE2 entity & mechanic grounding."),
     "import": (".cli_import", "cmd_import", "Import PoE2 builds (PoB2 code, share URL, CN WeGame link)."),
     "rune": (".cli_rune", "rune_group", "Rank PoE2 runes, soul cores, and idols with socket parity."),
@@ -183,7 +183,7 @@ class ExtensibleLazyGroup(Pob2Group):
     "out_path",
     type=click.Path(dir_okay=False),
     default=None,
-    help="Write output to a UTF-8 (no BOM) file.",
+    help="Write output to PATH instead of stdout.",
 )
 @click.pass_context
 def main(ctx: click.Context, offline: bool, as_json: bool, compact: bool, out_path: str | None) -> None:

@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..game_profile import GAME_ID
+from ..importers.post_load_fixups import detect_worker_res_override_lines
 from .version_stamp import attach_version_stamp
 
 DEFAULT_OVERCAP_TARGET = 15
@@ -426,12 +427,26 @@ def run_deep_audit(
         probe = worker.call("deep_audit_probe", {}, timeout=45.0)
         dehydration = worker.call("eval_honest_dehydration", {}, timeout=45.0)
         diag = worker.get_engine_diagnostics()
+        res_override = detect_worker_res_override_lines(worker)
 
     res_audit = evaluate_resistances_cap_overcap(
         probe.get("resists") or {},
         overcap_target=overcap_target,
         chaos_floor=chaos_floor,
     )
+    if res_override["matches"]:
+        for warn_txt in res_override["warnings"]:
+            res_audit["issues"].append(
+                {
+                    "code": "res_override_line",
+                    "tag": "[res-override-line]",
+                    "severity": "warning",
+                    "affectedElements": res_override["affectedElements"],
+                    "affectedSlots": res_override["affectedSlots"],
+                    "matches": res_override["matches"],
+                    "message": warn_txt,
+                }
+            )
     findings = _build_findings_from_probe(probe, dehydration, res_audit)
     payload: dict[str, Any] = {
         "game": GAME_ID,
@@ -452,6 +467,7 @@ def run_deep_audit(
         "unsimulatedRedCards": probe.get("unsimulatedRedCards") or [],
         "engineDiagnostics": diag,
         "findings": findings,
+        "warnings": list(res_override["warnings"]),
     }
     return attach_version_stamp(
         payload,

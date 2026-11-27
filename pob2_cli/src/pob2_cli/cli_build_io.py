@@ -44,6 +44,8 @@ def cmd_load(ctx: click.Context, source: str, target: str, as_json: bool) -> Non
         echo_utf8(warn_txt, err=True)
         lines.append(f"- [tree-disconnected] {warn_txt}")
     for w in res.get("fixupWarnings") or []:
+        if "[res-override-line]" in str(w):
+            echo_utf8(f"Warning: {w}", err=True)
         lines.append(f"- {w}")
     for w in res.get("importWarnings") or []:
         lines.append(f"- [import] {w}")
@@ -77,7 +79,7 @@ def cmd_export(
     if eff_out is not None:
         eff_out.parent.mkdir(parents=True, exist_ok=True)
         eff_out.write_text(body + "\n", encoding="utf-8", newline="\n")
-        echo_utf8(f"Exported to {eff_out}")
+        echo_utf8(f"Wrote {eff_out}", err=True)
         return
     echo_utf8(body)
 

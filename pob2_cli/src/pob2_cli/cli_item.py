@@ -27,7 +27,6 @@ from .errors import (
     DaemonRequestError,
     LegacyPatchTrapError,
 )
-from .formatters import format_uniques_md
 from .guardrails import check_input_item_raw, normalize_poe2_equipment_slot
 
 
@@ -200,9 +199,11 @@ def run_unique_slot_ranking(
     as_json: bool,
     command_label: str,
 ) -> None:
-    """Shared implementation for `pob2 item db` and `pob2 uniques` with P2-a slot pre-validation."""
+    """Shared implementation for `pob2 item db` and `pob2 uniques` with 100% identical schema."""
+    from .formatters import format_uniques_md
+
     canon_slot = normalize_poe2_equipment_slot(slot, command=command_label)
-    res = daemon_call_cli(
+    raw_res = daemon_call_cli(
         "uniques",
         {
             "target": resolve_target_slot(target),
@@ -212,12 +213,13 @@ def run_unique_slot_ranking(
             "eval_sanctified": not no_sanctified,
         },
     )
+    res = {k: v for k, v in raw_res.items() if k not in ("loopGuardWarning", "cached")}
     emit_output(ctx, res, as_json=as_json, markdown_text=format_uniques_md(res))
 
 
 @pob2_group("item")
 def item_group() -> None:
-    """Inspect PoE2 items (`--slot`/`--text`/`--file`) and rank full-slot PoE2 uniques (`item db`)."""
+    """Inspect PoE2 items (`--slot`/`--text`/`--file`) and rank uniques against loaded `--target` build (`item db` == `uniques`)."""
 
 
 @item_group.command("inspect")
@@ -273,7 +275,7 @@ def cmd_item_db(
     target: str,
     as_json: bool,
 ) -> None:
-    """Rank PoE2 unique items for an equipment slot (including Flask 1..2 & Charm 1..3) with Sanctified 0.78x-1.22x range."""
+    """Rank PoE2 unique items for `--slot` against the loaded build in `--target` (identical alias of `pob2 uniques`; JSON output key: `results`)."""
     run_unique_slot_ranking(
         ctx,
         slot=slot,

@@ -89,7 +89,7 @@ def cmd_uniques(
     target: str,
     as_json: bool,
 ) -> None:
-    """Keyword-free full-slot PoE2 unique ranking (alias of `pob2 item db`; incl. Flask/Charm & Sanctified 0.78x-1.22x)."""
+    """Rank PoE2 unique items for `--slot` against the loaded build in `--target` (identical alias of `pob2 item db`; JSON output key: `results`)."""
     run_unique_slot_ranking(
         ctx,
         slot=slot,

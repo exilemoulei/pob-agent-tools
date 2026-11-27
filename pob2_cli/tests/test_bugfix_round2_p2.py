@@ -108,7 +108,10 @@ def test_p2a_uniques_bad_slot_rejected_before_build_loaded_without_daemon(
     assert "Ring 1" in res.output and "Charm 1" in res.output
     assert "has no build loaded" not in res.output
     assert "Traceback" not in res.output
-    assert "\n" not in res.output.strip()
+    assert "\n" not in res.stderr.strip()
+    err_json = json.loads(res.stdout)
+    assert err_json["ok"] is False and err_json["game"] == "poe2"
+    assert err_json["code"] == "POE2-INVALID-SLOT"
     assert not (rt_dir / "daemon_poe2.json").exists(), "Invalid --slot must fail before spawning daemon!"
 
     # PoE1 Flask 3..5 still raises CrossGameHallucinationError before daemon

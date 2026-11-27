@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..craft.price_book import PriceBook
+from ..importers.post_load_fixups import scan_res_override_lines_in_items
 from ..rune.catalog import RuneInstillCatalog, load_rune_instill_catalog
 from .net_gap import EquippedSlotAudit, NetGapAudit, StatSnapshot
 from .spirit_knapsack import SpiritKnapsackPlan
@@ -63,6 +64,14 @@ class FixGapsReport:
     def to_dict(self) -> dict[str, Any]:
         in_game = self.current_in_game or self.before
         without_charm = self.before.to_dict(chaos_target=self.chaos_target, overcap_target=self.overcap_target)
+        snap_notes: dict[str, str] = {
+            "currentInGame": "Live in-game build stats as loaded (including active hit-triggered Charms and current socketed runes).",
+            "withoutConditionalAndCharm": "Permanent stats with hit-triggered Charms deactivated; keeps all equipped gear, socketed runes, passive tree, and permanent campaign quest rewards.",
+            "bareNet": "Equipped gear + passive tree + permanent campaign quest rewards + Mirrored/isSocketBound augments KEPT; only Charms deactivated and replaceable socket runes temporarily stripped to measure free socket capacity (NOT unequipped resistances).",
+        }
+        res_ov_warns = [w for w in self.warnings if "[res-override-line]" in w]
+        if res_ov_warns:
+            snap_notes["resOverrideWarning"] = res_ov_warns[0]
         return {
             "game": "poe2",
             "patch": "0.5.5",
@@ -78,11 +87,7 @@ class FixGapsReport:
             "before": without_charm,
             "bareNet": self.bare_net.to_dict(chaos_target=self.chaos_target, overcap_target=self.overcap_target),
             "afterVerified": self.after_verified.to_dict(chaos_target=self.chaos_target, overcap_target=self.overcap_target),
-            "snapshotNotes": {
-                "currentInGame": "Live in-game build stats as loaded (including active hit-triggered Charms and current socketed runes).",
-                "withoutConditionalAndCharm": "Permanent stats with hit-triggered Charms deactivated; keeps all equipped gear, socketed runes, passive tree, and permanent campaign quest rewards.",
-                "bareNet": "Equipped gear + passive tree + permanent campaign quest rewards + Mirrored/isSocketBound augments KEPT; only Charms deactivated and replaceable socket runes temporarily stripped to measure free socket capacity (NOT unequipped resistances).",
-            },
+            "snapshotNotes": snap_notes,
             "stages": {
                 "stage1Attributes": self.stage1.to_dict(),
                 "stage2Runes": self.stage2.to_dict(),
@@ -256,7 +261,12 @@ def solve_fix_gaps_offline(
         "spirit": after.spirit_deficit(),
     }
     s5 = build_stage5_fallback(audit.slots, final_hard, after.resistance_overcap_needs(overcap_target=overcap_target))
-    all_warnings = (*audit.warnings, *s1.warnings, *s2.warnings, *s3.warnings, *s4.warnings)
+    res_ov = scan_res_override_lines_in_items(
+        [(s.slot_name, s.name or s.base_name, s.raw_text) for s in audit.slots]
+    )
+    all_warnings = tuple(
+        dict.fromkeys([*audit.warnings, *res_ov["warnings"], *s1.warnings, *s2.warnings, *s3.warnings, *s4.warnings])
+    )
 
     return FixGapsReport(
         before=audit.current,

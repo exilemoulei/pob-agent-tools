@@ -4,11 +4,55 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
 from ..errors import DaemonRequestError
+
+_MOD_PAREN_RANGE_RE = re.compile(r"([+-]?)\(\s*([+-]?\d+(?:\.\d+)?)\s*-\s*([+-]?\d+(?:\.\d+)?)\s*\)")
+_MOD_ADDS_FIXED_RE = re.compile(r"\badds\s+([+-]?\d+(?:\.\d+)?)\s+to\s+([+-]?\d+(?:\.\d+)?)\b", re.IGNORECASE)
+_MOD_NUM_RE = re.compile(r"(?<![A-Za-z0-9_.])([+-]?\d+(?:\.\d+)?)")
+
+
+def _clean_num(val: float) -> int | float:
+    return int(val) if val.is_integer() else round(val, 4)
+
+
+def extract_mod_value_range(stat_text: str) -> list[Any] | None:
+    """Extract `[min, max]` (or `[[min1, max1], ...]` for multi-stat mods) from *stat_text*."""
+    if not stat_text:
+        return None
+    paren_hits = list(_MOD_PAREN_RANGE_RE.finditer(stat_text))
+    if paren_hits:
+        pairs: list[list[int | float]] = []
+        for m in paren_hits:
+            outer_neg = m.group(1) == "-"
+            ra, rb = m.group(2), m.group(3)
+            fa = -float(ra) if (outer_neg and not ra.startswith(("-", "+"))) else float(ra)
+            fb = -float(rb) if (outer_neg and not rb.startswith(("-", "+"))) else float(rb)
+            lo, hi = min(fa, fb), max(fa, fb)
+            pairs.append([_clean_num(lo), _clean_num(hi)])
+        return pairs[0] if len(pairs) == 1 else pairs
+
+    fixed_pairs: list[list[int | float]] = []
+    for raw_ln in stat_text.splitlines():
+        ln = raw_ln.strip()
+        if not ln:
+            continue
+        m_adds = _MOD_ADDS_FIXED_RE.search(ln)
+        if m_adds:
+            va, vb = _clean_num(float(m_adds.group(1))), _clean_num(float(m_adds.group(2)))
+            fixed_pairs.extend(([va, va], [vb, vb]))
+            continue
+        m_num = _MOD_NUM_RE.search(ln)
+        if m_num:
+            vn = _clean_num(float(m_num.group(1)))
+            fixed_pairs.append([vn, vn])
+    if not fixed_pairs:
+        return None
+    return fixed_pairs[0] if len(fixed_pairs) == 1 else fixed_pairs
 
 MARK_OF_ABYSS_MOD_ID = "MarkOfTheAbyssalLord"
 
@@ -425,6 +469,41 @@ class PoolEvalResult:
     whittling: WhittlingReport | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        ordered = sorted(
+            self.matching_tiers,
+            key=lambda m: (m.display_tier, -m.required_level, m.mod_id),
+        )
+        raw_sum = sum(max(0, m.weight) for m in ordered)
+        matched_tiers: list[dict[str, Any]] = []
+        for m in ordered:
+            if raw_sum > 0 and self.target_weight > 0:
+                eff_w: int | float = (
+                    m.weight
+                    if raw_sum == self.target_weight
+                    else round(m.weight * (self.target_weight / raw_sum), 4)
+                )
+            elif len(ordered) == 1 and self.target_weight > 0:
+                eff_w = self.target_weight
+            else:
+                eff_w = m.weight
+            if isinstance(eff_w, float) and eff_w.is_integer():
+                eff_w = int(eff_w)
+            prob = (
+                round(float(eff_w) / self.eligible_pool_weight, 8)
+                if self.eligible_pool_weight > 0
+                else 0.0
+            )
+            matched_tiers.append(
+                {
+                    "modId": m.mod_id,
+                    "tier": f"T{m.display_tier}",
+                    "ilvlReq": m.required_level,
+                    "valueRange": extract_mod_value_range(m.stat_text),
+                    "statText": m.stat_text,
+                    "weight": eff_w,
+                    "probability": prob,
+                }
+            )
         out: dict[str, Any] = {
             "lever": self.lever.name,
             "omens": [o.name for o in self.omens],
@@ -434,6 +513,7 @@ class PoolEvalResult:
             "targetWeight": self.target_weight,
             "weightConfidence": self.weight_confidence.value,
             "matchingModIds": [m.mod_id for m in self.matching_tiers],
+            "matchedTiers": matched_tiers,
             "notes": self.notes,
         }
         if self.whittling is not None:

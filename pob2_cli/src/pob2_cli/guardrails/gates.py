@@ -114,6 +114,13 @@ class UrlGateRule:
     label: str
     counterpart_hint: str
     source_ref: str
+    counterpart_command: str | None = None
+
+
+_COUNTERPART_SUBCOMMAND_MAP: dict[tuple[str, str], str] = {
+    ("pob", "import"): "load",
+    ("pob2", "profile"): "import",
+}
 
 
 URL_GATE_RULES: tuple[UrlGateRule, ...] = (
@@ -224,11 +231,14 @@ def validate_url(
     for rule in URL_GATE_RULES:
         if rule.belongs_to != expected_game and rule.pattern.search(cand):
             other_cli = "pob" if expected_game == "poe2" else "pob2"
+            subcmd = rule.counterpart_command or _COUNTERPART_SUBCOMMAND_MAP.get(
+                (other_cli, cli_subcommand), cli_subcommand
+            )
             raise CrossGameHallucinationError(
                 game=expected_game, detected_game=rule.belongs_to, trigger=cand,
                 error=f"URL matches {rule.label}, which belongs to {rule.belongs_to.upper()}.",
                 remediation=rule.counterpart_hint,
-                equivalent_command=f'{other_cli} {cli_subcommand} "{cand}"',
+                equivalent_command=f'{other_cli} {subcmd} "{cand}"',
                 rule_id=rule.rule_id,
             )
 
