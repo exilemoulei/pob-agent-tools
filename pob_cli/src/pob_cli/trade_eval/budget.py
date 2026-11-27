@@ -57,10 +57,10 @@ def _slot_key(payload: dict[str, Any]) -> str:
 
 def collect_listings(
     payloads: list[dict[str, Any]], score: dict[str, float], *, divine_rate: float | None = None
-) -> tuple[dict[str, list[dict[str, Any]]], int]:
-    """Group priced, PoB-verified, positive-score listings by slot; returns (by_slot, skipped)."""
+) -> tuple[dict[str, list[dict[str, Any]]], int, int]:
+    """Group priced, PoB-verified, positive-score listings by slot; returns (by_slot, skipped, needDivineRate)."""
     by_slot: dict[str, list[dict[str, Any]]] = {}
-    skipped = 0
+    skipped = need_rate = 0
     for payload in payloads:
         slot = _slot_key(payload)
         for cand in payload.get("candidates") or []:
@@ -68,6 +68,9 @@ def collect_listings(
             value = _listing_score(cand, score)
             if chaos is None or value is None or value <= 0:
                 skipped += 1
+                price = cand.get("price") or {}
+                if chaos is None and divine_rate is None and str(price.get("currency") or "").strip().lower() == "divine":
+                    need_rate += 1
                 continue
             by_slot.setdefault(slot, []).append(
                 {"slot": slot, "listingId": cand.get("listing_id"), "name": cand.get("name"), "chaos": float(chaos), "score": value,
@@ -80,7 +83,7 @@ def collect_listings(
         if item["listingId"] not in best or item["score"] > best[item["listingId"]]["score"]:
             best[item["listingId"]] = item
     by_slot = {s: [i for i in items if not i["listingId"] or best[i["listingId"]] is i] for s, items in by_slot.items()}
-    return {s: items for s, items in by_slot.items() if items}, skipped
+    return {s: items for s, items in by_slot.items() if items}, skipped, need_rate
 
 
 def plan_budget(
@@ -97,7 +100,7 @@ def plan_budget(
     if divine_rate is not None and (not math.isfinite(divine_rate) or divine_rate <= 0):
         raise ValueError("--divine-rate must be a positive number of chaos.")
     score = score or dict(DEFAULT_PLAN_SCORE)
-    by_slot, skipped = collect_listings(payloads, score, divine_rate=divine_rate)
+    by_slot, skipped, need_rate = collect_listings(payloads, score, divine_rate=divine_rate)
     unit = max(1.0, budget / _MAX_UNITS)
     # Fixed cap above _MAX_UNITS: budget // (budget / _MAX_UNITS) can round down to _MAX_UNITS - 1.
     cap = _MAX_UNITS if budget > _MAX_UNITS else int(budget)
@@ -126,4 +129,5 @@ def plan_budget(
         "bestPerChaos": sorted(every, key=lambda i: (i["perChaos"] is not None, -(i["perChaos"] or 0.0)))[:top],  # free first
         "slots": sorted(by_slot),
         "skippedUnverified": skipped,
+        "skippedNeedDivineRate": need_rate,
     }

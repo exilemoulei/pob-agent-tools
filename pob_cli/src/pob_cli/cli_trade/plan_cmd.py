@@ -83,7 +83,8 @@ def format_plan_markdown(res: dict[str, Any], *, budget: float) -> str:
         f"### Upgrade Plan (budget {budget:g}c, Score: `{terms}`)",
         f"- Spend {res['totalChaos']:g}c for score {res['totalScore']:+.2f} over slots: {', '.join(res['slots']) or '-'}"
         f"; {res['skippedUnverified']} listing(s) skipped (no chaos price, no PoB result or no gain)"
-        + ("; Divine listings saved without a chaos price need --divine-rate" if res.get("divineRate") is None else ""),
+        + (f"; {res['skippedNeedDivineRate']} of them are Divine listings saved without a chaos price: pass --divine-rate"
+           if res.get("skippedNeedDivineRate") else ""),
         render_table(["Slot", "Item", "Chaos", "ΔDPS", "ΔEHP", "Score"], pick_rows) if pick_rows else "- Nothing fits the budget.",
         "",
         "#### Best value per chaos",

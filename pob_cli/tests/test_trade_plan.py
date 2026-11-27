@@ -51,7 +51,7 @@ def test_cmd_trade_plan(tmp_path: Path) -> None:
     amu.write_text(json.dumps(_AMU), encoding="utf-8")
     r = CliRunner().invoke(main, ["trade", "plan", str(ring), str(amu), "--budget", "100"])
     assert r.exit_code == 0, r.output
-    assert "R-big" in r.output and "Spend 80c" in r.output
+    assert "R-big" in r.output and "Spend 80c" in r.output and "--divine-rate" not in r.output
     bad = CliRunner().invoke(main, ["trade", "plan", str(ring), "--budget", "100", "--score", "life=1"])
     assert bad.exit_code == 1
     missing = CliRunner().invoke(main, ["trade", "plan", str(tmp_path / "nope.json"), "--budget", "1"])
@@ -78,8 +78,10 @@ def test_plan_budget_converts_divine_listings_saved_without_chaos() -> None:
     chaos = {"slot": "Amulet", "candidates": [_priced("A-c", {"amount": 30, "currency": "chaos", "chaos": None})]}
     res = plan_budget([div, chaos], budget=400)
     assert [p["name"] for p in res["picks"]] == ["A-c"] and res["skippedUnverified"] == 1
+    assert res["skippedNeedDivineRate"] == 1
     res = plan_budget([div, chaos], budget=400, divine_rate=150)
     assert sorted(p["name"] for p in res["picks"]) == ["A-c", "R-div"] and res["totalChaos"] == 330
+    assert res["skippedNeedDivineRate"] == 0
     with pytest.raises(ValueError):
         plan_budget([div], budget=10, divine_rate=0)
 
@@ -108,3 +110,13 @@ def test_cmd_trade_plan_rejects_non_positive_top(tmp_path: Path) -> None:
     ring.write_text(json.dumps(_RING), encoding="utf-8")
     r = CliRunner().invoke(main, ["trade", "plan", str(ring), "--budget", "100", "--top", "-1"])
     assert r.exit_code != 0 and "--top" in r.output
+
+
+def test_cmd_trade_plan_hints_divine_rate_only_when_needed(tmp_path: Path) -> None:
+    div = tmp_path / "div.json"
+    div.write_text(json.dumps({"slot": "Ring 1", "candidates": [
+        _priced("R-div", {"amount": 2, "currency": "divine", "chaos": None})]}), encoding="utf-8")
+    r = CliRunner().invoke(main, ["trade", "plan", str(div), "--budget", "400"])
+    assert r.exit_code == 0 and "1 of them are Divine listings" in r.output
+    r2 = CliRunner().invoke(main, ["trade", "plan", str(div), "--budget", "400", "--divine-rate", "150"])
+    assert r2.exit_code == 0 and "R-div" in r2.output and "--divine-rate" not in r2.output
