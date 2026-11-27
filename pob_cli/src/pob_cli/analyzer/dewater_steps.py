@@ -26,6 +26,8 @@ from .summary import (
 
 def _same_state(a: Any, b: Any) -> bool:
     """Compare a read-back value with the expected one (PoB stores unset checks as nil)."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same_state(a[k], b[k]) for k in a)
     if isinstance(a, (dict, list)) or isinstance(b, (dict, list)):
         return a == b
     if isinstance(a, bool) or isinstance(b, bool) or a is None or b is None:
