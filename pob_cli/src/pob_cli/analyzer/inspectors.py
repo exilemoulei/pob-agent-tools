@@ -297,6 +297,7 @@ def inspect_items(
                 "label": s.get("labelZh") or s.get("label") or s["name"],
                 "socketIndex": s.get("socketIndex"),
                 "nodeId": node_id,
+                "weaponSet": s.get("weaponSet"),
                 "isFlask": bool(s.get("isFlask")),
                 "active": bool(s.get("active")),
                 "inactive": bool(s.get("inactive")),
@@ -331,6 +332,7 @@ def inspect_items(
         return {
             "buildInfo": build_info,
             "activeItemSetId": items_res.get("activeItemSetId"),
+            "useSecondWeaponSet": bool(items_res.get("useSecondWeaponSet")),
             "itemSets": items_res.get("itemSets", []),
             "equippedSlots": equipped_slots,
             "equippedCount": sum(1 for e in equipped_slots if e.get("itemId")),
