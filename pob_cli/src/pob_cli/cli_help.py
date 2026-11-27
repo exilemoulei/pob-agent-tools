@@ -68,7 +68,7 @@ def build_brief_entries(root: click.Group, root_ctx: click.Context) -> list[dict
                 sub_cmd = cmd.get_command(sub_ctx, sub_name)
                 if sub_cmd is None or sub_cmd.hidden:
                     continue
-                subs.append({"name": sub_name, "flags": _command_signature(sub_cmd, max_opts=8)})
+                subs.append({"name": sub_name, "flags": _command_signature(sub_cmd, max_opts=10)})
             entries.append({"name": name, "kind": "group", "summary": short, "subcommands": subs})
         else:
             entries.append(
