@@ -35,14 +35,14 @@ description: Path of Exile 1 (PoE1 3.30, 流放之路1) build diagnosis, headles
   pob diagnose '@buildA.xml' --compare '@buildB.xml' [--stage S] [--ref-stage R] -q "<player question>"
   pob tree diff [--against ref | --spec-a 1 --spec-b 2] # 5-section structural tree diff (intra-build --spec-a/--spec-b reflects active ItemSet) + 3.30 Gold respec cost (`respecGold`, 5x ascendancy multiplier) for same-class specs
   ```
-- **C. Mechanics, local 0ms game data, `0.033s` CDR math & dual-source web research (daemon-free)**:
+- **C. Mechanics, local 0ms game data, `0.033s` CDR math & dual-source web research (daemon-free; `--for-build` queries loaded build tree)**:
   ```powershell
   pob ground "<player question>"                                      # <15ms: 3.30 cards + PoE2/patch traps
   pob research "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us|en] # Concurrent poedb.tw + poewiki.net (1-3 short entity names)
   pob wiki "<q1>" ["<q2>" ...] | pob poedb "<q1>" ["<q2>" ...] [--mods] [--filter "<kw>"] [--lang cn|us|en]
   pob data gem "<q1>" ["<q2>" ...] | pob data gem --quality-breakpoints --active-only [--limit 25]
   pob data unique [QUERY] [--mod "<stat_kw>"] [--slot S] | pob data drop "<item|boss|map>" | pob data mod "<q>" [--slot S] [--ilvl N] | pob data translate "<EN|中文>"
-  pob data tree [Q...] [--type Keystone|Notable|Ascendancy|Bloodline] [--asc "<Asc>"] | pob data runegraft <query> | pob data tattoo <query> [--kind tattoo|runegraft]
+  pob data tree [Q...] [--type Keystone|Notable|Ascendancy|Bloodline] [--asc "<Asc>"] | pob data runegraft <query> [--for-build] | pob data tattoo <query> [--kind tattoo|runegraft] [--slot small_dex|notable_attr] [--for-build [--target <slug>]]
   pob data tick <base_cd|coc|cospri|mjolner|poet|cwdt|soa> [--cdr N] [--aps R]        # Exact 0.033s tick & overspeed math
   pob price "<EN|中文>" [--league L] | pob meta [--skill "<EN|中文>"] [--class "<EN|中文>"] [--league L] # poe.ninja prices & league meta share
   ```
