@@ -400,6 +400,28 @@ def test_daemon_rpc_cross_header_and_error_roundtrip(tmp_path: Path, monkeypatch
         thread.join(timeout=2)
 
 
+def test_daemon_rpc_early_errors_drain_body() -> None:
+    srv = TCPServer(("127.0.0.1", 0), daemon.make_handler(type("M", (), {"token": "s"})()))  # type: ignore[arg-type]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    body = b'{"action":"status","pad":"' + b"x" * 256 + b'"}'
+    cases = [("/rpc", {"X-PoB2-Token": "p"}, 400), ("/rpc", {"X-PoB-Token": "x"}, 403), ("/x", {"X-PoB-Token": "s"}, 404)]
+    try:
+        for _ in range(20):
+            for path, hdr, code in cases:
+                c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+                try:
+                    c.request("POST", path, body=body, headers=hdr)
+                    r = c.getresponse()
+                    assert r.status == code and json.loads(r.read())["ok"] is False
+                finally:
+                    c.close()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)
+
+
 # ---------------------------------------------------------------------------
 # 5. Gate 4: Reverse CLI Trap Commands
 # ---------------------------------------------------------------------------
