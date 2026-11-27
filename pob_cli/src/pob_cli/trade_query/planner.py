@@ -10,17 +10,28 @@ from typing import Any
 
 from ..trade_item import ELEMENTS, convert_template, match_harvest
 from .aliases import INDEXED_WINDOWS, VALID_STATUSES
+from .gem_filters import apply_exact_item_filters
+from .option_stats import resolve_option_stat, split_pipe_stat_id
 from .stats_index import StatMatch, resolve_stat, suggest_stats
 
 _SUM_MIN_SUFFIX_RE = re.compile(r">=\s*([+-]?\d+(?:\.\d+)?)\s*$")
 _WEIGHT_SUFFIX_RE = re.compile(r"\*\s*([+-]?\d+(?:\.\d+)?)\s*$")
+_STAT_DOMAIN_PREFIX_RE = re.compile(
+    r"^(implicit|enchant|fractured|crafted|explicit|pseudo)\s*:\s*(.+)$",
+    re.IGNORECASE,
+)
+_RANGE_BOUNDS_RE = re.compile(r"^\s*([+-]?\d+(?:\.\d+)?)?\s*\.\.\s*([+-]?\d+(?:\.\d+)?)?\s*$")
 
 
 @dataclass
 class StatRequest:
     text: str
-    min_value: float = 1.0
+    min_value: float | None = 1.0
     match: StatMatch | None = None
+    max_value: float | None = None
+    domain: str | None = None
+    option_value: str | None = None
+    option_id: int | str | None = None
 
 
 @dataclass
@@ -29,11 +40,12 @@ class ConversionPlan:
 
     group: str
     target: str
-    min_value: float
+    min_value: float | None
     stat_ids: dict[str, str] = field(default_factory=dict)
     templates: dict[str, str] = field(default_factory=dict)
     cost: str = ""
     patch: str = ""
+    max_value: float | None = None
 
     @property
     def elements(self) -> list[str]:
@@ -78,6 +90,27 @@ def _reject_if_ambiguous_aura(raw_text: str, match: StatMatch) -> None:
     raise ValueError("\n".join(lines))
 
 
+def _scope_entries_by_domain(entries: list[dict[str, Any]], domain: str | None) -> list[dict[str, Any]]:
+    if not domain:
+        return entries
+    prefix = f"{domain.strip().lower()}."
+    return [e for e in entries if str(e.get("id") or "").lower().startswith(prefix)]
+
+
+def _plain_stat_filter(request: StatRequest) -> dict[str, Any]:
+    assert request.match is not None
+    base_id, pipe_opt = split_pipe_stat_id(request.match.id)
+    opt_val = request.option_id if request.option_id is not None else pipe_opt
+    if opt_val is not None:
+        return {"id": base_id, "value": {"option": opt_val}, "disabled": False}
+    val: dict[str, Any] = {}
+    if request.min_value is not None:
+        val["min"] = request.min_value
+    if request.max_value is not None:
+        val["max"] = request.max_value
+    return {"id": base_id, "value": val, "disabled": False}
+
+
 def resolve_requests(
     requests: Iterable[StatRequest],
     entries: list[dict[str, Any]],
@@ -86,31 +119,87 @@ def resolve_requests(
 ) -> None:
     """Resolve every ``StatRequest`` in place, raising ``ValueError`` with suggestions on miss."""
     for request in requests:
-        match = resolve_stat(request.text, entries, slot=slot)
+        scoped = _scope_entries_by_domain(entries, request.domain)
+        opt_match = resolve_option_stat(
+            request.text,
+            scoped,
+            option_value=request.option_value,
+            domain=request.domain,
+        )
+        if opt_match is not None:
+            request.option_id = opt_match.option_id
+            request.match = StatMatch(
+                id=opt_match.id,
+                text=opt_match.text,
+                score=opt_match.score,
+                template=opt_match.text.lower(),
+            )
+            continue
+        if request.option_value is not None:
+            raise ValueError(
+                f"Could not map enumerated option stat: {request.text}={request.option_value}"
+            )
+        match = resolve_stat(request.text, scoped, slot=slot)
         if match is None:
             lines = [f"Could not map this modifier to a trade filter: {request.text}"]
-            for suggestion in suggest_stats(request.text, entries, slot=slot):
+            for suggestion in suggest_stats(request.text, scoped, slot=slot):
                 lines.append(f"  - {suggestion.text}  ({suggestion.id})")
             lines.append("Rewrite the text, or use --want (scoring only, no filter).")
             raise ValueError("\n".join(lines))
         _reject_if_ambiguous_aura(request.text, match)
+        base_id, pipe_opt = split_pipe_stat_id(match.id)
+        if pipe_opt is not None:
+            request.option_id = pipe_opt
+            match = StatMatch(
+                id=base_id,
+                text=match.text,
+                score=match.score,
+                template=match.template,
+                disambiguation_candidates=match.disambiguation_candidates,
+                disambiguation_aura=match.disambiguation_aura,
+                is_ambiguous_bare_aura=match.is_ambiguous_bare_aura,
+            )
         request.match = match
 
 
 def parse_stat_argument(value: str) -> StatRequest:
-    """Parse ``"to Cold Resistance=40"``, ``"生命>=70"``, or ``"冰霜抗性=40"`` into a ``StatRequest``."""
+    """Parse ``"[domain:]<stat>[=<min>|<min>..<max>|..<max>|<option>]"`` into a ``StatRequest``."""
     text = (value or "").strip()
-    minimum = 1.0
+    domain: str | None = None
+    m_dom = _STAT_DOMAIN_PREFIX_RE.match(text)
+    if m_dom:
+        domain = m_dom.group(1).lower()
+        text = m_dom.group(2).strip()
+
+    minimum: float | None = 1.0
+    maximum: float | None = None
+    option_value: str | None = None
     if "=" in text:
-        candidate_text, candidate_min = text.rsplit("=", 1)
-        try:
-            minimum = float(candidate_min.strip())
+        candidate_text, candidate_rhs = text.rsplit("=", 1)
+        rhs = candidate_rhs.strip()
+        m_range = _RANGE_BOUNDS_RE.match(rhs)
+        if m_range and (m_range.group(1) is not None or m_range.group(2) is not None):
+            minimum = float(m_range.group(1)) if m_range.group(1) is not None else None
+            maximum = float(m_range.group(2)) if m_range.group(2) is not None else None
             text = candidate_text.rstrip(">").strip()
-        except ValueError:
-            pass
+        else:
+            try:
+                minimum = float(rhs)
+                text = candidate_text.rstrip(">").strip()
+            except ValueError:
+                if rhs:
+                    option_value = rhs
+                    minimum = None
+                    text = candidate_text.rstrip(">").strip()
     if not text:
         raise ValueError("--stat cannot be empty")
-    return StatRequest(text=text, min_value=minimum)
+    return StatRequest(
+        text=text,
+        min_value=minimum,
+        max_value=maximum,
+        domain=domain,
+        option_value=option_value,
+    )
 
 
 def parse_sum_group_argument(value: str) -> WeightedGroup:
@@ -204,6 +293,7 @@ def _conversion_plan(
         group=found.group.key,
         target=found.element,
         min_value=request.min_value,
+        max_value=request.max_value,
         stat_ids=stat_ids,
         templates=templates,
         cost=found.group.cost,
@@ -289,6 +379,11 @@ def build_query(
     name: str | None = None,
     item_type: str | None = None,
     corrupted: str | None = None,
+    links: int | None = None,
+    foulborn: bool = False,
+    gem_level: int | None = None,
+    gem_quality: int | None = None,
+    infer_gem_category: bool = True,
 ) -> dict[str, Any]:
     """Build an official PoE1 ``/api/trade/search`` JSON request body."""
     status_norm = (status or "available").strip().lower()
@@ -333,11 +428,7 @@ def build_query(
             {
                 "type": "and",
                 "filters": [
-                    {
-                        "id": request.match.id,
-                        "value": {"min": request.min_value},
-                        "disabled": False,
-                    }
+                    _plain_stat_filter(request)
                     for request in plan.plain
                     if request.match is not None
                 ],
@@ -347,6 +438,11 @@ def build_query(
         stat_groups.append({"type": "and", "filters": list(pseudo_filters)})
     for conversion in plan.conversions:
         # PoE1 trade API rejects "type": "or"; a count group with min=1 is the supported OR form.
+        conv_val: dict[str, Any] = {}
+        if conversion.min_value is not None:
+            conv_val["min"] = conversion.min_value
+        if conversion.max_value is not None:
+            conv_val["max"] = conversion.max_value
         stat_groups.append(
             {
                 "type": "count",
@@ -354,7 +450,7 @@ def build_query(
                 "filters": [
                     {
                         "id": stat_id,
-                        "value": {"min": conversion.min_value},
+                        "value": dict(conv_val),
                         "disabled": False,
                     }
                     for stat_id in conversion.stat_ids.values()
@@ -435,4 +531,14 @@ def build_query(
     else:
         raise ValueError(f"Invalid search_sort {search_sort!r}; expected asc, desc, or sum.")
 
-    return {"query": query, "sort": sort_block}
+    body = {"query": query, "sort": sort_block}
+    if links is not None or foulborn or gem_level is not None or gem_quality is not None:
+        apply_exact_item_filters(
+            body,
+            links=links,
+            foulborn=foulborn,
+            gem_level=gem_level,
+            gem_quality=gem_quality,
+            infer_gem_category=infer_gem_category,
+        )
+    return body

@@ -32,6 +32,7 @@ from ..trade_query import (
     OPEN_AFFIX_ID,
     OPEN_PREFIX_ID,
     OPEN_SUFFIX_ID,
+    apply_exact_item_filters,
     build_query,
     plan_stats,
 )
@@ -311,6 +312,7 @@ def _build_effective_trade_query(
     item_name: str | None,
     item_type: str | None,
     corrupted: str | None,
+    exact_filters: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any], dict[str, Any], int | None]:
     plan = plan_stats(
         requests,
@@ -335,6 +337,7 @@ def _build_effective_trade_query(
         "name": item_name,
         "item_type": item_type,
         "corrupted": corrupted,
+        **(exact_filters or {}),
     }
     is_auto = isinstance(auto_query_body, dict)
     auto_complexity: int | None = None
@@ -372,6 +375,8 @@ def _build_effective_trade_query(
             item_type=item_type,
             corrupted=corrupted,
         )
+        if exact_filters:
+            apply_exact_item_filters(query, **exact_filters)
         if str(search_sort).startswith("sum"):
             merged_stats = (query.get("query") or {}).get("stats") or []
             if not any(isinstance(g, dict) and g.get("type") == "weight" for g in merged_stats):
@@ -425,6 +430,7 @@ def _execute_trade_api_query(
     item_name: str | None = None,
     item_type: str | None = None,
     corrupted: str | None = None,
+    exact_filters: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     import pob_cli.cli_trade as _ct
 
@@ -519,6 +525,7 @@ def _execute_trade_api_query(
                 item_name=item_name,
                 item_type=item_type,
                 corrupted=corrupted,
+                exact_filters=exact_filters,
             )
             is_auto = isinstance(auto_query_body, dict)
         except ValueError as exc:

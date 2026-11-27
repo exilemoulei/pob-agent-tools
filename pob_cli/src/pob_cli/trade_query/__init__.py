@@ -48,6 +48,19 @@ from .aliases import (
 from .aliases import (
     _normalize_slot as _normalize_slot,
 )
+from .gem_filters import (
+    apply_exact_item_filters,
+    detect_and_strip_foulborn,
+    load_foulborn_map,
+    resolve_trade_name_and_base,
+    strip_foulborn_replaced_mods,
+)
+from .option_stats import (
+    OptionStatMatch,
+    build_option_index,
+    resolve_option_stat,
+    split_pipe_stat_id,
+)
 from .planner import (
     _SUM_MIN_SUFFIX_RE as _SUM_MIN_SUFFIX_RE,
 )
@@ -185,18 +198,23 @@ __all__ = [
     "VALID_STATUSES",
     "ZH_STAT_ALIASES",
     "ConversionPlan",
+    "OptionStatMatch",
     "StatMatch",
     "StatPlan",
     "StatRequest",
     "WeightedGroup",
     "WeightedStatEntry",
+    "apply_exact_item_filters",
     "aura_disambiguation_for_query",
+    "build_option_index",
     "build_query",
     "category_for_slot",
+    "detect_and_strip_foulborn",
     "flatten_stats",
     "get_stat_polarity",
     "get_stat_polarity_info",
     "infer_weapon_category_from_base",
+    "load_foulborn_map",
     "load_local_trade_stats",
     "load_trade_stats",
     "lookup_apt_zh_stat",
@@ -205,8 +223,12 @@ __all__ = [
     "plan_stats",
     "pob_slot_for_slot",
     "resolve_engine_root",
+    "resolve_option_stat",
     "resolve_requests",
     "resolve_stat",
+    "resolve_trade_name_and_base",
+    "split_pipe_stat_id",
+    "strip_foulborn_replaced_mods",
     "suggest_stats",
     "translate_stat_query",
 ]
