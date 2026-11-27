@@ -281,8 +281,8 @@ class SlotReadCache:
                 return
             kept_meta: dict[str, Any] = {}
             if isinstance(load_meta, dict):
-                for key in ("importNotes", "translateWarnings", "character"):
-                    if load_meta.get(key):
+                for key in ("importNotes", "translateWarnings", "character", "rawHashesCount", "rawHashesExCount"):
+                    if key in load_meta and load_meta[key] not in (None, [], {}):
                         kept_meta[key] = copy.deepcopy(load_meta[key])
             self._slot_sources[slot] = {
                 "sourceHash": source_hash,

@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from .cluster_hashes import load_tree_cluster_meta, resolve_cluster_hashes
 from .pob_xml_helpers import apply_mod_flags, extract_mod_entries, pick_main_socket_group
 
 _POE1_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -78,12 +79,6 @@ _ASCII_BASE_MAP: dict[str, str] = {
     "Energy Blade": "Energy Blade One Handed",
 }
 
-_FALLBACK_JEWEL_SLOTS_3_30: tuple[int, ...] = (
-    26725, 36634, 33989, 41263, 60735, 61834, 31683, 28475, 6230, 48768,
-    34483, 7960, 46882, 55190, 61419, 2491, 54127, 32763, 26196, 33631,
-    21984, 29712, 48679, 9408, 12613,
-)
-_JEWEL_SLOTS_CACHE: dict[str, list[int]] = {}
 _BUILTIN_SUP_RE = re.compile(r"Supported by Level\s+(\d+)\s+(.+)", re.IGNORECASE)
 
 
@@ -121,27 +116,6 @@ def _stage_tree(poe1: Path, tree_version: str) -> bool:
     except Exception:
         return False
     return (poe1 / "TreeData" / tree_version / "tree.lua").is_file()
-
-
-def _load_jewel_slots(pob_root: Path | None, tree_version: str) -> list[int]:
-    if pob_root is None:
-        return list(_FALLBACK_JEWEL_SLOTS_3_30)
-    tree_lua = Path(pob_root) / "PoE1" / "TreeData" / tree_version / "tree.lua"
-    key = str(tree_lua)
-    if key in _JEWEL_SLOTS_CACHE:
-        return _JEWEL_SLOTS_CACHE[key]
-    if tree_lua.is_file():
-        try:
-            txt = tree_lua.read_text(encoding="utf-8", errors="replace")
-            m = re.search(r'\["jewelSlots"\]\s*=\s*\{([^}]+)\}', txt)
-            if m:
-                nums = [int(n) for n in re.findall(r"\d+", m.group(1))]
-                if nums:
-                    _JEWEL_SLOTS_CACHE[key] = nums
-                    return nums
-        except OSError:
-            pass
-    return list(_FALLBACK_JEWEL_SLOTS_3_30)
 
 
 def _parse_int(val: Any, default: int = 0) -> int:
@@ -473,18 +447,36 @@ def character_bundle_to_pob_xml(
 
     build_el.set("mainSocketGroup", str(pick_main_socket_group(skill_group_meta)))
 
-    # Passive tree (incl. cluster hashes_ex), masteries, overrides, and socketed tree jewels
+    # Passive tree (incl. decoded cluster hashes_ex), masteries, overrides, and socketed tree jewels
+    meta = load_tree_cluster_meta(pob_root, tree_version)
     hashes_all: list[str] = []
     seen_h: set[int] = set()
-    for raw_h in list(passives.get("hashes") or []) + list(passives.get("hashes_ex") or []):
+    resolved_ex = resolve_cluster_hashes(passives, pob_root=pob_root, tree_version=tree_version)
+    for raw_h in list(passives.get("hashes") or []) + resolved_ex:
         if isinstance(raw_h, int) and raw_h not in seen_h:
             seen_h.add(raw_h)
             hashes_all.append(str(raw_h))
     mastery_raw = passives.get("mastery_effects")
-    mastery_parts: list[str] = []
+    mastery_map: dict[int, int] = {}
     if isinstance(mastery_raw, dict):
         for nid, eid in mastery_raw.items():
-            mastery_parts.append(f"{{{nid},{eid}}}")
+            try:
+                mastery_map[int(nid)] = int(eid)
+            except (TypeError, ValueError):
+                pass
+    overrides = passives.get("skill_overrides")
+    if isinstance(overrides, dict):
+        for nid_s, ov in overrides.items():
+            try:
+                nid_i = int(nid_s)
+            except (TypeError, ValueError):
+                continue
+            ov_name = str(ov.get("name") or "") if isinstance(ov, dict) else ""
+            if nid_i in seen_h and nid_i not in mastery_map and ov_name.startswith("Runegraft"):
+                eff = meta.mastery_first_effect.get(nid_i)
+                if eff:
+                    mastery_map[nid_i] = eff
+    mastery_parts = [f"{{{nid},{eid}}}" for nid, eid in mastery_map.items()]
 
     tree_el = ET.SubElement(root, "Tree", {"activeSpec": "1"})
     spec_el = ET.SubElement(
@@ -501,7 +493,7 @@ def character_bundle_to_pob_xml(
         },
     )
     sockets_el = ET.SubElement(spec_el, "Sockets")
-    jewel_slots = _load_jewel_slots(pob_root, tree_version)
+    jewel_slots = list(meta.jewel_slots)
     for j_item in passives.get("items") or []:
         if not isinstance(j_item, dict):
             continue
@@ -514,7 +506,6 @@ def character_bundle_to_pob_xml(
         j_el.text = "\n" + _format_pob_item_text(j_item) + "\n"
         ET.SubElement(sockets_el, "Socket", {"nodeId": str(jewel_slots[x_idx]), "itemId": str(j_id)})
 
-    overrides = passives.get("skill_overrides")
     if isinstance(overrides, dict) and overrides:
         ov_el = ET.SubElement(spec_el, "Overrides")
         for nid, ov in overrides.items():
@@ -528,5 +519,7 @@ def character_bundle_to_pob_xml(
     cfg_el = ET.SubElement(root, "Config", {"activeConfigSet": "1"})
     cfg_set = ET.SubElement(cfg_el, "ConfigSet", {"id": "1", "title": "Default"})
     ET.SubElement(cfg_set, "Input", {"name": "enemyIsBoss", "string": "Pinnacle"})
+    if level >= 70:
+        ET.SubElement(cfg_set, "Input", {"name": "resistancePenalty", "number": "-60"})
 
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
