@@ -8,10 +8,17 @@ import os
 import statistics
 from typing import Any
 
-from ..trade_client import MAX_FETCH_IDS, MAX_FETCH_MANY, NoResults, TradeError, localize_query_for_tw
+from ..trade_client import (
+    MAX_FETCH_IDS,
+    MAX_FETCH_MANY,
+    NoResults,
+    TradeError,
+    extract_listing_trade_meta,
+    localize_query_for_tw,
+)
 from ..trade_eval import listing_age_hours
 from ..trade_query import build_query
-from .common import _is_securable_row, _price_of
+from .common import _price_of
 
 # The trade site stops matching at this many listings and sorts only those, so the "cheapest"
 # page of a search that hits it is not the real floor.
@@ -154,7 +161,7 @@ def _market_chaos(
     """
     if status == "available":
         securable_prices = _deduped_seller_prices(
-            [row for row in cheapest if _is_securable_row(row)],
+            [row for row in cheapest if extract_listing_trade_meta(row)["tradeMode"] == "securable"],
             rates,
         )
         if len(securable_prices) >= 5:

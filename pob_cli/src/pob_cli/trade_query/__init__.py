@@ -121,6 +121,7 @@ from .stats_matcher import (
 )
 from .stats_matcher import (
     StatMatch,
+    aura_disambiguation_for_query,
     resolve_stat,
     suggest_stats,
 )
@@ -189,6 +190,7 @@ __all__ = [
     "StatRequest",
     "WeightedGroup",
     "WeightedStatEntry",
+    "aura_disambiguation_for_query",
     "build_query",
     "category_for_slot",
     "flatten_stats",

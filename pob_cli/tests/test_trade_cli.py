@@ -190,7 +190,7 @@ def test_trade_search_full_loop_with_batch_pob_and_ci_inf_json_safety(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(cli_trade, "load_trade_stats", _mock_trade_stats)
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Covens", None))
 
     class _FakeClient(TradeClient):
         def search(self, league: str, query: dict[str, Any]) -> dict[str, Any]:
@@ -277,7 +277,7 @@ def test_trade_search_exit_codes(
     expected_code: int,
 ) -> None:
     monkeypatch.setattr(cli_trade, "load_trade_stats", _mock_trade_stats)
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Covens", None))
 
     class _ErrClient(TradeClient):
         def search(self, league: str, query: dict[str, Any]) -> dict[str, Any]:
@@ -294,7 +294,7 @@ def test_trade_search_exit_codes(
 
 def test_trade_search_pob_on_exits_6_on_daemon_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_trade, "load_trade_stats", _mock_trade_stats)
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Covens", None))
 
     class _FakeClient(TradeClient):
         def search(self, league: str, query: dict[str, Any]) -> dict[str, Any]:
@@ -350,7 +350,7 @@ def test_trade_search_non_json_skips_redundant_status_and_supports_named_slot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(cli_trade, "load_trade_stats", _mock_trade_stats)
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Covens", None))
     monkeypatch.setenv("POB_SLOT", "worker-alpha")
 
     class _FakeClient(TradeClient):
@@ -927,7 +927,7 @@ def test_carbon_p1_trade_bench_compact_out_proxy_and_client_close(
         league_proxy_seen.append(proxy)
         return ""  # force fallback to client.default_league()
 
-    monkeypatch.setattr(cli_trade, "resolve_current_trade_league", _fake_resolve_league)
+    monkeypatch.setattr("pob_cli.trade_client.league_meta.resolve_current_trade_league", _fake_resolve_league)
 
     class _TrackingClient(TradeClient):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -1165,7 +1165,7 @@ def test_trade_search_weighted_sum_cli_and_pseudo_sum_extraction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(cli_trade, "load_trade_stats", _mock_trade_stats)
-    monkeypatch.setattr(cli_trade, "_resolve_league", lambda *_a, **_kw: "Covens")
+    monkeypatch.setattr(cli_trade, "resolve_trade_league", lambda *_a, **_kw: ("Covens", None))
 
     captured_queries: list[dict[str, Any]] = []
 
