@@ -50,6 +50,7 @@ LAYER_MAP: dict[str, int] = {
     "trade_eval": 2,
     "timeless": 2,
     "map_regex": 2,
+    "rebalance": 2,
     # L3: daemon server & client
     "daemon": 3,
     # L4: CLI entry points
