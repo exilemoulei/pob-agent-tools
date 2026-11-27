@@ -37,6 +37,15 @@ pob trade search --slot ring1 --stat "生命>=80" --stat "冰抗>=40" --securabl
 
 # Preview Harvest swap on a pasted item
 pob trade convert --file item.txt --to fire
+
+# Exact item primitives, 3.30 Foulborn uniques, gems & enumerated option stats:
+# --base "<BaseType>" (alias --type), --links <1..6>, --foulborn (defaults --rarity to unique when omitted),
+# --gem-level <1..40>, --gem-quality <0..40>, enumerated option templates (Forbidden Flame/Flesh, Thread of Hope, Impossible Escape).
+# Bare-aura ambiguity guard: `--stat "受坚定影响时"` or `--stat "while affected by vitality"` fails with candidate IDs/clauses;
+# pass a specific effect clause instead (e.g. `--stat "受【坚定】影响时，获得额外物理伤害减免"`).
+pob trade search --name "Cloak of Flame" --links 6 --foulborn --securable --pob off
+pob trade search --base "Awakened Multistrike Support" --gem-level 5 --gem-quality 20 --securable --pob off
+pob trade search --name "Watcher's Eye" --stat "受【坚定】影响时，获得额外物理伤害减免" --securable --pob off
 ```
 
 ## 3. Rare Item Affix Inspection & Hideout Crafting Bench (`ModMaster.lua` Authoritative)
@@ -45,6 +54,26 @@ pob item inspect --slot "Ring 2" --want "Cold Resistance"
 pob item inspect --file item.txt --slot gloves --want "maximum Life"
 pob bench list --slot ring --search "生命"
 pob bench suggest --slot gloves --stat "攻速" --affix suffix
+```
+
+## 4. Full-Build Buyout Links & 3-Tier Build Appraisal (`shopping-list` / `appraise`)
+```powershell
+# L0 zero-HTTP full-build buyout links (<0.5s, 0 HTTP requests; default --status securable):
+# Covers all equipped gear, flasks, active weapon set, Foulborn uniques (strips replaced mod + sets foulborn_item=true),
+# and special jewels (Watcher's Eye, Forbidden Flame/Flesh, Thread of Hope, Impossible Escape, Timeless Mazcotl -> ahuana).
+# Surfaces `warnings` (unmappedTwFields, CJK residue, non-English raw item skip). Add `--live` to upgrade to L1 appraisal.
+pob trade shopping-list [--target SLOT] [--league L] [--realm global|tw] [--status securable] [--include-gems|--no-gems] [--live [--max-live-queries 8]] [--json]
+
+# L1 3-tier build valuation:
+# - Tier A: poe.ninja uniques/gems/anoint oils (strict 5/20 Awakened gem variant safety)
+# - Tier B: live P25 across >=5 distinct sellers scanning up to 30 rows
+# - Tier C: crafted rares counted in `unpricedCount`
+# Exposes `divineRateSource: ninja|env|static_fallback`. On `--realm tw`, warns poe.ninja is unavailable and promotes
+# core Tier A items into live queries. `--max-live-queries 0` runs offline poe.ninja-only.
+pob trade appraise [--target SLOT] [--league L] [--realm global|tw] [--status securable] [--max-live-queries 8] [--include-gems|--no-gems] [--json]
+
+# Bilingual & slang poe.ninja economy lookup (supports --detailed for gem level/quality, corrupted, links, cluster passives):
+pob price "<EN|中文>" [--league L] [--detailed] [--variant V] [--category C]
 ```
 
 ## Exit Codes (`pob trade`)

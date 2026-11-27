@@ -44,10 +44,10 @@ description: Path of Exile 1 (PoE1 3.30, 流放之路1) build diagnosis, headles
   pob data unique [QUERY] [--mod "<stat_kw>"] [--slot S] | pob data drop "<item|boss|map>" | pob data mod "<q>" [--slot S] [--ilvl N] | pob data translate "<EN|中文>"
   pob data tree [Q...] [--type Keystone|Notable|Ascendancy|Bloodline] [--asc "<Asc>"] | pob data runegraft <query> [--for-build] | pob data tattoo <query> [--kind tattoo|runegraft] [--slot small_dex|notable_attr] [--for-build [--target <slug>]]
   pob data tick <base_cd|coc|cospri|mjolner|poet|cwdt|soa> [--cdr N] [--aps R]        # Exact 0.033s tick & overspeed math
-  pob price "<EN|中文>" [--league L] | pob meta [--skill "<EN|中文>"] [--class "<EN|中文>"] [--league L] # poe.ninja prices & league meta share
+  pob price "<EN|中文>" [--league L] [--detailed] [--variant V] | pob meta [--skill "<EN|中文>"] [--class "<EN|中文>"] [--league L] # poe.ninja bilingual/slang prices & league meta share
   ```
 - **D. Trade (Global & TW `pathofexile.tw`), Crafting Bench & `<3.5s` Timeless upgrades**:
-  Run `pob diagnose '@build.xml'` (ranking is off by default; or `pob timeless list`) for gaps & jewel socket IDs, then run `pob trade search` (add `--realm tw` only after user confirms TW server; supports `--name`, `--type`, `--corrupted yes|no|any`, auto TW name mapping & reverse-ZH PoB eval; TW chaos-equivalent uses static fallback `1d=150c` unless `POB_TW_DIVINE_CHAOS` env override is set since poe.ninja does not index `pathofexile.tw`), `pob trade leagues [--realm tw]`, `pob bench suggest`, or `pob timeless search` (hybrid in-engine PRNG+mmap synthesis for Legion & 3.30 Abyss jewels).
+  Run `pob diagnose '@build.xml'` (ranking is off by default; or `pob timeless list`) for gaps & jewel socket IDs, then run `pob trade search` (add `--realm tw` only after user confirms TW server; supports `--name`, `--base`/`--type`, `--links`, `--foulborn`, `--gem-level`, `--gem-quality`, `--corrupted yes|no|any`, auto TW name mapping & reverse-ZH PoB eval; TW chaos-equivalent uses static fallback `1d=150c` unless `POB_TW_DIVINE_CHAOS` env override is set since poe.ninja does not index `pathofexile.tw`), `pob trade shopping-list` (`<0.5s` 0-HTTP full-build buyout links), `pob trade appraise [--max-live-queries 8]` (3-tier build valuation), `pob trade leagues [--realm tw]`, `pob bench suggest`, or `pob timeless search` (hybrid in-engine PRNG+mmap synthesis for Legion & 3.30 Abyss jewels).
 
 ## 2. Fast `<0.3s` Follow-Ups & CoW Zero-Residue What-If (`--apply` to Persist)
 ```powershell
@@ -59,7 +59,8 @@ pob item db ["<q>"] [--slot S] [--sort dps|ehp|maxhit|...] [--equip] | pob item 
 pob skill add|set|rm --group main ... [--target SLUG] [--apply] | pob tree change --allocate <id>[,<id>...] [--deallocate <id>[,<id>...]] [--apply] | pob config set <k>=<v> [--custom-mods "<txt>"] [--apply]
 pob batch --json-ops '[...]' [--return "skills,summary"] (ops: references/whatif-and-batch.md) | pob sweep --scenario Pinnacle --json-variants '[...]' | pob matrix Original Pinnacle Uber FlasksOff
 pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--max-dist 5] | pob rank-gems [--group main] [--slot N|--add-link]
-pob bench suggest --slot boots --stat "抗性" | pob trade search --slot ring1 [--realm global|tw] [--name "<Unique>"] [--corrupted yes|no|any] [--securable] [--auto-query | --stat "生命>=60" --sum "火抗|冰抗|电抗>=80"] [--bench-craft "最大生命"] [--max-per-seller 2] [--normalize-quality auto|on|off] --budget 5 --currency divine
+pob bench suggest --slot boots --stat "抗性" | pob trade search --slot ring1 [--realm global|tw] [--name "<Unique>"] [--base "<Base>"] [--links 6] [--foulborn] [--gem-level 21 --gem-quality 20] [--corrupted yes|no|any] [--securable] [--auto-query | --stat "生命>=60" --sum "火抗|冰抗|电抗>=80"] [--bench-craft "最大生命"] [--max-per-seller 2] [--normalize-quality auto|on|off] --budget 5 --currency divine
+pob trade shopping-list [--target SLOT] [--league L] [--realm global|tw] [--status securable] [--live] [--json] | pob trade appraise [--target SLOT] [--league L] [--realm global|tw] [--max-live-queries 8] [--json]
 pob timeless search --jewel "Lethal Pride" --socket <nodeId|id1,id2|all> --stat CombinedDPS | pob lang [zh-CN|zh-TW|en] [--realm global|tw]
 pob map-regex ['@build.xml'] [--tier both|t16|t17] [--mode safe|brick] [--avoid "<id|kw>"] [--allow "<id|kw>"] [--min-quant 80] [--client-lang auto|zh-CN|zh-TW|en] # <=250-char 0-FP stash regex
 ```
