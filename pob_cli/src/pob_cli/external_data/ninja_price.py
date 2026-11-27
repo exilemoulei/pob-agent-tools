@@ -21,6 +21,7 @@ from .ninja_http import (
     _stash_cache_path,
     resolve_current_trade_league,
 )
+from .ninja_viscera import apply_viscera_price_fallback
 
 __all__ = [
     "_build_searchable_fields",
@@ -381,6 +382,7 @@ def query_price(
             divine_chaos_rate = float(line.get("chaos") or line.get("chaosValue") or 0.0)
             break
 
+    fetched_stash: dict[str, list[dict[str, Any]]] = {}
     if is_detailed:
         target_types = _narrow_detailed_types(q, cat_key, types_to_search, overviews, variant=variant)
         if target_types:
@@ -399,7 +401,7 @@ def query_price(
         target_types = types_to_search
         source_by_type = {ov_type: overviews.get(ov_type, []) for ov_type in target_types}
 
-    return _score_price_matches(
+    primary_res = _score_price_matches(
         query,
         search_query=resolved_q,
         resolved_alias=resolved_alias,
@@ -412,6 +414,24 @@ def query_price(
         target_types=target_types,
         source_by_type=source_by_type,
         is_stale=is_stale,
+    )
+    return apply_viscera_price_fallback(
+        raw_query=q_raw,
+        res_q=resolved_q,
+        res_alias=resolved_alias,
+        cat_key=cat_key,
+        primary_result=primary_res,
+        overviews=overviews,
+        fetched_stash=fetched_stash,
+        resolved_league=resolved_league,
+        variant=variant,
+        is_detailed=is_detailed,
+        limit=limit,
+        divine_chaos_rate=divine_chaos_rate,
+        is_stale=is_stale,
+        proxy=proxy,
+        score_fn=_score_price_matches,
+        fetch_stash_fn=_fetch_stash_overviews_batch,
     )
 
 
@@ -490,20 +510,38 @@ def query_price_multi(
             src = {ov_type: (fetched_stash.get(ov_type) or overviews.get(ov_type, [])) for ov_type in t_types}
         else:
             src = {ov_type: overviews.get(ov_type, []) for ov_type in t_types}
+        primary_r = _score_price_matches(
+            q_raw,
+            search_query=res_q,
+            resolved_alias=res_alias,
+            resolved_league=resolved_league,
+            cat_key=cat_key,
+            variant=variant,
+            is_detailed=q_det,
+            limit=limit,
+            divine_chaos_rate=divine_chaos_rate,
+            target_types=t_types,
+            source_by_type=src,
+            is_stale=q_stale,
+        )
         results.append(
-            _score_price_matches(
-                q_raw,
-                search_query=res_q,
-                resolved_alias=res_alias,
-                resolved_league=resolved_league,
+            apply_viscera_price_fallback(
+                raw_query=q_raw,
+                res_q=res_q,
+                res_alias=res_alias,
                 cat_key=cat_key,
+                primary_result=primary_r,
+                overviews=overviews,
+                fetched_stash=fetched_stash,
+                resolved_league=resolved_league,
                 variant=variant,
                 is_detailed=q_det,
                 limit=limit,
                 divine_chaos_rate=divine_chaos_rate,
-                target_types=t_types,
-                source_by_type=src,
                 is_stale=q_stale,
+                proxy=proxy,
+                score_fn=_score_price_matches,
+                fetch_stash_fn=_fetch_stash_overviews_batch,
             )
         )
 
