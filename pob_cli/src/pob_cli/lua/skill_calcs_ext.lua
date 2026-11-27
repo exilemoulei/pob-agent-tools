@@ -272,10 +272,119 @@ local function handle_get_shock_probe(_params)
 	}
 end
 
+local function serialize_item_set(it, set_id)
+	local iset = it and it.itemSets and it.itemSets[set_id]
+	if type(iset) ~= "table" then return nil end
+	local slots = {}
+	local ordered = it.orderedSlots or {}
+	local seen = {}
+	for _, slot in ipairs(ordered) do
+		local sname = slot and slot.slotName
+		if type(sname) == "string" and not slot.nodeId then
+			seen[sname] = true
+			local entry = iset[sname]
+			local sel_id = entry and entry.selItemId or 0
+			local item = sel_id and sel_id > 0 and it.items and it.items[sel_id] or nil
+			if type(item) == "table" then
+				slots[#slots + 1] = {
+					slotName = sname,
+					itemId = sel_id,
+					name = item.name or "",
+					title = item.title or item.name or "",
+					baseName = item.baseName or "",
+					rarity = item.rarity or "",
+					type = item.type or "",
+					raw = item.raw or "",
+				}
+			end
+		end
+	end
+	for sname, entry in pairs(iset) do
+		if type(sname) == "string" and not seen[sname] and type(entry) == "table" and entry.selItemId then
+			local sel_id = entry.selItemId
+			local item = sel_id and sel_id > 0 and it.items and it.items[sel_id] or nil
+			if type(item) == "table" then
+				slots[#slots + 1] = {
+					slotName = sname,
+					itemId = sel_id,
+					name = item.name or "",
+					title = item.title or item.name or "",
+					baseName = item.baseName or "",
+					rarity = item.rarity or "",
+					type = item.type or "",
+					raw = item.raw or "",
+				}
+			end
+		end
+	end
+	return {
+		id = set_id,
+		title = iset.title or ("Set " .. tostring(set_id)),
+		isActiveSet = (set_id == it.activeItemSetId),
+		slots = slots,
+	}
+end
+
+local function handle_get_minion_itemsets(_params)
+	local b = host.get_build()
+	local st = b and b.skillsTab
+	local it = b and b.itemsTab
+	if not st or not it then
+		return { ok = false, error = "tabs unavailable" }
+	end
+	local bindings = {}
+	local wanted_sets = {}
+	for g_idx, g in ipairs(st.socketGroupList or {}) do
+		local g_en = (g.enabled ~= false)
+		local sup_names = {}
+		for _, gm in ipairs(g.gemList or {}) do
+			if gm.enabled ~= false and gm.gemData and gm.gemData.grantedEffect and gm.gemData.grantedEffect.support then
+				sup_names[#sup_names + 1] = gm.nameSpec or gm.gemData.name or ""
+			end
+		end
+		for gem_idx, gem in ipairs(g.gemList or {}) do
+			local nm = gem.nameSpec or (gem.gemData and gem.gemData.name) or ""
+			local sid = gem.skillId or (gem.gemData and gem.gemData.grantedEffectId) or ""
+			local is_ag = tostring(nm):lower():find("animate guardian", 1, true) ~= nil
+				or tostring(sid):lower():find("animateguardian", 1, true) ~= nil
+			if is_ag or gem.skillMinionItemSet ~= nil or gem.skillMinionItemSetCalcs ~= nil then
+				local main_set = gem.skillMinionItemSet
+				local calcs_set = gem.skillMinionItemSetCalcs
+				if main_set ~= nil then wanted_sets[main_set] = true end
+				if calcs_set ~= nil then wanted_sets[calcs_set] = true end
+				bindings[#bindings + 1] = {
+					group = g_idx,
+					gemIndex = gem_idx,
+					name = nm,
+					skillId = sid,
+					enabled = g_en and (gem.enabled ~= false),
+					slot = g.slot or "",
+					skillMinion = gem.skillMinion,
+					skillMinionItemSet = main_set,
+					skillMinionItemSetCalcs = calcs_set,
+					supportNames = sup_names,
+				}
+			end
+		end
+	end
+	local sets_map = json_obj({})
+	for set_id in pairs(wanted_sets) do
+		local ser = serialize_item_set(it, set_id)
+		if ser then sets_map[tostring(set_id)] = ser end
+	end
+	return {
+		ok = true,
+		activeItemSetId = it.activeItemSetId,
+		bindings = bindings,
+		minionItemSets = sets_map,
+	}
+end
+
 return {
 	rpc_handlers = {
 		get_group_gem_states = handle_get_group_gem_states,
 		apply_group_gem_states = handle_apply_group_gem_states,
 		get_shock_probe = handle_get_shock_probe,
+		get_minion_itemsets = handle_get_minion_itemsets,
 	},
 }

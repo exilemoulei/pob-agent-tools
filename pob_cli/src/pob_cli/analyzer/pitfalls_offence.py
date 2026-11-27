@@ -214,14 +214,18 @@ def _check_main_group_anti_synergies(ctx: dict[str, Any], gaps: list[dict[str, s
         )
 
 
-def _check_main_group_sockets_and_swap(ctx: dict[str, Any], gaps: list[dict[str, str]]) -> None:
+def _check_main_group_sockets_and_swap(
+    ctx: dict[str, Any],
+    gaps: list[dict[str, str]],
+    mechanics: dict[str, Any] | None = None,
+) -> None:
     main_group = ctx["main_group"]
     groups = ctx["groups"]
     raw_by_slot = ctx["raw_by_slot"]
+    mg_slot = str(main_group.get("slot") or "") if main_group and main_group.get("enabled", True) else ""
 
     if main_group and main_group.get("enabled", True):
         mg_idx = main_group.get("index")
-        mg_slot = str(main_group.get("slot") or "")
         mg_gems = [gm for gm in (main_group.get("gems") or []) if gm.get("enabled", True)]
 
         for gm in mg_gems:
@@ -265,6 +269,20 @@ def _check_main_group_sockets_and_swap(ctx: dict[str, Any], gaps: list[dict[str,
                         }
                     )
 
+    main_gem_count = (
+        sum(1 for gm in (main_group.get("gems") or []) if isinstance(gm, dict) and gm.get("enabled", True))
+        if main_group and main_group.get("enabled", True)
+        else 0
+    )
+    lvl_toks = ("empower", "enlighten", "enhance", "awakened")
+    lvl_entries: list[dict[str, Any]] = []
+
+    def _gn(gm: dict[str, Any]) -> str:
+        return strip_pob_escapes(str(gm.get("name") or gm.get("nameSpec") or "")).strip()
+
+    def _add_lvl(g: dict[str, Any], g_slot: str, gems: list[dict[str, Any]]) -> None:
+        lvl_entries.append({"group": g.get("index"), "slot": g_slot, "count": len(gems), "gems": [_gn(gm) for gm in gems]})
+
     for g in groups:
         g_slot = str(g.get("slot") or "")
         if "Swap" not in g_slot:
@@ -275,35 +293,68 @@ def _check_main_group_sockets_and_swap(ctx: dict[str, Any], gaps: list[dict[str,
         sup_gems = [gm for gm in g_gems if gm.get("support")]
         act_gems = [gm for gm in g_gems if not gm.get("support")]
         if sup_gems and not act_gems:
-            names_s = ", ".join(
-                strip_pob_escapes(str(gm.get("nameZh") or gm.get("name") or ""))
-                for gm in sup_gems
-            )
-            gaps.append(
-                {
-                    "category": "Skills",
-                    "severity": "HIGH",
-                    "message": (
-                        f"Orphan support gem(s) in '{g_slot}' (Group #{g.get('index')}: {names_s}) — "
-                        "inactive in weapon swap (check if mistakenly left out of main link)!"
-                    ),
-                }
-            )
-        elif any("archmage" in strip_pob_escapes(str(gm.get("name") or "")).lower() for gm in sup_gems):
-            names_s = ", ".join(
-                strip_pob_escapes(str(gm.get("nameZh") or gm.get("name") or ""))
-                for gm in g_gems
-            )
-            gaps.append(
-                {
-                    "category": "Skills",
-                    "severity": "HIGH",
-                    "message": (
-                        f"Core support gem (Archmage) sitting in '{g_slot}' (Group #{g.get('index')}: {names_s}) — "
-                        "inactive in weapon swap!"
-                    ),
-                }
-            )
+            norms = [_gn(gm).lower() for gm in sup_gems]
+            if (
+                main_gem_count >= 6
+                or len(norms) > len(set(norms))
+                or any(not gm.get("enabled", True) for gm in sup_gems)
+                or any(tok in nm for nm in norms for tok in lvl_toks)
+            ):
+                _add_lvl(g, g_slot, sup_gems)
+                continue
+            names_s = ", ".join(strip_pob_escapes(str(gm.get("nameZh") or gm.get("name") or "")) for gm in sup_gems)
+            gaps.append({
+                "category": "Skills",
+                "severity": "INFO",
+                "message": f"Orphan support gem(s) in '{g_slot}' (Group #{g.get('index')}: {names_s}) — inactive in weapon swap (verify if leveling or left out of main link).",
+            })
+        elif any("archmage" in _gn(gm).lower() for gm in sup_gems):
+            names_s = ", ".join(strip_pob_escapes(str(gm.get("nameZh") or gm.get("name") or "")) for gm in g_gems)
+            gaps.append({
+                "category": "Skills",
+                "severity": "LOW",
+                "message": f"Core support gem (Archmage) sitting in '{g_slot}' (Group #{g.get('index')}: {names_s}) — inactive in weapon swap.",
+            })
+
+    am_it = (ctx.get("active_items_by_slot") or {}).get("Amulet") or {}
+    am_low = f"{_item_display(am_it)} {raw_by_slot.get('Amulet') or ''}".lower()
+    has_vow = any(t in am_low for t in ("uul-netol's vow", "乌尔尼多的誓言", "烏爾尼多的誓言"))
+    slot_has_active = {
+        str(g.get("slot") or "")
+        for g in groups
+        if g.get("slot") and "Swap" not in str(g.get("slot") or "")
+        and (g.get("source") or any(not gm.get("support") for gm in (g.get("gems") or []) if isinstance(gm, dict)))
+    }
+    for g in groups:
+        g_slot = str(g.get("slot") or "")
+        if not g_slot or "Swap" in g_slot or g_slot in slot_has_active or not g.get("enabled", True):
+            continue
+        if g_slot == "Amulet" and has_vow:
+            continue
+        raw_g = [gm for gm in (g.get("gems") or []) if isinstance(gm, dict) and not gm.get("fromItem")]
+        g_gems = [gm for gm in raw_g if gm.get("enabled", True)]
+        if g_gems and all(gm.get("support") for gm in g_gems):
+            g_norm = [_gn(gm).lower() for gm in g_gems]
+            if (
+                g_slot == "Weapon 2"
+                and mg_slot in ("Body Armour", "Weapon 1")
+                and main_gem_count >= 6
+                and (
+                    len(g_norm) > len(set(g_norm))
+                    or any(not gm.get("enabled", True) for gm in raw_g)
+                    or all(any(tok in nm for tok in lvl_toks) for nm in g_norm)
+                )
+            ):
+                _add_lvl(g, g_slot, g_gems)
+                continue
+            names_s = ", ".join(strip_pob_escapes(str(gm.get("nameZh") or gm.get("name") or "")) for gm in g_gems)
+            gaps.append({
+                "category": "Skills",
+                "severity": "HIGH",
+                "message": f"Orphan support gem(s) in '{g_slot}' (Group #{g.get('index')}: {names_s}) with no active skill in slot!",
+            })
+    if lvl_entries and mechanics is not None:
+        mechanics["swapLevelingGems"] = {"count": sum(int(e["count"]) for e in lvl_entries), "groups": lvl_entries}
 
 
 def _check_resistance_inversion(
@@ -352,23 +403,28 @@ def _check_resistance_inversion(
                     curse_hits_swap.append(label)
                 else:
                     curse_hits_active.append(label)
+    from .pitfalls_ag import find_ag_exposure_conflicts
+
+    ag_exposure_hits = find_ag_exposure_conflicts(ctx, invert_sources)
     mechanics["resistanceInversion"] = {
         "sources": invert_sources,
         "conflictingActiveCursesOrExposure": curse_hits_active,
         "conflictingSwapCursesOrExposure": curse_hits_swap,
+        "conflictingAgExposure": ag_exposure_hits,
         "note": (
             "Lowering enemy elemental resistance via Curses/Exposure BEFORE inversion shrinks the inverted "
             "negative-resistance bonus; Elemental Penetration applies AFTER inversion and still works fully."
         ),
     }
-    if curse_hits_active:
+    if curse_hits_active or ag_exposure_hits:
+        all_conflicts = curse_hits_active + ag_exposure_hits
         gaps.append(
             {
                 "category": "Mechanic",
                 "severity": "HIGH",
                 "message": (
                     f"Resistance Inversion anti-synergy: {', '.join(invert_sources[:2])} is active alongside "
-                    f"resistance-lowering skill(s) {', '.join(curse_hits_active)} — lowering enemy resistance before "
+                    f"resistance-lowering source(s) {', '.join(all_conflicts)} — lowering enemy resistance before "
                     "inversion REDUCES inverted bonus (use Elemental Penetration instead, which applies after inversion)."
                 ),
             }

@@ -54,3 +54,60 @@ def _resist_cap_and_gap(stats: dict[str, Any], elem: str, val: float) -> tuple[f
     if over_raw is not None and over_raw > 0:
         return val, 0.0  # total exceeds the (possibly lowered) max, so the shown value is the cap
     return 75.0, max(0.0, 75.0 - val)
+
+
+def compute_level_passive_cap(level: int, pob_used_max: int) -> int:
+    """Return legal passive point cap for character `level` given PoB's Lv.100 `usedMax`."""
+    if pob_used_max <= 0:
+        return 0
+    if 70 <= level <= 100:
+        return max(0, pob_used_max - (100 - level))
+    return pob_used_max
+
+
+def collect_passive_point_issues(
+    info: dict[str, Any] | None,
+    *,
+    include_unallocated: bool = False,
+) -> list[dict[str, str]]:
+    """Evaluate passive point allocation against level-aware cap (zero false alarms at Lv.97 120/120)."""
+    if not isinstance(info, dict):
+        return []
+    pts = info.get("points") or {}
+    used = int(pts.get("used") or 0)
+    used_max = int(pts.get("usedMax") or 0)
+    if used_max <= 0:
+        return []
+    try:
+        level = int(info.get("level") or 0)
+    except (TypeError, ValueError):
+        level = 0
+    level_max = compute_level_passive_cap(level, used_max)
+    issues: list[dict[str, str]] = []
+    if used > used_max:
+        issues.append(
+            {
+                "category": "Points",
+                "severity": "HIGH",
+                "message": f"Over-allocated passive points: {used}/{used_max}",
+            }
+        )
+    elif 70 <= level <= 100 and used > level_max:
+        req_lvl = 100 - (used_max - used)
+        issues.append(
+            {
+                "category": "Points",
+                "severity": "MEDIUM",
+                "message": (
+                    f"Over-allocated passive points for Lv.{level}: {used}/{level_max} "
+                    f"(requires Lv.{req_lvl} for {used}/{used_max} points)"
+                ),
+            }
+        )
+    elif include_unallocated and used < level_max:
+        if 70 <= level <= 100:
+            msg = f"Unallocated passive points for Lv.{level}: {used}/{level_max} ({level_max - used} remaining)"
+        else:
+            msg = f"Unallocated passive points: {used}/{used_max} ({used_max - used} remaining)"
+        issues.append({"category": "Points", "severity": "LOW", "message": msg})
+    return issues

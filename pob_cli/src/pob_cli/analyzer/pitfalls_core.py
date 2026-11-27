@@ -6,6 +6,7 @@ from typing import Any
 
 from ..formatters import strip_pob_escapes
 from ..snapshot import _finite_float
+from .pitfalls_ag import _check_animate_guardian_dependencies, fetch_minion_itemsets
 from .pitfalls_defence import (
     _check_defensive_and_reservation_synergies,
     _check_defensive_bricks,
@@ -142,6 +143,7 @@ def _build_pitfall_context(
     warnings: list[str] | None,
     build_info: dict[str, Any] | None,
     stripped_flasks: list[str] | None,
+    minion_itemsets: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     groups = (skills_res or {}).get("groups") or []
     main_idx = (skills_res or {}).get("mainSocketGroup")
@@ -242,6 +244,7 @@ def _build_pitfall_context(
         "warnings": warnings,
         "build_info": build_info,
         "stripped_flasks": stripped_flasks,
+        "minion_itemsets": minion_itemsets or {},
     }
 
 
@@ -261,8 +264,10 @@ def _detect_build_mechanics_and_pitfalls(
     worker: Any = None,
     tree_state: dict[str, Any] | None = None,
     nodes_db: dict[str, Any] | None = None,
+    minion_itemsets: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Detect high-impact PoE1 3.30 build mechanics, dead/anti-synergy links, triggers, & defensive bricks."""
+    eff_minion_sets = minion_itemsets if minion_itemsets is not None else fetch_minion_itemsets(worker)
     ctx = _build_pitfall_context(
         stats=stats,
         skills_res=skills_res,
@@ -275,6 +280,7 @@ def _detect_build_mechanics_and_pitfalls(
         warnings=warnings,
         build_info=build_info,
         stripped_flasks=stripped_flasks,
+        minion_itemsets=eff_minion_sets,
     )
     gaps: list[dict[str, str]] = []
     mechanics: dict[str, Any] = {}
@@ -282,9 +288,10 @@ def _detect_build_mechanics_and_pitfalls(
     amulet_7th_link: list[str] = []
 
     _check_main_group_anti_synergies(ctx, gaps)
-    _check_main_group_sockets_and_swap(ctx, gaps)
+    _check_main_group_sockets_and_swap(ctx, gaps, mechanics)
     _check_sword_of_ages_and_triggers(ctx, gaps, mechanics)
     _check_resistance_inversion(ctx, gaps, mechanics)
+    _check_animate_guardian_dependencies(ctx, gaps, mechanics)
     _check_tincture_setup(ctx, mechanics)
     _check_defensive_bricks(ctx, gaps, mechanics)
     _check_dark_pact_echo_and_crit_acc(ctx, gaps)

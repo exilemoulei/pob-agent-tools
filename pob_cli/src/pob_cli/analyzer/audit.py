@@ -23,9 +23,14 @@ from .dewater_auto import (
     infer_auto_keep_and_flask_notes,
 )
 from .eb_sustain import collect_dewatered_eb_flask_note, collect_mana_sustain_issues
+from .pitfalls_ag import fetch_minion_itemsets
 from .pitfalls_core import _detect_build_mechanics_and_pitfalls
 from .pitfalls_triggers import confirm_trigger_estimates
-from .static_checks import _has_hollow_palm_keystone, _resist_cap_and_gap
+from .static_checks import (
+    _has_hollow_palm_keystone,
+    _resist_cap_and_gap,
+    collect_passive_point_issues,
+)
 from .summary import _has_doryanis_prototype_equipped
 from .threshold_probes import compute_threshold_probes
 
@@ -115,16 +120,8 @@ def _collect_static_health_issues(
     )
 
     pts = info.get("points", {})
-    used, used_max = int(pts.get("used") or 0), int(pts.get("usedMax") or 0)
     asc_used, asc_max = int(pts.get("ascUsed") or 0), int(pts.get("ascMax") or 0)
-    if used > used_max:
-        health_issues.append(
-            {
-                "category": "Points",
-                "severity": "HIGH",
-                "message": f"Over-allocated passive points: {used}/{used_max}",
-            }
-        )
+    health_issues.extend(collect_passive_point_issues(info, include_unallocated=False))
     if asc_used < asc_max:
         health_issues.append(
             {
@@ -250,6 +247,7 @@ def audit_build(
             skill_flags=digest_before.get("skillFlags"),
         )
 
+        minion_itemsets = fetch_minion_itemsets(worker)
         ak_reasons, flask_notes = (
             infer_auto_keep_and_flask_notes(
                 stats=stats,
@@ -259,6 +257,7 @@ def audit_build(
                 tree_summary=eff_tree,
                 equipped_slots_raw=eff_raw,
                 alloc_node_stats=alloc_st,
+                minion_itemsets=minion_itemsets,
             )
             if auto_keep
             else ({}, {})
@@ -298,9 +297,13 @@ def audit_build(
             skills_res=skills_res_audit,
             items_res=items_res,
             cfg_res=cfg_res_audit,
+            tree_summary=eff_tree,
+            equipped_slots_raw=eff_raw,
+            alloc_node_stats=alloc_st,
             warnings=digest_before["warnings"],
             build_info=info,
             stripped_flasks=list((stripped or {}).get("flasks") or []),
+            minion_itemsets=minion_itemsets,
         )
         health_issues.extend(mech_gaps)
         audit_core_synergies = list(mech_audit.get("coreSynergies") or [])
