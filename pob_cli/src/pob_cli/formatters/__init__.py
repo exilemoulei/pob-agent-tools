@@ -11,10 +11,10 @@ from .build_md import (
     _extract_metrics_block,
     _format_calc_cell,
     _safe_min_ele_max_hit,
-    format_compare_markdown,
     format_matrix_markdown,
     format_sweep_markdown,
 )
+from .compare_md import format_compare_markdown
 from .diagnose_compare_md import (
     format_diagnose_compare_markdown,
     format_ground_markdown,

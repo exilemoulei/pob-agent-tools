@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+from .borrow import TWO_HANDED_TYPES, borrow_from_ref
 from .compare import (
     EXTERNAL_ENV_WHITELIST,
-    TWO_HANDED_TYPES,
     _apply_env_config,
     _build_pair_table,
     _extract_env_config,
     _extract_env_config_from_cfg,
     _run_worker_pair,
-    borrow_from_ref,
     compare_builds,
 )
 from .gem_caveats import (

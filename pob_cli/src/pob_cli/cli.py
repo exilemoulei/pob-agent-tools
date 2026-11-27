@@ -193,12 +193,12 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "Rank support/active candidate gems for a skill group by DPS gain.",
     ),
     "compare": (
-        ".cli_optimize",
+        ".cli_compare",
         "cmd_compare",
         "Compare target build vs reference build across 3 baselines + tree/skill/equipment diffs.",
     ),
     "borrow": (
-        ".cli_optimize",
+        ".cli_compare",
         "cmd_borrow",
         "Borrow items and/or a skill group from reference slot into target slot and compute exact delta.",
     ),
