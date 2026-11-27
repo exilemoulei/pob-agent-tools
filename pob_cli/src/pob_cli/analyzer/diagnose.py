@@ -23,7 +23,9 @@ from .diagnose_probes import (
     _detect_dead_main_supports,
     _extract_trigger_attack_aps,
     _gaps_from_agent_probe,
+    _gaps_from_unsupported_mods,
     _probe_agent_build,
+    _probe_unsupported_mods,
     detect_volatile_vaal_opportunity,
 )
 from .inspectors import inspect_items
@@ -246,6 +248,10 @@ def _assemble_diagnose_mechanics(
     probe_gaps = _gaps_from_agent_probe(agent_probe)
     if agent_probe is not None:
         build_mechanics["agentProbe"] = agent_probe
+    unsup_scan = _probe_unsupported_mods(worker)
+    unsup_gaps = _gaps_from_unsupported_mods(unsup_scan)
+    if isinstance(unsup_scan, dict) and int(unsup_scan.get("totalCount") or 0) > 0:
+        build_mechanics["unsupportedMods"] = unsup_scan
     from .threshold_probes import compute_threshold_probes
 
     build_mechanics["_thresholdProbes"] = compute_threshold_probes(
@@ -295,7 +301,7 @@ def _assemble_diagnose_mechanics(
                 audit_extra_trig.append(ag)
 
     existing_gap_msgs = {str(g.get("message") or "") for g in gaps}
-    for mgap in (*diag_mech_gaps, *audit_extra_trig, *dead_sup_gaps, *probe_gaps):
+    for mgap in (*diag_mech_gaps, *audit_extra_trig, *dead_sup_gaps, *probe_gaps, *unsup_gaps):
         if mgap["message"] not in existing_gap_msgs:
             existing_gap_msgs.add(mgap["message"])
             gaps.append(mgap)

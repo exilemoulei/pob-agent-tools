@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..bridge_client import BridgeWorker
@@ -26,6 +27,97 @@ def _probe_agent_build(worker: BridgeWorker) -> dict[str, Any] | None:
         return res if isinstance(res, dict) and not res.get("_error") else None
     except Exception:
         return None
+
+
+def _probe_unsupported_mods(worker: BridgeWorker) -> dict[str, Any] | None:
+    """Invoke `scan_unsupported_mods` RPC only when advertised in `worker.caps` (0 RPC on FakeWorker/2.67.2)."""
+    if not _worker_caps(worker).get("interactionsProbe"):
+        return None
+    try:
+        res = worker.call("scan_unsupported_mods", {})
+        return res if isinstance(res, dict) and not res.get("_error") else None
+    except Exception:
+        return None
+
+
+_POB_BESPOKE_ITEM_MOD_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^magic utility flasks? cannot be used$", re.I),
+    re.compile(r"^leftmost \d+ magic utility flasks? constantly apply", re.I),
+    re.compile(r"^magic utility flask effects? cannot be removed$", re.I),
+    re.compile(r"^(?:gains? no|cannot gain) charges during effect$", re.I),
+    re.compile(r"^(?:re)?used (?:when|at the end of this flask)", re.I),
+    re.compile(r"^grants level \d+ .+ skill$", re.I),
+    re.compile(r"^(?:limited to:\s*\d+|radius:\s*\w+|corrupted|mirrored|split|unidentified)$", re.I),
+)
+
+
+def _is_pob_bespoke_item_line(raw_line: str) -> bool:
+    clean = strip_pob_escapes(raw_line).strip()
+    return any(pat.search(clean) for pat in _POB_BESPOKE_ITEM_MOD_RES)
+
+
+def _gaps_from_unsupported_mods(scan: dict[str, Any] | None) -> list[dict[str, str]]:
+    """Surface PoB unparsed red mods (^xF05050) from customMods and active gear as `[UNSUPPORTED-MOD]` gaps."""
+    if not isinstance(scan, dict):
+        return []
+    gaps: list[dict[str, str]] = []
+    custom_mods = [c for c in (scan.get("customMods") or []) if isinstance(c, dict) and c.get("rawLine")]
+    for cm in custom_mods[:5]:
+        blk = str(cm.get("blockTitle") or "Default")
+        raw = strip_pob_escapes(str(cm.get("rawLine") or "")).strip()
+        gaps.append(
+            {
+                "category": "UnsupportedMod",
+                "severity": "HIGH",
+                "message": (
+                    f"[UNSUPPORTED-MOD] ConfigTab customMods ({blk}) line unparsed by PoB (0 effect): '{raw}'"
+                ),
+            }
+        )
+    if len(custom_mods) > 5:
+        gaps.append(
+            {
+                "category": "UnsupportedMod",
+                "severity": "HIGH",
+                "message": (
+                    f"[UNSUPPORTED-MOD] +{len(custom_mods) - 5} more unparsed ConfigTab customMods line(s) "
+                    "— run `pob interactions --unsupported-only` for full list"
+                ),
+            }
+        )
+    item_mods = [
+        it
+        for it in (scan.get("items") or [])
+        if isinstance(it, dict)
+        and it.get("rawLine")
+        and it.get("active", True) is not False
+        and not _is_pob_bespoke_item_line(str(it.get("rawLine") or ""))
+    ]
+    for it in item_mods[:6]:
+        slot = str(it.get("slot") or "Unknown")
+        inm = strip_pob_escapes(str(it.get("itemName") or "Item")).strip()
+        raw = strip_pob_escapes(str(it.get("rawLine") or "")).strip()
+        gaps.append(
+            {
+                "category": "UnsupportedMod",
+                "severity": "MEDIUM",
+                "message": (
+                    f"[UNSUPPORTED-MOD] Equipped '{slot}' ({inm}) has unparsed red mod ignored by PoB (0 effect): '{raw}'"
+                ),
+            }
+        )
+    if len(item_mods) > 6:
+        gaps.append(
+            {
+                "category": "UnsupportedMod",
+                "severity": "MEDIUM",
+                "message": (
+                    f"[UNSUPPORTED-MOD] +{len(item_mods) - 6} more unparsed equipped item mod(s) "
+                    "— run `pob interactions --unsupported-only` for full list"
+                ),
+            }
+        )
+    return gaps
 
 
 def _gaps_from_agent_probe(probe: dict[str, Any] | None) -> list[dict[str, str]]:

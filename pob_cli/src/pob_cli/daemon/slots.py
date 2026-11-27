@@ -58,6 +58,7 @@ _STATE_META_ACTIONS = frozenset(
         "summary",
         "audit",
         "diagnose",
+        "interactions_inspect",
         "undo",
         "redo",
         "new_build",

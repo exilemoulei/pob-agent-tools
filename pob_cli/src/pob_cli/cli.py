@@ -137,6 +137,11 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "cmd_calc",
         "Search PoB Calcs breakdown tables and formulas by one or more English/Chinese keywords.",
     ),
+    "interactions": (
+        ".cli_interactions",
+        "cmd_interactions",
+        "Inspect ModParser flag compatibility, conditional premises, and PoB uncomputed red mods.",
+    ),
     "item": (
         ".cli_mutate_items",
         "grp_item",

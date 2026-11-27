@@ -236,6 +236,28 @@ def _h_item_ablate(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) ->
     return m._attach_warning_if_degraded(ablate_item_mods(w, slot_val))
 
 
+def _h_interactions_inspect(m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    from ..analyzer.interactions import inspect_interactions
+
+    raw_mods = params.get("mods") if params.get("mods") is not None else params.get("lines")
+    if raw_mods is None:
+        mods_list: list[str] = []
+    elif isinstance(raw_mods, str):
+        mods_list = [raw_mods]
+    elif isinstance(raw_mods, list):
+        mods_list = [str(x) for x in raw_mods]
+    else:
+        raise DaemonRequestError("Parameter 'mods' for interactions_inspect must be a string or list of strings.")
+    return m._attach_warning_if_degraded(
+        inspect_interactions(
+            w,
+            slot_name=params.get("slot") or params.get("slotName"),
+            mod_lines=mods_list or None,
+            unsupported_only=bool(params.get("unsupported_only", params.get("unsupportedOnly", False))),
+        )
+    )
+
+
 def _h_skills(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from ..analyzer import inspect_skills
 
@@ -433,6 +455,7 @@ _SLOT_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "diagnose": _h_diagnose,
     "items": _h_items,
     "item_ablate": _h_item_ablate,
+    "interactions_inspect": _h_interactions_inspect,
     "skills": _h_skills,
     "config_list": _h_config_list,
     "calc": _h_calc,

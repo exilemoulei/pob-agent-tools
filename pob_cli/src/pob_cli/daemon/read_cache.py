@@ -14,7 +14,7 @@ from typing import Any
 from ..snapshot import history_of
 
 READ_CACHE_ACTIONS: frozenset[str] = frozenset(
-    {"summary", "items", "skills", "audit", "calc", "diagnose", "map_regex"}
+    {"summary", "items", "skills", "audit", "calc", "diagnose", "map_regex", "interactions_inspect"}
 )
 
 LOOP_GUARD_WARNING = (
@@ -34,9 +34,12 @@ _PARAM_KEY_ALIASES: dict[str, str] = {
     "noBreakdown": "no_breakdown",
     "maxBreakdowns": "max_breakdowns",
     "noAutoKeep": "no_auto_keep",
+    "slotName": "slot",
+    "lines": "mods",
+    "unsupportedOnly": "unsupported_only",
 }
 _BOOL_CANON_KEYS: frozenset[str] = frozenset(
-    {"raw", "allRaw", "no_rank", "no_breakdown", "attribution", "no_auto_keep"}
+    {"raw", "allRaw", "no_rank", "no_breakdown", "attribution", "no_auto_keep", "unsupported_only"}
 )
 
 # A URL or profile source is hashed by its address, not by the build behind it, and that build can
@@ -161,6 +164,14 @@ def _canonicalize_params(action: str, params: dict[str, Any], *, include_section
         norm.setdefault("no_auto_keep", False)
     elif action == "compare":
         norm.setdefault("no_auto_keep", False)
+    elif action == "interactions_inspect":
+        norm.setdefault("unsupported_only", False)
+        if isinstance(norm.get("mods"), str):
+            norm["mods"] = [norm["mods"]]
+        if norm.get("mods") == []:
+            norm.pop("mods", None)
+        if norm.get("slot") == "":
+            norm.pop("slot", None)
 
     return json.dumps(norm, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
 

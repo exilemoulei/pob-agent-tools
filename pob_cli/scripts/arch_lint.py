@@ -63,6 +63,7 @@ LAYER_MAP: dict[str, int] = {
     "cli_build_io": 4,
     "cli_inspect": 4,
     "cli_inspect_parts": 4,
+    "cli_interactions": 4,
     "cli_item_db": 4,
     "cli_item_inspect": 4,
     "cli_mutate_items": 4,
