@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from pob_cli.analyzer import attribute_water, dewater_build_with_records
+from pob_cli.analyzer.dewater import _normalize_keep
 from pob_cli.analyzer.dewater_attribution import group_coupled_records
 from pob_cli.analyzer.dewater_steps import _same_state
 from pob_cli.snapshot import capture_digest
@@ -184,3 +185,26 @@ def test_keep_plus_joined_coupled_key_keeps_both_without_rejection() -> None:
     assert records == []
     assert w.config["conditionEnemyShocked"] is True
     assert w.config["conditionShockEffect"] == 39
+
+
+def test_normalize_keep_preserves_custom_mods_and_leading_plus_tokens() -> None:
+    assert _normalize_keep("customMods:+25% to Critical Strike Multiplier") == {
+        "custommods:+25% to critical strike multiplier",
+    }
+    assert _normalize_keep("+2 to maximum Life") == {"+2 to maximum life"}
+    assert _normalize_keep("conditionEnemyShocked+conditionShockEffect") == {
+        "conditionenemyshocked",
+        "conditionshockeffect",
+    }
+    assert _normalize_keep(
+        [
+            "customMods:+25% to Critical Strike Multiplier",
+            "+2 to maximum Life",
+            "conditionEnemyShocked+conditionShockEffect",
+        ]
+    ) == {
+        "custommods:+25% to critical strike multiplier",
+        "+2 to maximum life",
+        "conditionenemyshocked",
+        "conditionshockeffect",
+    }

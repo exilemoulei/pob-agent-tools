@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import math
+import re
 from collections.abc import Iterable
 from typing import Any
 
@@ -33,6 +34,8 @@ from .dewater_steps import (
     _rpc_error_text as _rpc_error_text,
 )
 
+_COUPLED_KEEP_RE = re.compile(r"[a-z0-9_]+(?:\+[a-z0-9_]+)+")
+
 
 def _normalize_keep(keep: Iterable[str] | str | None) -> set[str]:
     """Normalize user keep tokens (config vars, 'Flask N', 'flasks', gem names, 'customMods', 'party')."""
@@ -45,11 +48,8 @@ def _normalize_keep(keep: Iterable[str] | str | None) -> set[str]:
             p = part.strip().lower()
             if not p:
                 continue
-            if "+" in p:
-                for sub in p.split("+"):
-                    s = sub.strip()
-                    if s:
-                        out.add(s)
+            if _COUPLED_KEEP_RE.fullmatch(p):
+                out.update(p.split("+"))
             else:
                 out.add(p)
     return out
