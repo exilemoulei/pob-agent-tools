@@ -303,6 +303,7 @@ def audit_build(
             warnings=digest_before["warnings"],
             build_info=info,
             stripped_flasks=list((stripped or {}).get("flasks") or []),
+            worker=worker,
             minion_itemsets=minion_itemsets,
         )
         health_issues.extend(mech_gaps)
