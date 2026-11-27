@@ -49,6 +49,7 @@ def apply_cli_filters_to_auto_query(
     name: str | None = None,
     item_type: str | None = None,
     corrupted: str | None = None,
+    armour_filters: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Overlay CLI price/status/category/name/type/corrupted/sort/stat/open-affix constraints onto a wrapped auto query."""
     inner = body.setdefault("query", {})
@@ -86,6 +87,8 @@ def apply_cli_filters_to_auto_query(
             trade_f["indexed"] = {"option": window}
     if trade_f:
         filters.setdefault("trade_filters", {}).setdefault("filters", {}).update(trade_f)
+    if armour_filters:
+        filters.setdefault("armour_filters", {}).setdefault("filters", {}).update(armour_filters)
     if extra_stat_groups:
         inner.setdefault("stats", []).extend(extra_stat_groups)
     pseudo: list[dict[str, Any]] = []

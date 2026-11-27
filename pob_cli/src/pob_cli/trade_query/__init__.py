@@ -48,6 +48,15 @@ from .aliases import (
 from .aliases import (
     _normalize_slot as _normalize_slot,
 )
+from .armour_filters import (
+    ARMOUR_FILTER_KEYS,
+    detect_local_defence_hints,
+    extract_armour_panel_filters,
+    is_armour_slot,
+    match_panel_defence_key,
+    merge_armour_filters,
+    normalize_armour_filters,
+)
 from .gem_filters import (
     apply_exact_item_filters,
     detect_and_strip_foulborn,
@@ -188,6 +197,7 @@ from .stats_matcher import (
 )
 
 __all__ = [
+    "ARMOUR_FILTER_KEYS",
     "CATEGORY_BY_SLOT",
     "INDEXED_WINDOWS",
     "OPEN_AFFIX_ID",
@@ -210,14 +220,20 @@ __all__ = [
     "build_query",
     "category_for_slot",
     "detect_and_strip_foulborn",
+    "detect_local_defence_hints",
+    "extract_armour_panel_filters",
     "flatten_stats",
     "get_stat_polarity",
     "get_stat_polarity_info",
     "infer_weapon_category_from_base",
+    "is_armour_slot",
     "load_foulborn_map",
     "load_local_trade_stats",
     "load_trade_stats",
     "lookup_apt_zh_stat",
+    "match_panel_defence_key",
+    "merge_armour_filters",
+    "normalize_armour_filters",
     "parse_stat_argument",
     "parse_sum_group_argument",
     "plan_stats",

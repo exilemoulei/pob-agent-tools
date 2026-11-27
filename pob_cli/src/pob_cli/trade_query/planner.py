@@ -10,6 +10,11 @@ from typing import Any
 
 from ..trade_item import ELEMENTS, convert_template, match_harvest
 from .aliases import INDEXED_WINDOWS, VALID_STATUSES
+from .armour_filters import (
+    detect_local_defence_hints,
+    extract_armour_panel_filters,
+    merge_armour_filters,
+)
 from .gem_filters import apply_exact_item_filters
 from .option_stats import resolve_option_stat, split_pipe_stat_id
 from .stats_index import StatMatch, resolve_stat, suggest_stats
@@ -21,6 +26,7 @@ _STAT_DOMAIN_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 _RANGE_BOUNDS_RE = re.compile(r"^\s*([+-]?\d+(?:\.\d+)?)?\s*\.\.\s*([+-]?\d+(?:\.\d+)?)?\s*$")
+_STAT_MAX_RE = re.compile(r"^(?P<text>.+?)\s*<=\s*(?P<hi>[+-]?\d+(?:\.\d+)?)\s*$")
 
 
 @dataclass
@@ -75,6 +81,8 @@ class StatPlan:
     plain: list[StatRequest] = field(default_factory=list)
     conversions: list[ConversionPlan] = field(default_factory=list)
     weighted_groups: list[WeightedGroup] = field(default_factory=list)
+    armour_filters: dict[str, dict[str, int | float]] = field(default_factory=dict)
+    hints: list[str] = field(default_factory=list)
 
 
 def _reject_if_ambiguous_aura(raw_text: str, match: StatMatch) -> None:
@@ -163,7 +171,7 @@ def resolve_requests(
 
 
 def parse_stat_argument(value: str) -> StatRequest:
-    """Parse ``"[domain:]<stat>[=<min>|<min>..<max>|..<max>|<option>]"`` into a ``StatRequest``."""
+    """Parse ``"[domain:]<stat>[=<min>|<min>..<max>|..<max>|<=<max>|<option>]"`` into a ``StatRequest``."""
     text = (value or "").strip()
     domain: str | None = None
     m_dom = _STAT_DOMAIN_PREFIX_RE.match(text)
@@ -174,13 +182,20 @@ def parse_stat_argument(value: str) -> StatRequest:
     minimum: float | None = 1.0
     maximum: float | None = None
     option_value: str | None = None
-    if "=" in text:
+    m_max = _STAT_MAX_RE.match(text)
+    if m_max:
+        text = m_max.group("text").strip()
+        minimum = None
+        maximum = float(m_max.group("hi"))
+    elif "=" in text:
         candidate_text, candidate_rhs = text.rsplit("=", 1)
         rhs = candidate_rhs.strip()
         m_range = _RANGE_BOUNDS_RE.match(rhs)
         if m_range and (m_range.group(1) is not None or m_range.group(2) is not None):
             minimum = float(m_range.group(1)) if m_range.group(1) is not None else None
             maximum = float(m_range.group(2)) if m_range.group(2) is not None else None
+            if minimum is not None and maximum is not None and minimum > maximum:
+                raise ValueError(f"--stat range min ({minimum:g}) cannot exceed max ({maximum:g}): {value!r}")
             text = candidate_text.rstrip(">").strip()
         else:
             try:
@@ -306,6 +321,7 @@ def plan_stats(
     entries: list[dict[str, Any]],
     *,
     slot: str | None = None,
+    category: str | None = None,
     allow_conversion: bool = False,
     convert_to: str | None = None,
     rarity: str | None = "rare",
@@ -318,11 +334,14 @@ def plan_stats(
             "(uniques cannot use Harvest conversion)."
         )
 
-    resolve_requests(requests, entries, slot=slot)
-    plan = StatPlan()
+    remaining_requests, routed_armour = extract_armour_panel_filters(
+        requests, slot=slot, category=category
+    )
+    resolve_requests(remaining_requests, entries, slot=slot)
+    plan = StatPlan(armour_filters=routed_armour)
     target_override = convert_to.strip().lower() if convert_to else None
 
-    for request in requests:
+    for request in remaining_requests:
         conversion = _conversion_plan(request, entries, slot=slot) if allow_conversion else None
         if conversion is None:
             plan.plain.append(request)
@@ -335,6 +354,8 @@ def plan_stats(
                 )
             conversion.target = target_override
         plan.conversions.append(conversion)
+
+    plan.hints = detect_local_defence_hints(plan.plain, slot=slot, category=category)
 
     for group in weighted_groups or []:
         resolved_entries: list[WeightedStatEntry] = []
@@ -384,6 +405,7 @@ def build_query(
     gem_level: int | None = None,
     gem_quality: int | None = None,
     infer_gem_category: bool = True,
+    armour_filters: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build an official PoE1 ``/api/trade/search`` JSON request body."""
     status_norm = (status or "available").strip().lower()
@@ -517,6 +539,10 @@ def build_query(
         misc_filters["corrupted"] = {"option": "false"}
     if misc_filters:
         filter_block["misc_filters"] = {"filters": misc_filters}
+
+    merged_armour = merge_armour_filters(plan.armour_filters, armour_filters)
+    if merged_armour:
+        filter_block["armour_filters"] = {"filters": merged_armour}
 
     if filter_block:
         query["filters"] = filter_block

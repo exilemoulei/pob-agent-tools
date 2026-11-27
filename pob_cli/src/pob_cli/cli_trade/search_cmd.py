@@ -20,6 +20,7 @@ from ..trade_eval import (
 from ..trade_query import (
     VALID_STATUSES,
     apply_exact_item_filters,
+    normalize_armour_filters,
     parse_stat_argument,
     parse_sum_group_argument,
     pob_slot_for_slot,
@@ -161,6 +162,14 @@ def _prepare_exact_item_options(
 )
 @click.option("--rarity", type=click.Choice(["nonunique", "rare", "unique", "any"]), default="nonunique", show_default=True)
 @click.option("--ilvl-min", type=int, default=0, show_default=True)
+@click.option("--es-min", type=float, default=None, help="Minimum item total Energy Shield (armour_filters.es.min).")
+@click.option("--es-max", type=float, default=None, help="Maximum item total Energy Shield (armour_filters.es.max).")
+@click.option("--ar-min", type=float, default=None, help="Minimum item total Armour (armour_filters.ar.min).")
+@click.option("--ar-max", type=float, default=None, help="Maximum item total Armour (armour_filters.ar.max).")
+@click.option("--ev-min", type=float, default=None, help="Minimum item total Evasion (armour_filters.ev.min).")
+@click.option("--ev-max", type=float, default=None, help="Maximum item total Evasion (armour_filters.ev.max).")
+@click.option("--ward-min", type=float, default=None, help="Minimum item total Ward (armour_filters.ward.min).")
+@click.option("--ward-max", type=float, default=None, help="Maximum item total Ward (armour_filters.ward.max).")
 @click.option("--category", help="Override official trade category (e.g. weapon.claw).")
 @click.option("--no-category", is_flag=True, help="Do not set a category filter.")
 @click.option("--allow-conversion", is_flag=True, help="Broaden single-element resist/damage filters for Harvest swap.")
@@ -224,44 +233,19 @@ def cmd_trade_search(
     bargain: float | None,
     league: str | None,
     realm: str | None,
-    item_name: str | None,
-    item_type: str | None,
-    links: int | None,
-    foulborn: bool,
-    gem_level: int | None,
-    gem_quality: int | None,
-    corrupted: str | None,
-    rarity: str,
-    ilvl_min: int,
-    category: str | None,
-    no_category: bool,
-    allow_conversion: bool,
-    convert_to: str | None,
-    allow_corrupted: bool,
-    search_sort: str,
-    sort_by: str,
-    max_results: int,
-    max_per_seller: int,
-    fetch_limit: int,
-    open_prefix: bool,
-    open_suffix: bool,
-    open_affix: bool,
-    bench_crafts: tuple[str, ...],
-    bench_hint: bool,
-    pob_mode: str,
-    pob_limit: int,
-    normalize_quality: str,
-    surrogate_k: int | None,
-    auto_query: bool,
-    target: str,
-    current_item_file: str | None,
-    no_compare: bool,
-    dump_query: bool,
-    proxy: str | None,
-    as_json: bool,
-    compact: bool,
-    out_path: str | None,
-    verbose: bool,
+    item_name: str | None, item_type: str | None,
+    links: int | None, foulborn: bool, gem_level: int | None, gem_quality: int | None,
+    corrupted: str | None, rarity: str, ilvl_min: int,
+    es_min: float | None, es_max: float | None, ar_min: float | None, ar_max: float | None,
+    ev_min: float | None, ev_max: float | None, ward_min: float | None, ward_max: float | None,
+    category: str | None, no_category: bool,
+    allow_conversion: bool, convert_to: str | None, allow_corrupted: bool,
+    search_sort: str, sort_by: str, max_results: int, max_per_seller: int, fetch_limit: int,
+    open_prefix: bool, open_suffix: bool, open_affix: bool,
+    bench_crafts: tuple[str, ...], bench_hint: bool,
+    pob_mode: str, pob_limit: int, normalize_quality: str, surrogate_k: int | None,
+    auto_query: bool, target: str, current_item_file: str | None, no_compare: bool,
+    dump_query: bool, proxy: str | None, as_json: bool, compact: bool, out_path: str | None, verbose: bool,
 ) -> None:
     """Search official PoE1 trade listings, compare against equipped gear, and verify in PoB."""
     ctx = click.get_current_context()
@@ -288,6 +272,10 @@ def cmd_trade_search(
         preferred = preferred_templates([translate_stat_query(w) for w in wants])
         requests = [parse_stat_argument(value) for value in stats]
         weighted_groups = [parse_sum_group_argument(value) for value in sum_groups]
+        armour_filters = normalize_armour_filters(
+            es_min=es_min, es_max=es_max, ar_min=ar_min, ar_max=ar_max,
+            ev_min=ev_min, ev_max=ev_max, ward_min=ward_min, ward_max=ward_max,
+        )
     except ValueError as exc:
         _err_utf8(str(exc))
         ctx.exit(1)
@@ -316,6 +304,7 @@ def cmd_trade_search(
                 category=resolved_category,
                 search_sort=search_sort if ctx.get_parameter_source("search_sort") != click.core.ParameterSource.DEFAULT else None,
                 name=item_name, item_type=item_type, corrupted=corrupted,
+                armour_filters=armour_filters or None,
             )
             if exact_filters:
                 apply_exact_item_filters(auto_res["query"], **exact_filters)
@@ -350,7 +339,8 @@ def cmd_trade_search(
         open_suffix=open_suffix, open_affix=open_affix, allow_corrupted=allow_corrupted,
         bench_hint=bench_hint, fetch_limit=eff_fetch_limit, compact=compact, out_path=out_path,
         auto_query_body=auto_res["query"] if isinstance(auto_res, dict) else None,
-        item_name=item_name, item_type=item_type, corrupted=corrupted, exact_filters=exact_filters,
+        item_name=item_name, item_type=item_type, corrupted=corrupted,
+        exact_filters=exact_filters, armour_filters=armour_filters or None,
     )
     if fetched_ctx is None:
         return

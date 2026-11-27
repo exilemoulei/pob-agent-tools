@@ -34,6 +34,7 @@ from ..trade_query import (
     OPEN_SUFFIX_ID,
     apply_exact_item_filters,
     build_query,
+    merge_armour_filters,
     plan_stats,
 )
 from ..trade_query.auto_query import apply_cli_filters_to_auto_query as _apply_cli_filters_to_auto_query
@@ -313,11 +314,13 @@ def _build_effective_trade_query(
     item_type: str | None,
     corrupted: str | None,
     exact_filters: dict[str, Any] | None = None,
+    armour_filters: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[Any, dict[str, Any], dict[str, Any], int | None]:
     plan = plan_stats(
         requests,
         entries,
         slot=slot,
+        category=resolved_category,
         allow_conversion=allow_conversion,
         convert_to=convert_to,
         rarity=rarity,
@@ -338,6 +341,7 @@ def _build_effective_trade_query(
         "item_type": item_type,
         "corrupted": corrupted,
         **(exact_filters or {}),
+        "armour_filters": armour_filters,
     }
     is_auto = isinstance(auto_query_body, dict)
     auto_complexity: int | None = None
@@ -374,6 +378,7 @@ def _build_effective_trade_query(
             name=item_name,
             item_type=item_type,
             corrupted=corrupted,
+            armour_filters=merge_armour_filters(plan.armour_filters, armour_filters) or None,
         )
         if exact_filters:
             apply_exact_item_filters(query, **exact_filters)
@@ -431,6 +436,7 @@ def _execute_trade_api_query(
     item_type: str | None = None,
     corrupted: str | None = None,
     exact_filters: dict[str, Any] | None = None,
+    armour_filters: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     import pob_cli.cli_trade as _ct
 
@@ -526,12 +532,16 @@ def _execute_trade_api_query(
                 item_type=item_type,
                 corrupted=corrupted,
                 exact_filters=exact_filters,
+                armour_filters=armour_filters,
             )
             is_auto = isinstance(auto_query_body, dict)
         except ValueError as exc:
             _err_utf8(str(exc))
             ctx.exit(1)
             return None
+
+        for hint in getattr(plan, "hints", ()):
+            _err_utf8(f"Hint: {hint}")
 
         if dump_query:
             payload = {
@@ -546,6 +556,8 @@ def _execute_trade_api_query(
                 "benchOptions": bench_options,
                 "query": query,
             }
+            if getattr(plan, "hints", None):
+                payload["hints"] = plan.hints
             if is_auto:
                 payload["autoQuery"] = True
                 payload["complexity"] = auto_complexity

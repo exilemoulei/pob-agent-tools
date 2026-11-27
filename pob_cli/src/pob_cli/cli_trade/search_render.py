@@ -284,6 +284,8 @@ def _emit_search_results(
             payload["updateWarning"] = update_warning
         if fetched_ctx.get("league_warning"):
             payload["leagueWarning"] = fetched_ctx["league_warning"]
+        if getattr(plan, "hints", None):
+            payload["hints"] = plan.hints
         _emit_json(payload, compact=compact, out_path=out_path, sanitize=True)
         return
 
