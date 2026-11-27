@@ -76,6 +76,7 @@ _STATE_META_ACTIONS = frozenset(
         "skill_replace_group",
         "tree_change",
         "tree_set_class",
+        "tree_tattoo",
         "config_set",
         "batch",
         "sweep",

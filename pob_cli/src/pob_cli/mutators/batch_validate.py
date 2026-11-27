@@ -60,6 +60,9 @@ _ITEM_EDIT_KEYS: frozenset[str] = frozenset(
 _UNEQUIP_KEYS: frozenset[str] = frozenset({"slot", "slotName", "slot_name"})
 _ANOINT_KEYS: frozenset[str] = frozenset({"notable", "slot", "slotName", "slot_name", "index"})
 _TREE_KEYS: frozenset[str] = frozenset({"allocate", "deallocate", "allowCascade", "allow_cascade"})
+_TATTOO_KEYS: frozenset[str] = frozenset(
+    {"node", "nodeId", "node_id", "id", "tattoo", "name", "reset", "clear", "showLegacy", "show_legacy", "strictReq", "strict_req"}
+)
 _TREE_RESET_KEYS: frozenset[str] = frozenset({"tattoos"})
 _IMPORT_TREE_URL_KEYS: frozenset[str] = frozenset({"url", "title", "name"})
 _NEW_BUILD_KEYS: frozenset[str] = frozenset(
@@ -277,6 +280,8 @@ _OP_VALID_KEYS: dict[str, frozenset[str]] = {
     "item_anoint": _ANOINT_KEYS,
     "tree": _TREE_KEYS,
     "tree_change": _TREE_KEYS,
+    "tattoo": _TATTOO_KEYS,
+    "tree_tattoo": _TATTOO_KEYS,
     "tree_reset": _TREE_RESET_KEYS,
     "reset_tree": _TREE_RESET_KEYS,
     "import_tree_url": _IMPORT_TREE_URL_KEYS,

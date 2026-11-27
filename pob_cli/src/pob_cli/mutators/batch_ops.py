@@ -35,6 +35,7 @@ from .item_db import _search_item_db_items
 from .item_edit import _apply_edit_item_mods_in_place
 from .items import _apply_anoint_in_place, _parse_flask_slots
 from .strict_args import opt_bool, parse_replace_mods, parse_token_list
+from .tattoos import _CLEAR_TOKENS, _attach_req_deficits, apply_tattoo_in_place
 from .tree import _apply_tree_changes_in_place, _resolve_node_token
 
 _BatchOpHandler = Callable[[BridgeWorker, dict[str, Any], _BatchCache, int], dict[str, Any]]
@@ -232,6 +233,29 @@ def _op_tree(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) 
     return step_entry
 
 
+def _op_tattoo(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
+    node_val = op.get("node") if op.get("node") is not None else op.get("nodeId", op.get("node_id", op.get("id")))
+    if node_val is None or not str(node_val).strip():
+        raise ValueError(f"Batch op 'tattoo' at step {idx} requires 'node'.")
+    tattoo_val = op.get("tattoo") if op.get("tattoo") is not None else op.get("name")
+    reset_flag = opt_bool(op, "reset", "clear", default=False)
+    strict_req = opt_bool(op, "strictReq", "strict_req", default=False)
+    is_clear = bool(reset_flag) or (tattoo_val is not None and str(tattoo_val).strip().lower() in _CLEAR_TOKENS)
+    before_stats = {} if is_clear else ((w.call("get_stats", {}) or {}).get("stats") or {})
+    res = apply_tattoo_in_place(
+        w,
+        node=node_val,
+        tattoo=tattoo_val,
+        reset=reset_flag,
+        show_legacy=opt_bool(op, "showLegacy", "show_legacy", default=False),
+        cache=cache,
+    )
+    if not is_clear:
+        after_stats = (w.call("get_stats", {}) or {}).get("stats") or {}
+        _attach_req_deficits(res, before_stats, after_stats, strict_req=strict_req, hint_flag="`strictReq`")
+    return {"step": idx, "op": "tattoo", **res}
+
+
 def _op_tree_reset(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: int) -> dict[str, Any]:
     tattoos = bool(op.get("tattoos", False))
     res = w.call("reset_tree", {"tattoos": True} if tattoos else {})
@@ -409,6 +433,8 @@ _BATCH_OP_HANDLERS: dict[str, _BatchOpHandler] = {
     "item_anoint": _op_anoint,
     "tree": _op_tree,
     "tree_change": _op_tree,
+    "tattoo": _op_tattoo,
+    "tree_tattoo": _op_tattoo,
     "tree_reset": _op_tree_reset,
     "reset_tree": _op_tree_reset,
     "import_tree_url": _op_import_tree_url,

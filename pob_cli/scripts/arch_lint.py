@@ -70,6 +70,7 @@ LAYER_MAP: dict[str, int] = {
     "cli_mutate_skills": 4,
     "cli_mutate": 4,
     "cli_tree": 4,
+    "cli_tree_tattoo": 4,
     "cli_tree_wheels": 4,
     "cli_compare": 4,
     "cli_optimize": 4,

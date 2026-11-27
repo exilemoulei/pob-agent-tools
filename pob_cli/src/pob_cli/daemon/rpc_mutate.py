@@ -275,6 +275,23 @@ def _h_tree_set_class(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker
     )
 
 
+def _h_tree_tattoo(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    from .. import mutators
+
+    node_val = params.get("node") if params.get("node") is not None else params.get("nodeId", params.get("id"))
+    if node_val is None or not str(node_val).strip():
+        raise ValueError("Missing required parameter 'node'.")
+    return mutators.apply_tree_tattoo(
+        w,
+        node=node_val,
+        tattoo=params.get("tattoo"),
+        reset=opt_bool(params, "reset", "clear", default=False),
+        show_legacy=opt_bool(params, "show_legacy", "showLegacy", default=False),
+        strict_req=opt_bool(params, "strict_req", "strictReq", default=False),
+        apply=opt_bool(params, "apply", default=False),
+    )
+
+
 def _h_config_set(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from .. import mutators
 
@@ -335,6 +352,7 @@ MUTATE_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "skill_replace_group": _h_skill_replace_group,
     "tree_change": _h_tree_change,
     "tree_set_class": _h_tree_set_class,
+    "tree_tattoo": _h_tree_tattoo,
     "config_set": _h_config_set,
     "batch": _h_batch,
     "sweep": _h_sweep,

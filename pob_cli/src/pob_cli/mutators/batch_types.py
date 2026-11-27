@@ -44,6 +44,11 @@ _BOOL_KEYS: frozenset[str] = frozenset(
         "borrowTree",
         "tree_jewels",
         "treeJewels",
+        "clear",
+        "showLegacy",
+        "show_legacy",
+        "strictReq",
+        "strict_req",
     }
 )
 _INT_KEYS: frozenset[str] = frozenset(
@@ -128,7 +133,7 @@ def normalize_batch_op_types(idx: int, kind: str, op: dict[str, Any]) -> dict[st
         for key, val in op.items():
             if val is None:
                 continue
-            if key in _BOOL_KEYS:
+            if key in _BOOL_KEYS or (key == "reset" and kind in ("tattoo", "tree_tattoo")):
                 out[key] = parse_bool(val, key)
             elif key in _INT_KEYS or (key == "value" and kind == "set_level"):
                 out[key] = parse_int(val, key)

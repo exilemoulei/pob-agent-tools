@@ -493,6 +493,8 @@ def cmd_tree_diff(
     _emit_text(format_tree_diff_markdown(res), out_path=out_path)
 
 
+from .cli_tree_tattoo import register_tree_tattoo_commands as _register_tree_tattoo_commands  # noqa: E402
 from .cli_tree_wheels import register_tree_wheel_commands as _register_tree_wheel_commands  # noqa: E402
 
+_register_tree_tattoo_commands(grp_tree)
 _register_tree_wheel_commands(grp_tree)
