@@ -7,13 +7,13 @@ delta was verified alone against the current build; summing them across slots is
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from typing import Any
 
 from ..trade_query import pob_slot_for_slot
 
 PLAN_STATS = ("dps", "ehp")
 DEFAULT_PLAN_SCORE: dict[str, float] = {"dps": 1.0, "ehp": 0.25}  # same blend as `combined_pct`
-_MAX_UNITS = 5000  # budget resolution; costs are rounded up so the plan never exceeds the budget
 
 
 def _listing_score(cand: dict[str, Any], score: dict[str, float]) -> float | None:
@@ -77,13 +77,28 @@ def collect_listings(
                  "perChaos": value / chaos if chaos > 0 else None, "url": cand.get("url"),
                  "dpsPct": (cand.get("pob") or {}).get("dps_pct"), "ehpPct": (cand.get("pob") or {}).get("ehp_pct")}
             )
-    # Ring 1 / Ring 2 searches can return the same listing: keep it once, in the slot where it scores best.
-    best: dict[str, dict[str, Any]] = {}
-    for item in (i for items in by_slot.values() for i in items if i["listingId"]):
-        if item["listingId"] not in best or item["score"] > best[item["listingId"]]["score"]:
-            best[item["listingId"]] = item
-    by_slot = {s: [i for i in items if not i["listingId"] or best[i["listingId"]] is i] for s, items in by_slot.items()}
-    return {s: items for s, items in by_slot.items() if items}, skipped, need_rate
+    # Two files for one slot can hold the same listing: keep its best copy there. Across slots
+    # (Ring 1 / Ring 2) every copy stays; `plan_budget` buys a listing at most once.
+    for slot, items in by_slot.items():
+        best: dict[Any, dict[str, Any]] = {}
+        for i in items:
+            key = i["listingId"] or id(i)
+            if key not in best or i["score"] > best[key]["score"]:
+                best[key] = i
+        by_slot[slot] = list(best.values())
+    return by_slot, skipped, need_rate
+
+
+_State = tuple[float, float, tuple[dict[str, Any], ...]]  # (chaos, score, picks)
+
+
+def _pareto(states: list[_State]) -> list[_State]:
+    """Drop every state that costs at least as much as another one for no more score."""
+    out: list[_State] = []
+    for st in sorted(states, key=lambda t: (t[0], -t[1])):
+        if not out or st[1] > out[-1][1]:
+            out.append(st)
+    return out
 
 
 def plan_budget(
@@ -101,24 +116,33 @@ def plan_budget(
         raise ValueError("--divine-rate must be a positive number of chaos.")
     score = score or dict(DEFAULT_PLAN_SCORE)
     by_slot, skipped, need_rate = collect_listings(payloads, score, divine_rate=divine_rate)
-    unit = max(1.0, budget / _MAX_UNITS)
-    # Fixed cap above _MAX_UNITS: budget // (budget / _MAX_UNITS) can round down to _MAX_UNITS - 1.
-    cap = _MAX_UNITS if budget > _MAX_UNITS else int(budget)
-    # best[b] = (score, picks) with total cost <= b units
-    best: list[tuple[float, tuple[dict[str, Any], ...]]] = [(0.0, ())] * (cap + 1)
-    for listings in by_slot.values():
-        nxt = list(best)
-        for item in listings:
-            cost = math.ceil(item["chaos"] / unit - 1e-9)
-            if cost > cap:
-                continue
-            for b in range(cap, cost - 1, -1):
-                cand_score = best[b - cost][0] + item["score"]
-                if cand_score > nxt[b][0]:
-                    nxt[b] = (cand_score, (*best[b - cost][1], item))
-        best = nxt
-    total, picks = best[cap]
-    every = [item for listings in by_slot.values() for item in listings]
+    limit = budget + 1e-9 * max(1.0, budget)  # exact chaos prices; only float noise is tolerated
+    seen: dict[Any, int] = defaultdict(int)
+    for items in by_slot.values():
+        for i in items:
+            if i["listingId"]:
+                seen[i["listingId"]] += 1
+    shared = {k for k, n in seen.items() if n > 1}
+    # Pareto frontier per set of bought shared listings, so a listing found for two slots is bought once.
+    fronts: dict[frozenset[Any], list[_State]] = {frozenset(): [(0.0, 0.0, ())]}
+    for items in by_slot.values():
+        nxt: dict[frozenset[Any], list[_State]] = defaultdict(list)
+        for used, front in fronts.items():
+            nxt[used].extend(front)  # leave this slot as it is
+            for cost, value, picks in front:
+                for item in items:
+                    lid = item["listingId"]
+                    if cost + item["chaos"] > limit or lid in used:
+                        continue
+                    key = used | {lid} if lid in shared else used
+                    nxt[key].append((cost + item["chaos"], value + item["score"], (*picks, item)))
+        fronts = {k: _pareto(v) for k, v in nxt.items()}
+    _, total, picks = max((st for front in fronts.values() for st in front), key=lambda t: (t[1], -t[0]))
+    every: dict[Any, dict[str, Any]] = {}
+    for i in (i for items in by_slot.values() for i in items):
+        key = i["listingId"] or id(i)
+        if key not in every or i["score"] > every[key]["score"]:
+            every[key] = i
     return {
         "budget": budget,
         "score": score,
@@ -126,7 +150,7 @@ def plan_budget(
         "picks": list(picks),
         "totalChaos": sum(p["chaos"] for p in picks),
         "totalScore": total,
-        "bestPerChaos": sorted(every, key=lambda i: (i["perChaos"] is not None, -(i["perChaos"] or 0.0)))[:top],  # free first
+        "bestPerChaos": sorted(every.values(), key=lambda i: (i["perChaos"] is not None, -(i["perChaos"] or 0.0)))[:top],  # free first
         "slots": sorted(by_slot),
         "skippedUnverified": skipped,
         "skippedNeedDivineRate": need_rate,

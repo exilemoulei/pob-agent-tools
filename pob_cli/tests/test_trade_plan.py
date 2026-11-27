@@ -120,3 +120,23 @@ def test_cmd_trade_plan_hints_divine_rate_only_when_needed(tmp_path: Path) -> No
     assert r.exit_code == 0 and "1 of them are Divine listings" in r.output
     r2 = CliRunner().invoke(main, ["trade", "plan", str(div), "--budget", "400", "--divine-rate", "150"])
     assert r2.exit_code == 0 and "R-div" in r2.output and "--divine-rate" not in r2.output
+
+
+def test_plan_budget_keeps_slot_alternatives_for_shared_listings() -> None:
+    # X scores best in Ring 1, yet A (Ring 1) + X (Ring 2) = 16 beats X (Ring 1) + B (Ring 2) = 10.
+    x = {"listing_id": "X", "name": "X"}
+    ring1 = {"slot": "Ring 1", "candidates": [{**_priced("X", {"chaos": 10}, 9.0), **x}, _priced("A", {"chaos": 10}, 8.0)]}
+    ring2 = {"slot": "Ring 2", "candidates": [{**_priced("X", {"chaos": 10}, 8.0), **x}, _priced("B", {"chaos": 10}, 1.0)]}
+    res = plan_budget([ring1, ring2], budget=20)
+    assert sorted((p["slot"], p["name"]) for p in res["picks"]) == [("Ring 1", "A"), ("Ring 2", "X")]
+    assert res["totalScore"] == pytest.approx(16.0)
+    assert [p["name"] for p in res["bestPerChaos"]].count("X") == 1
+
+
+@pytest.mark.parametrize(("budget", "prices"), [(100, [49.5, 50.5]), (1.5, [1.5]), (0.3, [0.1, 0.2])])
+def test_plan_budget_uses_exact_chaos_prices(budget: float, prices: list[float]) -> None:
+    slots = ["Ring 1", "Amulet", "Belt"]
+    payloads = [{"slot": slots[n], "candidates": [_priced(f"L{n}", {"chaos": c})]} for n, c in enumerate(prices)]
+    res = plan_budget(payloads, budget=budget)
+    assert len(res["picks"]) == len(prices) and res["totalChaos"] == pytest.approx(sum(prices))
+    assert plan_budget(payloads, budget=budget * 0.99)["totalChaos"] <= budget * 0.99
