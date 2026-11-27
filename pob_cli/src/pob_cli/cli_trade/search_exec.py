@@ -34,6 +34,7 @@ from ..trade_query import (
     OPEN_SUFFIX_ID,
     apply_exact_item_filters,
     build_query,
+    is_uncategorized_trade_slot,
     merge_armour_filters,
     plan_stats,
 )
@@ -46,6 +47,7 @@ from .common import (
     _is_known_slot,
     _price_of,
     _trade_error,
+    _uncategorized_slot_note,
     _weighted_sum_of,
 )
 from .fresh_bargain import _fetch_with_fresh_and_market, _price_chaos
@@ -558,6 +560,8 @@ def _execute_trade_api_query(
             }
             if getattr(plan, "hints", None):
                 payload["hints"] = plan.hints
+            if resolved_category is None and is_uncategorized_trade_slot(slot):
+                payload["slotNote"] = _uncategorized_slot_note(slot)
             if is_auto:
                 payload["autoQuery"] = True
                 payload["complexity"] = auto_complexity

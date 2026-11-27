@@ -108,15 +108,16 @@ def run_dual_research(
                 wk = _run_wiki(pdb_slug)
         ok_sources = [s for s, d in (("poedb", pdb), ("wiki", wk)) if not d.get("error")]
         errors = {s: str(d["error"]) for s, d in (("poedb", pdb), ("wiki", wk)) if d.get("error")}
-        results.append(
-            {
-                "query": q,
-                "poedb": pdb,
-                "wiki": wk,
-                "okSources": ok_sources,
-                "errors": errors,
-            }
-        )
+        entry: dict[str, Any] = {
+            "query": q,
+            "poedb": pdb,
+            "wiki": wk,
+            "okSources": ok_sources,
+            "errors": errors,
+        }
+        if "poedb" in errors:
+            entry["localFallbackHint"] = f'pob data <unique|gem|mod|tattoo> "{q}"'
+        results.append(entry)
 
     out: dict[str, Any] = {
         "queries": clean_queries,
@@ -159,6 +160,9 @@ def _render_research_markdown(res: dict[str, Any]) -> str:
         if errors and ok_sources:
             err_s = "; ".join(f"{k}: {v}" for k, v in errors.items())
             parts.append(f"> [PARTIAL] Succeeded: {', '.join(ok_sources)} | Errors: {err_s}")
+        if "poedb" in errors:
+            hint_cmd = str(item.get("localFallbackHint") or f'pob data <unique|gem|mod|tattoo> "{q}"')
+            parts.append(f"> [FALLBACK] PoEDB unavailable; query local 3.30 DB (0ms): `{hint_cmd}`")
         pdb = item.get("poedb") if isinstance(item.get("poedb"), dict) else {"query": q, "error": "missing"}
         wk = item.get("wiki") if isinstance(item.get("wiki"), dict) else {"query": q, "error": "missing"}
         parts.append(_render_single_poedb_markdown(pdb))

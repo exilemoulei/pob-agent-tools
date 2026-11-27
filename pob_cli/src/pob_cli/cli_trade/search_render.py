@@ -12,6 +12,7 @@ from ..trade_item import parse_item_text, sanitize_text
 from ..trade_query import (
     category_for_slot,
     infer_weapon_category_from_base,
+    is_uncategorized_trade_slot,
     load_local_trade_stats,
 )
 from ..trade_query.auto_query import wrap_auto_query
@@ -20,6 +21,7 @@ from .common import (
     _err_utf8,
     _prepend_warning,
     _read_current_item,
+    _uncategorized_slot_note,
 )
 
 
@@ -280,6 +282,8 @@ def _emit_search_results(
         }
         if price_floor_note:
             payload["priceFloorNote"] = price_floor_note
+        if resolved_category is None and is_uncategorized_trade_slot(slot):
+            payload["slotNote"] = _uncategorized_slot_note(slot)
         if update_warning:
             payload["updateWarning"] = update_warning
         if fetched_ctx.get("league_warning"):
@@ -331,6 +335,8 @@ def _emit_search_results(
         body = f"{body.rstrip()}\n\n{tw_note}"
     if fetched_ctx.get("league_warning"):
         body = f"> Warning: {fetched_ctx['league_warning']}\n\n{body}"
+    if resolved_category is None and is_uncategorized_trade_slot(slot):
+        body = f"> Note: {_uncategorized_slot_note(slot)}\n\n{body}"
     _emit_text(_prepend_warning(body, update_warning), out_path=out_path)
     if current_error:
         _err_utf8(f"Equipped item could not be read: {current_error}")

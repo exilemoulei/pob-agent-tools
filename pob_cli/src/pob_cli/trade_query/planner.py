@@ -66,6 +66,7 @@ class WeightedStatEntry:
     weight: float = 1.0
     min_value: float | None = None
     match: StatMatch | None = None
+    max_value: float | None = None
 
 
 @dataclass
@@ -119,6 +120,25 @@ def _plain_stat_filter(request: StatRequest) -> dict[str, Any]:
     return {"id": base_id, "value": val, "disabled": False}
 
 
+def _negate_bound(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return 0.0 if value == 0 else -value
+
+
+def _apply_inverted_polarity_bounds(request: StatRequest) -> None:
+    """Negate and swap ``(min, max)`` when ``reduced/less`` maps to a canonical ``increased/more`` stat."""
+    already_negative = (request.min_value is not None and request.min_value < 0) or (
+        request.max_value is not None and request.max_value < 0
+    )
+    if already_negative:
+        return
+    request.min_value, request.max_value = (
+        _negate_bound(request.max_value),
+        _negate_bound(request.min_value),
+    )
+
+
 def resolve_requests(
     requests: Iterable[StatRequest],
     entries: list[dict[str, Any]],
@@ -166,12 +186,15 @@ def resolve_requests(
                 disambiguation_candidates=match.disambiguation_candidates,
                 disambiguation_aura=match.disambiguation_aura,
                 is_ambiguous_bare_aura=match.is_ambiguous_bare_aura,
+                polarity_inverted=match.polarity_inverted,
             )
+        elif match.polarity_inverted:
+            _apply_inverted_polarity_bounds(request)
         request.match = match
 
 
 def parse_stat_argument(value: str) -> StatRequest:
-    """Parse ``"[domain:]<stat>[=<min>|<min>..<max>|..<max>|<=<max>|<option>]"`` into a ``StatRequest``."""
+    """Parse ``"[domain:]<stat>[=|>=|<=<val>|<min>..<max>|..<max>|<option>]"`` into a ``StatRequest``."""
     text = (value or "").strip()
     domain: str | None = None
     m_dom = _STAT_DOMAIN_PREFIX_RE.match(text)
@@ -190,17 +213,24 @@ def parse_stat_argument(value: str) -> StatRequest:
     elif "=" in text:
         candidate_text, candidate_rhs = text.rsplit("=", 1)
         rhs = candidate_rhs.strip()
+        is_le = candidate_text.rstrip().endswith("<")
         m_range = _RANGE_BOUNDS_RE.match(rhs)
         if m_range and (m_range.group(1) is not None or m_range.group(2) is not None):
             minimum = float(m_range.group(1)) if m_range.group(1) is not None else None
             maximum = float(m_range.group(2)) if m_range.group(2) is not None else None
             if minimum is not None and maximum is not None and minimum > maximum:
                 raise ValueError(f"--stat range min ({minimum:g}) cannot exceed max ({maximum:g}): {value!r}")
-            text = candidate_text.rstrip(">").strip()
+            text = candidate_text.rstrip("><").strip()
         else:
             try:
-                minimum = float(rhs)
-                text = candidate_text.rstrip(">").strip()
+                num = float(rhs)
+                if is_le:
+                    minimum = None
+                    maximum = num
+                    text = candidate_text.rstrip().removesuffix("<").strip()
+                else:
+                    minimum = num
+                    text = candidate_text.rstrip(">").strip()
             except ValueError:
                 if rhs:
                     option_value = rhs
@@ -367,11 +397,20 @@ def plan_stats(
                     lines.append(f"  - {suggestion.text}  ({suggestion.id})")
                 raise ValueError("\n".join(lines))
             _reject_if_ambiguous_aura(item.text, match)
+            eff_weight = item.weight
+            eff_min = item.min_value
+            eff_max = item.max_value
+            if match.polarity_inverted:
+                eff_weight = 0.0 if item.weight == 0 else -item.weight
+                already_neg = (eff_min is not None and eff_min < 0) or (eff_max is not None and eff_max < 0)
+                if not already_neg and (eff_min is not None or eff_max is not None):
+                    eff_min, eff_max = _negate_bound(eff_max), _negate_bound(eff_min)
             resolved_entries.append(
                 WeightedStatEntry(
                     text=item.text,
-                    weight=item.weight,
-                    min_value=item.min_value,
+                    weight=eff_weight,
+                    min_value=eff_min,
+                    max_value=eff_max,
                     match=match,
                 )
             )
@@ -427,6 +466,8 @@ def build_query(
             val: dict[str, Any] = {"weight": entry.weight}
             if entry.min_value is not None:
                 val["min"] = entry.min_value
+            if entry.max_value is not None:
+                val["max"] = entry.max_value
             wfilters.append(
                 {
                     "id": entry.match.id,

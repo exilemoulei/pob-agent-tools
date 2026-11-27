@@ -82,6 +82,16 @@ CATEGORY_BY_SLOT: dict[str, str | None] = {
     "jewel": "jewel",
     "abyss_jewel": "jewel.abyss",
     "cluster_jewel": "jewel.cluster",
+    # 3.30 Viscera (Wickerman) & 3.27 Graft — GGG Trade has no item category filter
+    "viscera": None,
+    "viscera_head": None,
+    "viscera_body": None,
+    "viscera_arm": None,
+    "viscera_leg": None,
+    "wickerman": None,
+    "graft": None,
+    "graft1": None,
+    "graft2": None,
 }
 
 # PoB slot names used by `pob items` / `pob item try`.
@@ -130,6 +140,13 @@ POB_SLOT_BY_SLOT: dict[str, str] = {
     "jewel": "Jewel 1",
     "abyss_jewel": "Jewel 1",
     "cluster_jewel": "Jewel 1",
+    "viscera_head": "Head",
+    "viscera_body": "Body",
+    "viscera_arm": "Arm",
+    "viscera_leg": "Leg",
+    "graft": "Graft 1",
+    "graft1": "Graft 1",
+    "graft2": "Graft 2",
 }
 
 _SLOT_COMPACT_ALIASES: dict[str, str] = {
@@ -200,7 +217,42 @@ _SLOT_COMPACT_ALIASES: dict[str, str] = {
     "药水4": "flask4",
     "药水5": "flask5",
     "珠宝": "jewel",
+    "graft_1": "graft1",
+    "graft_2": "graft2",
+    "graft_head": "viscera_head",
+    "graft_body": "viscera_body",
+    "graft_arm": "viscera_arm",
+    "graft_leg": "viscera_leg",
+    "grafthead": "viscera_head",
+    "graftbody": "viscera_body",
+    "graftarm": "viscera_arm",
+    "graftleg": "viscera_leg",
+    "viscerahead": "viscera_head",
+    "viscerabody": "viscera_body",
+    "visceraarm": "viscera_arm",
+    "visceraleg": "viscera_leg",
+    "脏器": "viscera",
+    "假肢": "graft",
+    "肢体": "viscera",
+    "肢体头部": "viscera_head",
+    "肢体躯干": "viscera_body",
+    "肢体手臂": "viscera_arm",
+    "肢体腿部": "viscera_leg",
 }
+
+_UNCATEGORIZED_TRADE_SLOTS: frozenset[str] = frozenset(
+    {
+        "viscera",
+        "viscera_head",
+        "viscera_body",
+        "viscera_arm",
+        "viscera_leg",
+        "wickerman",
+        "graft",
+        "graft1",
+        "graft2",
+    }
+)
 
 _WEAPON_SLOTS: frozenset[str] = frozenset(
     {
@@ -424,6 +476,11 @@ def _normalize_slot(slot: str | None) -> str:
 def category_for_slot(slot: str) -> str | None:
     """Map a PoE1 slot or weapon subtype name to its trade API ``type_filters.category`` option."""
     return CATEGORY_BY_SLOT.get(_normalize_slot(slot))
+
+
+def is_uncategorized_trade_slot(slot: str | None) -> bool:
+    """Return True for valid 3.30 Viscera / Graft slots that have no GGG Trade category filter."""
+    return _normalize_slot(slot) in _UNCATEGORIZED_TRADE_SLOTS
 
 
 def pob_slot_for_slot(slot: str) -> str | None:

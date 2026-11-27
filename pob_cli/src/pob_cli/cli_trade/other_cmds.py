@@ -161,6 +161,8 @@ def cmd_trade_stats(
                 "score": match.score,
                 **_polarity_json(match.id),
             }
+            if match.polarity_inverted:
+                match_obj["polarityInverted"] = True
             if disambig_cands:
                 match_obj["disambiguationCandidates"] = disambig_cands
         payload: dict[str, object] = {
@@ -190,9 +192,10 @@ def cmd_trade_stats(
 
         lines: list[str] = [w.format_markdown() for w in get_active_warnings()]
         if match:
+            inv_note = ", bounds inverted (negated)" if match.polarity_inverted else ""
             lines.append(
                 f"Resolved (`{source}`): `{match.text}` -> `{match.id}` "
-                f"(score {match.score:.3f}, polarity {_fmt_polarity_md(match.id)})"
+                f"(score {match.score:.3f}, polarity {_fmt_polarity_md(match.id)}{inv_note})"
             )
         else:
             lines.append(f"No confident match for `{text}` (source: `{source}`).")
