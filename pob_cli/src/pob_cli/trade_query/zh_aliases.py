@@ -19,6 +19,8 @@ ZH_STAT_ALIASES: dict[str, str] = {
     "最大魔力": "+# to maximum Mana",
     "魔力回复": "#% increased Mana Regeneration Rate",
     "魔力回复速度": "#% increased Mana Regeneration Rate",
+    "减少魔力消耗": "#% reduced Mana Cost of Skills",
+    "魔力消耗降低": "#% reduced Mana Cost of Skills",
     # Resistances
     "火抗": "+#% to Fire Resistance",
     "火焰抗性": "+#% to Fire Resistance",
