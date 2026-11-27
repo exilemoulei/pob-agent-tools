@@ -242,7 +242,26 @@ _SKILL_RM_KEYS: frozenset[str] = _SKILL_COMMON_GROUP_KEYS | frozenset(
     {"gem", "index", "removeGem", "remove_gem"}
 )
 
+_BORROW_KEYS: frozenset[str] = frozenset(
+    {
+        "items",
+        "item_slots",
+        "itemSlots",
+        "slots",
+        "slot",
+        "item_slot",
+        "skill_group",
+        "skillGroup",
+        "tree",
+        "borrow_tree",
+        "borrowTree",
+        "tree_jewels",
+        "treeJewels",
+    }
+)
 _OP_VALID_KEYS: dict[str, frozenset[str]] = {
+    "borrow": _BORROW_KEYS,
+    "transplant": _BORROW_KEYS,
     "config": _CONFIG_KEYS,
     "config_set": _CONFIG_KEYS,
     "flask": _FLASK_KEYS,
@@ -329,6 +348,37 @@ def validate_batch_op(idx: int, kind: str, op: dict[str, Any]) -> dict[str, Any]
         )
 
     norm = normalize_batch_op_types(idx, kind, op)
+    if kind in ("borrow", "transplant"):
+        for group_label, alias_keys in (
+            ("tree", ("tree", "borrow_tree", "borrowTree")),
+            ("tree_jewels", ("tree_jewels", "treeJewels")),
+        ):
+            vals = [(k, bool(norm[k])) for k in alias_keys if norm.get(k) is not None]
+            if len({v for _, v in vals}) > 1:
+                raise ValueError(
+                    f"Batch step #{idx} ({kind}): conflicting {group_label} aliases {dict(vals)}; "
+                    "pass only one or matching booleans."
+                )
+        sg_vals = [
+            (k, str(norm[k]).strip())
+            for k in ("skill_group", "skillGroup")
+            if norm.get(k) is not None and str(norm[k]).strip() != ""
+        ]
+        if len({v for _, v in sg_vals}) > 1:
+            raise ValueError(
+                f"Batch step #{idx} ({kind}): conflicting skill_group aliases {dict(sg_vals)}; pass only one."
+            )
+        has_items = any(
+            bool(norm.get(k))
+            for k in ("items", "item_slots", "itemSlots", "slots", "slot", "item_slot")
+        )
+        has_sg = bool(sg_vals)
+        has_tree = any(bool(norm.get(k)) for k in ("tree", "borrow_tree", "borrowTree"))
+        if not (has_items or has_sg or has_tree):
+            raise ValueError(
+                f"Batch step #{idx} ({kind}): borrows nothing; provide at least one of "
+                "'items' (or 'slot'), 'skill_group', or 'tree': true."
+            )
     if kind == "switch_main" and not any(op.get(k) is not None for k in _SWITCH_MAIN_KEYS):
         raise ValueError(
             f"Batch step #{idx} ({kind}): switches nothing; give at least one of spec, skillGroup, "

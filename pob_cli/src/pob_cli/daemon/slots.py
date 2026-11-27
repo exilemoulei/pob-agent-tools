@@ -25,7 +25,7 @@ from ..updater import (
     unrestored_swap,
 )
 from .read_cache import READ_CACHE_ACTIONS, SlotReadCache
-from .rpc_dual import same_slot_error
+from .rpc_dual import action_needs_ref_slot, same_slot_error
 from .rpc_handlers import dispatch_dual_slot_action, dispatch_game_data, dispatch_slot_action
 from .runtime import (
     GAME_ID,
@@ -481,7 +481,7 @@ class DaemonManager:
             action == "tree_diff" and not (params.get("spec_a") or params.get("spec_b"))
         ) or (
             action == "diagnose" and (params.get("compare_source") or params.get("compare_xml_code"))
-        ):
+        ) or action_needs_ref_slot(action, params):
             main_slot = normalize_slot_name(params.get("main_target") or params.get("target") or "main")
             default_ref = "ref" if main_slot == "main" else f"{main_slot}_ref"
             ref_slot = normalize_slot_name(params.get("ref_target") or default_ref)

@@ -16,6 +16,21 @@ if TYPE_CHECKING:
     from .slots import DaemonManager
 
 
+def action_needs_ref_slot(action: str, params: dict[str, Any]) -> bool:
+    """Return True if a `batch` or `sweep` RPC contains any `borrow` / `transplant` op."""
+    if action not in ("batch", "sweep"):
+        return False
+    from ..mutators.batch_ops_borrow import ops_need_ref
+
+    if action == "batch":
+        raw_ops = params.get("ops")
+        return ops_need_ref(raw_ops if isinstance(raw_ops, list) else None)
+    base_ops = params.get("base_ops") or params.get("baseOps")
+    variants = params.get("variants") or []
+    var_ops = [v.get("ops") for v in variants if isinstance(v, dict) and isinstance(v.get("ops"), list)]
+    return ops_need_ref(base_ops if isinstance(base_ops, list) else None, *var_ops)
+
+
 def same_slot_error(action: str, slot: str) -> str:
     """Why a two-slot command refuses one slot named twice, in that command's own flags."""
     if action == "tree_diff":
@@ -72,9 +87,46 @@ def dispatch_dual_slot_action(
             rw,
             item_slots=params.get("item_slots"),
             skill_group=params.get("skill_group"),
+            borrow_tree=opt_bool(params, "borrow_tree", "borrowTree", default=False),
+            borrow_tree_jewels=opt_bool(params, "borrow_tree_jewels", "borrowTreeJewels", default=True),
+            scenario=params.get("scenario"),
+            keep=norm_keep(params),
             apply=opt_bool(params, "apply", default=False),
         )
         return manager._attach_state_meta(b_res, mw)
+
+    if action in ("batch", "sweep"):
+        from .. import mutators
+        from ..comparator.borrow import capture_ref_bundle
+
+        if not rw.last_good_code:
+            ref_slot = getattr(rw, "slot_name", None) or "ref"
+            raise DaemonRequestError(
+                f"No reference build loaded in '{ref_slot}' slot. "
+                f"Run `pob load <source> --target {ref_slot}` or `pob compare <source>` first."
+            )
+        ref_bundle = capture_ref_bundle(rw)
+        if action == "batch":
+            res_b = mutators.run_batch(
+                mw,
+                ops=params.get("ops") or [],
+                apply=opt_bool(params, "apply", default=False),
+                no_undo=opt_bool(params, "no_undo", "noUndo", default=False),
+                return_sections=params.get("return_sections") or params.get("returnSections"),
+                keep=norm_keep(params),
+                ref_bundle=ref_bundle,
+            )
+            return manager._attach_state_meta(res_b, mw)
+        res_s = mutators.run_sweep(
+            mw,
+            variants=params.get("variants") or [],
+            base_ops=params.get("base_ops") or params.get("baseOps"),
+            calc_keywords=params.get("calc_keywords") or params.get("calcKeywords"),
+            scenario=params.get("scenario"),
+            keep=norm_keep(params),
+            ref_bundle=ref_bundle,
+        )
+        return manager._attach_state_meta(res_s, mw)
 
     if action == "diagnose":
         from ..analyzer import diagnose_compare_builds

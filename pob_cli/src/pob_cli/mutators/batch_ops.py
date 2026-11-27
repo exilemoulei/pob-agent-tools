@@ -8,6 +8,7 @@ from typing import Any
 from ..bridge_client import BridgeWorker
 from ..guardrails import GuardrailScope, check_input, check_input_item_raw, validate_url
 from ..snapshot import BuildScope
+from .batch_ops_borrow import BORROW_OP_KINDS, _op_borrow
 from .batch_ops_skills import (
     _op_add_group,
     _op_delete_group,
@@ -391,6 +392,8 @@ def _op_skill_rm(w: BridgeWorker, op: dict[str, Any], cache: _BatchCache, idx: i
 
 
 _BATCH_OP_HANDLERS: dict[str, _BatchOpHandler] = {
+    "borrow": _op_borrow,
+    "transplant": _op_borrow,
     "config": _op_config,
     "config_set": _op_config,
     "flask": _op_flask,
@@ -449,6 +452,8 @@ def op_scope(op: Any) -> BuildScope:
         return BuildScope.ACTIVE_SETS
     kind = str(op.get("op") or op.get("type") or op.get("action") or "").strip().lower().replace("-", "_")
     if kind == "switch_main" and any(op.get(k) is not None for k in _SET_SWITCH_KEYS):
+        return BuildScope.SETS
+    if kind in BORROW_OP_KINDS and any(bool(op.get(k)) for k in ("tree", "borrow_tree", "borrowTree")):
         return BuildScope.SETS
     return _OP_SCOPES.get(kind, BuildScope.ACTIVE_SETS)
 
