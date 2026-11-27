@@ -43,6 +43,7 @@ from .other_cmds import (
     cmd_trade_stats,
     trade_group,
 )
+from .plan_cmd import cmd_trade_plan
 from .search_cmd import cmd_trade_search
 
 __all__ = [
@@ -77,6 +78,7 @@ __all__ = [
     "cmd_bench_suggest",
     "cmd_trade_convert",
     "cmd_trade_leagues",
+    "cmd_trade_plan",
     "cmd_trade_search",
     "cmd_trade_stats",
     "fetch_currency_chaos_rates",
