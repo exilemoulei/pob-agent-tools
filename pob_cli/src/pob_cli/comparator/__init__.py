@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from .borrow import TWO_HANDED_TYPES, borrow_from_ref
+from .borrow import (
+    TWO_HANDED_TYPES,
+    apply_borrow_in_place,
+    borrow_from_ref,
+    capture_ref_bundle,
+)
 from .compare import (
     EXTERNAL_ENV_WHITELIST,
     _apply_env_config,
@@ -58,7 +63,9 @@ __all__ = [
     "_run_worker_pair",
     "_safe_dist",
     "_safe_float",
+    "apply_borrow_in_place",
     "borrow_from_ref",
+    "capture_ref_bundle",
     "compare_builds",
     "compute_sadism_per_ailment_pct",
     "compute_sadism_stats",

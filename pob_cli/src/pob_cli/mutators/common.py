@@ -370,8 +370,9 @@ def _normalize_keep_list(keep: Iterable[str] | str | None) -> list[str]:
 class _BatchCache:
     """Tab-level read cache scoped to a single `run_batch` / `run_sweep` execution."""
 
-    def __init__(self, worker: BridgeWorker) -> None:
+    def __init__(self, worker: BridgeWorker, *, ref_bundle: dict[str, Any] | None = None) -> None:
         self.worker = worker
+        self.ref_bundle = ref_bundle
         self.config: dict[str, Any] | None = None
         self.known_config_vars: dict[str, str] | None = None
         self.known_config_items: dict[str, dict[str, Any]] | None = None

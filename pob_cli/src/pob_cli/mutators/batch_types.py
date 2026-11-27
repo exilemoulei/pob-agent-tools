@@ -39,6 +39,11 @@ _BOOL_KEYS: frozenset[str] = frozenset(
         "allow_illegal_level",
         "allowIllegalAffixes",
         "allow_illegal_affixes",
+        "tree",
+        "borrow_tree",
+        "borrowTree",
+        "tree_jewels",
+        "treeJewels",
     }
 )
 _INT_KEYS: frozenset[str] = frozenset(
@@ -152,6 +157,37 @@ def normalize_batch_op_types(idx: int, kind: str, op: dict[str, Any]) -> dict[st
             for key in ("addMods", "add_mods", "removeMods", "remove_mods"):
                 if op.get(key) is not None:
                     out[key] = parse_str_list(op[key], key)
+        if kind in ("borrow", "transplant"):
+            for key in ("items", "item_slots", "itemSlots", "slots"):
+                raw_slots = op.get(key)
+                if raw_slots is not None:
+                    if isinstance(raw_slots, str):
+                        parts = [x.strip() for x in raw_slots.split(",") if x.strip()]
+                        if not parts:
+                            raise ValueError(f"'{key}' must contain at least one non-empty slot name")
+                        out[key] = parts
+                    else:
+                        parsed_list = parse_str_list(raw_slots, key)
+                        if any(not str(x).strip() for x in parsed_list):
+                            raise ValueError(f"'{key}' entries must be non-empty slot strings")
+                        out[key] = [str(x).strip() for x in parsed_list]
+            for key in ("slot", "item_slot"):
+                raw_s = op.get(key)
+                if raw_s is not None:
+                    if not isinstance(raw_s, str):
+                        raise ValueError(f"'{key}' must be a string, got {type(raw_s).__name__}")
+                    if not raw_s.strip():
+                        raise ValueError(f"'{key}' must be a non-empty slot string")
+                    out[key] = raw_s.strip()
+            for key in ("skill_group", "skillGroup"):
+                raw_sg = op.get(key)
+                if raw_sg is not None:
+                    if isinstance(raw_sg, bool):
+                        raise ValueError(f"'{key}' must be a skill group index or name, got bool")
+                    if isinstance(raw_sg, int) and raw_sg < 1:
+                        raise ValueError(f"'{key}' index must be >= 1, got {raw_sg}")
+                    if isinstance(raw_sg, str) and not raw_sg.strip():
+                        raise ValueError(f"'{key}' must be a non-empty string or integer")
         if op.get("gems") is not None:
             out["gems"] = parse_gem_list(op["gems"])
     except ValueError as exc:

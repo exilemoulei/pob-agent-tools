@@ -7,6 +7,7 @@ from typing import Any
 import click
 
 from .cli_common import (
+    _SLOT_SLUG_TYPE,
     _emit_json,
     _emit_text,
     _merge_keep_tokens,
@@ -38,6 +39,14 @@ from .formatters import format_mutation_report, keep_rejected_warning, restore_w
     help="Comma-separated readouts to attach (e.g. 'summary,audit,audit:full,matrix,calc:DPS;Mana,export').",
 )
 @_target_option(allow_slot_alias=True)
+@click.option(
+    "--ref-target",
+    "ref_target",
+    type=_SLOT_SLUG_TYPE,
+    default="ref",
+    show_default=True,
+    help="Reference build slot slug for `op: 'borrow'` steps (default: 'ref').",
+)
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @_output_options
 def cmd_batch(
@@ -48,6 +57,7 @@ def cmd_batch(
     keep: tuple[str, ...],
     return_spec: str | None,
     target: str,
+    ref_target: str,
     as_json: bool,
     compact: bool,
     out_path: str | None,
@@ -72,6 +82,7 @@ def cmd_batch(
     return_sections = ret_parts or None
     params: dict[str, Any] = {
         "target": target,
+        "ref_target": ref_target,
         "ops": ops,
         "apply": apply,
         "no_undo": no_undo,
@@ -134,6 +145,14 @@ def cmd_batch(
     help="Keep build-guaranteed items in audit/matrix/Pinnacle scenarios.",
 )
 @_target_option(allow_slot_alias=True)
+@click.option(
+    "--ref-target",
+    "ref_target",
+    type=_SLOT_SLUG_TYPE,
+    default="ref",
+    show_default=True,
+    help="Reference build slot slug for `op: 'borrow'` steps (default: 'ref').",
+)
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @_output_options
 def cmd_sweep(
@@ -144,6 +163,7 @@ def cmd_sweep(
     scenario: str | None,
     keep: tuple[str, ...],
     target: str,
+    ref_target: str,
     as_json: bool,
     compact: bool,
     out_path: str | None,
@@ -185,6 +205,7 @@ def cmd_sweep(
     eff_keep = _merge_keep_tokens(json_keep, keep)
     params: dict[str, Any] = {
         "target": target,
+        "ref_target": ref_target,
         "variants": variants,
         "base_ops": base_ops,
         "calc_keywords": eff_calcs or None,

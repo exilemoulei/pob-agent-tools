@@ -127,6 +127,7 @@ def run_batch(
     no_undo: bool = False,
     return_sections: list[str] | str | None = None,
     keep: Iterable[str] | str | None = None,
+    ref_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute a composite list of mutations in a single transaction with optional inline readouts."""
     import pob_cli.mutators as _mut
@@ -138,7 +139,7 @@ def run_batch(
 
     if apply and no_undo:
         with BuildTransaction(worker, scope=ops_scope(ops), will_commit=True) as tx:
-            cache = _BatchCache(worker)
+            cache = _BatchCache(worker, ref_bundle=ref_bundle)
             step_results = _execute_batch_ops(worker, ops, cache)
             digest_after = _mut.capture_digest(worker)
             returns_map = _collect_return_sections(worker, sections, keep=keep) if sections else None
@@ -174,7 +175,7 @@ def run_batch(
 
     def _do_batch(w: BridgeWorker) -> dict[str, Any]:
         nonlocal captured_returns
-        cache = _BatchCache(w)
+        cache = _BatchCache(w, ref_bundle=ref_bundle)
         step_results = _execute_batch_ops(w, ops, cache)
         if sections:
             captured_returns = _collect_return_sections(w, sections, keep=keep)
@@ -218,6 +219,7 @@ def _sweep_variant(
     base_digest: dict[str, Any],
     kw_list: list[str],
     use_direct: bool,
+    ref_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one variant's ops on the base build and measure it; raises on a bad variant."""
     import pob_cli.mutators as _mut
@@ -225,7 +227,7 @@ def _sweep_variant(
     v_ops = var.get("ops") or []
     if not isinstance(v_ops, list):
         raise ValueError(f"Variant '{v_name}' 'ops' must be a list of batch operations.")
-    step_results = _execute_batch_ops(worker, v_ops, _BatchCache(worker)) if v_ops else []
+    step_results = _execute_batch_ops(worker, v_ops, _BatchCache(worker, ref_bundle=ref_bundle)) if v_ops else []
     v_digest = capture_direct_digest(worker, base_digest=base_digest) if use_direct else _mut.capture_digest(worker)
     entry: dict[str, Any] = {
         "name": v_name,
@@ -242,6 +244,28 @@ def _sweep_variant(
     return entry
 
 
+_VARIANT_META_KEYS: frozenset[str] = frozenset(
+    {"name", "label", "id", "ops", "comment", "note", "why", "desc", "description", "reason"}
+)
+
+
+def _validate_sweep_variants(variants: list[Any]) -> None:
+    """Reject sweep variants with misplaced top-level step fields or non-list `ops` before starting a transaction."""
+    for idx, var in enumerate(variants):
+        if not isinstance(var, dict):
+            continue
+        v_name = str(var.get("name") or f"Variant {idx + 1}").strip()
+        if "ops" in var and var["ops"] is not None and not isinstance(var["ops"], list):
+            raise ValueError(f"Sweep variant '{v_name}' 'ops' must be a list of batch operations.")
+        if "ops" not in var or var.get("ops") is None:
+            misplaced = sorted(k for k in var if k not in _VARIANT_META_KEYS and not str(k).startswith("_"))
+            if misplaced:
+                raise ValueError(
+                    f"Sweep variant '{v_name}' has step fields ({', '.join(misplaced)}) at top level "
+                    f'without an \'ops\' list; wrap as {{"name": {v_name!r}, "ops": [{{"op": ...}}]}}.'
+                )
+
+
 def run_sweep(
     worker: BridgeWorker,
     variants: list[dict[str, Any]],
@@ -250,12 +274,14 @@ def run_sweep(
     calc_keywords: list[str] | str | None = None,
     scenario: str | dict[str, Any] | None = None,
     keep: Iterable[str] | str | None = None,
+    ref_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate N named build variants in ONE warm daemon worker with fault isolation and 0-residue rollback."""
     import pob_cli.mutators as _mut
 
     if not variants:
         raise ValueError("Sweep variants list cannot be empty.")
+    _validate_sweep_variants(variants)
 
     kw_list: list[str] = []
     if isinstance(calc_keywords, str):
@@ -285,7 +311,7 @@ def run_sweep(
             )
             tx.verify_digest = orig_digest
         if base_ops:
-            base_steps = _execute_batch_ops(worker, base_ops, _BatchCache(worker))
+            base_steps = _execute_batch_ops(worker, base_ops, _BatchCache(worker, ref_bundle=ref_bundle))
         if has_scenario:
             from ..comparator import _apply_matrix_scenario_in_place, _parse_matrix_scenario
 
@@ -320,7 +346,7 @@ def run_sweep(
                     fallbacks.append(f"before '{v_name}': {note}")
             dirty = bool(var.get("ops"))
             try:
-                results.append(_sweep_variant(worker, tx, var, v_name, base_digest, kw_list, use_direct))
+                results.append(_sweep_variant(worker, tx, var, v_name, base_digest, kw_list, use_direct, ref_bundle))
             except CrossGameHallucinationError:
                 raise
             except Exception as exc:

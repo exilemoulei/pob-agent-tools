@@ -16,7 +16,7 @@ from .cli_common import (
     _target_option,
     invoke_daemon,
 )
-from .formatters import format_mutation_report
+from .formatters import format_mutation_report, keep_rejected_warning, restore_warning
 
 
 @click.command("compare")
@@ -99,7 +99,27 @@ def cmd_compare(
     help="Comma-separated equipment slot(s) to borrow from reference into target (e.g. 'Weapon 1,Amulet,Body,node:33631').",
 )
 @click.option("--skill-group", "skill_group", help="Skill group ('main', index, or label) to borrow from reference into target.")
-@click.option("--apply", is_flag=True, help="Persist borrowed items/skills into target build.")
+@click.option("--tree", "borrow_tree", is_flag=True, help="Transplant the reference build's passive tree (and allocated socket jewels).")
+@click.option(
+    "--no-tree-jewels",
+    "no_tree_jewels",
+    is_flag=True,
+    help="With --tree, transplant passive nodes/masteries without auto-borrowing allocated socket jewels.",
+)
+@click.option(
+    "--scenario",
+    "scenario",
+    type=str,
+    default=None,
+    help="Measure what-if deltas under a temporary combat baseline (e.g. Pinnacle, Uber); cannot combine with --apply.",
+)
+@click.option(
+    "--keep",
+    "keep",
+    multiple=True,
+    help="Keep build-guaranteed items when --scenario applies Pinnacle/Uber dewatering.",
+)
+@click.option("--apply", is_flag=True, help="Persist borrowed items/skills/tree into target build.")
 @_target_option(allow_slot_alias=True)
 @click.option(
     "--ref-target",
@@ -114,6 +134,10 @@ def cmd_compare(
 def cmd_borrow(
     item_slot: str | None,
     skill_group: str | None,
+    borrow_tree: bool,
+    no_tree_jewels: bool,
+    scenario: str | None,
+    keep: tuple[str, ...],
     apply: bool,
     target: str,
     ref_target: str,
@@ -121,24 +145,47 @@ def cmd_borrow(
     compact: bool,
     out_path: str | None,
 ) -> None:
-    """Borrow items and/or a skill group from reference slot into target slot and compute exact delta."""
+    """Borrow items, a skill group, and/or passive tree from reference slot into target slot."""
+    has_scenario = bool(scenario and scenario.strip())
+    if has_scenario and apply:
+        raise click.ClickException(
+            "--scenario measures what-if deltas under a temporary combat baseline and cannot be combined "
+            "with --apply; omit --scenario when persisting changes."
+        )
+    if keep and not has_scenario:
+        raise click.ClickException(
+            "--keep on `pob borrow` requires `--scenario <name>` (e.g. `--scenario Pinnacle`)."
+        )
     slots = [x.strip() for x in item_slot.split(",") if x.strip()] if item_slot else []
-    res = invoke_daemon(
-        "borrow",
-        {
-            "target": target,
-            "ref_target": ref_target,
-            "item_slots": slots,
-            "skill_group": skill_group,
-            "apply": apply,
-        },
-    )
+    params: dict[str, Any] = {
+        "target": target,
+        "ref_target": ref_target,
+        "item_slots": slots,
+        "skill_group": skill_group,
+        "apply": apply,
+    }
+    if borrow_tree:
+        params["borrow_tree"] = True
+    if no_tree_jewels:
+        params["borrow_tree_jewels"] = False
+    if has_scenario and scenario is not None:
+        params["scenario"] = scenario.strip()
+    if keep:
+        params["keep"] = list(keep)
+    res = invoke_daemon("borrow", params)
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)
         return
 
     notices = (res.get("detail") or {}).get("notices") or []
     report = format_mutation_report(f"Borrow from Reference Build (`{ref_target}` -> `{target}`)", res)
+    r_warn = restore_warning(res)
+    if r_warn:
+        report = f"{r_warn}\n{report}"
+    stripped = (res.get("scenarioApplied") or {}).get("stripped") or {}
+    rej_lines = keep_rejected_warning(stripped) if isinstance(stripped, dict) else []
+    if rej_lines:
+        report += "\n" + "\n".join(rej_lines)
     if notices:
         notice_block = "\n#### Transplant Notices\n" + "\n".join(f"- {n}" for n in notices)
         report += notice_block
