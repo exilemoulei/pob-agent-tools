@@ -48,10 +48,24 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
             except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
                 pass
 
+        def _drain_small_body(self, max_bytes: int = 65536) -> None:
+            # Drain unread POST bodies before closing on early 4xx responses so
+            # Windows Winsock sends FIN instead of TCP RST (WinError 10053).
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                return
+            if 0 < length <= max_bytes:
+                try:
+                    self.rfile.read(length)
+                except OSError:
+                    pass
+
         def do_POST(self) -> None:
             token = self.headers.get("X-PoB-Token", "")
             foreign_token = self.headers.get("X-PoB2-Token", "")
             if foreign_token and not token:
+                self._drain_small_body()
                 exc = CrossGameHallucinationError(
                     game=GAME_ID,
                     detected_game="poe2",
@@ -67,10 +81,12 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
                 self._send_json(400, {**exc.to_dict(), "type": "CrossGameHallucinationError"})
                 return
             if not secrets.compare_digest(token, manager.token):
+                self._drain_small_body()
                 self._send_json(403, {"ok": False, "error": "Forbidden: invalid or missing X-PoB-Token"})
                 return
 
             if self.path != "/rpc":
+                self._drain_small_body()
                 self._send_json(404, {"ok": False, "error": "Not found"})
                 return
 
