@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .deficits import BuildDeficits, RebalanceStep, extract_build_deficits
+from .solver import solve_rebalance
 from .steps_catalyst_tattoo import (
     apply_catalyst_to_raw,
     enumerate_catalyst_steps,
@@ -26,4 +27,5 @@ __all__ = [
     "extract_build_deficits",
     "harvest_tier_min_roll",
     "parse_catalyst_header",
+    "solve_rebalance",
 ]

@@ -257,6 +257,11 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "cmd_map_regex",
         "Generate <=250-char 0-false-positive T16/T17 map filter regex tailored to your PoB build.",
     ),
+    "rebalance": (
+        ".cli_rebalance",
+        "cmd_rebalance",
+        "Solve attribute & resistance deficits via PoB CoW-verified Bench/Harvest/Catalyst/Tattoo steps (zero-buy).",
+    ),
     "help": (
         ".cli_help",
         "cmd_help",

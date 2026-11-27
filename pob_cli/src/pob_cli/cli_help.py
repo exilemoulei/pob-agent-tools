@@ -87,7 +87,7 @@ def format_brief_help(root: click.Group, root_ctx: click.Context) -> str:
     lines = [
         "pob — Headless PoE1 3.30 Path of Building CLI (run `pob <cmd> --help` for full details)",
         "Global: [--offline] [--compact] [--out FILE] | Build slot: [--target SLUG] (default POB_SLOT or 'main'); "
-        "--slot below is an equipment/socket slot (items, item, trade, bench, data, rank-gems, skill new-group)",
+        "--slot below is an equipment/socket slot (items, item, trade, bench, data, rank-gems, rebalance, skill new-group)",
     ]
     pad = max((len(e["name"]) for e in entries), default=10)
     for ent in entries:

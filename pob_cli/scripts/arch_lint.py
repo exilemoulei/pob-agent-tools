@@ -84,6 +84,7 @@ LAYER_MAP: dict[str, int] = {
     "cli_timeless": 4,
     "cli_timeless_trade": 4,
     "cli_map_regex": 4,
+    "cli_rebalance": 4,
 }
 
 BLOCKED_RPC_EXACT: frozenset[str] = frozenset(

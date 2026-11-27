@@ -81,6 +81,7 @@ _STATE_META_ACTIONS = frozenset(
         "batch",
         "sweep",
         "matrix",
+        "rebalance",
     }
 )
 
