@@ -23,7 +23,7 @@ pob <command>  (L4 cli*.py, lazy-loaded subcommands; `_lua-host` pre-dispatched 
 
 | Layer | Modules | Role |
 |---|---|---|
-| L0 | `errors.py`, `ticks.py`, `os_util.py`, `compat.py`, `json_io.py`, `locale_cfg.py`, `guardrails/` (incl. `redact.py`) | Foundation and static rules: error types, tick math, process/lockfile helpers, signature-compat/UTF-8 helpers, fail-safe JSON I/O, the display-language setting, secret redaction, PoE2 guardrails |
+| L0 | `errors.py`, `ticks.py`, `scoring.py`, `os_util.py`, `compat.py`, `json_io.py`, `locale_cfg.py`, `guardrails/` (incl. `redact.py`) | Foundation and static rules: error types, tick math, `--score`/`--floor` math, process/lockfile helpers, signature-compat/UTF-8 helpers, fail-safe JSON I/O, the display-language setting, secret redaction, PoE2 guardrails |
 | L1 | `updater/`, `bridge_protocol.py`, `bridge_client.py`, `bridge_boot.py`, `bridge_trees.py`, `importers.py`, `importers_codec.py`, `importers_stages.py`, `profile_import/`, `game_data/`, `external_data/`, `poedb_client/` | Engine runtime and data sources: engine install and updates, the bridge to the engine, build import, official Intl/CN profile import & ZH->EN translation, local game data, poe.ninja / wiki / PoEDB clients |
 | L2 | `formatters/`, `snapshot/`, `analyzer/`, `mutators/`, `comparator/`, `bench/`, `item_inspect.py`, `item_ablate/`, `trade_craft.py`, `trade_item/`, `trade_client/`, `trade_query/`, `trade_eval/`, `timeless/` | Domain core: rendering, what-if transactions, audits, build edits, comparison, crafting bench, trade, timeless jewels |
 | L3 | `daemon/` | The daemon server and its client |

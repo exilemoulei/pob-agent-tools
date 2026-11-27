@@ -78,6 +78,12 @@ Resolves English or Chinese modifier text to an official PoE1 trade stat ID with
 
 Each candidate's `Trade listing` link is the same search narrowed to that listing's seller account, so it opens on that item instead of the whole result list (a seller with several matching listings gets a link showing all of them).
 
+### `pob trade plan <search.json>... --budget N [--score dps=W,ehp=W] [--divine-rate C] [--top 10] [--json]`
+
+Plans one budget across several slots without calling the trade API again. Save each slot's `pob trade search --pob on --json --out <slot>.json`, then pass the files: the plan keeps listings with a chaos price and a PoB result, scores each as `Σ W × Δ%` (default `dps=1,ehp=0.25`, the same blend as `--sort pob`), and picks at most one listing per slot so the total score is highest within `--budget` chaos. Searches for the same slot under different spellings (`ring1`, `Ring 1`) count as one slot, and a listing found in two files is bought once. It also lists the best score per chaos across all slots.
+
+A search saved without `--sort price` or `--bargain` has no chaos price for Divine listings; pass `--divine-rate <chaos per Divine>` to price them, otherwise they are skipped and counted. Each delta was verified alone against the current build, so the combined gain is an estimate: apply the picks one at a time with `pob item try` to confirm.
+
 ### `pob trade convert (--text T | --file f) --to fire|cold|lightning [--out f] [--force] [--json]`
 
 Rewrites Harvest-convertible explicit single-element modifiers in PoB item text and prints conversion rules, 3.30 costs, warnings, and skipped reasons.
