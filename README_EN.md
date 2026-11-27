@@ -18,6 +18,8 @@ Saved trade searches for several slots can then be planned offline into the best
 
 It gives real upgrade suggestions, automatically builds trade queries around your build's gaps (with instant Gold buyout `--securable` filtering, seller deduplication, and lossless `+20%` quality normalization in PoB) with direct trade links, hunts Timeless Jewel seeds (including Abyss jewels) in seconds, generates build-aware 0-false-positive T16/T17 map regexes (`pob map-regex` — outputs passive text for manual copy-paste into the stash search box and never interacts with the game client, files, or overlays), and supports zero-engine boss/fragment drop lookup plus bilingual currency/divcard price queries (`pob data drop`, `pob price`)!
 
+It also measures in PoB what each stat line, bandit, Pantheon power and socketed jewel is worth to your build in DPS and EHP (`pob weights`), restoring the build afterwards.
+
 ---
 
 ## How do I install it?
