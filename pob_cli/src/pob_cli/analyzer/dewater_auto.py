@@ -444,4 +444,5 @@ def dewater_smart_in_place(
         keep=keep,
         auto_keep_reasons=ak_reasons,
         flask_notes=flask_notes,
+        equipped_slots_raw=eff_raw,
     )

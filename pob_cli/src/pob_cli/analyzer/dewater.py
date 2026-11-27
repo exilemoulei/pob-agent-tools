@@ -66,6 +66,7 @@ def dewater_build_in_place(
     *,
     auto_keep_reasons: dict[str, str] | None = None,
     flask_notes: dict[str, str] | None = None,
+    equipped_slots_raw: list[dict[str, Any]] | None = None,
 ) -> dict[str, list[str]]:
     """Strip PoB inflation ('water') in place and set enemyIsBoss='Pinnacle'."""
     stripped, _records = dewater_build_with_records(
@@ -73,6 +74,7 @@ def dewater_build_in_place(
         keep=keep,
         auto_keep_reasons=auto_keep_reasons,
         flask_notes=flask_notes,
+        equipped_slots_raw=equipped_slots_raw,
     )
     return stripped
 
@@ -84,6 +86,7 @@ def dewater_build_with_records(
     has_bloodsoaked_blade: bool | None = None,
     auto_keep_reasons: dict[str, str] | None = None,
     flask_notes: dict[str, str] | None = None,
+    equipped_slots_raw: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
     """De-water in place (2 pipelined RPC batches) and return reversible per-item records."""
     keep_set = _normalize_keep(keep)
@@ -129,6 +132,7 @@ def dewater_build_with_records(
         records,
         has_bloodsoaked_blade=has_bloodsoaked_blade,
         flask_notes=flask_notes,
+        equipped_slots_raw=equipped_slots_raw,
     )
     _dewater_skills(skills_res, keep_set, known, stripped, mutations, records)
 

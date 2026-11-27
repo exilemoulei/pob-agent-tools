@@ -269,6 +269,8 @@ def audit_build(
             dw_kw["auto_keep_reasons"] = ak_reasons
         if "flask_notes" in dw_defs:
             dw_kw["flask_notes"] = flask_notes
+        if "equipped_slots_raw" in dw_defs:
+            dw_kw["equipped_slots_raw"] = eff_raw
         stripped, records = _analyzer.dewater_build_with_records(worker, keep=keep, **dw_kw)
         digest_dewatered = capture_digest(worker)
         eb_dew_note = collect_dewatered_eb_flask_note(
