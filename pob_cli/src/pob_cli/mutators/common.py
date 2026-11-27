@@ -10,7 +10,6 @@ from typing import Any
 from .. import game_data as _game_data
 from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
-from ..guardrails import normalize_equipment_slot
 
 _EXCEPTIONAL_AWAKENED_KEEP: frozenset[str] = frozenset(
     {
@@ -347,31 +346,9 @@ def _fold_no_apos(text: str | None) -> str:
 
 def _resolve_slot_from_items(items_res: dict[str, Any], slot_query: str) -> str:
     """Resolve slot query against an already-fetched `list_items` response (avoids duplicate RPCs)."""
-    q = normalize_equipment_slot(_game_data.fold_han(slot_query)) or slot_query.strip()
-    slots = items_res.get("slots", [])
+    from ..analyzer.inspectors import resolve_slot_from_items
 
-    m_jewel = re.match(r"^#?(\d+)$", q)
-    if m_jewel:
-        idx = int(m_jewel.group(1))
-        for s in slots:
-            if s.get("socketIndex") == idx:
-                return s["name"]
-        raise ValueError(f"Jewel socket #{idx} not found in build slots.")
-
-    q_lower = q.lower()
-    for s in slots:
-        if (
-            s.get("name", "").lower() == q_lower
-            or _game_data.fold_han(s.get("label") or "").lower() == q_lower
-            or _game_data.fold_han(s.get("labelZh") or "").lower() == q_lower
-        ):
-            return s["name"]
-
-    for s in slots:
-        if q_lower in s.get("name", "").lower() or q_lower in _game_data.fold_han(s.get("labelZh") or "").lower():
-            return s["name"]
-
-    raise ValueError(f"Equipment slot '{slot_query}' not found.")
+    return resolve_slot_from_items(items_res, slot_query)
 
 
 def _normalize_keep_list(keep: Iterable[str] | str | None) -> list[str]:
@@ -493,4 +470,4 @@ def _is_jewel_slot_name(slot_name: str | None) -> bool:
     if not slot_name:
         return False
     s = slot_name.strip().lower()
-    return "jewel" in s or s.startswith("#") or s.isdigit()
+    return "jewel" in s or s.startswith(("#", "node:", "socket:", "socket #")) or s.isdigit()

@@ -1,4 +1,4 @@
-"""3-baseline dual-build comparison (`compare_builds`) and cross-build transplant (`borrow_from_ref`)."""
+"""3-baseline dual-build comparison (`compare_builds`)."""
 
 from __future__ import annotations
 
@@ -8,12 +8,7 @@ from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from ..analyzer import (
-    dewater_smart_in_place,
-    inspect_tree,
-    resolve_skill_group_index,
-    resolve_slot_name,
-)
+from ..analyzer import dewater_smart_in_place, inspect_tree
 from ..bridge_client import BridgeWorker
 from ..formatters import _parse_numeric_or_none, fmt_delta, fmt_num, strip_pob_escapes
 from ..importers import share_code_to_xml
@@ -24,8 +19,21 @@ from ..snapshot import (
     _json_safe_stat,
     capture_digest,
     load_build,
-    run_mutation,
 )
+from .borrow import TWO_HANDED_TYPES, borrow_from_ref
+
+__all__ = [
+    "COMPARE_BUDGET_S",
+    "EXTERNAL_ENV_WHITELIST",
+    "TWO_HANDED_TYPES",
+    "_apply_env_config",
+    "_build_pair_table",
+    "_extract_env_config",
+    "_extract_env_config_from_cfg",
+    "_run_worker_pair",
+    "borrow_from_ref",
+    "compare_builds",
+]
 
 EXTERNAL_ENV_WHITELIST = (
     "enemyIsBoss",
@@ -39,18 +47,6 @@ EXTERNAL_ENV_WHITELIST = (
     "enemyChaosResist",
     "enemyMaxResist",
     "EHPUnluckyWorstOf",
-)
-
-TWO_HANDED_TYPES = frozenset(
-    {
-        "Bow",
-        "Staff",
-        "Warstaff",
-        "Two Handed Sword",
-        "Two Handed Axe",
-        "Two Handed Mace",
-        "Fishing Rod",
-    }
 )
 
 _COMPARE_SLOT_NAMES = (
@@ -70,6 +66,8 @@ _COMPARE_SLOT_NAMES = (
     "Flask 4",
     "Flask 5",
 )
+
+_VISCERA_SLOT_NAMES = ("Head", "Body", "Arm", "Leg")
 
 
 def _extract_env_config_from_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -182,6 +180,84 @@ def _active_skill_names(skills_res: dict[str, Any]) -> set[str]:
     return names
 
 
+def _fmt_item_label(item: dict[str, Any] | None) -> str:
+    if not item:
+        return "-"
+    return strip_pob_escapes(item.get("titleZh") or item.get("title") or item.get("nameZh") or item.get("name") or "-")
+
+
+def _fmt_item_base(item: dict[str, Any] | None) -> str:
+    if not item:
+        return "-"
+    return strip_pob_escapes(item.get("baseNameZh") or item.get("baseName") or item.get("base") or item.get("type") or "-")
+
+
+def _allocated_socket_node_ids(tree_summary: dict[str, Any]) -> set[int]:
+    out: set[int] = set()
+    for sock in tree_summary.get("jewelSockets") or []:
+        if isinstance(sock, dict) and sock.get("nodeId") is not None and sock.get("allocated"):
+            out.add(int(sock["nodeId"]))
+    return out
+
+
+def _build_jewel_socket_diff(
+    main_tree: dict[str, Any],
+    ref_tree: dict[str, Any],
+    main_items_res: dict[str, Any],
+    ref_items_res: dict[str, Any],
+    m_items_by_id: dict[int, dict[str, Any]],
+    r_items_by_id: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    m_alloc = _allocated_socket_node_ids(main_tree)
+    r_alloc = _allocated_socket_node_ids(ref_tree)
+    m_by_nid = {
+        int(s["nodeId"]): s
+        for s in main_items_res.get("slots", [])
+        if s.get("nodeId") is not None and not s.get("inactive")
+    }
+    r_by_nid = {
+        int(s["nodeId"]): s
+        for s in ref_items_res.get("slots", [])
+        if s.get("nodeId") is not None and not s.get("inactive")
+    }
+    all_nids = sorted(set(m_by_nid) | set(r_by_nid) | m_alloc | r_alloc)
+    diff: list[dict[str, Any]] = []
+    for nid in all_nids:
+        ms = m_by_nid.get(nid, {})
+        rs = r_by_nid.get(nid, {})
+        m_it = m_items_by_id.get(ms.get("selItemId") or 0)
+        r_it = r_items_by_id.get(rs.get("selItemId") or 0)
+        main_allocated = (nid in m_alloc) or (m_it is not None)
+        ref_allocated = (nid in r_alloc) or (r_it is not None)
+        if not main_allocated and not ref_allocated:
+            continue
+        m_lbl, r_lbl = _fmt_item_label(m_it), _fmt_item_label(r_it)
+        m_base, r_base = _fmt_item_base(m_it), _fmt_item_base(r_it)
+        if m_it is not None and r_it is None:
+            status = "only_in_main"
+        elif r_it is not None and m_it is None:
+            status = "only_in_ref"
+        elif m_it is None and r_it is None:
+            status = "same" if main_allocated == ref_allocated else ("only_in_main" if main_allocated else "only_in_ref")
+        else:
+            status = "same" if (m_lbl == r_lbl and m_base == r_base) else "changed"
+        diff.append(
+            {
+                "nodeId": nid,
+                "mainAllocated": main_allocated,
+                "refAllocated": ref_allocated,
+                "mainItem": m_lbl,
+                "mainBase": m_base,
+                "mainRarity": m_it.get("rarity") if m_it else "-",
+                "refItem": r_lbl,
+                "refBase": r_base,
+                "refRarity": r_it.get("rarity") if r_it else "-",
+                "status": status,
+            }
+        )
+    return diff
+
+
 def _build_compare_structural_diffs(
     main_tree: dict[str, Any],
     ref_tree: dict[str, Any],
@@ -189,7 +265,7 @@ def _build_compare_structural_diffs(
     ref_skills: dict[str, Any],
     main_items_res: dict[str, Any],
     ref_items_res: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     tree_diff = {
         "mainPoints": main_tree.get("points"),
         "refPoints": ref_tree.get("points"),
@@ -218,8 +294,13 @@ def _build_compare_structural_diffs(
     m_slots = {s["name"]: s for s in main_items_res.get("slots", [])}
     r_slots = {s["name"]: s for s in ref_items_res.get("slots", [])}
 
+    slot_names = list(_COMPARE_SLOT_NAMES)
+    for vname in _VISCERA_SLOT_NAMES:
+        if (m_slots.get(vname) or {}).get("selItemId") or (r_slots.get(vname) or {}).get("selItemId"):
+            slot_names.append(vname)
+
     slot_comparison: list[dict[str, Any]] = []
-    for sname in _COMPARE_SLOT_NAMES:
+    for sname in slot_names:
         ms = m_slots.get(sname, {})
         rs = r_slots.get(sname, {})
         m_it = m_items_by_id.get(ms.get("selItemId") or 0)
@@ -227,22 +308,17 @@ def _build_compare_structural_diffs(
         slot_comparison.append(
             {
                 "slot": sname,
-                "mainItem": strip_pob_escapes(
-                    (m_it.get("titleZh") or m_it.get("title") or m_it.get("nameZh") or m_it.get("name"))
-                    if m_it
-                    else "-"
-                ),
+                "mainItem": _fmt_item_label(m_it),
                 "mainRarity": m_it.get("rarity") if m_it else "-",
-                "refItem": strip_pob_escapes(
-                    (r_it.get("titleZh") or r_it.get("title") or r_it.get("nameZh") or r_it.get("name"))
-                    if r_it
-                    else "-"
-                ),
+                "refItem": _fmt_item_label(r_it),
                 "refRarity": r_it.get("rarity") if r_it else "-",
             }
         )
 
-    return tree_diff, skill_diff, slot_comparison
+    jewel_socket_diff = _build_jewel_socket_diff(
+        main_tree, ref_tree, main_items_res, ref_items_res, m_items_by_id, r_items_by_id
+    )
+    return tree_diff, skill_diff, slot_comparison, jewel_socket_diff
 
 
 # The CLI waits 150 s for `pob compare`; the margin covers the reply.
@@ -339,7 +415,7 @@ def compare_builds(
     main_env, ref_snap = main_p1["env"], ref_p1["snap"]
     baseline_1 = _build_pair_table(main_orig, ref_orig)
 
-    tree_diff, skill_diff, slot_comparison = _build_compare_structural_diffs(
+    tree_diff, skill_diff, slot_comparison, jewel_socket_diff = _build_compare_structural_diffs(
         main_p1["tree"],
         ref_p1["tree"],
         main_p1["skills"],
@@ -415,167 +491,10 @@ def compare_builds(
         "treeDiff": tree_diff,
         "skillDiff": skill_diff,
         "itemSlotDiff": slot_comparison,
+        "jewelSocketDiff": jewel_socket_diff,
     }
     if power_attribution is not None:
         out_cmp["powerAttribution"] = power_attribution
     if attribution_error:
         out_cmp["powerAttributionError"] = attribution_error
     return out_cmp
-
-
-def borrow_from_ref(
-    main_worker: BridgeWorker,
-    ref_worker: BridgeWorker,
-    *,
-    item_slots: list[str] | None = None,
-    skill_group: str | None = None,
-    apply: bool = False,
-) -> dict[str, Any]:
-    """Borrow one or more equipment slots and/or a skill group from `ref` into `main`."""
-    slots_to_borrow = [s.strip() for s in (item_slots or []) if s.strip()]
-    if not slots_to_borrow and not skill_group:
-        raise ValueError("Specify at least one of --item-slot or --skill-group to borrow.")
-
-    with main_worker.lock, ref_worker.lock:
-        ref_items_res = ref_worker.call("list_items", {})
-        ref_items_by_id = {it["id"]: it for it in ref_items_res.get("items", [])}
-        ref_slots_by_name = {s["name"]: s for s in ref_items_res.get("slots", [])}
-        ref_skills_res = ref_worker.call("list_skills", {})
-
-        borrowed_items_plan: list[dict[str, Any]] = []
-        for s_query in slots_to_borrow:
-            resolved = resolve_slot_name(ref_worker, s_query)
-            r_slot = ref_slots_by_name.get(resolved)
-            if not r_slot or not r_slot.get("selItemId"):
-                raise ValueError(f"Reference build has no equipped item in slot '{resolved}'.")
-            item_id = int(r_slot["selItemId"])
-            raw_text = ref_worker.call("item_raw", {"id": item_id}).get("raw")
-            borrowed_items_plan.append(
-                {"slotName": resolved, "refItem": ref_items_by_id.get(item_id), "raw": raw_text}
-            )
-
-        ref_group_obj: dict[str, Any] | None = None
-        copied_group_texts: list[tuple[str, str | None]] = []
-        borrow_main_flag = False
-        if skill_group:
-            g_idx = resolve_skill_group_index(ref_skills_res, skill_group)
-            ref_group_obj = next((g for g in ref_skills_res.get("groups", []) if g.get("index") == g_idx), None)
-            if ref_group_obj is None:
-                raise ValueError(f"Reference skill group #{g_idx} not found.")
-            borrow_main_flag = str(skill_group).strip().lower() == "main" or bool(ref_group_obj.get("isMain"))
-            src_slot = ref_group_obj.get("slot")
-            if ref_group_obj.get("source"):
-                if src_slot and not any(p["slotName"] == src_slot for p in borrowed_items_plan):
-                    r_slot = ref_slots_by_name.get(src_slot)
-                    if r_slot and r_slot.get("selItemId"):
-                        item_id = int(r_slot["selItemId"])
-                        raw_text = ref_worker.call("item_raw", {"id": item_id}).get("raw")
-                        borrowed_items_plan.append(
-                            {
-                                "slotName": src_slot,
-                                "refItem": ref_items_by_id.get(item_id),
-                                "raw": raw_text,
-                                "autoBorrowedForSkillSource": True,
-                            }
-                        )
-                if src_slot:
-                    for sg in ref_skills_res.get("groups", []):
-                        if not sg.get("source") and sg.get("slot") == src_slot and sg.get("enabled", True):
-                            cp = ref_worker.call("copy_group", {"index": sg["index"]}).get("text")
-                            if cp:
-                                copied_group_texts.append((cp, src_slot))
-            else:
-                cp = ref_worker.call("copy_group", {"index": g_idx}).get("text")
-                if cp:
-                    copied_group_texts.append((cp, src_slot))
-
-        def _do_borrow(w: BridgeWorker) -> dict[str, Any]:
-            notices: list[str] = []
-            equipped_items: list[dict[str, Any]] = []
-            main_items_before = w.call("list_items", {})
-            main_items_by_id = {it["id"]: it for it in main_items_before.get("items", [])}
-            main_slots_by_name = {s["name"]: s for s in main_items_before.get("slots", [])}
-            borrowed_slot_names = {p["slotName"] for p in borrowed_items_plan}
-
-            for plan in borrowed_items_plan:
-                target_slot = plan["slotName"]
-                ref_item = plan.get("refItem") or {}
-                ref_type = str(ref_item.get("type") or "")
-
-                if target_slot == "Weapon 1" and ref_type in TWO_HANDED_TYPES and "Weapon 2" not in borrowed_slot_names:
-                    w2_slot = main_slots_by_name.get("Weapon 2")
-                    if w2_slot and w2_slot.get("selItemId"):
-                        w.call("unequip_slot", {"slotName": "Weapon 2"})
-                        notices.append(
-                            f"Unequipped 'Weapon 2' in main build because borrowed 'Weapon 1' is Two-Handed ({ref_type})."
-                        )
-                elif target_slot == "Weapon 2" and "Weapon 1" not in borrowed_slot_names:
-                    w1_slot = main_slots_by_name.get("Weapon 1")
-                    w1_item = main_items_by_id.get(w1_slot.get("selItemId") or 0) if w1_slot else None
-                    if w1_item and str(w1_item.get("type") or "") in TWO_HANDED_TYPES:
-                        notices.append(
-                            f"Warning: Borrowing 'Weapon 2' while main 'Weapon 1' has a Two-Handed weapon ({w1_item.get('type')})."
-                        )
-
-                if plan.get("autoBorrowedForSkillSource") and ref_group_obj is not None:
-                    notices.append(
-                        f"Auto-borrowed source item in slot '{target_slot}' because skill group "
-                        f"'{ref_group_obj.get('displayLabel')}' is granted by that item."
-                    )
-
-                add_res = w.call("add_item", {"raw": plan["raw"], "slotName": target_slot, "equip": True})
-                equipped_items.append({"slotName": target_slot, "item": add_res.get("item")})
-
-            borrowed_skill_info = None
-            if ref_group_obj:
-                new_idx: int | None = None
-                new_grp: dict[str, Any] = {}
-                pasted_indices: list[int] = []
-                for cp_text, target_slot_name in copied_group_texts:
-                    paste_res = w.call("paste_group", {"text": cp_text})
-                    p_idx = paste_res.get("index")
-                    if p_idx is not None:
-                        p_idx = int(p_idx)
-                        pasted_indices.append(p_idx)
-                        new_grp = paste_res.get("group") or {}
-                        if target_slot_name:
-                            set_res = w.call("set_group", {"index": p_idx, "slot": target_slot_name})
-                            new_grp = set_res.get("group") or new_grp
-
-                if ref_group_obj.get("source"):
-                    src_slot = ref_group_obj.get("slot")
-                    skills_after = w.call("list_skills", {})
-                    for g in skills_after.get("groups", []):
-                        if g.get("source") and (not src_slot or g.get("slot") == src_slot):
-                            new_idx = int(g["index"])
-                            new_grp = g
-                            break
-                elif pasted_indices:
-                    new_idx = pasted_indices[-1]
-
-                switched_main = False
-                if borrow_main_flag and new_idx is not None:
-                    w.call("set_build_field", {"field": "mainSocketGroup", "value": int(new_idx)})
-                    switched_main = True
-                    notices.append(f"Switched mainSocketGroup to borrowed skill group #{new_idx}.")
-
-                borrowed_skill_info = {
-                    "newGroupIndex": new_idx,
-                    "label": (
-                        new_grp.get("displayLabelZh")
-                        or new_grp.get("displayLabel")
-                        or new_grp.get("label")
-                        or ref_group_obj.get("displayLabelZh")
-                        or ref_group_obj.get("displayLabel")
-                        or ref_group_obj.get("label")
-                    ),
-                    "switchedMain": switched_main,
-                }
-
-            return {
-                "borrowedItems": equipped_items,
-                "borrowedSkillGroup": borrowed_skill_info,
-                "notices": notices,
-            }
-
-        return run_mutation(main_worker, _do_borrow, apply=apply)

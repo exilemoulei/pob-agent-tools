@@ -11,26 +11,63 @@ from ..game_data import fold_han
 from ..snapshot import _call_batch
 from .constants import _ALWAYS_SHOW_VISIBLE_CONFIG_VARS, _KNOWN_CONFIG_DEFAULTS
 
+_VISCERA_SLOT_NAMES: tuple[str, ...] = ("Head", "Body", "Arm", "Leg")
+_VISCERA_PREFIX_RE = re.compile(r"^(?:viscera|graft)\s*[:_\-\s]\s*(head|body|arm|leg)$", re.IGNORECASE)
+_NODE_SOCKET_RE = re.compile(r"^(?:node|socket)\s*:\s*(\d+)$|^socket\s*#\s*(\d+)$", re.IGNORECASE)
 
-def resolve_slot_name(
-    worker: BridgeWorker,
-    slot_query: str,
-    *,
-    items_res: dict[str, Any] | None = None,
-) -> str:
-    """Resolve user slot query (including '#1', '#2' jewel socket shorthand, 3.30 graft slots Head/Body/Arm/Leg, EN/ZH aliases, or Flask 1..5) to exact PoB slotName."""
+
+def resolve_slot_from_items(items_res: dict[str, Any], slot_query: str) -> str:
+    """Resolve user slot query against an already-fetched `list_items` response.
+
+    Supports:
+    - 3.30 Wickerman Viscera slots (`Head`, `Body`, `Arm`, `Leg`, or explicit `viscera:*` / `graft:*`),
+      including empty slots (`selItemId == 0`) while keeping lowercase `body`/`head` aliases mapped to
+      `Body Armour`/`Helmet`.
+    - Cross-build invariant passive-tree jewel sockets via `node:<nodeId>`, `socket:<nodeId>`, or `Socket #<nodeId>`.
+    - `#1`, `#2` jewel socket index shorthand, EN/ZH aliases, and `Flask 1..5`.
+    """
     from ..guardrails import GuardrailScope, check_input, normalize_equipment_slot
 
     raw_q = slot_query.strip()
     check_input(raw_q, scope=GuardrailScope.SLOT, expected_game="poe1")
-    if items_res is None:
-        items_res = worker.call("list_items", {})
     slots = items_res.get("slots", [])
 
-    if raw_q in ("Head", "Body", "Arm", "Leg"):
+    m_viscera = _VISCERA_PREFIX_RE.match(raw_q)
+    if m_viscera:
+        target_v = m_viscera.group(1).capitalize()
         for s in slots:
-            if s.get("name") == raw_q and (s.get("selItemId") or s.get("shown")):
+            if s.get("name") == target_v and bool(s.get("shown") or s.get("selItemId")):
                 return s["name"]
+        raise ValueError(f"3.30 Wickerman Viscera slot '{target_v}' is not available on this build.")
+
+    if raw_q in _VISCERA_SLOT_NAMES or raw_q.lower() in ("arm", "leg"):
+        target_v = raw_q.capitalize()
+        for s in slots:
+            if s.get("name") == target_v and bool(s.get("shown") or s.get("selItemId")):
+                return s["name"]
+        if raw_q.lower() in ("arm", "leg"):
+            raise ValueError(f"Equipment slot '{slot_query}' (3.30 Wickerman Viscera) is not available on this build.")
+
+    m_node = _NODE_SOCKET_RE.match(raw_q)
+    if m_node:
+        target_nid = int(m_node.group(1) or m_node.group(2))
+        for s in slots:
+            nid = s.get("nodeId")
+            if nid is not None and int(nid) == target_nid and not s.get("inactive"):
+                return s["name"]
+        for s in slots:
+            nid = s.get("nodeId")
+            if nid is not None and int(nid) == target_nid:
+                raise ValueError(
+                    f"Jewel socket at nodeId={target_nid} is not allocated on the target passive tree "
+                    f"(allocate node {target_nid} first, or pass --tree)."
+                )
+        avail = sorted({int(s["nodeId"]) for s in slots if s.get("nodeId") is not None and not s.get("inactive")})
+        avail_str = ", ".join(str(x) for x in avail) if avail else "none"
+        raise ValueError(
+            f"Jewel socket with nodeId={target_nid} not found in build slots "
+            f"(available allocated socket nodeIds: {avail_str})."
+        )
 
     # Fold both sides: a Traditional query must hit the Simplified aliases, and the engine's labels
     # are Traditional by default.
@@ -58,6 +95,21 @@ def resolve_slot_name(
             return s["name"]
 
     raise ValueError(f"Equipment slot '{slot_query}' not found.")
+
+
+def resolve_slot_name(
+    worker: BridgeWorker,
+    slot_query: str,
+    *,
+    items_res: dict[str, Any] | None = None,
+) -> str:
+    """Resolve user slot query (including '#1', 'node:<nodeId>', 3.30 Viscera Head/Body/Arm/Leg, EN/ZH aliases, or Flask 1..5) to exact PoB slotName."""
+    if items_res is None:
+        from ..guardrails import GuardrailScope, check_input
+
+        check_input(slot_query.strip(), scope=GuardrailScope.SLOT, expected_game="poe1")
+        items_res = worker.call("list_items", {})
+    return resolve_slot_from_items(items_res, slot_query)
 
 
 def _infer_config_default(item: dict[str, Any]) -> Any:

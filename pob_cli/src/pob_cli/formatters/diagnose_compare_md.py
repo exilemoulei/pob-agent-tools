@@ -6,7 +6,7 @@ from typing import Any
 
 from ..game_data.fact_cards import normalize_stat_lines
 from .bilingual import lookup_localized_name
-from .build_md import format_compare_markdown
+from .compare_md import format_compare_markdown
 from .primitives import (
     _parse_numeric_or_none,
     fmt_num,
