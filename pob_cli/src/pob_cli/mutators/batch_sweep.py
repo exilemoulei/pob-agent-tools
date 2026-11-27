@@ -275,6 +275,7 @@ def run_sweep(
     scenario: str | dict[str, Any] | None = None,
     keep: Iterable[str] | str | None = None,
     ref_bundle: dict[str, Any] | None = None,
+    auto_keep: bool = True,
 ) -> dict[str, Any]:
     """Evaluate N named build variants in ONE warm daemon worker with fault isolation and 0-residue rollback."""
     import pob_cli.mutators as _mut
@@ -316,7 +317,7 @@ def run_sweep(
             from ..comparator import _apply_matrix_scenario_in_place, _parse_matrix_scenario
 
             plan = _parse_matrix_scenario(scenario)
-            scenario_applied = _apply_matrix_scenario_in_place(worker, plan, keep=eff_keep)
+            scenario_applied = _apply_matrix_scenario_in_place(worker, plan, keep=eff_keep, auto_keep=auto_keep)
         base_cp = tx.checkpoint() if (base_ops or has_scenario) else tx.base
 
         full_base = _mut.capture_digest(worker)

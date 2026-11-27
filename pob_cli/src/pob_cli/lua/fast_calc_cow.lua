@@ -348,10 +348,14 @@ end
 
 -- Restore only rewrites the active spec and sets of the build it was taken from; anything
 -- else (a new build, a switched or added set) makes the snapshot unusable, never mis-restored.
+local function tbl_count(t)
+	if type(t) ~= "table" then return 0 end
+	local n = 0; for _ in pairs(t) do n = n + 1 end; return n
+end
 local function set_sig(b)
 	local tt, it, st, ct = b.treeTab or {}, b.itemsTab or {}, b.skillsTab or {}, b.configTab or {}
-	return table.concat({ tostring(tt.activeSpec), #(tt.specList or {}), tostring(it.activeItemSetId), #(it.itemSetOrderList or {}),
-		tostring(st.activeSkillSetId), #(st.skillSetOrderList or {}), tostring(ct.activeConfigSetId), #(ct.configSetOrderList or {}) }, ",")
+	return table.concat({ tostring(tt.activeSpec), #(tt.specList or {}), tostring(it.activeItemSetId), tbl_count(it.itemSets),
+		tostring(st.activeSkillSetId), tbl_count(st.skillSets), tostring(ct.activeConfigSetId), tbl_count(ct.configSets) }, ",")
 end
 
 local function forget(sid)

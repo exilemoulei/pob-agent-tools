@@ -22,6 +22,7 @@ from .dewater_auto import (
     best_effort_audit_tree_and_raw,
     infer_auto_keep_and_flask_notes,
 )
+from .dewater_provenance import build_cycle_envelope, fetch_dewater_provenance
 from .eb_sustain import collect_dewatered_eb_flask_note, collect_mana_sustain_issues
 from .pitfalls_ag import fetch_minion_itemsets
 from .pitfalls_core import _detect_build_mechanics_and_pitfalls
@@ -210,6 +211,7 @@ def audit_build(
     attribution: bool = True,
     *,
     auto_keep: bool = True,
+    boss: str | None = None,
     include_envelope: bool = True,
     pre_tree_summary: dict[str, Any] | None = None,
     pre_equipped_slots_raw: list[dict[str, Any]] | None = None,
@@ -262,6 +264,7 @@ def audit_build(
             if auto_keep
             else ({}, {})
         )
+        prov_pre = fetch_dewater_provenance(worker)
         dw_defs = getattr(_analyzer.dewater_build_with_records, "__kwdefaults__", None) or {}
         dw_kw: dict[str, Any] = {}
         if "auto_keep_reasons" in dw_defs:
@@ -276,6 +279,10 @@ def audit_build(
             dw_kw["alloc_node_stats"] = alloc_st
         if "auto_keep_live" in dw_defs:
             dw_kw["auto_keep_live"] = auto_keep
+        if "boss" in dw_defs and boss:
+            dw_kw["boss"] = boss
+        if "provenance" in dw_defs and prov_pre is not None:
+            dw_kw["provenance"] = prov_pre
         stripped, records = _analyzer.dewater_build_with_records(worker, keep=keep, **dw_kw)
         digest_dewatered = capture_digest(worker)
         eb_dew_note = collect_dewatered_eb_flask_note(
@@ -338,14 +345,18 @@ def audit_build(
             ),
             "inflationStripped": stripped,
             "pass2Applied": bool((stripped or {}).get("pass2Applied", True)),
+            "bossTier": "Uber" if (boss or "").lower() == "uber" else "Pinnacle",
             "waterAttribution": water_attribution,
             "restoreCheck": restore_check,
             "original": _build_audit_panel(digest_before),
             "dewateredPinnacle": _build_audit_panel(digest_dewatered),
             "dewaterDiff": dewater_diff,
         }
+        cycle_envelope = build_cycle_envelope(prov_pre, stripped, scenario_envelope_res)
         if agent_probe_res is not None:
             out_audit["agentProbe"] = agent_probe_res
         if scenario_envelope_res is not None:
             out_audit["scenarioEnvelope"] = scenario_envelope_res
+        if cycle_envelope is not None:
+            out_audit["cycleEnvelope"] = cycle_envelope
         return out_audit

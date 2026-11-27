@@ -8,6 +8,7 @@ from typing import Any
 from ..game_data.fact_cards import normalize_stat_lines
 from .bilingual import format_bilingual
 from .build_md import extract_custom_mods_330_notes
+from .dewater_md import format_dewater_summary_lines
 from .diagnose_compare_md import (
     _fmt_ask_grounding_line,
     _fmt_diagnose_fact_cards_and_upgrades,
@@ -20,7 +21,6 @@ from .primitives import (
     fmt_num,
     fmt_signed_pct,
     format_recency_stamp,
-    keep_rejected_warning,
     render_table,
     render_update_warning,
     restore_warning,
@@ -166,18 +166,13 @@ def _fmt_diagnose_baseline(res: dict[str, Any], *, compact: bool) -> list[str]:
     stripped = res.get("inflationStripped") or {}
     for cm_note in extract_custom_mods_330_notes(stripped, top_water, res):
         lines.append(f"\n> [3.30 CustomMods Note] {cm_note}")
-    auto_kept = stripped.get("autoKept") or []
-    if auto_kept:
-        lines.append("\n**Auto-Kept (Build-Guaranteed)**: " + "; ".join(str(x) for x in auto_kept))
-    kept = stripped.get("kept") or []
-    if kept:
-        lines.append("\n**Kept (--keep)**: " + "; ".join(kept))
-    noted_flasks = [str(f) for f in (stripped.get("flasks") or []) if "[" in str(f) and "]" in str(f)]
-    if noted_flasks:
-        lines.append("\n**Flask Dewater Notes**: " + "; ".join(noted_flasks))
-    rej = keep_rejected_warning(stripped)
-    if rej:
-        lines.extend(rej)
+    lines.extend(
+        format_dewater_summary_lines(
+            stripped,
+            cycle_envelope=res.get("cycleEnvelope"),
+            show_flask_notes=True,
+        )
+    )
     return lines
 
 

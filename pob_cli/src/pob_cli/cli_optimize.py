@@ -17,7 +17,7 @@ from .cli_common import (
     invoke_daemon,
 )
 from .cli_compare import cmd_borrow, cmd_compare
-from .formatters import format_mutation_report, keep_rejected_warning, restore_warning
+from .formatters import format_dewater_summary_lines, format_mutation_report, restore_warning
 
 
 @click.command("batch")
@@ -111,11 +111,13 @@ def cmd_batch(
                     parts.append(r_warn)
                 stripped = sec_val.get("inflationStripped")
                 if isinstance(stripped, dict):
-                    kept = stripped.get("kept") or []
-                    if kept:
-                        parts.append("**Kept (--keep)**: " + "; ".join(kept))
-                    for line in keep_rejected_warning(stripped):
-                        parts.append(line)
+                    parts.extend(
+                        format_dewater_summary_lines(
+                            stripped,
+                            cycle_envelope=sec_val.get("cycleEnvelope"),
+                            leading_newline=False,
+                        )
+                    )
             elif sec_name == "export":
                 code_str = (
                     sec_val
@@ -144,6 +146,12 @@ def cmd_batch(
     multiple=True,
     help="Keep build-guaranteed items in audit/matrix/Pinnacle scenarios.",
 )
+@click.option(
+    "--no-auto-keep",
+    "no_auto_keep",
+    is_flag=True,
+    help="Disable automatic mechanism-based config retention in Pinnacle/Uber scenarios.",
+)
 @_target_option(allow_slot_alias=True)
 @click.option(
     "--ref-target",
@@ -162,6 +170,7 @@ def cmd_sweep(
     calc_keywords: tuple[str, ...],
     scenario: str | None,
     keep: tuple[str, ...],
+    no_auto_keep: bool,
     target: str,
     ref_target: str,
     as_json: bool,
@@ -213,6 +222,8 @@ def cmd_sweep(
     }
     if eff_keep:
         params["keep"] = eff_keep
+    if no_auto_keep:
+        params["no_auto_keep"] = True
     res = invoke_daemon("sweep", params, timeout=300.0)
     if as_json:
         _emit_json(res, compact=compact, out_path=out_path)

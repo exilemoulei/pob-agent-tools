@@ -9,11 +9,11 @@ from .compare_md import (
     extract_custom_mods_330_notes,
     format_compare_markdown,
 )
+from .dewater_md import format_dewater_summary_lines
 from .primitives import (
     _parse_numeric_or_none,
     fmt_delta,
     fmt_num,
-    keep_rejected_warning,
     render_table,
     restore_warning,
 )
@@ -203,6 +203,7 @@ def format_matrix_markdown(res: dict[str, Any], *, target: str = "main") -> str:
 
     rows: list[list[Any]] = []
     auto_kept: list[str] = []
+    auto_clamped: list[str] = []
     kept: list[str] = []
     rejected: list[str] = []
     cm_notes: list[str] = extract_custom_mods_330_notes(res, res.get("waterSources"), res.get("topWaterSources"))
@@ -249,8 +250,11 @@ def format_matrix_markdown(res: dict[str, Any], *, target: str = "main") -> str:
         st_info = (sc.get("applied") or {}).get("stripped") or {}
         if isinstance(st_info, dict):
             for ak in st_info.get("autoKept") or []:
-                if ak not in auto_kept:
+                if str(ak) not in auto_kept:
                     auto_kept.append(str(ak))
+            for ac in st_info.get("autoClamped") or []:
+                if str(ac) not in auto_clamped:
+                    auto_clamped.append(str(ac))
             for k in st_info.get("kept") or []:
                 if k not in kept:
                     kept.append(k)
@@ -273,13 +277,7 @@ def format_matrix_markdown(res: dict[str, Any], *, target: str = "main") -> str:
     parts.append(table)
     for cn in cm_notes:
         parts.append(f"\n> [3.30 CustomMods Note] {cn}")
-    if auto_kept:
-        parts.append("\n**Auto-Kept (Build-Guaranteed)**: " + "; ".join(auto_kept))
-    if kept:
-        parts.append("\n**Kept (--keep)**: " + "; ".join(kept))
-    rej_lines = keep_rejected_warning(rejected)
-    if rej_lines:
-        parts.append("\n" + "\n".join(rej_lines))
+    parts.extend(format_dewater_summary_lines({"autoKept": auto_kept, "autoClamped": auto_clamped, "kept": kept, "keepRejected": rejected}))
     return "\n".join(parts)
 
 
@@ -393,12 +391,7 @@ def format_sweep_markdown(result: dict[str, Any], *, target: str | None = None) 
     for cn in extract_custom_mods_330_notes(st_info, result, result.get("waterSources"), result.get("topWaterSources")):
         lines.append(f"\n> [3.30 CustomMods Note] {cn}")
     if isinstance(st_info, dict):
-        kept = st_info.get("kept") or []
-        if kept:
-            lines.append("\n**Kept (--keep)**: " + "; ".join(kept))
-        rej_lines = keep_rejected_warning(st_info)
-        if rej_lines:
-            lines.append("\n" + "\n".join(rej_lines))
+        lines.extend(format_dewater_summary_lines(st_info))
 
     if errors:
         lines.append("\n#### Variant Errors")

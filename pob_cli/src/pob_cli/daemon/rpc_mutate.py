@@ -315,6 +315,7 @@ def _h_sweep(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict
         calc_keywords=params.get("calc_keywords") or params.get("calcKeywords"),
         scenario=params.get("scenario"),
         keep=norm_keep(params),
+        auto_keep=not opt_bool(params, "no_auto_keep", "noAutoKeep", default=False),
     )
 
 

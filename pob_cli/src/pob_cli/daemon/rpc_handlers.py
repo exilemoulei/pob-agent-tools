@@ -147,11 +147,14 @@ def _h_summary(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[st
 def _h_audit(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     from ..analyzer import audit_build
 
+    raw_boss = str(params.get("boss") or "").strip().lower()
+    eff_boss = "Uber" if raw_boss == "uber" else ("Pinnacle" if raw_boss == "pinnacle" else None)
     return audit_build(
         w,
         keep=norm_keep(params),
         attribution=bool(params.get("attribution", True)),
         auto_keep=not bool(params.get("no_auto_keep", params.get("noAutoKeep", False))),
+        boss=eff_boss,
     )
 
 

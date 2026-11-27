@@ -15,6 +15,11 @@ from .build_md import (
     format_sweep_markdown,
 )
 from .compare_md import format_compare_markdown
+from .dewater_md import (
+    format_compare_dewater_lines,
+    format_cycle_burst_line,
+    format_dewater_summary_lines,
+)
 from .diagnose_compare_md import (
     format_diagnose_compare_markdown,
     format_ground_markdown,
@@ -67,7 +72,10 @@ __all__ = [
     "fmt_signed_pct",
     "format_bilingual",
     "format_cautions",
+    "format_compare_dewater_lines",
     "format_compare_markdown",
+    "format_cycle_burst_line",
+    "format_dewater_summary_lines",
     "format_diagnose_compare_markdown",
     "format_diagnose_markdown",
     "format_game_data",

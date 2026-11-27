@@ -8,6 +8,7 @@ from typing import Any
 from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
 from ..snapshot import _finite_float
+from .dewater_cycle import build_cycle_envelope as build_cycle_envelope
 from .dewater_mageblood import mageblood_exempt_flask_slots
 from .summary import _has_bloodsoaked_blade_keystone, _is_tincture_item
 

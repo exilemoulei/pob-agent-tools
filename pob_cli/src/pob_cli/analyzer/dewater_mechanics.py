@@ -528,3 +528,55 @@ AILMENT_CLAMP_SPECS: tuple[tuple[str, str, str, float, int], ...] = (
     ("Brittle", "conditionenemybrittle", "conditionbrittleeffect", 1.0, 6),
     ("Sap", "conditionenemysapped", "conditionsapeffect", 2.0, 20),
 )
+
+
+def reclamp_ailments_for_boss(
+    worker: BridgeWorker,
+    cached_stripped: dict[str, Any] | None = None,
+    *,
+    boss_name: str = "Uber",
+) -> dict[str, Any] | None:
+    """Re-clamp active non-damaging ailments after switching `enemyIsBoss` (e.g. matrix Uber)."""
+    caps = getattr(worker, "caps", None)
+    if not (isinstance(caps, dict) and caps.get("dewaterProbes")):
+        return cached_stripped
+    try:
+        cfg_res, prov = _call_batch(
+            worker,
+            [("list_config", {}), ("get_dewater_provenance", {"includeAilments": True})],
+            raise_on_error=False,
+        )
+    except Exception:
+        return cached_stripped
+    if not isinstance(cfg_res, dict) or not isinstance(prov, dict) or prov.get("ok") is not True:
+        return cached_stripped
+    ailments = prov.get("ailments") or {}
+    assignments: list[tuple[str, Any]] = []
+    clamped_notes: list[str] = []
+    for a_name, flag_low, eff_low, min_t, def_max in AILMENT_CLAMP_SPECS:
+        f_item = _find_config_item(cfg_res, flag_low)
+        e_item = _find_config_item(cfg_res, eff_low)
+        if not f_item or not f_item[1] or not e_item or e_item[1] in (None, False, "", 0):
+            continue
+        try:
+            cur_eff = round(float(e_item[1]))
+        except (TypeError, ValueError):
+            continue
+        a_info = ailments.get(a_name) if isinstance(ailments, dict) else None
+        if not isinstance(a_info, dict) or not a_info.get("canInflict"):
+            assignments.extend([(f_item[0], False), (e_item[0], 0)])
+            clamped_notes.append(f"{e_item[0]}={cur_eff} -> 0 (clamped for {boss_name} Boss)")
+            continue
+        computed = _finite_float(a_info.get("computedPct"))
+        cap = min(max(int(min_t), int(_finite_float(a_info.get("maxCap")) or def_max)), math.floor(computed + 1e-6))
+        if computed < min_t or cap < min_t:
+            assignments.extend([(f_item[0], False), (e_item[0], 0)])
+            clamped_notes.append(f"{e_item[0]}={cur_eff} -> 0 (below {boss_name} Boss threshold)")
+        elif cur_eff > cap:
+            assignments.append((e_item[0], cap))
+            clamped_notes.append(f"{e_item[0]}={cur_eff} -> {cap} (clamped to PoB {boss_name} Boss {a_name.lower()} {cap}%)")
+    if not assignments or not _set_configs_verified(worker, assignments):
+        return cached_stripped
+    out = {k: (list(v) if isinstance(v, list) else v) for k, v in (cached_stripped or {}).items()}
+    out.setdefault("autoClamped", []).extend(clamped_notes)
+    return out
