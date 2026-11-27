@@ -182,6 +182,11 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "cmd_rank_nodes",
         "Rank unallocated passive tree nodes by ROI per point (`pathPower`) and total gain (`power`).",
     ),
+    "weights": (
+        ".cli_weights",
+        "cmd_weights",
+        "PoB-verified stat weights: DPS/EHP gain of each probe mod line (0-residue rollback).",
+    ),
     "rank-gems": (
         ".cli_optimize",
         "cmd_rank_gems",

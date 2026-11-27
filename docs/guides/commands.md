@@ -3,7 +3,7 @@
 Every subcommand with its flags, in one place. For when to use which, start with the recipes in [skills/pob/SKILL.md](../../skills/pob/SKILL.md); `pob <command> --help` is authoritative when this list and the CLI disagree.
 
 ```powershell
-# Optimization flow: pob audit (dewater & gaps) -> rank-nodes / rank-gems / anoint / bench -> pob trade search (verified via PoB)
+# Optimization flow: pob audit (dewater & gaps) -> weights / rank-nodes / rank-gems / anoint / bench -> pob trade search (verified via PoB)
 # Global output & slot targeting: --target <slug> (build slot; default POB_SLOT or main; a deprecated --slot alias exists only on commands without an equipment --slot and refuses equipment names such as `gloves`/`ring1` with exit 1); --compact (1-line JSON); --out <file> (UTF-8 no-BOM).
 # Before the subcommand: pob --offline <command> (no engine update check, same as POB_OFFLINE=1); pob -V | --version.
 # Exit codes: 0 ok; 1 bad request (bad arguments, PoE2 input, a share code that does not decode, a poe.ninja character that is not found, or a build code the engine rejects while it keeps running) and no engine installed (stderr says to run `pob bootstrap`); 2 usage error from the option parser (unknown option, missing or out-of-range value) and malformed JSON in --json-ops / --json-variants / --base-ops / --file; 5 daemon or engine fault (timeout, crash, any other engine error: `pob stop` and retry); `pob trade` uses 0..6 and exits 1 (not 2) on option-parser errors (docs/guides/trade.md).
@@ -69,6 +69,7 @@ pob matrix [Original Pinnacle Uber FlasksOff "Label:Pinnacle,k=v"] [-s <spec>]..
 # ROI Ranking, 3-Baseline A/B Comparison & Transplant
 pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--max-dist 5] [--top 15] [--json]
 pob rank-gems [--group main] [--slot N | --add-link] [--field CombinedDPS|FullDPS] [--top 15] [--include-legacy] [--json]
+pob weights [--mod "<custom mod line>"]... [--preset bandit|pantheon-major|pantheon-minor|jewels] [--scenario Pinnacle] [--keep <spec>]... [--score STAT=W[,STAT=W]]... [--floor "STAT>=N|STAT<=N"]... [--target <slug>] [--json]       # PoB-verified ΔDPS/ΔEHP per probe mod (16 defaults; --mod replaces), 0-residue rollback; the default output is the raw ΔDPS/ΔEHP table, --score (rank by Σ W×Δ%) and --floor (drop rows past a hard limit) are opt-in and read sweep summary stats (CombinedDPS, TotalEHP, Life, FullDPS, ...; case-insensitive); --preset compares every option of that build choice instead (Pantheon avoidance PoB does not score shows Δ 0; bandit None does not allocate its 2 points; jewels unequips each equipped tree/abyssal jewel in turn, so Δ is what that jewel is worth)
 pob compare [<ref_source>] [--ref-stage R] [--ref-spec S] [--ref-item-set I] [--ref-skill-set K] [--keep <spec>]... [--no-auto-keep] [--target <slug>] [--ref-target <slug>] [--json] # 3 baselines: Original / Target Env Aligned / Pinnacle Dewatered; --ref-target must differ from the main slot (exit 1)
 pob borrow [--item-slot "Weapon 1,Amulet"] [--skill-group main] [--ref-target ref] [--apply] [--json] # --ref-target must differ from --target (exit 1)
 
