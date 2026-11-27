@@ -2,13 +2,18 @@
 
 All mutators run in **0-residue what-if mode** by default (snapshot -> mutate -> PoB calc -> rollback + `verify_restored`). Pass `--apply` only when the user wants to persist changes (`pob undo` / `pob redo` supported).
 
-## Multi-Slot Parallel Comparison
+## Multi-Slot Parallel Comparison & Staged A->B Upgrade Recipe
 Target isolated build slots with `--target <slug>` (default `main`, reference `ref`):
 ```powershell
+# 1. Load current (main) & target (ref) builds and inspect full structural diff:
 pob load "https://pobb.in/..." --target main
 pob load "https://pobb.in/..." --target ref
-pob compare                                              # Original / Env-Aligned / Pinnacle Dewatered
-pob borrow --item-slot "Weapon 1,Amulet" [--apply]       # Transplant ref items into main
+pob compare                                              # 3 baselines (Original / Env-Aligned / Pinnacle Dewatered) + 15 gear/flask slots + 3.30 Wickerman Viscera (`Head/Body/Arm/Leg`) + `jewelSocketDiff` paired by `nodeId`
+# 2. Price the reference build for upgrade budgeting:
+pob trade appraise --target ref [--league L] [--max-live-queries 8]
+# 3. Run warm 0-residue staged upgrade deltas in one call (or single-shot `pob borrow`):
+pob sweep --scenario Pinnacle --ref-target ref --json-variants '[{"name":"S1_Viscera","ops":[{"op":"borrow","items":["Body","Arm","node:28475"]}]},{"name":"S2_TreeMain","ops":[{"op":"borrow","skill_group":"main","tree":true}]}]'
+pob borrow --item-slot "Body,Arm,node:28475" [--skill-group main] [--tree [--no-tree-jewels]] [--scenario Pinnacle [--keep SPEC]] [--apply]
 ```
 Two-slot commands (`pob compare`, `pob borrow`, `pob tree diff`) require distinct main and reference slots; naming the same slot twice fails with exit code `1`.
 
@@ -18,7 +23,8 @@ pob matrix Original Pinnacle Uber FlasksOff "BossWithFrenzy:Pinnacle,useFrenzyCh
 ```
 
 ## Atomic Multi-Op Transaction (`pob batch`)
-Supported op types (22, aliases in parentheses; 37 names in all): `config` (`config_set`), `flask` (`item_flask`), `item` (`item_try`), `item_db`, `item_edit`, `unequip` (`item_unequip`, `unequip_slot`), `anoint` (`item_anoint`), `tree` (`tree_change`), `tree_reset` (`reset_tree`), `import_tree_url`, `new_build`, `set_level`, `set_class` (`tree_set_class`), `switch_main`, `add_group` (`new_group`, `skill_new_group`), `delete_group` (`rm_group`, `remove_group`), `set_group`, `replace_group` (`skill_replace_group`), `skill`, `skill_set`, `skill_add`, `skill_rm`.
+Supported op types (23, aliases in parentheses; 39 names in all): `borrow` (`transplant`), `config` (`config_set`), `flask` (`item_flask`), `item` (`item_try`), `item_db`, `item_edit`, `unequip` (`item_unequip`, `unequip_slot`), `anoint` (`item_anoint`), `tree` (`tree_change`), `tree_reset` (`reset_tree`), `import_tree_url`, `new_build`, `set_level`, `set_class` (`tree_set_class`), `switch_main`, `add_group` (`new_group`, `skill_new_group`), `delete_group` (`rm_group`, `remove_group`), `set_group`, `replace_group` (`skill_replace_group`), `skill`, `skill_set`, `skill_add`, `skill_rm`.
+- `"borrow"` (`"transplant"`) requires `--ref-target <slug>` (default `ref`, captured once in memory across the whole `batch`/`sweep`), and accepts `"items"` / `"item_slots"` / `"itemSlots"` / `"slots"` / `"slot"` / `"item_slot"` (list or CSV of gear slots, 3.30 Wickerman Viscera `Head`/`Body`/`Arm`/`Leg` or `viscera:<part>`, and active passive-tree sockets `node:<nodeId>` / `socket:<nodeId>`), `"skill_group"` / `"skillGroup"` (label, index, or `"main"` to transplant and activate the reference main skill), `"tree"` / `"borrow_tree"` / `"borrowTree"` (bool), and `"tree_jewels"` / `"treeJewels"` (bool, default `true`).
 - `"add_group"` takes `"gems"` as `"Name[:level[:quality]]"` strings (or gem objects), plus `label`, `slot`, `makeMain`; `"tree"` takes `"allocate"` / `"deallocate"` lists of node ids or names (`pob tree --search "<kw>" --show-path`).
 - `"skill_add"` / `"skill_set"` / `"skill_rm"` are `"skill"` with that action as the default (an explicit `"action"` in the step still wins, so leave it out): `{"op":"skill_add","group":"main","gem":"Controlled Destruction","level":20,"quality":0}`, `{"op":"skill_rm","group":"main","gem":"Spell Echo"}`.
 - `"config"` takes `"set": {"useFrenzyCharges": true, "enemyIsBoss": "Pinnacle"}` (one or many variables), `"reset"`, and `"customMods"` / `"appendCustomMods"`; a bare `"var"`/`"value"` pair is refused with the `"set"` form to use.
@@ -38,11 +44,14 @@ pob diagnose '@build.xml' --json --out report.json                        # Writ
 ```
 
 ## Parallel Variant Sweep (`pob sweep`)
-Evaluate multiple candidate setups under one scenario (`Pinnacle` etc.) in a single daemon call:
+Evaluate multiple candidate setups under one scenario (`Pinnacle` etc.) in a single daemon call. Every variant must wrap its steps inside `"ops": [...]` (misplaced top-level `"op"` or step keys fail pre-run validation with exit `1`):
 ```powershell
 pob sweep --scenario Pinnacle --json-variants '[{"name":"Echo","ops":[{"op":"skill","group":"main","gem":2,"new_gem":"Spell Echo"}]},{"name":"Unleash","ops":[{"op":"skill","group":"main","gem":2,"new_gem":"Unleash"}]}]'
+pob sweep --scenario Pinnacle --ref-target ref --json-variants '[{"name":"S1_BodyArm","ops":[{"op":"borrow","items":["Body","Arm","node:28475"]}]},{"name":"S2_FullTree","ops":[{"op":"borrow","skill_group":"main","tree":true}]}]'
 ```
 
 ## Tolerant Slot & Flag Aliases
-- Slots accept EN & ZH shortcuts: `ring1`/`左戒指` -> `Ring 1`, `ring2`/`右戒指` -> `Ring 2`, `chest`/`body`/`衣服`/`胸甲` -> `Body Armour`, `helm`/`头盔` -> `Helmet`, `gloves`/`手套` -> `Gloves`, `boots`/`鞋子` -> `Boots`, `amulet`/`项链` -> `Amulet`, `belt`/`腰带` -> `Belt`, `weapon1`/`主手` -> `Weapon 1`, `weapon2`/`offhand`/`副手` -> `Weapon 2`, `flask1..5` -> `Flask 1..5`, `#1` -> Jewel socket #1. Traditional spellings (`頭盔`, `項鍊`) resolve the same way.
+- Slots accept EN & ZH shortcuts: `ring1`/`左戒指` -> `Ring 1`, `ring2`/`右戒指` -> `Ring 2`, `chest`/`body armour`/`衣服`/`胸甲` -> `Body Armour`, `helm`/`头盔` -> `Helmet`, `gloves`/`手套` -> `Gloves`, `boots`/`鞋子` -> `Boots`, `amulet`/`项链` -> `Amulet`, `belt`/`腰带` -> `Belt`, `weapon1`/`主手` -> `Weapon 1`, `weapon2`/`offhand`/`副手` -> `Weapon 2`, `flask1..5` -> `Flask 1..5`. Traditional spellings (`頭盔`, `項鍊`) resolve the same way.
+- **3.30 Wickerman Viscera vs Body Armour**: `Head` / `Body` / `Arm` / `Leg` (or `viscera:head|body|arm|leg`, `graft:head|body|arm|leg`) target the 4 Wickerman Viscera slots (`Body` resolves to Wickerman `Body` when present, while `Body Armour` / `chest` / `胸甲` always target the chest armour slot).
+- **Passive-tree jewel sockets**: `node:<nodeId>` / `socket:<nodeId>` pair active passive-tree jewel sockets by stable tree `nodeId` across builds (preferred over `#1` build-local socket index shortcuts when comparing or borrowing between builds).
 - Flag aliases: `item anoint --oil` (`--notable`), `skill add/set/rm --gem-name` (`--gem`).

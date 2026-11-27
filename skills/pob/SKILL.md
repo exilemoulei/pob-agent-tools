@@ -29,10 +29,10 @@ description: Path of Exile 1 (PoE1 3.30, 流放之路1) build diagnosis, headles
   pob profile "https://www.pathofexile.com/account/view-profile/<Acc-1234>" [--realm pc|cn] [--league L] # 0-engine char list (public intl needs no cookie; CN uses env POE_CN_SESSID)
   pob diagnose "https://www.pathofexile.com/account/view-profile/<Acc-1234>" --char "<name>" -q "<question>" # Lv70+ locks -60% res; decodes cluster/jump/Runegrafts
   ```
-- **B. Dual-build A/B comparison & multi-stage pobb.in**:
+- **B. Dual-build A/B comparison, staged upgrade sweep & multi-stage pobb.in**:
   ```powershell
-  pob load <url|'@build.xml'> [--stage "<idx|title>"] [--spec S] [--item-set I] [--skill-set K] # Also supports #stage=<idx|title> URL/file fragment
-  pob diagnose '@buildA.xml' --compare '@buildB.xml' [--stage S] [--ref-stage R] -q "<player question>"
+  pob load <curr> --target main [--stage "<idx|title>"] [--spec S] [--item-set I] [--skill-set K]; pob load <ref> --target ref; pob compare # 3-baseline diff + 3.30 Viscera (`Head/Body/Arm/Leg`) + `jewelSocketDiff` (`node:<id>`); `#stage=<idx|title>` & `pob diagnose '@A.xml' --compare '@B.xml' -q "<ask>"` supported
+  pob trade appraise --target ref [--league L] [--max-live-queries 8]; pob sweep --scenario Pinnacle --ref-target ref --json-variants '[{"name":"S1_Viscera","ops":[{"op":"borrow","items":["Body","Arm","node:28475"]}]},{"name":"S2_TreeMain","ops":[{"op":"borrow","skill_group":"main","tree":true}]}]' # 3-step A->B budget + warm 0-residue staged deltas (single-shot: pob borrow --item-slot "Body,node:28475" [--tree [--no-tree-jewels]] --scenario Pinnacle)
   pob tree diff [--against ref | --spec-a 1 --spec-b 2] # 5-section structural tree diff (intra-build --spec-a/--spec-b reflects active ItemSet) + 3.30 Gold respec cost (`respecGold`, 5x ascendancy multiplier) for same-class specs
   ```
 - **C. Mechanics, local 0ms game data, `0.033s` CDR math & dual-source web research (daemon-free; `--for-build` queries loaded build tree)**:
@@ -57,7 +57,7 @@ pob tree prune [--sort dps|ehp|pts] [--max-branch-pts 5] [--include-unsafe] | po
 pob item inspect (--slot S | --raw "<txt>" | --file f) [--want "<stat>"]... | pob item inspect "<slot>" --ablate [--json] # --ablate runs 0-residue CoW single-mod ablation (ΔCombinedDPS, ΔTotalEHP/ehpTransition, ΔPool/Supp, deltaUtility); [DEAD-MOD] = no PoB stat of the main skill changed; [NOT-MEASURED]/[UNSUPPORTED] lines and inactive slots carry no verdict
 pob item db ["<q>"] [--slot S] [--sort dps|ehp|maxhit|...] [--equip] | pob item try --slot S --raw "<txt>" [--apply] | pob item edit --slot S --add-mod "<ln>" [--apply] | pob item anoint --notable "<N>"
 pob skill add|set|rm --group main ... [--target SLUG] [--apply] | pob tree change --allocate <id>[,<id>...] [--deallocate <id>[,<id>...]] [--apply] | pob config set <k>=<v> [--custom-mods "<txt>"] [--apply]
-pob batch --json-ops '[...]' [--return "skills,summary"] (ops: references/whatif-and-batch.md) | pob sweep --scenario Pinnacle --json-variants '[...]' | pob matrix Original Pinnacle Uber FlasksOff
+pob batch [--ref-target ref] --json-ops '[...]' [--return "skills,summary"] (ops incl. op:"borrow": references/whatif-and-batch.md) | pob sweep --scenario Pinnacle [--ref-target ref] --json-variants '[...]' | pob matrix Original Pinnacle Uber FlasksOff
 pob rank-nodes [--stat CombinedDPS|TotalEHP|Life] [--max-dist 5] | pob rank-gems [--group main] [--slot N|--add-link]
 pob bench suggest --slot boots --stat "抗性" | pob trade search --slot ring1 [--realm global|tw] [--name "<Unique>"] [--base "<Base>"] [--links 6] [--foulborn] [--gem-level 21 --gem-quality 20] [--corrupted yes|no|any] [--securable] [--auto-query | --stat "生命>=60" --sum "火抗|冰抗|电抗>=80"] [--bench-craft "最大生命"] [--max-per-seller 2] [--normalize-quality auto|on|off] --budget 5 --currency divine
 pob trade shopping-list [--target SLOT] [--league L] [--realm global|tw] [--status securable] [--live] [--json] | pob trade appraise [--target SLOT] [--league L] [--realm global|tw] [--max-live-queries 8] [--json]

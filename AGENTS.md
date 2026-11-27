@@ -2,7 +2,7 @@
 
 pob4agents is a command-line tool, run as `pob`, that lets AI agents inspect, test and optimize Path of Exile 1 builds with the real Path of Building engine, run headless. It is a Python package (`pob_cli/`, Python 3.11+) whose daemon on `127.0.0.1` drives PobTools-zh's `pob-zh.exe` on Windows and PoB on a pinned LuaJIT runtime on macOS and Linux.
 
-> **Running `pob` to analyze or optimize a PoE1 build?** Read [skills/pob/SKILL.md](skills/pob/SKILL.md), check [docs/guides/commands.md](docs/guides/commands.md), or run `pob help --brief` (this `AGENTS.md` is for developing `pob4agents` itself).
+> **Analyzing, comparing, upgrading, or pricing a player's PoE1 build?** Use the `pob` CLI directly via [skills/pob/SKILL.md](skills/pob/SKILL.md) (see §1.B for `compare` + `trade appraise` + `sweep` `op:"borrow"` A->B staged upgrades), [docs/guides/commands.md](docs/guides/commands.md), or `pob help --brief` — no need to inspect `pob_cli/` source; this `AGENTS.md` is for developing `pob4agents` itself.
 
 **Read [docs/architecture.md](docs/architecture.md) before changing code.** It covers how a command reaches the engine, the module layers, engine paths and runtime state, environment variables, Chinese locale matching, the `R1`..`R13` constraints, adding a command, verification and CI.
 
