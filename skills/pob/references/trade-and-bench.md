@@ -38,14 +38,28 @@ pob trade search --slot ring1 --stat "生命>=80" --stat "冰抗>=40" --securabl
 # Preview Harvest swap on a pasted item
 pob trade convert --file item.txt --to fire
 
-# Exact item primitives, 3.30 Foulborn uniques, gems & enumerated option stats:
+# Exact item primitives, native armour panel filters, 3.30 Foulborn/Viscera, gems & enumerated option stats:
 # --base "<BaseType>" (alias --type), --links <1..6>, --foulborn (defaults --rarity to unique when omitted),
+# --es-min/--es-max, --ar-min/--ar-max, --ev-min/--ev-max, --ward-min/--ward-max -> official `armour_filters.filters.*`
+#   (total/panel ES/AR/EV/Ward phrases on armour slots route here automatically — NEVER to `pseudo.pseudo_total_energy_shield`, which ignores base * quality * local %ES!).
+# 3.30 Viscera/Graft slots (`viscera:head|body|arm|leg`, `graft:*`) & automatic `reduced`/`less` polarity inversion (`better: -1`) are built in.
 # --gem-level <1..40>, --gem-quality <0..40>, enumerated option templates (Forbidden Flame/Flesh, Thread of Hope, Impossible Escape).
 # Bare-aura ambiguity guard: `--stat "受坚定影响时"` or `--stat "while affected by vitality"` fails with candidate IDs/clauses;
 # pass a specific effect clause instead (e.g. `--stat "受【坚定】影响时，获得额外物理伤害减免"`).
+pob trade search --slot body_armour --es-min 800 --securable --budget 10 --currency divine --pob auto
 pob trade search --name "Cloak of Flame" --links 6 --foulborn --securable --pob off
 pob trade search --base "Awakened Multistrike Support" --gem-level 5 --gem-quality 20 --securable --pob off
 pob trade search --name "Watcher's Eye" --stat "受【坚定】影响时，获得额外物理伤害减免" --securable --pob off
+```
+
+## 2b. 8p2s Large Cluster Jewel Solver (`trade cluster`) & Offline Budget Planner (`trade plan`)
+```powershell
+# 8-passive 2-socket Front-2 Back-1 Large Cluster Jewel topology solver (zero-HTTP URL by default; add --live for buyouts):
+pob trade cluster --enchant "12% increased Lightning Damage" --notables "Sadist,Snowstorm" [--passives 8] [--sockets 2] [--ilvl-max 83] [--live --budget 15 --currency divine --status securable --max-results 8] [--realm global|tw] [--league L]
+
+# Offline multi-slot budget knapsack over saved `pob trade search --json --out <slot>.json` files (0 HTTP calls):
+# Picks at most one PoB-verified listing per slot maximizing weighted DPS/EHP within total chaos --budget.
+pob trade plan ring1.json boots.json amulet.json --budget 1500 [--score dps=1,ehp=0.25] [--top 10] [--divine-rate 150] [--json]
 ```
 
 ## 3. Rare Item Affix Inspection & Hideout Crafting Bench (`ModMaster.lua` Authoritative)
@@ -72,7 +86,7 @@ pob trade shopping-list [--target SLOT] [--league L] [--realm global|tw] [--stat
 # core Tier A items into live queries. `--max-live-queries 0` runs offline poe.ninja-only.
 pob trade appraise [--target SLOT] [--league L] [--realm global|tw] [--status securable] [--max-live-queries 8] [--include-gems|--no-gems] [--json]
 
-# Bilingual & slang poe.ninja economy lookup (supports --detailed for gem level/quality, corrupted, links, cluster passives):
+# Bilingual & slang poe.ninja economy lookup (supports --detailed for gem level/quality, corrupted, links, cluster passives; 3.30 Greater Viscera prefix strip & wombgift/viscera categoryFallback):
 pob price "<EN|中文>" [--league L] [--detailed] [--variant V] [--category C]
 ```
 
