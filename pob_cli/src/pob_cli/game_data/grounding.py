@@ -87,6 +87,10 @@ def _suggest_similar(
             if en_s and en_s not in seen_mod_txt:
                 seen_mod_txt.add(en_s)
                 candidates.append((en_s, zh_s, (zh_l or en_l) if is_cjk else en_l))
+    elif kind_norm in ("tattoo", "runegraft"):
+        from .tattoos import tattoo_suggestion_candidates
+
+        candidates = tattoo_suggestion_candidates(conn, kind_norm, is_cjk)
     else:  # translate
         for tbl in ("gems", "uniques", "bases"):
             rows = conn.execute(f"SELECT name, name_lower, zh_name, zh_lower FROM {tbl}").fetchall()
@@ -128,6 +132,10 @@ def _suggest_similar(
 
 
 def _build_zero_result_hint(kind_norm: str, query: str, suggestions: list[dict[str, Any]]) -> str:
+    if kind_norm in ("tattoo", "runegraft"):
+        from .tattoos import tattoo_zero_result_hint
+
+        return tattoo_zero_result_hint(kind_norm, query, suggestions)
     if suggestions:
         top_names = ", ".join(
             f"{s['name']} ({s['zh_name']})" if s.get("zh_name") else s["name"]

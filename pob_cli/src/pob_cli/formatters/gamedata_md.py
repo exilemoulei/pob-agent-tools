@@ -219,18 +219,26 @@ def _fmt_game_data_base(results: list[dict[str, Any]]) -> list[str]:
 
 
 def _fmt_game_data_tattoo(results: list[dict[str, Any]]) -> list[str]:
+    from ..game_data.tattoos import format_tattoo_replaces
+    from ..locale_cfg import current_lang
+
+    show_zh = current_lang() != "en"
     rows = []
     for r in results:
         en, zh = str(r.get("name") or "-"), str(r.get("zh_name") or "")
         kind = ("Runegraft" if r.get("kind") == "runegraft" else "Tattoo") + (" [Legacy]" if r.get("legacy") else "")
-        target, target_value = str(r.get("target_type") or "-"), str(r.get("target_value") or "")
+        replaces, _ = format_tattoo_replaces(
+            str(r.get("target_type") or "-"),
+            str(r.get("target_value") or ""),
+            include_zh=show_zh,
+        )
         s_en, s_zh = r.get("stats") or [], r.get("stats_zh") or []
         stats = [f"{s} / {s_zh[i]}" if (i < len(s_zh) and s_zh[i] and s_zh[i] != s) else str(s) for i, s in enumerate(s_en)]
         rows.append(
             [
                 kind,
                 f"{zh} ({en})" if (zh and zh != en) else en,
-                f"{target} ({target_value})" if target_value else target,
+                replaces,
                 "; ".join(stats) or "-",
                 r.get("limit_text") or "-",
             ]
