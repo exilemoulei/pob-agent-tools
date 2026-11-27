@@ -41,7 +41,7 @@ from .other_cmds import (
 )
 from .plan_cmd import cmd_trade_plan
 from .search_cmd import cmd_trade_search
-from .shopping_cmd import cmd_trade_shopping_list
+from .shopping_cmd import cmd_trade_appraise, cmd_trade_shopping_list
 
 __all__ = [
     "SLOT_HINT",
@@ -69,6 +69,7 @@ __all__ = [
     "call_daemon",
     "cmd_bench_list",
     "cmd_bench_suggest",
+    "cmd_trade_appraise",
     "cmd_trade_convert",
     "cmd_trade_leagues",
     "cmd_trade_plan",
