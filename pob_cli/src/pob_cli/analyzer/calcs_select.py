@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..bridge_client import BridgeWorker
@@ -9,6 +10,59 @@ from ..bridge_protocol import BridgeError
 from ..formatters import strip_pob_escapes
 from ..game_data import fold_han
 from .inspectors import resolve_skill_group_index
+
+_MINION_PREFIX_RE = re.compile(r"^\s*@minion(?::|\s+|$)", re.IGNORECASE)
+_PURE_MINION_EXACT_OR_SUB = (
+    "animate guardian",
+    "animate weapon",
+    "raise spectre",
+    "raise zombie",
+    "raise spiders",
+    "herald of agony",
+    "blink arrow",
+    "mirror arrow",
+    "dancing dervish",
+    "soulwrest",
+    "幻化守卫",
+    "幻化守衛",
+    "幻化武器",
+    "召唤灵体",
+    "召喚靈體",
+    "魔卫复苏",
+    "魔衛復甦",
+    "苦痛之捷",
+)
+
+
+def parse_actor_keywords(kw_list: list[str]) -> tuple[list[str], bool]:
+    """Strip `@minion` prefix/token from calc query keywords; return `(clean_keywords, force_minion)`."""
+    force_minion = False
+    cleaned: list[str] = []
+    for kw in kw_list:
+        s = str(kw or "")
+        if _MINION_PREFIX_RE.match(s):
+            force_minion = True
+            rest = _MINION_PREFIX_RE.sub("", s).strip()
+            if rest:
+                cleaned.append(rest)
+        else:
+            cleaned.append(s)
+    if force_minion and not cleaned:
+        cleaned = [""]
+    return cleaned, force_minion
+
+
+def is_pure_minion_skill(*labels: Any) -> bool:
+    """True when any label names a pure minion skill (e.g. Animate Guardian, Summon *, Raise Spectre)."""
+    for raw in labels:
+        s = _flbl(raw)
+        if not s:
+            continue
+        if s.startswith(("summon ", "召唤")):
+            return True
+        if any(tok in s for tok in _PURE_MINION_EXACT_OR_SUB):
+            return True
+    return False
 
 
 def _active_skills_of(grp: dict[str, Any]) -> list[dict[str, Any]]:
@@ -96,12 +150,114 @@ def select_calcs_target(w: BridgeWorker, group: str | int | None, skill: str | i
     return w.call("get_calcs", {})
 
 
-def restore_calcs_target(w: BridgeWorker, restores: list[dict[str, Any]], *, quiet: bool = False) -> None:
+def _selected_labels(calcs: dict[str, Any]) -> tuple[int | None, list[Any]]:
+    sel = calcs.get("selectors") if isinstance(calcs.get("selectors"), dict) else {}
+    grp_sel = sel.get("mainSocketGroup") if isinstance(sel.get("mainSocketGroup"), dict) else {}
+    sk_sel = sel.get("mainSkill") if isinstance(sel.get("mainSkill"), dict) else {}
+    grp_idx: int | None = None
+    try:
+        if grp_sel.get("index") is not None:
+            grp_idx = int(grp_sel["index"])
+    except (TypeError, ValueError):
+        grp_idx = None
+    for box in (sk_sel, grp_sel):
+        try:
+            idx = int(box["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        lst = box.get("list")
+        if isinstance(lst, list) and 1 <= idx <= len(lst) and isinstance(lst[idx - 1], dict):
+            found = [v for v in (lst[idx - 1].get("label"), lst[idx - 1].get("labelZh")) if str(v or "").strip()]
+            if found:
+                return grp_idx, found
+    return grp_idx, []
+
+
+def ensure_calcs_actor(
+    w: BridgeWorker,
+    calcs: dict[str, Any],
+    *,
+    has_explicit_selector: bool,
+    force_minion: bool,
+    restores: list[dict[str, Any]],
+    gem_restores: list[dict[str, Any]],
+) -> tuple[dict[str, Any], str, str | None]:
+    """Auto-switch `showMinion` for pure minion skills (or `@minion`), queuing full restore."""
+    inp = calcs.get("input") if isinstance(calcs.get("input"), dict) else {}
+    orig_show = bool(inp.get("showMinion"))
+    has_minion = bool(calcs.get("hasMinion"))
+    grp_idx, labels = _selected_labels(calcs)
+
+    want_minion = orig_show
+    if has_minion and (force_minion or (has_explicit_selector and is_pure_minion_skill(*labels))):
+        want_minion = True
+
+    aligned_itemset = False
+    if want_minion and grp_idx is not None:
+        try:
+            g_state = w.call("get_group_gem_states", {"group": grp_idx})
+            gems = g_state.get("gems") if isinstance(g_state, dict) else None
+            default_set = g_state.get("defaultItemSetId", 1) if isinstance(g_state, dict) else 1
+            if isinstance(gems, list):
+                patches: list[dict[str, Any]] = []
+                orig_patches: list[dict[str, Any]] = []
+                for gm in gems:
+                    if not isinstance(gm, dict):
+                        continue
+                    m_set = gm.get("skillMinionItemSet")
+                    c_set = gm.get("skillMinionItemSetCalcs")
+                    eff_m_set = m_set if m_set is not None else default_set
+                    eff_c_set = c_set if c_set is not None else default_set
+                    if eff_m_set != eff_c_set:
+                        patches.append({"index": gm["index"], "skillMinionItemSetCalcs": eff_m_set})
+                        orig_patches.append(
+                            {
+                                "index": gm["index"],
+                                "skillMinionItemSetCalcs": "__nil__" if c_set is None else c_set,
+                            }
+                        )
+                if patches:
+                    gem_restores.append({"group": grp_idx, "gemStates": orig_patches})
+                    aligned_itemset = True
+                    w.call("apply_group_gem_states", {"group": grp_idx, "gemStates": patches})
+        except Exception:
+            pass
+
+    if want_minion != orig_show:
+        restores.insert(0, {"var": "showMinion", "value": orig_show})
+        w.call("set_calcs_input", {"var": "showMinion", "value": want_minion})
+        calcs = w.call("get_calcs", {})
+    elif aligned_itemset:
+        calcs = w.call("get_calcs", {})
+
+    cur_inp = calcs.get("input") if isinstance(calcs.get("input"), dict) else {}
+    cur_has_minion = bool(calcs.get("hasMinion"))
+    actor = "minion" if (bool(cur_inp.get("showMinion")) and cur_has_minion) else "player"
+    hint = (
+        "This skill also has minion stats; pass '@minion' in your query to inspect the Minion panel."
+        if actor == "player" and cur_has_minion
+        else None
+    )
+    return calcs, actor, hint
+
+
+def restore_calcs_target(
+    w: BridgeWorker,
+    restores: list[dict[str, Any]],
+    *,
+    gem_restores: list[dict[str, Any]] | None = None,
+    quiet: bool = False,
+) -> None:
     """Run every queued restore; a failed one is reported, because the command is read-only.
 
     `quiet` is for a caller that is already failing: its own error says more than the restore's.
     """
     first: Exception | None = None
+    for gr in gem_restores or []:
+        try:
+            w.call("apply_group_gem_states", gr)
+        except Exception as exc:
+            first = first or exc
     for rc in restores:
         try:
             w.call("set_calcs_input", rc)

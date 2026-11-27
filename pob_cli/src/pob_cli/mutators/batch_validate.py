@@ -25,7 +25,7 @@ _CONFIG_KEYS: frozenset[str] = frozenset(
     }
 )
 
-_FLASK_KEYS: frozenset[str] = frozenset({"index", "flask_index", "flaskIndex", "active"})
+_FLASK_KEYS: frozenset[str] = frozenset({"index", "flask_index", "flaskIndex", "slot", "flask", "active", "state", "enabled"})
 _ITEM_KEYS: frozenset[str] = frozenset({"raw", "slot", "slotName", "slot_name"})
 _ITEM_DB_KEYS: frozenset[str] = frozenset(
     {

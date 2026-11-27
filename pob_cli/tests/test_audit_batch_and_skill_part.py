@@ -441,7 +441,7 @@ def test_a_skill_part_asked_of_a_host_without_the_extension_is_an_error_not_a_no
 @pytest.mark.parametrize(
     ("op_dict", "bad_key"),
     [
-        ({"op": "flask", "slot": "Flask 1", "active": False}, "slot"),
+        ({"op": "flask", "slotName": "Flask 1", "active": False}, "slotName"),
         ({"op": "item", "slot": "Belt", "raw": "Rarity: NORMAL\nHeavy Belt", "mods": []}, "mods"),
         ({"op": "item_db", "name": "Mageblood", "rarity": "UNIQUE"}, "rarity"),
         ({"op": "item_edit", "slot": "Belt", "mods": ["+20 to Strength"]}, "mods"),

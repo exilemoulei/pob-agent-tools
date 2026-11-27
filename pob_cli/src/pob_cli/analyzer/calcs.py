@@ -12,7 +12,12 @@ from ..bridge_client import BridgeWorker
 from ..formatters import strip_pob_escapes
 from ..game_data import fold_han
 from ..snapshot import _call_batch
-from .calcs_select import restore_calcs_target, select_calcs_target
+from .calcs_select import (
+    ensure_calcs_actor,
+    parse_actor_keywords,
+    restore_calcs_target,
+    select_calcs_target,
+)
 from .tree_inspect import _normalize_query_list
 
 _CALC_CELL_NUM_RE = re.compile(
@@ -302,7 +307,8 @@ def search_calcs_breakdown(
     group: str | int | None = None, skill: str | int | None = None,
 ) -> dict[str, Any]:
     """Bilingual (EN + ZH) search across `get_calcs` rows with variadic keywords and pipelined `calcs_breakdown`."""
-    kw_list = _normalize_query_list(keyword, keywords) or [""]
+    raw_kw_list = _normalize_query_list(keyword, keywords) or [""]
+    kw_list, force_minion = parse_actor_keywords(raw_kw_list)
     if any(kw.strip() for kw in kw_list):
         from ..guardrails import GuardrailScope, check_input
 
@@ -314,9 +320,21 @@ def search_calcs_breakdown(
     with worker.lock:
         orig_translate, toggled_translate = _ensure_calcs_translate_enabled(worker)
         restore_calls: list[dict[str, Any]] = []
+        gem_restores: list[dict[str, Any]] = []
         try:
             calcs = select_calcs_target(worker, group, skill, restore_calls) if has_sel else worker.call("get_calcs", {})
+            calcs, actor, minion_hint = ensure_calcs_actor(
+                worker,
+                calcs,
+                has_explicit_selector=has_sel,
+                force_minion=force_minion,
+                restores=restore_calls,
+                gem_restores=gem_restores,
+            )
             calcs_skill = _calcs_skill(worker, calcs)
+            actor_meta: dict[str, Any] = {"actor": actor}
+            if minion_hint:
+                actor_meta["minionHint"] = minion_hint
             indexed_rows = _index_calc_rows(calcs)
             per_kw_scored: list[tuple[str, list[tuple[float, int, dict[str, Any]]]]] = []
             bd_coord_order: list[tuple[Any, Any, Any, Any]] = []
@@ -352,7 +370,7 @@ def search_calcs_breakdown(
             if len(per_kw_scored) == 1:
                 kw, scored = per_kw_scored[0]
                 m_out = _build_calc_matches(scored, limit=limit, max_breakdowns=max_breakdowns, no_breakdown=no_breakdown, bd_map=bd_map)
-                return {"keyword": kw, "totalMatches": len(scored), "matches": m_out, **calcs_skill}
+                return {"keyword": kw, "totalMatches": len(scored), "matches": m_out, **actor_meta, **calcs_skill}
 
             per_kw_results, combined_matches, seen_coords = [], [], set()
             for kw, scored in per_kw_scored:
@@ -366,11 +384,16 @@ def search_calcs_breakdown(
 
             return {
                 "keyword": kw_list[0], "keywords": kw_list, "results": per_kw_results,
-                "totalMatches": sum(r["totalMatches"] for r in per_kw_results), "matches": combined_matches, **calcs_skill,
+                "totalMatches": sum(r["totalMatches"] for r in per_kw_results), "matches": combined_matches, **actor_meta, **calcs_skill,
             }
         finally:
             try:
-                restore_calcs_target(worker, restore_calls, quiet=sys.exc_info()[0] is not None)
+                restore_calcs_target(
+                    worker,
+                    restore_calls,
+                    gem_restores=gem_restores,
+                    quiet=sys.exc_info()[0] is not None,
+                )
             finally:
                 if toggled_translate and orig_translate is not None:
                     try:
