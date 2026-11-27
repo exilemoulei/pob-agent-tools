@@ -24,15 +24,23 @@ INFLATION_CONFIG_PREFIXES = (
 )
 
 INFLATION_CONFIG_EXACT = frozenset({
-    "onslaught",
-    "adrenaline",
-    "fortify",
-    "tailwind",
-    "elusive",
-    "unholyMight",
-    "divineBlessing",
-    "innervation",
-    "infusedChannelling",
+    "Unbound",
+    "ShockStacks",
+    "HoarfrostStacks",
+    "ScorchStacks",
+    "barkskinStacks",
+    "bannerPlanted",
+    "bannerValour",
+    "warcryMode",
+    "pactMode",
+    "sigilOfPowerStages",
+    "frostShieldStages",
+    "prideEffect",
+    "innervateInnervation",
+    "infusedChannellingInfusion",
+    "closeCombatCombatRush",
+    "configResonanceCount",
+    "traumaStacks",
 })
 
 TEMPORARY_SKILL_PATTERNS = (
@@ -66,6 +74,14 @@ _POB_TRUTHY_CONFIG_DEFAULTS: dict[str, Any] = {
     "conditionCorruptingCryStages": 1,
     "conditionChampionIntimidate": True,
     "conditionSacrificeMinion": True,
+    "bloodsoakedBannerStages": 1,
+    "plagueBearerState": "INC",
+    "resourceGainMode": "AVERAGE",
+    "touchedDebuffsCount": 10,
+    "maniaDebuffsCount": 15,
+    "warcryMode": "AVERAGE",
+    "pactMode": "AVERAGE",
+    "prideEffect": "MIN",
 }
 
 _RESERVATION_AURA_EXACT = frozenset(

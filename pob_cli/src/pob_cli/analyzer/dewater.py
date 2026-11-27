@@ -11,13 +11,16 @@ from ..bridge_client import BridgeWorker
 from ..formatters import _parse_numeric_or_none
 from ..snapshot import (
     _call_batch,
-    _finite_float,
     _json_safe_stat,
     _safe_min_ele_max_hit,
     verify_build,
 )
 from .constants import _KEEP_KEYWORDS
-from .dewater_provenance import evaluate_flask_provenance, fetch_dewater_provenance
+from .dewater_provenance import (
+    evaluate_flask_provenance,
+    fetch_dewater_provenance,
+    is_close_range_main_skill,
+)
 from .dewater_steps import (
     _dewater_config_and_custom_mods,
     _dewater_flasks,
@@ -73,16 +76,22 @@ def dewater_build_in_place(
     auto_keep_reasons: dict[str, str] | None = None,
     flask_notes: dict[str, str] | None = None,
     equipped_slots_raw: list[dict[str, Any]] | None = None,
+    tree_summary: dict[str, Any] | None = None,
+    alloc_node_stats: list[tuple[str, list[str]]] | None = None,
     auto_keep_live: bool = True,
+    boss: str | None = None,
 ) -> dict[str, list[str]]:
-    """Strip PoB inflation ('water') in place and set enemyIsBoss='Pinnacle'."""
+    """Strip PoB inflation ('water') in place and set enemyIsBoss (default 'Pinnacle')."""
     stripped, _records = dewater_build_with_records(
         worker,
         keep=keep,
         auto_keep_reasons=auto_keep_reasons,
         flask_notes=flask_notes,
         equipped_slots_raw=equipped_slots_raw,
+        tree_summary=tree_summary,
+        alloc_node_stats=alloc_node_stats,
         auto_keep_live=auto_keep_live,
+        boss=boss,
     )
     return stripped
 
@@ -95,17 +104,21 @@ def dewater_build_with_records(
     auto_keep_reasons: dict[str, str] | None = None,
     flask_notes: dict[str, str] | None = None,
     equipped_slots_raw: list[dict[str, Any]] | None = None,
+    tree_summary: dict[str, Any] | None = None,
+    alloc_node_stats: list[tuple[str, list[str]]] | None = None,
     auto_keep_live: bool = True,
+    boss: str | None = None,
 ) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
-    """De-water in place (2 pipelined RPC batches) and return reversible per-item records."""
+    """De-water in place (2 pipelined RPC batches + optional Pass 2 clamp) and return reversible records."""
     keep_set = _normalize_keep(keep)
-    stripped: dict[str, list[str]] = {
+    stripped: dict[str, Any] = {
         "config": [],
         "flasks": [],
         "skills": [],
         "party": [],
         "kept": [],
         "autoKept": [],
+        "autoClamped": [],
         "keepRejected": [],
     }
     records: list[dict[str, Any]] = []
@@ -142,6 +155,9 @@ def dewater_build_with_records(
         mutations,
         records,
         auto_keep_reasons=eff_auto_keep or None,
+        auto_keep_live=auto_keep_live,
+        is_close_range=is_close_range_main_skill(skills_res, provenance),
+        boss=boss,
     )
     _dewater_flasks(
         worker,
@@ -181,67 +197,26 @@ def dewater_build_with_records(
     if mutations:
         _call_batch(worker, mutations)
 
-    ig_reason = (auto_keep_reasons or {}).get("conditionenemyignited") or ""
-    if "IgniteChance" in ig_reason and any(
-        s.lower().startswith("conditionenemyignited=") for s in stripped.get("autoKept", [])
-    ):
-        _revoke_flask_inflated_ignite(worker, cfg_res, stripped, records)
+    from .dewater_clamp import run_pass2_clamp_and_verify
 
-    if auto_keep_live:
-        from .dewater_mechanics import refine_post_dewater_mechanics
+    pass2_applied = run_pass2_clamp_and_verify(
+        worker,
+        cfg_res,
+        keep_set,
+        stripped,
+        records,
+        auto_keep_reasons=eff_auto_keep or None,
+        skills_res=skills_res,
+        flask_verdict=flask_verdict,
+        tree_summary=tree_summary,
+        equipped_slots_raw=equipped_slots_raw,
+        alloc_node_stats=alloc_node_stats,
+        auto_keep_live=auto_keep_live,
+    )
 
-        refine_post_dewater_mechanics(worker, cfg_res, keep_set, stripped, records, skills_res=skills_res)
-
+    stripped["pass2Applied"] = pass2_applied
     stripped["keepRejected"] = _unmatched_keep(keep_set, known)
     return stripped, records
-
-
-def _revoke_flask_inflated_ignite(
-    worker: BridgeWorker,
-    cfg_res: dict[str, Any],
-    stripped: dict[str, list[str]],
-    records: list[dict[str, Any]],
-) -> None:
-    """Revoke `conditionEnemyIgnited` auto-keep if post-dewater `IgniteChance` fell below 100%."""
-    ig_var = "conditionEnemyIgnited"
-    ig_val: Any = True
-    for sec in cfg_res.get("sections", []):
-        for item in sec.get("items", []):
-            if str(item.get("var") or "").lower() == "conditionenemyignited":
-                ig_var = str(item["var"])
-                ig_val = item.get("value")
-                break
-    try:
-        st_batch = _call_batch(worker, [("get_stats", {})], raise_on_error=False)
-    except Exception:
-        return
-    if not st_batch or not isinstance(st_batch[0], dict) or st_batch[0].get("_error"):
-        return
-    post_stats = st_batch[0].get("stats")
-    if not isinstance(post_stats, dict):
-        return
-    post_ig = max(
-        _finite_float(post_stats.get("IgniteChance")),
-        _finite_float(post_stats.get("EnemyIgniteChance")),
-    )
-    if post_ig >= 100.0:
-        return
-    _call_batch(worker, [("reset_config", {"var": ig_var})])
-    stripped["autoKept"] = [
-        s for s in stripped.get("autoKept", []) if not s.lower().startswith("conditionenemyignited=")
-    ]
-    stripped["config"].append(f"{ig_var}={ig_val!r} -> reset (post-dewater IgniteChance {post_ig:.0f}% < 100%)")
-    records.append(
-        {
-            "dimension": "config",
-            "key": ig_var,
-            "label": f"{ig_var}={ig_val!r}",
-            "restore": [("set_config", {"var": ig_var, "value": ig_val})],
-            "revert": [("reset_config", {"var": ig_var})],
-            "probe": {"kind": "config", "var": ig_var},
-            "original": ig_val,
-        }
-    )
 
 
 def _probe_rpc_method(probe: dict[str, Any]) -> str:

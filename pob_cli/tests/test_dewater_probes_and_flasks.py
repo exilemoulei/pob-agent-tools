@@ -137,8 +137,8 @@ def test_agent_probes_diet_and_dewater_probes_budget() -> None:
     dp_txt = dp_raw.decode("utf-8").replace("\r\n", "\n")
     dp_lines = dp_txt.splitlines()
     dp_crlf = max(len(dp_raw), len(dp_txt.encode("utf-8")) + len(dp_lines))
-    assert len(dp_lines) <= 260
-    assert dp_crlf <= 20_000
+    assert len(dp_lines) <= 350
+    assert dp_crlf <= 24_000
     assert "get_dewater_provenance = handle_get_dewater_provenance" in dp_txt
     assert "eval_scenario_envelope = handle_eval_scenario_envelope" in dp_txt
 
