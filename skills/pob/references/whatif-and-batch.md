@@ -22,6 +22,7 @@ Supported op types (22, aliases in parentheses; 37 names in all): `config` (`con
 - `"add_group"` takes `"gems"` as `"Name[:level[:quality]]"` strings (or gem objects), plus `label`, `slot`, `makeMain`; `"tree"` takes `"allocate"` / `"deallocate"` lists of node ids or names (`pob tree --search "<kw>" --show-path`).
 - `"skill_add"` / `"skill_set"` / `"skill_rm"` are `"skill"` with that action as the default (an explicit `"action"` in the step still wins, so leave it out): `{"op":"skill_add","group":"main","gem":"Controlled Destruction","level":20,"quality":0}`, `{"op":"skill_rm","group":"main","gem":"Spell Echo"}`.
 - `"config"` takes `"set": {"useFrenzyCharges": true, "enemyIsBoss": "Pinnacle"}` (one or many variables), `"reset"`, and `"customMods"` / `"appendCustomMods"`; a bare `"var"`/`"value"` pair is refused with the `"set"` form to use.
+- `"flask"` (`"item_flask"`) takes `"slot"` or `"flask"` (`1`–`5`) and `"active"` / `"state"` / `"enabled"` (`true`/`false`/`on`/`off`/`active`/`inactive`; conflicting aliases fail pre-run validation).
 - `"skill"` supports `"skill_part"` (1-based sub-skill part index for multi-part gems such as `Ice Spear`, `Blade Vortex`, or transfigured variants).
 - **Strict pre-run validation & exit codes:** every batch step is validated before the first step runs with strict field types (integers reject booleans, lists, objects, and fractions like `12.5`; booleans accept `true`/`false`/`0`/`1`/`on`/`off`/`yes`/`no`; `allocate`/`deallocate`/`addMods`/`removeMods`/`gems` take lists, and `replaceMods` takes `[old, new]` pairs). Invalid batch/trade arguments or same-slot `compare`/`borrow`/`tree diff` exit `1` (`pob trade` reserves exit `2` for "no results").
 ```powershell
@@ -31,6 +32,7 @@ pob batch --json-ops '[{"op":"config","set":{"usePowerCharges":true,"enemyIsBoss
 ## Scoped `calc`, Repeatable `tree change` & PowerShell 5.1 `--out`
 ```powershell
 pob calc "CombinedDPS" "ManaCost" --group 2 --skill 1                     # Inspect a specific socket group / active skill without switching main
+pob calc "Life" "FireResist" "LifeRegen" --group <N>                      # Pure minion groups (e.g. Animate Guardian) auto-switch to minion actor; @minion / @player suffixes override explicitly without mutating main skill or player ItemSet
 pob tree change --allocate 26725 --allocate 41263 --deallocate 36634      # Repeatable --allocate / --deallocate flags (or comma-separated IDs)
 pob diagnose '@build.xml' --json --out report.json                        # Writes clean UTF-8 (no BOM); prefer --out <file> on Windows PowerShell 5.1 instead of > / pipe
 ```
