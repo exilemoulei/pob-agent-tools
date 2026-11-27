@@ -22,7 +22,7 @@ _LUA_DIR = os.path.join(src_dir, "pob_cli", "lua")
 _LUA_FILES = sorted(name for name in os.listdir(_LUA_DIR) if name.endswith(".lua"))
 _DATA_DIR = os.path.join(src_dir, "pob_cli", "data")
 _DATA_FILES = sorted(
-    name for name in os.listdir(_DATA_DIR) if name.endswith((".json", ".json.gz", ".lua.gz"))
+    name for name in os.listdir(_DATA_DIR) if name.endswith((".json", ".json.gz", ".lua.gz", ".md"))
 )
 
 _THIRD_PARTY_NOTICES = os.path.abspath(os.path.join(spec_dir, "..", "..", "THIRD_PARTY_NOTICES.md"))

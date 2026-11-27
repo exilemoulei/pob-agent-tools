@@ -189,9 +189,11 @@ def run_installer(tmp_path: Path, release: tuple[_Release, str]):  # type: ignor
 @posix_only
 def test_installs_the_signed_build(release: tuple[_Release, str], run_installer, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     release[0].publish()
-    proc = run_installer()
+    proc = run_installer(POB_LANG="zh-CN")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "Release signature verified" in proc.stdout
+    assert "--- BEGIN USER WELCOME TIPS ---" in proc.stdout
+    assert "@流放降临-某雷" in proc.stdout
     link = tmp_path / "bin" / "pob"
     assert link.is_symlink() and os.readlink(link) == str(tmp_path / "app" / "pob")
     assert subprocess.run([str(link), "--version"], capture_output=True, text=True).stdout.strip() == "pob, version 9.9.9"
@@ -203,12 +205,20 @@ def test_upgrade_replaces_an_earlier_python_install(release: tuple[_Release, str
     release[0].publish()
     (tmp_path / "bin").mkdir()
     (tmp_path / "bin" / "pob").write_text("#!/bin/sh\necho old\n", encoding="utf-8")
-    assert run_installer().returncode == 0
+    assert run_installer(POB_LANG="en").returncode == 0
     assert (tmp_path / "bin" / "pob").is_symlink()
     assert (tmp_path / "bin" / "pob.old").read_text(encoding="utf-8").endswith("echo old\n")
-    # Run again over the existing build: the link and the directory are replaced in place.
-    assert run_installer().returncode == 0
+    # Run again over the existing build (same version): no fresh-install welcome tip.
+    reinstall = run_installer(POB_LANG="en")
+    assert reinstall.returncode == 0
+    assert "BEGIN USER WELCOME TIPS" not in reinstall.stdout
     assert (tmp_path / "app" / "pob").is_file()
+    # Upgrade from an older version (9.9.9 -> 10.0.0): no welcome tip; falls back to release URL when changelog is absent.
+    release[0].publish(version="10.0.0")
+    upgrade = run_installer(POB_LANG="en")
+    assert upgrade.returncode == 0
+    assert "BEGIN USER WELCOME TIPS" not in upgrade.stdout
+    assert "releases/tag/v10.0.0" in upgrade.stdout
 
 
 @posix_only

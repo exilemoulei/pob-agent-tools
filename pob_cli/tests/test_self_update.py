@@ -507,3 +507,92 @@ def test_next_run_reports_a_failed_windows_swap(monkeypatch: pytest.MonkeyPatch,
         assert shown == []
     else:
         assert len(shown) == 1 and f"self-update to {NEW} did not finish: Access to the path is denied." in shown[0]
+
+
+def test_self_update_surfaces_release_notes_text_and_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _standalone(monkeypatch, tmp_path)
+    monkeypatch.setattr(self_update, "is_windows", lambda: False)
+    sample_notes = "--- BEGIN USER RELEASE NOTES ---\n0.11 新增功能\n--- END USER RELEASE NOTES ---"
+
+    def downloaded(staging: Path, **_kw: object) -> dict[str, Any]:
+        (staging / "new").mkdir()
+        return {"tag": f"v{NEW}", "version": NEW, "dir": staging / "new", "releaseNotes": sample_notes}
+
+    monkeypatch.setattr(self_update, "download_release", downloaded)
+    monkeypatch.setattr(self_update, "swap_posix", lambda *_a: None)
+
+    res_txt = CliRunner().invoke(main, ["self-update"])
+    assert res_txt.exit_code == 0, res_txt.output
+    assert f"Updated pob {__version__} -> {NEW}." in res_txt.output
+    assert sample_notes in res_txt.output
+
+    res_json = CliRunner().invoke(main, ["self-update", "--json"])
+    assert res_json.exit_code == 0, res_json.output
+    data = json.loads(res_json.stdout)
+    assert data["updated"] is True
+    assert data["releaseNotes"] == sample_notes
+
+
+def test_read_release_notes_handles_old_binary_and_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    exe = tmp_path / "pob"
+    exe.write_text("", encoding="utf-8")
+
+    # Old binary without `changelog` subcommand exits non-zero -> returns None, never raises
+    monkeypatch.setattr(
+        self_update.subprocess,
+        "run",
+        lambda cmd, **_kw: subprocess.CompletedProcess(cmd, 2, "", "No such command 'changelog'"),
+    )
+    assert self_update._read_release_notes(exe, "0.10.0") is None
+
+    # Timeout -> returns None, never raises
+    def hang(cmd: list[str], **_kw: object) -> None:
+        raise subprocess.TimeoutExpired(cmd, 10)
+
+    monkeypatch.setattr(self_update.subprocess, "run", hang)
+    assert self_update._read_release_notes(exe, "0.10.0") is None
+
+    # Exit 0 with non-marker output (e.g. "No release notes newer than ...") -> returns None
+    monkeypatch.setattr(
+        self_update.subprocess,
+        "run",
+        lambda cmd, **_kw: subprocess.CompletedProcess(cmd, 0, "No release notes newer than v0.10.0.\n", ""),
+    )
+    assert self_update._read_release_notes(exe, "0.10.0") is None
+
+    # Healthy binary with release-notes marker -> returns trimmed UTF-8 notes
+    framed = "--- BEGIN USER RELEASE NOTES ---\nhello notes\n--- END USER RELEASE NOTES ---"
+    monkeypatch.setattr(
+        self_update.subprocess,
+        "run",
+        lambda cmd, **_kw: subprocess.CompletedProcess(cmd, 0, f"  {framed}\n", ""),
+    )
+    assert self_update._read_release_notes(exe, "0.10.0") == framed
+
+
+def test_download_release_skips_changelog_on_downgrade(
+    fake_release: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    old = "0.1.0"
+    name = self_update.build_asset_name(old, "linux-x64")
+    data = _build(old, "linux-x64")
+    sums = f"{hashlib.sha256(data).hexdigest()}  {name}\n".encode()
+    fake_release[f"{BASE}/download/v{old}/SHA256SUMS.txt"] = _Resp(200, sums)
+    fake_release[f"{BASE}/download/v{old}/SHA256SUMS.txt.sig"] = _Resp(200, sign_sums_text(sums).encode())
+    fake_release[f"{BASE}/download/v{old}/{name}"] = _Resp(200, data)
+
+    seen_cmds: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+        seen_cmds.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, f"pob, version {old}\n", "")
+
+    monkeypatch.setattr(self_update.subprocess, "run", fake_run)
+    res = self_update.download_release(tmp_path / "s", tag=old)
+    assert res["version"] == old
+    assert "releaseNotes" not in res
+    assert all("changelog" not in c for c in seen_cmds)

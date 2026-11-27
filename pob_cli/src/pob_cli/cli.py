@@ -237,6 +237,11 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
         "cmd_self_update",
         "Update pob itself to the latest release (standalone builds; others get their update command).",
     ),
+    "changelog": (
+        ".cli_self_update",
+        "cmd_changelog",
+        "Show bilingual author release notes bundled with pob (zero network, zero daemon).",
+    ),
     "trade": (
         ".cli_trade",
         "trade_group",

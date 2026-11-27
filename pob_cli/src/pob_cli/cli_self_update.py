@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 # Commands whose output an agent harness parses, or that run in the background: no notice there.
-_QUIET_COMMANDS = frozenset({"_daemon", "_lua-host", "_release-check", "serve", "self-update"})
+_QUIET_COMMANDS = frozenset({"_daemon", "_lua-host", "_release-check", "serve", "self-update", "changelog"})
 # Background commands, which nobody reads: a failed Windows swap is reported by the next other one.
 _BACKGROUND_COMMANDS = frozenset({"_daemon", "_lua-host", "_release-check"})
 
@@ -209,13 +209,68 @@ def cmd_self_update(
     elif result.get("pending"):
         report["latest"] = result["version"]
         report["updated"] = "pending"
-        emit(f"pob {result['version']} is downloaded and verified; it replaces {__version__} as soon as this command exits.")
+        notes = result.get("releaseNotes")
+        if isinstance(notes, str) and notes.strip():
+            report["releaseNotes"] = notes.strip()
+        status = f"pob {result['version']} is downloaded and verified; it replaces {__version__} as soon as this command exits."
+        emit(f"{status}\n\n{report['releaseNotes']}" if report.get("releaseNotes") else status)
     else:
         report["latest"] = result["version"]
         report["updated"] = True
-        emit(f"Updated pob {__version__} -> {result['version']}.")
+        notes = result.get("releaseNotes")
+        if isinstance(notes, str) and notes.strip():
+            report["releaseNotes"] = notes.strip()
+        status = f"Updated pob {__version__} -> {result['version']}."
+        emit(f"{status}\n\n{report['releaseNotes']}" if report.get("releaseNotes") else status)
+
+
+@click.command("changelog")
+@click.option(
+    "--since",
+    default=None,
+    help="Only show releases strictly newer than this version (e.g. 0.10.0).",
+)
+@click.option(
+    "--lang",
+    default=None,
+    help="Output language: zh-CN, zh-TW, or en (default: POB_LANG / `pob lang`).",
+)
+@click.option(
+    "--limit",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Max releases to show (default: 1 without --since, 3 with --since).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Output structured JSON.")
+@_output_options
+def cmd_changelog(
+    since: str | None,
+    lang: str | None,
+    limit: int | None,
+    as_json: bool,
+    compact: bool,
+    out_path: str | None,
+) -> None:
+    """Show bilingual author release notes bundled with pob (zero network, zero daemon)."""
+    from .updater.changelog import build_changelog_payload, format_changelog_text
+
+    try:
+        payload = build_changelog_payload(since=since, lang=lang, limit=limit)
+    except ValueError as exc:
+        msg = str(exc)
+        if "language" in msg.lower():
+            raise click.BadParameter(msg, param_hint="--lang") from exc
+        if "release version" in msg.lower():
+            raise click.BadParameter(msg, param_hint="--since") from exc
+        raise click.BadParameter(msg) from exc
+
+    if as_json:
+        _emit_json(payload, compact=compact, out_path=out_path)
+    else:
+        _emit_text(format_changelog_text(payload), out_path=out_path)
 
 
 def register_self_update_commands(group: click.Group) -> None:
     group.add_command(cmd_self_update)
+    group.add_command(cmd_changelog)
     group.add_command(cmd_release_check)

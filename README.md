@@ -138,7 +138,14 @@ pob status
 
 ### 4. 收尾验收与用户 Cookie 安全规则
 
-- **完成验收**：确认 `pob status` 正常、`skills/pob` 已落盘后，**提醒用户新开一个对话窗口**，让新装的 Skill 生效。
+- **首次安装完成**：确认 `pob status` 正常、`skills/pob` 已落盘后，**提醒用户新开一个对话窗口**让新装的 Skill 生效，并将以下作者首次安装提示**直接以正文完整原样转达给用户**（保留全部提示与末尾署名/star 链接，不要套代码块、不要删减改写，也不要额外重复总结）：
+  > 本插件由b站@流放降临-某雷 维护，永久免费开源，喜欢的话来点个star或者关注吧！
+  > 项目地址：https://github.com/exilemoulei/pob4agents
+  > 这个插件能让你一句话：分析流放之路的角色链接/生成所有装备购买链接/估算角色造价，甚至还能帮你找永恒珠宝！
+  > 它会强制要求AI用PoB里可以验证的真实数据说话，让它不能胡编乱造
+  > 插件目前还不太完善，记得两件事：聊多了就开个新窗口，最好不要超过6轮对话，以及多给它一些补充信息，比如你玩的是什么bd/抄的谁的作业/有什么特殊机制，会很有帮助！
+  > 还有更多强大功能等待你解锁，可以多问问它！
+- **升级完成**：当用户要求更新 `pob4agents` 时，升级前先记录旧版本号（`pob --version`），再运行 `pob self-update`（或安装脚本）并同步更新本仓库的 `skills/pob`；随后将本次升级区间对应的更新说明（来自 `pob self-update` 输出、`pob changelog --since <旧版本号>`，或当旧版本早于 `pob changelog` 时直接读取 [`CHANGELOG.md`](CHANGELOG.md)）**直接以正文完整原样转达给用户**（保留全部条目、吐槽与末尾署名/star 提示，不要套代码块、不要删减改写，也不要额外重复总结）；若同步更新了 `skills/pob`，提醒用户新开一个对话窗口。
 - **收到用户发来的 Cookie 时**：
   - 国际服交易 / 国际服私密角色 → 写入本机用户级环境变量 **`POESESSID`**（Windows PowerShell：`[Environment]::SetEnvironmentVariable("POESESSID", "<值>", "User")`；macOS/Linux 写入 shell 配置文件）。
   - 国服官网（`poe.game.qq.com`）角色导入 → 写入本机用户级环境变量 **`POE_CN_SESSID`**（或完整 `POE_CN_COOKIE`）。

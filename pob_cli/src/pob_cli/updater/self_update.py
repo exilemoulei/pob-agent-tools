@@ -266,6 +266,30 @@ def _unpack_and_check(staging: Path, name: str, data: bytes, target: str, versio
     return new_dir
 
 
+def _read_release_notes(exe: Path, since: str) -> str | None:
+    """Best-effort read of bundled release notes from the staged new binary; never fails self-update."""
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    try:
+        proc = subprocess.run(
+            [str(exe), "changelog", "--since", since],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=10,
+            **win_hidden_subprocess_kwargs(subprocess, windows=is_windows()),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    notes = proc.stdout.strip()
+    if "--- BEGIN USER RELEASE NOTES ---" not in notes:
+        return None
+    return notes
+
+
 def download_release(
     staging: Path,
     *,
@@ -307,7 +331,13 @@ def download_release(
     if hashlib.sha256(data).hexdigest() != sums[name]:
         raise UpdateError(f"{name} does not match the signed SHA256SUMS.txt; not installing it.")
     new_dir = _unpack_and_check(staging, name, data, target, version)
-    return {"tag": target, "version": version, "dir": new_dir}
+    out: dict[str, Any] = {"tag": target, "version": version, "dir": new_dir}
+    if is_newer(version, __version__):
+        exe = new_dir / ("pob.exe" if is_windows() else "pob")
+        notes = _read_release_notes(exe, __version__)
+        if notes:
+            out["releaseNotes"] = notes
+    return out
 
 
 def new_staging(current: Path) -> Path:
