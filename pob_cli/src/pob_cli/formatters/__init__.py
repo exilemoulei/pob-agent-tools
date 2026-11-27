@@ -27,6 +27,7 @@ from .diagnose_compare_md import (
 from .diagnose_md import format_diagnose_markdown
 from .gamedata_md import format_game_data
 from .mutation_md import format_cautions, format_mutation_report
+from .price_md import render_single_price_markdown
 from .primitives import (
     LARGE_JSON_STDOUT_BYTES,
     POB_ESCAPE_RE,
@@ -87,6 +88,7 @@ __all__ = [
     "format_tree_markdown",
     "keep_rejected_warning",
     "lookup_localized_name",
+    "render_single_price_markdown",
     "render_table",
     "render_update_warning",
     "restore_warning",

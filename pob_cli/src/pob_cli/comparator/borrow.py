@@ -130,13 +130,14 @@ def _build_item_plans(
     borrow_tree: bool,
     borrow_tree_jewels: bool,
     ref_group_obj: dict[str, Any] | None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[int]]:
     ref_items_res = ref_bundle["itemsRes"]
     ref_items_by_id = ref_bundle["itemsById"]
     ref_slots_by_name = ref_bundle["slotsByName"]
     ref_raws = ref_bundle["itemRaws"]
     plans: list[dict[str, Any]] = []
     seen_ref_slots: set[str] = set()
+    skipped_tree_jewels: list[int] = []
 
     def _add_plan(resolved: str, *, auto_source: bool = False, auto_tree_jewel: bool = False) -> None:
         if resolved in seen_ref_slots:
@@ -172,8 +173,12 @@ def _build_item_plans(
                 continue
             if ref_alloc and int(nid) not in ref_alloc:
                 continue
-            if int(s["selItemId"]) in ref_raws:
-                _add_plan(s["name"], auto_tree_jewel=True)
+            if s["name"] in seen_ref_slots:
+                continue
+            if not ref_raws.get(int(s["selItemId"])):
+                skipped_tree_jewels.append(int(nid))
+                continue
+            _add_plan(s["name"], auto_tree_jewel=True)
 
     if ref_group_obj and ref_group_obj.get("source"):
         src_slot = ref_group_obj.get("slot")
@@ -191,7 +196,7 @@ def _build_item_plans(
                 "reference slot is missing."
             )
 
-    return plans
+    return plans, skipped_tree_jewels
 
 
 def apply_borrow_in_place(
@@ -237,7 +242,7 @@ def apply_borrow_in_place(
                 )
             copied_group_texts.append((cp, src_slot))
 
-    borrowed_items_plan = _build_item_plans(
+    borrowed_items_plan, skipped_tree_jewels = _build_item_plans(
         ref_bundle,
         slots_to_borrow,
         borrow_tree=borrow_tree,
@@ -245,7 +250,10 @@ def apply_borrow_in_place(
         ref_group_obj=ref_group_obj,
     )
 
-    notices: list[str] = []
+    notices: list[str] = [
+        f"Skipped tree jewel at node:{nid} (raw text unavailable from the reference slot)."
+        for nid in skipped_tree_jewels
+    ]
     borrowed_tree_info: dict[str, Any] | None = None
     if borrow_tree:
         borrowed_tree_info, tree_notices = _transplant_tree_in_place(main_worker, ref_bundle, cache=cache)
@@ -350,6 +358,8 @@ def apply_borrow_in_place(
     }
     if borrowed_tree_info is not None:
         out["borrowedTree"] = borrowed_tree_info
+    if skipped_tree_jewels:
+        out["skippedTreeJewels"] = skipped_tree_jewels
     return out
 
 

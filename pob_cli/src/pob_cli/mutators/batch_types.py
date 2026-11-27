@@ -173,7 +173,7 @@ def normalize_batch_op_types(idx: int, kind: str, op: dict[str, Any]) -> dict[st
                         out[key] = parts
                     else:
                         parsed_list = parse_str_list(raw_slots, key)
-                        if any(not str(x).strip() for x in parsed_list):
+                        if any(not [t.strip() for t in str(x).split(",") if t.strip()] for x in parsed_list):
                             raise ValueError(f"'{key}' entries must be non-empty slot strings")
                         out[key] = [str(x).strip() for x in parsed_list]
             for key in ("slot", "item_slot"):
@@ -181,7 +181,7 @@ def normalize_batch_op_types(idx: int, kind: str, op: dict[str, Any]) -> dict[st
                 if raw_s is not None:
                     if not isinstance(raw_s, str):
                         raise ValueError(f"'{key}' must be a string, got {type(raw_s).__name__}")
-                    if not raw_s.strip():
+                    if not [t.strip() for t in raw_s.split(",") if t.strip()]:
                         raise ValueError(f"'{key}' must be a non-empty slot string")
                     out[key] = raw_s.strip()
             for key in ("skill_group", "skillGroup"):

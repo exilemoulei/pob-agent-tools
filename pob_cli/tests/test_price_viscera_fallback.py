@@ -85,3 +85,55 @@ def test_viscera_category_falls_back_to_wombgift(_patch_ninja: None) -> None:
     assert res["matches"][0]["name"] == "Grafted Heart"
     assert res["matches"][0]["type"] == "Wombgift"
     assert res["categoryFallback"] == "wombgift"
+
+
+def test_detailed_sibling_fallback_preserves_stale_flag_on_stripped_retry(
+    _patch_ninja: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pob_cli.external_data import ninja_price as np_mod
+
+    overviews = _mock_overviews()
+    stash_calls: list[list[str]] = []
+
+    def _fake_stash_batch(
+        league: str, types: list[str] | tuple[str, ...], *, proxy: str | None = None, max_workers: int = 6
+    ) -> tuple[dict[str, list[dict[str, Any]]], set[str], set[str]]:
+        t_list = list(types)
+        stash_calls.append(t_list)
+        data = {t: overviews.get(t, []) for t in t_list}
+        stale = {"Viscera"} if "Viscera" in t_list else set()
+        return data, stale, set()
+
+    monkeypatch.setattr(np_mod, "_fetch_stash_overviews_batch", _fake_stash_batch)
+    res = query_price("Greater Brute's Arm", category="wombgift", detailed=True)
+    assert res["totalMatches"] == 1
+    assert res["matches"][0]["name"] == "Brute's Arm"
+    assert res["categoryFallback"] == "viscera"
+    assert res["resolvedQuery"] == "Brute's Arm"
+    assert res.get("stale") is True
+    assert sum(1 for call in stash_calls if "Viscera" in call) == 1
+
+
+def test_render_single_price_markdown_shows_category_fallback_note(_patch_ninja: None) -> None:
+    from pob_cli.cli_data_render import _render_single_price_markdown
+
+    fallback_res = query_price("Greater Brute's Arm", category="wombgift")
+    md_fb = _render_single_price_markdown(fallback_res, "Greater Brute's Arm")
+    assert "> [NOTE] Category fallback: `wombgift` -> `viscera` (0 matches in `wombgift`)." in md_fb
+
+    direct_res = query_price("Greater Brute's Arm", category="all")
+    md_direct = _render_single_price_markdown(direct_res, "Greater Brute's Arm")
+    assert "Category fallback:" not in md_direct
+
+
+def test_cmd_price_multi_renders_category_fallback_note(_patch_ninja: None) -> None:
+    from click.testing import CliRunner
+
+    from pob_cli.cli_data import cmd_price
+
+    runner = CliRunner()
+    res = runner.invoke(cmd_price, ["Greater Brute's Arm", "Grafted Heart", "--category", "wombgift"])
+    assert res.exit_code == 0, res.output
+    assert "> [NOTE] Category fallback: `wombgift` -> `viscera` (0 matches in `wombgift`)." in res.output
+    assert "Grafted Heart" in res.output

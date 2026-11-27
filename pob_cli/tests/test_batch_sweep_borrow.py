@@ -446,8 +446,19 @@ def test_borrow_tree_reset_and_click_class_mastery_3tier_and_partial_missing() -
             self.asc_calls: list[int] = []
             self._saved = self._snap()
 
+        def _snap(self) -> dict[str, Any]:
+            snap = super()._snap()
+            snap["class_id"] = self.class_id
+            snap["asc_id"] = self.asc_id
+            return snap
+
         def call(self, method: str, params: dict[str, Any] | None = None, timeout: float = 30.0) -> dict[str, Any]:
             params = dict(params or {})
+            if method == "import_code":
+                res = super().call(method, params, timeout)
+                self.class_id = int(self._saved.get("class_id", 1))
+                self.asc_id = int(self._saved.get("asc_id", 1))
+                return res
             if method == "set_class":
                 self.class_id = int(params["classId"])
                 self.class_calls.append(self.class_id)
@@ -505,6 +516,7 @@ def test_borrow_tree_reset_and_click_class_mastery_3tier_and_partial_missing() -
     assert bt["missingNodes"] == [99991]
     assert any("99991" in n for n in res["detail"]["notices"])
     assert res["restoreCheck"]["verified"] is True
+    assert main_w.class_id == 1 and main_w.asc_id == 1
 
 
 def test_borrow_strict_validation_and_source_copy_fail_fast() -> None:
@@ -512,12 +524,26 @@ def test_borrow_strict_validation_and_source_copy_fail_fast() -> None:
         validate_batch_op(1, "borrow", {"op": "borrow", "skill_group": True})
     with pytest.raises(ValueError, match="non-empty"):
         validate_batch_op(1, "borrow", {"op": "borrow", "items": ["   "]})
+    with pytest.raises(ValueError, match="non-empty"):
+        validate_batch_op(1, "borrow", {"op": "borrow", "slot": ", ,"})
+    with pytest.raises(ValueError, match="non-empty"):
+        validate_batch_op(1, "borrow", {"op": "borrow", "items": [", "]})
     with pytest.raises(ValueError, match="conflicting tree aliases"):
         validate_batch_op(1, "borrow", {"op": "borrow", "tree": False, "borrowTree": True})
     with pytest.raises(ValueError, match="conflicting tree_jewels aliases"):
         validate_batch_op(1, "borrow", {"op": "borrow", "tree": True, "tree_jewels": True, "treeJewels": False})
     with pytest.raises(ValueError, match="conflicting skill_group aliases"):
         validate_batch_op(1, "borrow", {"op": "borrow", "skill_group": "main", "skillGroup": "2"})
+
+    # tree: None + borrowTree: True must resolve to True (not shadowed by None).
+    ref_w_alias = _FakeBorrowWorker("ref", tree_nodes=[54447, 33631, 41263])
+    alias_bundle = capture_ref_bundle(ref_w_alias)  # type: ignore[arg-type]
+    alias_res = run_batch(
+        _FakeBorrowWorker("main"),  # type: ignore[arg-type]
+        [{"op": "borrow", "tree": None, "borrowTree": True}],
+        ref_bundle=alias_bundle,
+    )
+    assert alias_res["detail"]["steps"][0]["borrowedTree"]["allocatedCount"] == 3
 
     # Missing raw text for item-granted skill group must fail fast with ValueError.
     main_w = _FakeBorrowWorker("main")
@@ -557,30 +583,43 @@ def test_borrow_strict_validation_and_source_copy_fail_fast() -> None:
 
 def test_sweep_rejects_variant_missing_ops_wrapper_and_prunes_extra_cluster_leaf() -> None:
     main_w = _FakeBorrowWorker("main")
-    with pytest.raises(ValueError, match=r"without an 'ops' list"):
+    with pytest.raises(ValueError, match=r"outside 'ops'"):
         run_sweep(
             main_w,  # type: ignore[arg-type]
             [{"name": "arm_only", "op": "borrow", "items": ["Arm"]}],
+        )
+    with pytest.raises(ValueError, match=r"outside 'ops'"):
+        run_sweep(
+            main_w,  # type: ignore[arg-type]
+            [{"name": "mixed", "ops": [], "op": "borrow", "tree": True}],
         )
 
     # Pure baseline variant without misplaced keys remains allowed.
     base_res = run_sweep(main_w, [{"name": "baseline"}])  # type: ignore[arg-type]
     assert base_res["succeeded"] == 1
 
-    # Auto-pathed extra cluster leaf node 65701 is pruned cleanly without losing ref nodes.
+    # Auto-pathed extra cluster leaf node 65701 is pruned cleanly without losing ref nodes,
+    # and repair loop skips lost nodes already re-allocated along the path.
     class _ExtraLeafWorker(_FakeBorrowWorker):
-        def __init__(self, slot: str, *, nodes: list[int], url: str | None = None) -> None:
+        def __init__(self, slot: str, *, nodes: list[int], url: str | None = None, cascade: bool = False) -> None:
+            self.cascade = cascade
             super().__init__(slot, tree_nodes=nodes, tree_url=url)
             self._saved = self._snap()
 
         def call(self, method: str, params: dict[str, Any] | None = None, timeout: float = 30.0) -> dict[str, Any]:
             params = dict(params or {})
             if method == "import_tree_url":
-                self.tree_nodes = [54447, 33631, 65701]
+                self.tree_nodes = [54447, 33631, 41263, 65701] if self.cascade else [54447, 33631, 65701]
                 return {"activeSpec": 2}
             if method == "tree_click":
                 nid = int(params["id"])
-                if nid in self.tree_nodes:
+                if self.cascade and nid == 65701 and 65701 in self.tree_nodes:
+                    # Simulate cascade dropping both 33631 and 41263 when 65701 is unallocated.
+                    self.tree_nodes = [54447]
+                elif self.cascade and nid == 33631 and 33631 not in self.tree_nodes:
+                    # Re-clicking 33631 auto-paths and also re-allocates 41263!
+                    self.tree_nodes = [54447, 33631, 41263]
+                elif nid in self.tree_nodes:
                     self.tree_nodes.remove(nid)
                 else:
                     self.tree_nodes.append(nid)
@@ -593,6 +632,53 @@ def test_sweep_rejects_variant_missing_ops_wrapper_and_prunes_extra_cluster_leaf
     assert res_leaf["detail"]["borrowedTree"]["allocatedCount"] == 2
     assert res_leaf["detail"]["borrowedTree"]["targetCount"] == 2
     assert "missingNodes" not in res_leaf["detail"]["borrowedTree"]
+
+    # Cascade repair must not toggle 41263 back off after 33631 auto-paths through it.
+    m_casc = _ExtraLeafWorker("main", nodes=[54447], cascade=True)
+    r_casc = _ExtraLeafWorker(
+        "ref", nodes=[54447, 33631, 41263], url="https://www.pathofexile.com/passive-skill-tree/AAAABgM"
+    )
+    res_casc = borrow_from_ref(m_casc, r_casc, borrow_tree=True, borrow_tree_jewels=False, apply=False)  # type: ignore[arg-type]
+    assert res_casc["detail"]["borrowedTree"]["allocatedCount"] == 3
+    assert "missingNodes" not in res_casc["detail"]["borrowedTree"]
+
+
+def test_borrow_tree_missing_jewel_raw_skips_with_notice_while_explicit_fails() -> None:
+    class _MissingJewelRawWorker(_FakeBorrowWorker):
+        def call(self, method: str, params: dict[str, Any] | None = None, timeout: float = 30.0) -> dict[str, Any]:
+            if method == "item_raw":
+                return {"raw": ""}
+            return super().call(method, params, timeout)
+
+    main_w = _FakeBorrowWorker("main", tree_nodes=[54447])
+    ref_w = _MissingJewelRawWorker(
+        "ref",
+        tree_nodes=[54447, 33631],
+        tree_url="https://www.pathofexile.com/passive-skill-tree/AAAABgM",
+        jewel_raw="Rarity: RARE\nDoom Eye\nCrimson Jewel\nImplicits: 0\n+7% to maximum Life",
+    )
+
+    # 1. Auto --tree with missing jewel raw skips with skippedTreeJewels + notice.
+    res_auto = borrow_from_ref(main_w, ref_w, borrow_tree=True, borrow_tree_jewels=True, apply=False)  # type: ignore[arg-type]
+    assert res_auto["detail"]["skippedTreeJewels"] == [33631]
+    assert any(
+        "Skipped tree jewel at node:33631 (raw text unavailable from the reference slot)." in n
+        for n in res_auto["detail"]["notices"]
+    )
+
+    # Also verify propagation on batch_ops_borrow step dict.
+    bundle = capture_ref_bundle(ref_w)  # type: ignore[arg-type]
+    batch_res = run_batch(main_w, [{"op": "borrow", "tree": True}], ref_bundle=bundle)  # type: ignore[arg-type]
+    assert batch_res["detail"]["steps"][0]["skippedTreeJewels"] == [33631]
+
+    # 2. Explicit --item-slot node:33631 with missing jewel raw still fails hard.
+    with pytest.raises(ValueError, match="no raw text"):
+        borrow_from_ref(main_w, ref_w, item_slots=["node:33631"], apply=False)  # type: ignore[arg-type]
+
+    # 3. --tree with borrow_tree_jewels=False omits skippedTreeJewels and notice.
+    res_no_j = borrow_from_ref(main_w, ref_w, borrow_tree=True, borrow_tree_jewels=False, apply=False)  # type: ignore[arg-type]
+    assert "skippedTreeJewels" not in res_no_j["detail"]
+    assert not any("Skipped tree jewel" in n for n in res_no_j["detail"]["notices"])
 
 
 @pytest.mark.skipif(POB_DIR is None, reason="Real runnable PoB engine not available")
@@ -664,6 +750,7 @@ def test_real_engine_borrow_tree_with_cluster_jewel_subsocket(tmp_path: Path) ->
         assert outer_slot in borrowed_slots
         assert sub_sock["name"] in borrowed_slots
         assert res["applied"] is False
+        assert res["restoreCheck"]["verified"] is True
         assert not res.get("restoreWarning")
         assert after["stats"]["Life"] == pytest.approx(before["stats"]["Life"], rel=1e-6)
     finally:
