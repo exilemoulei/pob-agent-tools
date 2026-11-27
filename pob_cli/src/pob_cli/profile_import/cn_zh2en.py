@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..game_data import fold_han
+from . import cn_tencent_rules as _tr
 from . import pob_xml_helpers as _xh
 
 _CLASS_ZH_TO_EN = _xh.CLASS_ZH_TO_EN
@@ -28,20 +29,18 @@ _KNOWN_SPECIAL_SUPPORTS = frozenset(
 )
 
 _BUILTIN_SUPPORT_RE = re.compile(r"^(?:由\s*)?(?:等级\s*(\d+)\s*的?\s*)?(.+?)\s*辅助$|^被等级\s*(\d+)\s*的?\s*(.+?)\s*辅助$")
-_FORBIDDEN_REF_RE = re.compile(r"^若禁断之(?:火|肉)上有符合的词缀[，,]配置\s*(.+)$")
-_ANOINT_REF_RE = re.compile(r"^配置\s*(.+)$")
 
 _BASE_FILES = ("items.json", "Items_Accessories.txt.json", "Items_Armour.txt.json", "Items_Flasks.txt.json", "Items_Jewels.txt.json", "Items_Weapons.txt.json", "Z-Item.json", "Z-Flask.json", "Z-Jewel.json", "Z-Addition.json", "Z-S28.json", "Z-S29.json", "Z-S30.json")
 _UNIQUE_FILES = ("uniques.json", "Uniques.txt.json", "Z-S28-Foulborn.json", "Z-S28.json", "Z-S29.json", "Z-S30.json", "Z-Addition.json")
 _GEM_FILES = ("gems.json", "gem_names.json", "gem_names_support.json", "gem_names_nonactive.json", "Gems_data.txt.json", "Items_Gems.txt.json", "Z-Skills.json", "Z-Skills_Gems_Overview.json", "Z-Support_Gems_Overview.json", "Z-S28.json", "Z-S29.json", "Z-S30.json")
 _GEM_COLON_FILES = ("A-Skills2.json", "A-Skills1.json")
 _GEM_FALLBACK_FILES = ("A-1a.json",)
-_PASSIVE_FILES = ("passives.json", "passiveTree.json", "tree_dn.json", "anoint.json", "tattoo.json", "legion.json", "A-Forbidden.json", "Tatto.json", "TattooPassives.json", "Z-Phrecia.json", "Z-S30-Pearl_of_Tsoatha-Passive_Tree.json")
+_PASSIVE_FILES = ("passives.json", "passiveTree.json", "tree_dn.json", "anoint.json", "tattoo.json", "legion.json", "A-Forbidden.json", "Tatto.json", "TattooPassives.json", "Z-Phrecia.json", "Z-S27.json", "Z-S28.json", "Z-S29.json", "Z-S30.json", "Z-S30-Pearl_of_Tsoatha-Passive_Tree.json")
 _STAT_FILES = ("stats.json", "statDescriptions.json", "affixes.json", "ModMap.json", "A-Forbidden.json", "Z-S30.json", "Z-S30-Pearl_of_Tsoatha-Boots.json", "Z-S30-Pearl_of_Tsoatha-Gloves.json", "Z-S30-Pearl_of_Tsoatha-Helmet.json", "Z-S29.json", "Z-S28.json", "Z-S28-Foulborn.json", "Z-Addition.json", "Z-Other.json")
 
 
 def _norm_key(text: str) -> str:
-    return fold_han(str(text or "")).strip().lower()
+    return fold_han(str(text or "")).replace("\u00a0", " ").strip().lower()
 
 
 def _norm_gem_key(text: str) -> str:
@@ -262,14 +261,14 @@ class Zh2EnDictionary:
         if not s or not _CJK_RE.search(s):
             return s
         k = _norm_key(s)
-        return self.base_map.get(k) or self.unique_map.get(k) or s
+        return self.base_map.get(k) or _tr.TENCENT_BASE_ALIASES.get(k) or self.unique_map.get(k) or s
 
     def translate_unique(self, text: str) -> str:
         s = str(text or "").strip()
         if not s or not _CJK_RE.search(s):
             return s
         k = _norm_key(s)
-        return self.unique_map.get(k) or self.base_map.get(k) or ""
+        return self.unique_map.get(k) or _tr.TENCENT_UNIQUE_ALIASES.get(k) or self.base_map.get(k) or ""
 
     def translate_gem(self, text: str, *, is_support: bool | None = None) -> str:
         s = str(text or "").strip()
@@ -303,8 +302,11 @@ class Zh2EnDictionary:
         s = str(text or "").strip()
         if not s or not _CJK_RE.search(s):
             return s
-        k = _norm_key(s)
-        return self.passive_map.get(k) or self.base_map.get(k) or _CLASS_ZH_TO_EN.get(fold_han(s), s)
+        for cand in _tr.passive_lookup_variants(s):
+            hit = self.passive_map.get(cand) or self.base_map.get(cand)
+            if hit:
+                return hit
+        return _tr.lookup_tattoo_fallback(s) or _CLASS_ZH_TO_EN.get(fold_han(s), s)
 
     def translate_mod(self, mod: str) -> tuple[str, bool]:
         """Translate one CN mod line into English. Returns `(translated, matched)`."""
@@ -320,23 +322,17 @@ class Zh2EnDictionary:
                 if ok:
                     return f"{en_pref}{inner}", True
 
-        # 2. Exact non-numeric stat match first (preserves exact A-Forbidden / Z-S30 disambiguations)
+        # 2. Exact non-numeric stat match first (preserves A-Forbidden / Z-S30 disambiguations; skips Passage)
         k = _norm_key(s)
-        if k in self.stat_exact:
+        if folded not in ("通途", "Passage") and k in self.stat_exact:
             return self.stat_exact[k], True
 
-        # 3. Forbidden Flame/Flesh & Anoint reference lines (fallback when not in exact table)
-        m_forb = _FORBIDDEN_REF_RE.match(folded)
-        if m_forb:
-            node_en = self.translate_passive(m_forb.group(1).strip())
-            if not _CJK_RE.search(node_en):
-                jewel = "Forbidden Flame" if "禁断之火" in folded else "Forbidden Flesh"
-                return f"Allocates {node_en} if you have the matching modifier on {jewel}", True
-        m_anoint = _ANOINT_REF_RE.match(folded)
-        if m_anoint:
-            node_en = self.translate_passive(m_anoint.group(1).strip())
-            if not _CJK_RE.search(node_en):
-                return f"Allocates {node_en}", True
+        # 3. Tencent CN cluster / jump / forbidden / anoint / timeless rules
+        tn_hit = _tr.translate_tencent_mod_line(
+            s, translate_passive=self.translate_passive, translate_mod=self.translate_mod
+        )
+        if tn_hit is not None:
+            return tn_hit
 
         # 4. Skeleton-indexed numeric template match
         skel = _text_skeleton(s)
@@ -358,35 +354,6 @@ class Zh2EnDictionary:
                     return rendered, True
 
         return s, False
-
-
-def _map_mod_entry_text(entry: Any, fn: Any) -> Any:
-    if isinstance(entry, str):
-        return fn(entry)
-    if isinstance(entry, dict) and isinstance(entry.get("description"), str):
-        return {**entry, "description": fn(entry["description"])}
-    return entry
-
-
-def _pre_handle_cn_item(item: dict[str, Any]) -> None:
-    """Apply CN localization disambiguation fixes (from cn-poe-utils)."""
-    reqs = item.get("requirements") or []
-    is_scion = any(
-        isinstance(r, dict)
-        and str(r.get("name") or "") in ("职业：", "职业:")
-        and any(isinstance(v, list) and v and "贵族" in str(v[0]) for v in (r.get("values") or []))
-        for r in reqs
-    )
-    if is_scion and isinstance(item.get("explicitMods"), list):
-        item["explicitMods"] = [
-            _map_mod_entry_text(m, lambda txt: re.sub(r"暗影$", "暗影（贵族）", txt))
-            for m in item["explicitMods"]
-        ]
-    if isinstance(item.get("enchantMods"), list):
-        item["enchantMods"] = [
-            _map_mod_entry_text(m, lambda txt: f"该武器的{txt}" if _S26_WEAPON_ENCHANT_RE.match(txt.strip()) else txt)
-            for m in item["enchantMods"]
-        ]
 
 
 def _translate_gem_in_place(
@@ -425,7 +392,7 @@ def _translate_item_in_place(
     dictionary: Zh2EnDictionary,
     warnings: list[str],
 ) -> None:
-    _pre_handle_cn_item(item)
+    _tr.pre_handle_cn_item(item, _S26_WEAPON_ENCHANT_RE)
     slot_label = str(item.get("inventoryId") or item.get("baseType") or "Item")
 
     base_zh = str(item.get("baseType") or item.get("typeLine") or "").strip()
@@ -450,9 +417,15 @@ def _translate_item_in_place(
     for prop in item.get("properties") or []:
         if not isinstance(prop, dict):
             continue
-        pname = fold_han(str(prop.get("name") or "")).strip()
-        if pname in _PROP_ZH_TO_EN:
+        pname = fold_han(str(prop.get("name") or "")).strip().rstrip(":：")
+        if pname == "限制":
+            prop["name"] = "Limited to"
+        elif pname in _PROP_ZH_TO_EN:
             prop["name"] = _PROP_ZH_TO_EN[pname]
+        prop_en = str(prop.get("name") or "")
+        for val_pair in prop.get("values") or []:
+            if isinstance(val_pair, list) and val_pair and isinstance(val_pair[0], str):
+                val_pair[0] = _tr.translate_property_value(prop_en, val_pair[0])
 
     for mod_key in (
         "enchantMods", "implicitMods", "explicitMods", "craftedMods",
@@ -473,15 +446,17 @@ def _translate_item_in_place(
                     flags = raw_flags
             else:
                 continue
-            for sub_line in raw_text.split("\n"):
-                sub = strip_poe_markup(sub_line)
+            for sub_line in _tr.prepare_mod_lines(strip_poe_markup(raw_text)):
+                sub = sub_line.strip()
                 if not sub:
                     continue
                 translated, ok = dictionary.translate_mod(sub)
+                if not translated:
+                    continue
                 new_mods.append({"description": translated, "flags": flags} if flags else translated)
                 if not ok and _CJK_RE.search(translated):
                     warnings.append(f"[CN-TRANSLATE-WARN] {slot_label} ({base_en}): {sub}")
-        item[mod_key] = new_mods
+        item[mod_key] = _tr.normalize_cluster_enchant_order(new_mods) if mod_key == "enchantMods" else new_mods
 
     for si in item.get("socketedItems") or []:
         if not isinstance(si, dict):
@@ -518,8 +493,12 @@ def translate_cn_bundle(
                 _translate_item_in_place(jewel, dictionary, warnings)
         overrides = tree_obj.get("skill_overrides")
         if isinstance(overrides, dict):
-            for ov in overrides.values():
+            for nid, ov in overrides.items():
                 if isinstance(ov, dict) and isinstance(ov.get("name"), str):
-                    ov["name"] = dictionary.translate_passive(ov["name"])
+                    raw_nm = ov["name"]
+                    en_nm = dictionary.translate_passive(raw_nm)
+                    ov["name"] = en_nm
+                    if _CJK_RE.search(raw_nm) and _CJK_RE.search(en_nm):
+                        warnings.append(f"[CN-TRANSLATE-WARN] skill_overrides[{nid}]: {raw_nm}")
 
     return out, warnings
