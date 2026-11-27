@@ -84,9 +84,19 @@ def _h_tree_rank_wheels(_m: DaemonManager, params: dict[str, Any], w: BridgeWork
     )
 
 
+def _h_tree_tattoo_slots(_m: DaemonManager, params: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
+    from ..analyzer.tattoo_slots import inspect_build_tattoo_slots
+
+    return inspect_build_tattoo_slots(
+        w,
+        target_slot=str(params.get("target") or getattr(w, "slot_name", None) or "main"),
+    )
+
+
 TREE_ACTION_HANDLERS: dict[str, _SlotHandler] = {
     "tree": _h_tree,
     "tree_prune": _h_tree_prune,
     "tree_diff": _h_tree_diff,
     "tree_rank_wheels": _h_tree_rank_wheels,
+    "tree_tattoo_slots": _h_tree_tattoo_slots,
 }

@@ -26,6 +26,7 @@ from .runtime import (
     _is_pid_alive,
     _maybe_emit_degraded_alert,
 )
+from .stale_restart import replay_saved_slots, restart_stale_daemon_for_new_action
 
 
 def read_daemon_state(runtime_dir: Path | None = None) -> dict[str, Any] | None:
@@ -243,6 +244,11 @@ def _ensure_daemon(
 
     try:
         if acquired_lock:
+            existing_st = _daemon_pkg.read_daemon_state(rt_dir)
+            if existing_st is not None:
+                probed_existing = _probe_daemon(existing_st, timeout=5.0)
+                if probed_existing is not None:
+                    return existing_st, probed_existing
             try:
                 if boot_err_file.exists():
                     boot_err_file.unlink()
@@ -341,6 +347,7 @@ def call_daemon(
 
     rt_dir = _get_runtime_dir(runtime_dir)
     state_file = _daemon_state_file(rt_dir)
+    saved_slots: dict[str, str] | None = None
 
     state = _daemon_pkg.read_daemon_state(rt_dir)
     if state is not None:
@@ -395,6 +402,22 @@ def call_daemon(
                     except OSError:
                         pass
                     state = None
+                elif (
+                    auto_start
+                    and not data.get("ok")
+                    and "Unknown daemon action" in str(data.get("error") or "")
+                    and (
+                        saved_slots := restart_stale_daemon_for_new_action(
+                            rt_dir,
+                            port,
+                            token,
+                            action,
+                            old_pid=pid if isinstance(pid, int) and not isinstance(pid, bool) else None,
+                        )
+                    )
+                    is not None
+                ):
+                    state = None
                 else:
                     result = _rpc_result(data)
                     if emit_cold_start_alert:
@@ -418,6 +441,8 @@ def call_daemon(
         port, token = _parse_daemon_endpoint(st)
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError(f"Corrupt PoB daemon state after startup: {exc}") from exc
+    if saved_slots:
+        replay_saved_slots(rt_dir, port, token, saved_slots)
     _, data = _daemon_pkg._http_post_rpc(
         port, token, {"action": action, "params": params or {}}, timeout=timeout
     )

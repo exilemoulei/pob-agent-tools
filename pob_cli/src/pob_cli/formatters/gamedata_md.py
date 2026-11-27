@@ -6,6 +6,11 @@ from typing import Any
 
 from ..game_data.mod_guidance import DROP_ONLY_SOURCES
 from .primitives import _parse_numeric_or_none, render_table
+from .tattoo_build_md import (
+    format_build_tattoo_slots_callout,
+    format_tattoo_tree_cell,
+    render_multi_game_data,
+)
 
 
 def _fmt_game_data_gem(results: list[dict[str, Any]]) -> list[str]:
@@ -223,27 +228,20 @@ def _fmt_game_data_tattoo(results: list[dict[str, Any]]) -> list[str]:
     from ..locale_cfg import current_lang
 
     show_zh = current_lang() != "en"
+    has_tree = any(isinstance(r, dict) and "availableOnTree" in r for r in results)
     rows = []
     for r in results:
         en, zh = str(r.get("name") or "-"), str(r.get("zh_name") or "")
         kind = ("Runegraft" if r.get("kind") == "runegraft" else "Tattoo") + (" [Legacy]" if r.get("legacy") else "")
-        replaces, _ = format_tattoo_replaces(
-            str(r.get("target_type") or "-"),
-            str(r.get("target_value") or ""),
-            include_zh=show_zh,
-        )
+        replaces, _ = format_tattoo_replaces(str(r.get("target_type") or "-"), str(r.get("target_value") or ""), include_zh=show_zh)
         s_en, s_zh = r.get("stats") or [], r.get("stats_zh") or []
         stats = [f"{s} / {s_zh[i]}" if (i < len(s_zh) and s_zh[i] and s_zh[i] != s) else str(s) for i, s in enumerate(s_en)]
-        rows.append(
-            [
-                kind,
-                f"{zh} ({en})" if (zh and zh != en) else en,
-                replaces,
-                "; ".join(stats) or "-",
-                r.get("limit_text") or "-",
-            ]
-        )
-    return [render_table(["Kind", "Name", "Replaces", "Stats", "Limit"], rows)]
+        row = [kind, f"{zh} ({en})" if (zh and zh != en) else en, replaces, "; ".join(stats) or "-", r.get("limit_text") or "-"]
+        if has_tree:
+            row.append(format_tattoo_tree_cell(r, show_zh=show_zh))
+        rows.append(row)
+    headers = ["Kind", "Name", "Replaces", "Stats", "Limit"] + (["Current Tree"] if has_tree else [])
+    return [render_table(headers, rows)]
 
 
 def format_game_data(res: dict[str, Any], kind: str | None = None, query: str | None = None) -> str:
@@ -263,6 +261,8 @@ def format_game_data(res: dict[str, Any], kind: str | None = None, query: str | 
         f"### Local Game Data (`{kind_norm}`): `{q_disp}`{alias_note} — `{res.get('count', len(results))}` hits "
         f"(PoB `{res.get('pobVersion')}` / Data `{res.get('dataVersion')}`)"
     )
+    if kind_norm in ("tattoo", "runegraft") and isinstance(res.get("buildTattooSlots"), dict):
+        lines.append(format_build_tattoo_slots_callout(res["buildTattooSlots"]))
     if not results:
         lines.append("_(no matches)_")
         sugs = res.get("suggestions") or []
@@ -294,6 +294,11 @@ def format_game_data(res: dict[str, Any], kind: str | None = None, query: str | 
         lines.extend(_fmt_game_data_tattoo(results))
 
     return "\n".join(lines)
+
+
+def format_multi_game_data(multi_res: dict[str, Any], kind: str, q_list: list[str]) -> str:
+    """Format a multi-query `pob data` response into Markdown sections (with one optional tree-slots header)."""
+    return render_multi_game_data(multi_res, kind, q_list, format_game_data)
 
 
 def format_meta_markdown(res: dict[str, Any]) -> str:
