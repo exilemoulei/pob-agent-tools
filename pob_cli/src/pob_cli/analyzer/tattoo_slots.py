@@ -98,9 +98,9 @@ def analyze_tattoo_slots(
     """Inventory allocated un-overridden passive tree base slots eligible for Tattoos and Runegrafts."""
     buckets: dict[str, dict[str, Any]] = {k: _empty_bucket() for k in _ALL_BUCKETS}
     overrides = tree_state.get("overrides") if isinstance(tree_state.get("overrides"), dict) else {}
+    hash_overrides = tree_state.get("hashOverrides") if isinstance(tree_state.get("hashOverrides"), dict) else {}
     dynamic_map = {str(n["id"]): n for n in (tree_state.get("dynamicNodes") or ()) if isinstance(n, dict) and "id" in n}
 
-    tattoos_used = runegrafts_used = 0
     seen_ids: set[int] = set()
     has_non_start_alloc = False
     for raw_nid in tree_state.get("allocatedNodes") or ():
@@ -137,13 +137,45 @@ def analyze_tattoo_slots(
         if status in ("tattoo", "runegraft"):
             b["tattooed"] += 1
             b["tattooedLinkedCounts"].append(link_cnt)
-            if status == "runegraft":
-                runegrafts_used += 1
-            else:
-                tattoos_used += 1
         else:
             b["free"] += 1
             b["freeLinkedCounts"].append(link_cnt)
+
+    tattoos_used = runegrafts_used = 0
+    all_ov_sids = {str(k) for k in overrides} | {str(k) for k in hash_overrides}
+    for sid in all_ov_sids:
+        try:
+            nid = int(sid)
+        except ValueError:
+            continue
+        ov = overrides.get(sid) if isinstance(overrides.get(sid), dict) else None
+        hov = hash_overrides.get(sid) if isinstance(hash_overrides.get(sid), dict) else None
+        also_conquered = bool(ov and str(ov.get("why") or "").strip().lower() == "conquered" and hov is not None)
+        eff_ov = hov if (also_conquered and hov is not None) else (ov or hov)
+        if not isinstance(eff_ov, dict):
+            continue
+        why = str(eff_ov.get("why") or "").strip().lower()
+        name_l = str(eff_ov.get("name") or "").strip().lower()
+        name_zh = str(eff_ov.get("nameZh") or "")
+        is_rg_name = name_l.startswith("runegraft ") or "符文" in name_zh
+        is_tat_name = "tattoo" in name_l or "文身" in name_zh or "纹身" in name_zh
+        if why == "conquered" and not also_conquered:
+            continue
+        if why == "mastery" and not is_rg_name and hov is None:
+            continue
+        if hov is None and why not in ("tattoo", "mastery") and not (is_rg_name or is_tat_name):
+            continue
+        if seen_ids and nid not in seen_ids and hov is None:
+            continue
+        raw_base = nodes_db.get(sid) if isinstance(nodes_db.get(sid), dict) else None
+        raw_bucket = _classify_raw_base_bucket(raw_base) if isinstance(raw_base, dict) else ""
+        kind = _override_tattoo_kind(eff_ov, raw_bucket or "")
+        if kind == "free":
+            kind = "runegraft" if (is_rg_name or raw_bucket == BUCKET_MASTERY) else "tattoo"
+        if kind == "runegraft":
+            runegrafts_used += 1
+        elif kind == "tattoo":
+            tattoos_used += 1
 
     effective_loaded = has_non_start_alloc if build_loaded is None else (bool(build_loaded) and has_non_start_alloc)
     return {

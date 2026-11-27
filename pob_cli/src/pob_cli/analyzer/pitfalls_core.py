@@ -25,6 +25,7 @@ from .pitfalls_sustain import (
     _check_zero_dps_archetypes,
     _is_tattoo_or_graft_label,
 )
+from .pitfalls_tattoos import audit_tattoo_pitfalls
 from .pitfalls_tree import audit_conquered_zero_stat_nodes
 from .pitfalls_triggers import _check_sword_of_ages_and_triggers
 from .summary import _extract_global_cdr_sources
@@ -322,6 +323,12 @@ def _detect_build_mechanics_and_pitfalls(
         gaps.extend(tree_waste_gaps)
         if tree_waste_info is not None:
             mechanics["conqueredZeroStatWaste"] = tree_waste_info
+    tat_gaps, tat_info = audit_tattoo_pitfalls(
+        cfg_res=cfg_res, tree_state=tree_state, nodes_db=nodes_db, worker=worker
+    )
+    gaps.extend(tat_gaps)
+    if tat_info is not None:
+        mechanics["tattooAudit"] = tat_info
 
     if core_synergies:
         mechanics["coreSynergies"] = list(dict.fromkeys(core_synergies))

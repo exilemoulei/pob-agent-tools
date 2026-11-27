@@ -328,6 +328,8 @@ def _attach_diagnose_socket_fields(
         out_diag["socketSummary"] = sock_summary
     if isinstance(nearby_socks, list):
         out_diag["nearbySockets"] = nearby_socks
+    if isinstance(tree_summary.get("tattooSlots"), dict):
+        out_diag["tattooSlots"] = tree_summary["tattooSlots"]
     bm = out_diag.get("buildMechanics")
     if isinstance(bm, dict) and "_thresholdProbes" in bm:
         out_diag["thresholdProbes"] = bm.pop("_thresholdProbes")
