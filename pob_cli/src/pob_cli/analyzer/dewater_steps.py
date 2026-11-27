@@ -17,10 +17,7 @@ from .constants import (
     POB_GEM_FLAG_DEFAULTS,
     TEMPORARY_SKILL_PATTERNS,
 )
-from .summary import (
-    _has_bloodsoaked_blade_keystone,
-    _is_tincture_item,
-)
+from .summary import _is_tincture_item
 
 
 def _same_state(a: Any, b: Any) -> bool:
@@ -283,27 +280,24 @@ def _dewater_flasks(
     has_bloodsoaked_blade: bool | None,
     flask_notes: dict[str, str] | None = None,
     equipped_slots_raw: list[dict[str, Any]] | None = None,
+    flask_verdict: dict[str, Any] | None = None,
 ) -> None:
-    from .dewater_mageblood import mageblood_exempt_flask_slots
+    from .dewater_provenance import evaluate_flask_provenance
 
-    mb_exempt, mb_spec = mageblood_exempt_flask_slots(
-        worker, items_res, equipped_slots_raw=equipped_slots_raw
+    verdict = flask_verdict or evaluate_flask_provenance(
+        worker,
+        items_res,
+        equipped_slots_raw=equipped_slots_raw,
+        has_bloodsoaked_blade=has_bloodsoaked_blade,
     )
+    mb_exempt: set[str] = set(verdict.get("magebloodSlots") or ())
+    mb_spec = str(verdict.get("magebloodLabel") or "")
+    sustained_slots: dict[str, str] = dict(verdict.get("sustainedSlots") or {})
+    bloodsoaked_active = bool(verdict.get("bloodsoakedBlade"))
     items_by_id = {it["id"]: it for it in items_res.get("items", [])}
     for slot in items_res.get("slots", []):
         if slot.get("isFlask") and slot.get("name"):
             known[str(slot["name"]).lower()] = str(slot["name"])
-    has_active_tincture = any(
-        slot.get("isFlask")
-        and slot.get("active")
-        and _is_tincture_item(items_by_id.get(slot.get("selItemId") or 0))
-        for slot in items_res.get("slots", [])
-    )
-    bloodsoaked_active = (
-        bool(has_bloodsoaked_blade)
-        if has_bloodsoaked_blade is not None
-        else (_has_bloodsoaked_blade_keystone(worker) if has_active_tincture else False)
-    )
     for slot in items_res.get("slots", []):
         if slot.get("isFlask") and slot.get("active"):
             slot_name = slot["name"]
@@ -315,6 +309,11 @@ def _dewater_flasks(
             if slot_name in mb_exempt:
                 stripped.setdefault("autoKept", []).append(
                     f"{slot_name} ({item_title}) (auto-kept: {mb_spec})"
+                )
+                continue
+            if slot_name in sustained_slots:
+                stripped.setdefault("autoKept", []).append(
+                    f"{slot_name} ({item_title}) (auto-kept: {sustained_slots[slot_name]})"
                 )
                 continue
             if bloodsoaked_active and _is_tincture_item(item):
@@ -346,7 +345,13 @@ def _dewater_skills(
     stripped: dict[str, list[str]],
     mutations: list[tuple[str, dict[str, Any]]],
     records: list[dict[str, Any]],
+    *,
+    items_res: dict[str, Any] | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> None:
+    from .dewater_provenance import has_corpse_source, is_offering_gem
+
+    corpse_ok = has_corpse_source(skills_res, items_res, provenance=provenance)
     main_socket_group = skills_res.get("mainSocketGroup")
     for group in skills_res.get("groups", []):
         g_idx = group["index"]
@@ -374,6 +379,7 @@ def _dewater_skills(
                 or "瓦尔" in combined_lower
             )
             is_temp = any(pat in combined_lower for pat in TEMPORARY_SKILL_PATTERNS)
+            is_unfed_offering = is_offering_gem(gem) and not corpse_ok
             original_vaal_g1 = bool(gem.get("enableGlobal1", POB_GEM_FLAG_DEFAULTS["enableGlobal1"]))
             is_active_vaal = is_vaal and original_vaal_g1
 
@@ -406,14 +412,15 @@ def _dewater_skills(
                         next_skill = cand_next
 
             disp = strip_pob_escapes(gem.get("nameZh") or gem.get("name") or gem.get("nameSpec") or "")
-            if not (is_temp or is_active_vaal or selected_main_is_vaal):
+            if not (is_temp or is_unfed_offering or is_active_vaal or selected_main_is_vaal):
                 continue
             if any(n.lower() in keep_set for n in names if n):
                 stripped["kept"].append(f"Group #{g_idx} Gem #{gem['index']} ({disp}) (kept)")
                 continue
             gem_ref = {"group": g_idx, "index": gem["index"]}
-            if is_temp:
-                stripped["skills"].append(f"Group #{g_idx} Gem #{gem['index']} ({disp}) -> enabled=False")
+            if is_temp or is_unfed_offering:
+                reason_tag = " (no single-boss corpse source)" if (is_unfed_offering and not is_temp) else ""
+                stripped["skills"].append(f"Group #{g_idx} Gem #{gem['index']} ({disp}) -> enabled=False{reason_tag}")
                 mutations.append(("set_gem", {**gem_ref, "enabled": False}))
                 records.append(
                     {

@@ -6,10 +6,6 @@ local M = {}
 
 local RESISTS = { "Fire", "Cold", "Lightning", "Chaos" }
 local ATTRS = { "Str", "Dex", "Int" }
-local GUARD_NAMES = {
-	["Molten Shell"] = true, ["Steelskin"] = true, ["Immortal Call"] = true,
-	["Bone Armour"] = true, ["Arcane Cloak"] = true,
-}
 local RES_MOD_MAP = {
 	FireResist = { "Fire" }, ColdResist = { "Cold" }, LightningResist = { "Lightning" },
 	ChaosResist = { "Chaos" }, ElementalResist = { "Fire", "Cold", "Lightning" },
@@ -317,91 +313,10 @@ local function handle_agent_probe_build(_params)
 	}
 end
 
-local ENVELOPE_SCENARIOS = {
-	{ name = "Raw", flasks = true, guards = true, overlay = {
-		enemyIsBoss = "None", conditionKilledRecently = true, conditionHitRecently = true,
-		buffOnslaught = true, usePowerCharges = true, useFrenzyCharges = true, useEnduranceCharges = true,
-	} },
-	{ name = "PinnacleSustained", flasks = false, guards = false, overlay = {
-		enemyIsBoss = "Pinnacle", conditionKilledRecently = false, buffOnslaught = false,
-	} },
-	{ name = "Burst", flasks = true, guards = true, overlay = {
-		enemyIsBoss = "Pinnacle", conditionKilledRecently = false, conditionHitRecently = true,
-		buffOnslaught = true, usePowerCharges = true, useFrenzyCharges = true, useEnduranceCharges = true,
-	} },
-	{ name = "WorstHit", flasks = false, guards = false, overlay = {
-		enemyIsBoss = "Uber", enemyDamageRollRange = 100, conditionKilledRecently = false, buffOnslaught = false,
-	} },
-}
-
-local function handle_eval_scenario_envelope(_params)
-	local build = get_build()
-	local cfg_input, items_tab = build.configTab.input, build.itemsTab
-	local saved_cfg, saved_flasks, saved_guards = {}, {}, {}
-	for k, v in pairs(cfg_input) do saved_cfg[k] = v end
-	for i = 1, 5 do
-		local slot = items_tab.slots["Flask " .. i]
-		if slot then saved_flasks[i] = slot.active end
-	end
-	for gi, grp in ipairs(build.skillsTab.socketGroupList or {}) do
-		for gemi, gem in ipairs(grp.gemList or {}) do
-			if GUARD_NAMES[gem.nameSpec] then
-				saved_guards[#saved_guards + 1] = { gi = gi, gemi = gemi, enabled = gem.enabled }
-			end
-		end
-	end
-	local function set_flasks_guards(fl_on, grd_on)
-		for i = 1, 5 do
-			local slot = items_tab.slots["Flask " .. i]
-			local it = slot and slot.selItemId and slot.selItemId > 0 and items_tab.items[slot.selItemId]
-			if it and it.base and it.base.subType == "Utility" then slot.active = fl_on end
-		end
-		for _, g in ipairs(saved_guards) do
-			build.skillsTab.socketGroupList[g.gi].gemList[g.gemi].enabled = grd_on
-		end
-	end
-	local function reset_cfg(overlay)
-		for k in pairs(cfg_input) do cfg_input[k] = nil end
-		for k, v in pairs(saved_cfg) do cfg_input[k] = v end
-		for k, v in pairs(overlay or {}) do cfg_input[k] = v end
-	end
-	local function restore_all()
-		reset_cfg()
-		for i, st in pairs(saved_flasks) do
-			local slot = items_tab.slots["Flask " .. i]
-			if slot then slot.active = st end
-		end
-		for _, g in ipairs(saved_guards) do
-			build.skillsTab.socketGroupList[g.gi].gemList[g.gemi].enabled = g.enabled
-		end
-		build.configTab:BuildModList()
-		build.calcsTab:BuildOutput()
-	end
-
-	local t0, out_scenarios = now_ms(), {}
-	local ok, err = pcall(function()
-		for _, sc in ipairs(ENVELOPE_SCENARIOS) do
-			local ts = now_ms()
-			reset_cfg(sc.overlay)
-			set_flasks_guards(sc.flasks, sc.guards)
-			build.configTab:BuildModList()
-			local sc_env = calcs.buildOutput(build, "MAIN")
-			local out = (sc_env.player.output) or {}
-			local dps, dps_key = primary_dps(out, sc_env.minion and sc_env.minion.output)
-			out_scenarios[sc.name] = {
-				dps = dps, dpsKey = dps_key, combinedDps = out.CombinedDPS or 0, fullDps = out.FullDPS or 0,
-				totalEhp = out.TotalEHP or 0, physMaxHit = out.PhysicalMaximumHitTaken or 0,
-				eleMinMaxHit = math.min(out.FireMaximumHitTaken or 0, out.ColdMaximumHitTaken or 0, out.LightningMaximumHitTaken or 0),
-				chaosMaxHit = out.ChaosMaximumHitTaken or 0, elapsedMs = now_ms() - ts,
-			}
-		end
-	end)
-	restore_all()
-	if not ok then error(err, 0) end
-
-	local raw_dps = (out_scenarios.Raw and out_scenarios.Raw.dps) or 0
-	local pin_dps = (out_scenarios.PinnacleSustained and out_scenarios.PinnacleSustained.dps) or 0
-	return { scenarios = out_scenarios, inflationRatio = (pin_dps > 0) and (raw_dps / pin_dps) or 0, elapsedMs = now_ms() - t0 }
+local function handle_eval_scenario_envelope(params)
+	local fn = rawget(_G, "__pob4agents_eval_scenario_envelope")
+	if type(fn) == "function" then return fn(params) end
+	error("dewater_probes.lua not loaded", 0)
 end
 
 local FLAT_ELEM_SPECS = {

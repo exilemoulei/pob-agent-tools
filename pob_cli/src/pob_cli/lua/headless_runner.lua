@@ -424,6 +424,12 @@ do
 		if ap.rpc_handlers.agent_probe_build then CAPS.agentProbes = true end
 	end
 
+	local dp = load_ext("dewater_probes.lua")
+	if type(dp) == "table" and type(dp.rpc_handlers) == "table" then
+		register_handlers(dp.rpc_handlers)
+		if dp.rpc_handlers.get_dewater_provenance then CAPS.dewaterProbes = true end
+	end
+
 	local sce = load_ext("skill_calcs_ext.lua")
 	if type(sce) == "table" and type(sce.rpc_handlers) == "table" then
 		register_handlers(sce.rpc_handlers)
