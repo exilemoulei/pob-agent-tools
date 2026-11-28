@@ -8,21 +8,13 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Any
 
+from ..guardrails import strip_pob_color_codes
 from .res_override import detect_worker_res_override_lines, scan_res_override_lines_in_items
 
 _LOG = logging.getLogger(__name__)
 
-_POB_COLOR_RE = re.compile(r"\^(?:x[0-9A-Fa-f]{6}|[0-9])")
 _BONDED_LINE_RE = re.compile(r"(?:^|\})Bonded:\s*", re.IGNORECASE)
 _IMPLICITS_HDR_RE = re.compile(r"^Implicits:\s*(\d+)\s*$")
-
-
-def strip_pob_color_codes(text: str | None) -> str:
-    """Strip PoB colour escape codes (`^xRRGGBB`, `^0`..`^9`) while preserving line breaks."""
-    if not isinstance(text, str) or not text:
-        return ""
-    cleaned = _POB_COLOR_RE.sub("", text).replace("\r\n", "\n").replace("\r", "\n")
-    return cleaned.strip()
 
 
 def _detect_and_fix_2401_spirit(worker: Any, *, auto_fix: bool) -> tuple[list[dict[str, Any]], list[str]]:

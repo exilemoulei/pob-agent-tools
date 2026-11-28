@@ -110,12 +110,23 @@ def get_public_https(
                     current = urllib.parse.urljoin(str(resp.url), location)
                     continue
             buf = bytearray()
-            for chunk in resp.iter_bytes():
-                buf.extend(chunk)
-                if len(buf) > limit:
-                    raise DaemonRequestError(
-                        f"Remote build response from `{current}` exceeded {limit // (1024 * 1024)} MiB limit."
+            try:
+                for chunk in resp.iter_bytes():
+                    buf.extend(chunk)
+                    if len(buf) > limit:
+                        raise DaemonRequestError(
+                            f"Remote build response from `{current}` exceeded {limit // (1024 * 1024)} MiB limit."
+                        )
+            except httpx.DecodingError:
+                if resp.status_code in (403, 429, 503) or resp.headers.get("cf-mitigated"):
+                    clean_hdrs = {k: v for k, v in resp.headers.items() if k.lower() != "content-encoding"}
+                    return httpx.Response(
+                        status_code=resp.status_code,
+                        headers=clean_hdrs,
+                        content=b"",
+                        request=resp.request,
                     )
+                raise
             return httpx.Response(
                 status_code=resp.status_code,
                 headers=resp.headers,

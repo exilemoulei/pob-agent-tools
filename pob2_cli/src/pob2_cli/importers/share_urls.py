@@ -21,7 +21,7 @@ import httpx
 from ..bridge_client import validate_poe2_spec_class_ids
 from ..bridge_protocol import encode_xml_share_code
 from ..errors import DaemonRequestError
-from ..guardrails import redact_secrets, validate_build_xml, validate_url
+from ..guardrails import redact_secrets, strip_pob_color_codes, validate_build_xml, validate_url
 from ..share_codec import MAX_SHARE_XML_BYTES, ShareCodeLimitError, share_code_to_xml
 from ..updater import resolve_proxy
 from .url_guard import check_public_https_url, get_public_https
@@ -82,6 +82,7 @@ def extract_active_spec_node_ids(xml_text: str) -> set[int]:
 _DEFAULT_HEADERS = {
     "User-Agent": "pob24agents/0.1 (PathOfBuilding-PoE2 compatible)",
     "Accept": "text/plain, application/json, */*;q=0.8",
+    "Accept-Encoding": "identity",
 }
 
 _SITE_SPECS: tuple[tuple[str, re.Pattern[str], str], ...] = (
@@ -163,6 +164,12 @@ def _default_fetch_text(
             resp = get_public_https(client, url, max_bytes=MAX_SHARE_XML_BYTES)
     except DaemonRequestError:
         raise
+    except httpx.DecodingError as exc:
+        raise DaemonRequestError(
+            f"[POE2-FETCH-BLOCKED] PoE2 build URL `{redact_secrets(url)}` returned a malformed compressed response "
+            f"(likely anti-bot / Cloudflare challenge: {redact_secrets(str(exc))}). Open the link in a browser, "
+            "export the PoB2 share code, and pass the code or XML file to `pob2 load`."
+        ) from exc
     except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
         raise DaemonRequestError(
             f"Failed fetching PoE2 build URL `{redact_secrets(url)}`: {redact_secrets(str(exc))}"
@@ -425,7 +432,7 @@ def load_build_into_worker(
     info = dict(worker.call("get_build_info", {}) or {})
     if isinstance(info.get("points"), dict) and isinstance(info["points"].get("display"), str):
         pts_clean = dict(info["points"])
-        pts_clean["display"] = re.sub(r"\^(?:x[0-9A-Fa-f]{6}|\d)", "", pts_clean["display"]).strip()
+        pts_clean["display"] = strip_pob_color_codes(pts_clean["display"])
         info["points"] = pts_clean
 
     out: dict[str, Any] = {

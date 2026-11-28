@@ -507,6 +507,23 @@ def test_craft_inspect_file_dash_reads_stdin() -> None:
     assert data["slots"]["openPrefixes"] == 2
 
 
+def test_craft_inspect_file_dash_empty_stdin_fails_explicitly() -> None:
+    """Explicit `--file -` with empty stdin must fail fast with rc=1 instead of silently falling back to base_pool."""
+    runner = CliRunner()
+    r = runner.invoke(
+        cli_main,
+        ["craft", "inspect", "--base", "Desolate Crossbow", "--file", "-", "--json"],
+        input="",
+    )
+    assert r.exit_code == 1
+    assert r.stderr == ""
+    err = json.loads(r.stdout)
+    assert err["ok"] is False
+    assert err["errorKind"] == "empty_stdin"
+    assert err["code"] == "POE2-EMPTY-STDIN"
+    assert "stdin was empty" in err["error"]
+
+
 def test_craft_target_migration_json_zero_stderr() -> None:
     runner = CliRunner()
     r = runner.invoke(cli_main, ["craft", "odds", "--base", "Desolate Crossbow", "--target", "main", "--json"])

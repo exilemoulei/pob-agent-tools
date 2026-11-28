@@ -288,7 +288,7 @@ def test_cli_rune_instill_and_rank_instill(tmp_path: Path, monkeypatch: pytest.M
     assert d2["evaluatedCount"] > 10 and d2["bisAnchor"] is not None
     assert any("offline heuristic" in w for w in d2.get("warnings") or [])
 
-    r2_explicit = runner.invoke(rune_group, ["rank", "--type", "Wand", "--offline-heuristic", "--json"])
+    r2_explicit = runner.invoke(rune_group, ["rank", "--type", "Wand", "--slot", "Weapon 1", "--offline-heuristic", "--json"])
     assert r2_explicit.exit_code == 0, r2_explicit.output
     d2_explicit = json.loads(r2_explicit.output)
     assert d2_explicit["evalMode"] == "offline_heuristic"
@@ -326,12 +326,29 @@ def test_rune_rank_slot_mapping_and_empty_frontier_summary(
     assert data["slot"] == "Body Armour"
     assert data["itemType"] == "Body Armour"
 
-    # Ambiguous type without --slot fails fast with structured usage_error (rc=1)
+    # Ambiguous type without --slot fails fast with structured usage_error (rc=1) in BOTH live & offline modes
     r_ring = runner.invoke(rune_group, ["rank", "--type", "Ring", "--json"])
     assert r_ring.exit_code == 1
     err = json.loads(r_ring.output)
     assert err["errorKind"] == "usage_error"
     assert err["code"] == "POE2-USAGE-ERROR"
+
+    # Offline heuristic mode uses the exact same unique-type mapping table:
+    # Focus -> Weapon 2 (never Weapon 1), Body Armour -> Body Armour, ambiguous Ring/Weapon -> rc=1
+    r_focus = runner.invoke(rune_group, ["rank", "--type", "Focus", "--offline-heuristic", "--json"])
+    assert r_focus.exit_code == 0, r_focus.output
+    d_focus = json.loads(r_focus.output)
+    assert d_focus["slot"] == "Weapon 2"
+    assert d_focus["itemType"] == "Focus"
+
+    r_body_off = runner.invoke(rune_group, ["rank", "--type", "Body Armour", "--offline-heuristic", "--json"])
+    assert r_body_off.exit_code == 0, r_body_off.output
+    assert json.loads(r_body_off.output)["slot"] == "Body Armour"
+
+    for ambig in ("Ring", "Weapon"):
+        r_amb = runner.invoke(rune_group, ["rank", "--type", ambig, "--offline-heuristic", "--json"])
+        assert r_amb.exit_code == 1
+        assert json.loads(r_amb.output)["errorKind"] == "usage_error"
 
     # Empty Pareto frontier prints explicit summary line in Markdown
     md = cli_rune._format_pareto_human(

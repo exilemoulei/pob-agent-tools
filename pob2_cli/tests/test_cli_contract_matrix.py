@@ -20,10 +20,11 @@ from click.testing import CliRunner
 
 from pob2_cli import cli, cli_common, cli_inspect, cli_item, cli_mutate
 from pob2_cli.analyzer.summary import inspect_tree
+from pob2_cli.bridge_protocol import BridgeRejectedError
 from pob2_cli.cli_errors import _emit_error_and_resolve_code
 from pob2_cli.daemon.client import _rpc_result
-from pob2_cli.errors import DaemonRequestError, InternalBugError
-from pob2_cli.importers.share_urls import resolve_poe2_build_source
+from pob2_cli.errors import DaemonEngineError, DaemonRequestError, InternalBugError
+from pob2_cli.importers.share_urls import _DEFAULT_HEADERS, resolve_poe2_build_source
 from pob2_cli.snapshot.commands import undo_build
 from pob2_cli.snapshot.helpers import clean_points_dict
 from pob2_cli.snapshot.history import history_of
@@ -170,6 +171,13 @@ def test_error_envelopes_internal_error_and_empty_history() -> None:
     with pytest.raises(InternalBugError):
         _rpc_result({"ok": False, "errorKind": "internal_error", "error": "CONFIG_KEY"})
 
+    # Request-kind BridgeRejectedError maps to rc=1; daemon-kind / DaemonEngineError maps to rc=5 with engineCode
+    assert _emit_error_and_resolve_code(None, BridgeRejectedError("unknown config var: foo", code="bad_request", kind="request")) == 1
+    assert _emit_error_and_resolve_code(None, DaemonEngineError("lua crash", engine_code="lua_error")) == 5
+    with pytest.raises(DaemonEngineError) as exc_eng:
+        _rpc_result({"ok": False, "errorKind": "daemon", "error": "lua crash", "engineCode": "lua_error"})
+    assert exc_eng.value.engine_code == "lua_error"
+
     # Empty undo history raises [POE2-EMPTY-HISTORY]
     worker = _StubWorker()
     history_of(worker).load_build("dummy", "test")
@@ -181,11 +189,42 @@ def test_poe_ninja_403_and_html_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("pob2_cli.importers.share_urls.check_public_https_url", lambda _u: None)
     monkeypatch.setattr("pob2_cli.importers.url_guard.check_public_https_url", lambda _u: None)
 
+    assert _DEFAULT_HEADERS.get("Accept-Encoding") == "identity"
+
     transport_403 = httpx.MockTransport(
         lambda req: httpx.Response(403, text="<html><title>Just a moment...</title></html>", request=req)
     )
     with pytest.raises(DaemonRequestError, match="POE2-FETCH-BLOCKED"):
         resolve_poe2_build_source("https://poe.ninja/poe2/pob/abc123", transport=transport_403)
+
+    # 403 + Cf-Mitigated: challenge + malformed gzip/br body triggering httpx.DecodingError
+    transport_403_bad_gzip = httpx.MockTransport(
+        lambda req: httpx.Response(
+            403,
+            headers={"Cf-Mitigated": "challenge", "Content-Encoding": "gzip"},
+            content=b"not-valid-gzip-payload",
+            request=req,
+        )
+    )
+    with pytest.raises(DaemonRequestError, match="POE2-FETCH-BLOCKED"):
+        resolve_poe2_build_source("https://poe.ninja/poe2/pob/abc123", transport=transport_403_bad_gzip)
+
+    transport_403_bad_br = httpx.MockTransport(
+        lambda req: httpx.Response(
+            403,
+            headers={"Cf-Mitigated": "challenge", "Content-Encoding": "br"},
+            content=b"not-valid-brotli-payload",
+            request=req,
+        )
+    )
+    with pytest.raises(DaemonRequestError, match="POE2-FETCH-BLOCKED"):
+        resolve_poe2_build_source("https://poe.ninja/poe2/pob/abc123", transport=transport_403_bad_br)
+
+    def _raise_decoding_err(req: httpx.Request) -> httpx.Response:
+        raise httpx.DecodingError("Error -3 while decompressing data: incorrect header check", request=req)
+
+    with pytest.raises(DaemonRequestError, match="POE2-FETCH-BLOCKED"):
+        resolve_poe2_build_source("https://poe.ninja/poe2/pob/abc123", transport=httpx.MockTransport(_raise_decoding_err))
 
     transport_html200 = httpx.MockTransport(
         lambda req: httpx.Response(200, text="<!DOCTYPE html><html><title>Just a moment...</title></html>", request=req)

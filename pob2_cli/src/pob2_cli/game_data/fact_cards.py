@@ -104,7 +104,6 @@ _ZH_GROUND_ALIASES: dict[str, str] = {
     "职业": "classes ascendancy",
     "金币": "gold respec",
     "冷酷盛宴": "grim feast",
-    "战吼": "warcry",
 }
 
 _GROUND_STOPWORDS: frozenset[str] = frozenset(

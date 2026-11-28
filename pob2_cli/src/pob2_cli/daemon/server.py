@@ -104,10 +104,16 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
             except LegacyPatchTrapError as exc:
                 self._send_json(400, {**exc.to_dict(), "type": "LegacyPatchTrapError"})
             except (DaemonRequestError, ValueError) as exc:
-                self._send_json(
-                    400,
-                    {"ok": False, "game": GAME_ID, "error": _error_text(exc), "type": type(exc).__name__, "errorKind": "request"},
-                )
+                req_payload: dict[str, Any] = {
+                    "ok": False,
+                    "game": GAME_ID,
+                    "error": _error_text(exc),
+                    "type": type(exc).__name__,
+                    "errorKind": "request",
+                }
+                if isinstance(exc, DaemonRequestError) and getattr(exc, "suggestions", None):
+                    req_payload["suggestions"] = list(exc.suggestions)
+                self._send_json(400, req_payload)
             except BridgeError as exc:
                 kind = exc.kind if isinstance(exc, BridgeRejectedError) else "daemon"
                 payload: dict[str, Any] = {

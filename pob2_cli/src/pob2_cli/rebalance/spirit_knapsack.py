@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..guardrails import POB_COLOR_CODE_RE as _POB_COLOR_RE
 from ..rune.catalog import RuneInstillCatalog, load_rune_instill_catalog
 from ..snapshot import BuildScope, BuildTransaction
 from .spirit_catalog import (
@@ -20,7 +21,6 @@ from .spirit_dp import (
     solve_forward_spirit_knapsack,
 )
 
-_POB_COLOR_RE = re.compile(r"\^x[0-9A-Fa-f]{6}|\^\d")
 _UNRES_SPIRIT_RE = re.compile(r"^([+-][\d,]+(?:\.\d+)?)\s+Unreserved\s+Spirit\b", re.IGNORECASE)
 _UNRES_LIFE_RE = re.compile(r"^([+-][\d,]+(?:\.\d+)?)\s+Unreserved\s+Life\b", re.IGNORECASE)
 _EHP_LINE_RE = re.compile(r"^([+-][\d,]+(?:\.\d+)?)\s+Effective\s+Hit\s+Pool\b", re.IGNORECASE)

@@ -44,6 +44,8 @@ _REQUEST_ERROR_MARKERS: tuple[str, ...] = (
     "no item set",
     "no skill",
     "no config",
+    "unknown config var",
+    "value not in list",
     "unknown power stat",
     "unknown method",
     "path:",

@@ -156,7 +156,13 @@ def emit_output(
     eff_compact, eff_out = resolve_output_flags(
         ctx, compact=compact, out_path=out_path, ignore_ctx_out=ignore_ctx_out
     )
-    eff_payload = payload
+    loop_warn = payload.get("loopGuardWarning") if isinstance(payload, dict) else None
+    if isinstance(payload, dict) and ("cached" in payload or "loopGuardWarning" in payload):
+        eff_payload: dict[str, Any] = {
+            k: v for k, v in payload.items() if k not in ("cached", "loopGuardWarning")
+        }
+    else:
+        eff_payload = payload
     eff_md = markdown_text
     if not skip_projection:
         sec_raw, fields_raw = resolve_projection_flags(ctx)
@@ -164,7 +170,7 @@ def emit_output(
             from .formatters.projection import project_payload, render_projected_markdown
 
             eff_payload = project_payload(
-                normalize_json_envelope(payload, ok=ok),
+                normalize_json_envelope(eff_payload, ok=ok),
                 sections_raw=sec_raw,
                 fields_raw=fields_raw,
             )
@@ -185,6 +191,8 @@ def emit_output(
         )
     else:
         text = eff_md
+        if isinstance(loop_warn, str) and loop_warn.strip():
+            text = f"{text}\n> {loop_warn.strip()}"
 
     if eff_out is not None:
         eff_out.parent.mkdir(parents=True, exist_ok=True)

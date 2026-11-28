@@ -24,6 +24,28 @@ class DaemonRequestError(RuntimeError):
 
     exit_code: int = EXIT_REQUEST_ERROR
 
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        suggestions: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
+        super().__init__(message)
+        if suggestions is not None or not hasattr(self, "suggestions"):
+            self.suggestions: list[str] | tuple[str, ...] = [
+                str(s) for s in (suggestions or ()) if str(s).strip()
+            ]
+
+
+class DaemonEngineError(RuntimeError):
+    """Raised when the PoB2 daemon or LuaJIT engine fails with an engine-level fault (`rc=5`)."""
+
+    exit_code: int = EXIT_DAEMON_ERROR
+
+    def __init__(self, message: str = "", *, engine_code: str | None = None) -> None:
+        super().__init__(message)
+        self.engine_code: str | None = engine_code if isinstance(engine_code, str) and engine_code else None
+
 
 class InternalBugError(DaemonRequestError):
     """Raised when an internal Python programming error (AttributeError/TypeError/KeyError) occurs."""

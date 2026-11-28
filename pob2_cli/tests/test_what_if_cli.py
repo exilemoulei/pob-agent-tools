@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -12,8 +14,9 @@ import pytest
 from click.testing import CliRunner
 
 from pob2_cli import cli, cli_mutate, cli_what_if_helpers
+from pob2_cli.bridge_boot import wrap_rpc_rejection
 from pob2_cli.errors import DaemonRequestError
-from pob2_cli.mutators.what_if import _apply_mutation_ops
+from pob2_cli.mutators.what_if import _apply_mutation_ops, run_what_if
 
 
 def _mock_what_if(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
@@ -197,7 +200,7 @@ def test_what_if_skill_gem_index_sends_index_key() -> None:
         _apply_mutation_ops(worker, {"gem_group": 12, "gem_index": 0, "gem_level": 19})
 
 
-def test_what_if_skill_weapon_set_noop_rejected_and_real_change_ok() -> None:
+def test_what_if_skill_weapon_set_noop_idempotent_and_real_change_ok() -> None:
     noop_worker = _FakeWorker(
         {
             "set_skill_weapon_set": {
@@ -212,8 +215,9 @@ def test_what_if_skill_weapon_set_noop_rejected_and_real_change_ok() -> None:
             }
         }
     )
-    with pytest.raises(DaemonRequestError, match="POE2-NO-OP"):
-        _apply_mutation_ops(noop_worker, {"gem_group": 12, "set1": False})
+    noop_ops = _apply_mutation_ops(noop_worker, {"gem_group": 12, "set1": False})
+    assert noop_ops[0]["changed"] is False
+    assert noop_ops[0]["noOp"] is True
 
     ok_worker = _FakeWorker(
         {
@@ -232,7 +236,63 @@ def test_what_if_skill_weapon_set_noop_rejected_and_real_change_ok() -> None:
     ops = _apply_mutation_ops(ok_worker, {"gem_group": 12, "gem_index": 2, "set1": False})
     assert ok_worker.calls == [("set_skill_weapon_set", {"index": 12, "gemIndex": 2, "set1": False})]
     assert ops[0]["changed"] is True
+    assert ops[0]["noOp"] is False
     assert ops[0]["gem1EnableGlobal1"] is False
+
+
+def test_what_if_config_invalid_var_and_enum_return_rc1_with_suggestions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg_list = {
+        "sections": [
+            {
+                "name": "Combat",
+                "items": [
+                    {"var": "enemyLevel", "type": "count"},
+                    {"var": "enemyIsBoss", "type": "list"},
+                    {"var": "enemyFireResist", "type": "count"},
+                    {"var": "conditionFullLife", "type": "check"},
+                ],
+            }
+        ]
+    }
+
+    def _reject_unknown(_params: dict[str, Any]) -> dict[str, Any]:
+        raise wrap_rpc_rejection("set_config", {"code": "lua_error", "message": "unknown config var: enemyLvl"})
+
+    def _reject_enum(_params: dict[str, Any]) -> dict[str, Any]:
+        raise wrap_rpc_rejection("set_config", {"code": "lua_error", "message": "value not in list for enemyIsBoss: BadBoss"})
+
+    w_unk = _FakeWorker({"set_config": _reject_unknown, "list_config": cfg_list})
+    with pytest.raises(DaemonRequestError) as exc_unk:
+        _apply_mutation_ops(w_unk, {"config_key": "enemyLvl", "config_value": 82})
+    assert "POE2-INVALID-CONFIG-VAR" in str(exc_unk.value)
+    assert "enemyLevel" in exc_unk.value.suggestions
+
+    w_enum = _FakeWorker({"set_config": _reject_enum, "list_config": cfg_list})
+    with pytest.raises(DaemonRequestError) as exc_enum:
+        _apply_mutation_ops(w_enum, {"config_key": "enemyIsBoss", "config_value": "BadBoss"})
+    assert "POE2-INVALID-CONFIG-VAR" in str(exc_enum.value)
+
+    runner = CliRunner()
+    monkeypatch.setattr(cli_mutate, "daemon_call_cli", lambda _a, _p=None, **_kw: (_ for _ in ()).throw(exc_unk.value))
+    r_unk = runner.invoke(cli.main, ["what-if", "config", "--config-key", "enemyLvl", "--config-value", "82", "--json"])
+    assert r_unk.exit_code == 1
+    assert r_unk.stderr == ""
+    err_unk = json.loads(r_unk.stdout)
+    assert err_unk["ok"] is False
+    assert err_unk["errorKind"] == "request_error"
+    assert err_unk["code"] == "POE2-INVALID-CONFIG-VAR"
+    assert "enemyLevel" in err_unk["suggestions"]
+
+    monkeypatch.setattr(cli_mutate, "daemon_call_cli", lambda _a, _p=None, **_kw: (_ for _ in ()).throw(exc_enum.value))
+    r_enum = runner.invoke(cli.main, ["what-if", "config", "--config-key", "enemyIsBoss", "--config-value", "BadBoss", "--json"])
+    assert r_enum.exit_code == 1
+    assert r_enum.stderr == ""
+    err_enum = json.loads(r_enum.stdout)
+    assert err_enum["ok"] is False
+    assert err_enum["errorKind"] == "request_error"
+    assert err_enum["code"] == "POE2-INVALID-CONFIG-VAR"
 
 
 def test_what_if_equip_unequip_does_not_swallow_json(
@@ -305,3 +365,64 @@ def test_what_if_apply_nested_and_flat_spec() -> None:
     # Flat spec still works
     flat = cli_what_if_helpers.load_apply_spec('{"level":95}', None)
     assert flat == {"level": 95}
+
+
+_LIVE_SKILL_WS_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding2>
+\t<Build level="60" targetVersion="0_1" className="Witch" ascendClassName="None" mainSocketGroup="1"/>
+\t<Tree activeSpec="1">
+\t\t<Spec title="Default" treeVersion="0_5" classId="1" ascendClassId="0" nodes="54447"/>
+\t</Tree>
+\t<Skills activeSkillSet="1">
+\t\t<SkillSet id="1">
+\t\t\t<Skill mainActiveSkill="1" enabled="true" includeInFullDPS="true" label="Main">
+\t\t\t\t<Gem count="1" skillId="IceNovaPlayer" gemId="Metadata/Items/Gems/SkillGemIceNova" variantId="IceNova" nameSpec="Ice Nova" level="20" quality="0" enabled="true" enableGlobal1="true" enableGlobal2="true" corrupted="nil"/>
+\t\t\t</Skill>
+\t\t</SkillSet>
+\t</Skills>
+\t<Items activeItemSet="1"><ItemSet id="1" useSecondWeaponSet="false"/></Items>
+\t<Config activeConfigSet="1"><ConfigSet id="1"/></Config>
+</PathOfBuilding2>
+"""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native live PoB2 engine regression")
+def test_what_if_skill_weapon_set_live_engine_chain_and_undo(tmp_path: Path) -> None:
+    if os.environ.get("POB2_OFFLINE", "").strip().lower() in ("1", "true", "yes"):
+        pytest.skip("POB2_OFFLINE=1")
+    eng_raw = os.environ.get("POB2_ENGINE_DIR", "").strip() or os.environ.get("POB2_ROOT", "").strip()
+    if not eng_raw or not Path(eng_raw).exists():
+        pytest.skip("No local PoB2 engine configured via POB2_ENGINE_DIR")
+
+    from pob2_cli.bridge_client import BridgeWorker
+    from pob2_cli.snapshot import load_build, undo_build
+
+    worker = BridgeWorker(slot_name="test", pob_dir=Path(eng_raw), runtime_dir=tmp_path / "rt")
+    try:
+        worker.start()
+        load_build(worker, xml_code=_LIVE_SKILL_WS_XML)
+
+        # 1) --set1 false --apply -> reads (False, True)
+        r1 = run_what_if(worker, {"gem_group": 1, "set1": False}, apply=True)
+        assert r1["applied"] is True
+        assert r1["changed"] is True and r1["noOp"] is False
+        ws1 = worker.call("get_weapon_set_state", {})["skillWeaponSets"][0]
+        assert (ws1["gem1EnableGlobal1"], ws1["gem1EnableGlobal2"]) == (False, True)
+
+        # 2) Repeat same state -> idempotent rc=0 with changed=False, noOp=True
+        r2 = run_what_if(worker, {"gem_group": 1, "set1": False}, apply=True)
+        assert r2["changed"] is False and r2["noOp"] is True
+
+        # 3) Undo restores (True, True) (note: r2 also committed an undo entry, pop back to initial)
+        undo_build(worker)
+        ws_after_u1 = worker.call("get_weapon_set_state", {})["skillWeaponSets"][0]
+        if (ws_after_u1["gem1EnableGlobal1"], ws_after_u1["gem1EnableGlobal2"]) != (True, True):
+            undo_build(worker)
+        ws_restored = worker.call("get_weapon_set_state", {})["skillWeaponSets"][0]
+        assert (ws_restored["gem1EnableGlobal1"], ws_restored["gem1EnableGlobal2"]) == (True, True)
+
+        # 4) 1-based --gem-index 0 rejected explicitly
+        with pytest.raises(DaemonRequestError, match="1-based"):
+            run_what_if(worker, {"gem_group": 1, "gem_index": 0, "gem_level": 19}, apply=False)
+    finally:
+        worker.stop()

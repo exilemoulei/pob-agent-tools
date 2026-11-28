@@ -13,6 +13,7 @@ from typing import Any
 
 from ..errors import (
     CrossGameHallucinationError,
+    DaemonEngineError,
     DaemonRequestError,
     InternalBugError,
     LegacyPatchTrapError,
@@ -329,8 +330,11 @@ def _rpc_result(data: dict[str, Any]) -> dict[str, Any]:
         if data.get("errorKind") == "internal_error":
             raise InternalBugError(message)
         if data.get("errorKind") == "request":
-            raise DaemonRequestError(message)
-        raise RuntimeError(message)
+            raw_sugg = data.get("suggestions")
+            sugg = list(raw_sugg) if isinstance(raw_sugg, list) else None
+            raise DaemonRequestError(message, suggestions=sugg)
+        raw_ecode = data.get("engineCode")
+        raise DaemonEngineError(message, engine_code=raw_ecode if isinstance(raw_ecode, str) else None)
     if "result" not in data:
         raise RuntimeError("Malformed PoB2 daemon RPC response: missing 'result'.")
     return data["result"]
