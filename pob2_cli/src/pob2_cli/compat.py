@@ -22,5 +22,5 @@ def ensure_utf8(stream: Any) -> None:
     """Best-effort UTF-8 reconfiguration of a text stream (Windows consoles, pipes)."""
     try:
         stream.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
+    except (AttributeError, OSError, ValueError):
         pass

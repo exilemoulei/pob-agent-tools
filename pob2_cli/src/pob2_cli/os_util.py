@@ -72,7 +72,7 @@ def _is_pid_alive(pid: int) -> bool:
                 return int(exit_code.value) == _STILL_ACTIVE
             finally:
                 k32.CloseHandle(handle)
-        except Exception:
+        except (OSError, AttributeError, ValueError):
             return True
     try:
         os.kill(pid, 0)
@@ -102,7 +102,7 @@ def _is_lockfile_stale(lock_path: Path, *, stale_sec: float) -> bool:
             pid = int(payload.get("pid") or 0)
             if pid > 0 and pid != os.getpid() and not _is_pid_alive(pid):
                 return True
-    except Exception:
+    except (OSError, ValueError, TypeError):
         pass
     return False
 

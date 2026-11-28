@@ -271,7 +271,7 @@ def write_slot_state(
         try:
             sys.stderr.write(f"[pob2] WARN: could not save slot '{slot_name}' to {state_path}: {exc}\n")
             sys.stderr.flush()
-        except Exception:
+        except (OSError, ValueError):
             pass
         return False
 
@@ -308,7 +308,7 @@ def stderr_drain_loop(
             s = line.rstrip("\r\n")
             if s:
                 stderr_tail.append(s)
-    except Exception:
+    except (OSError, ValueError):
         pass
 
 

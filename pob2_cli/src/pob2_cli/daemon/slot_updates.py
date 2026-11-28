@@ -28,7 +28,7 @@ def available_locales(pob_dir: Path | None, data_dir: Path | None = None) -> lis
                 for lang, sub in (("zh-CN", "zh-rCN"), ("zh-TW", "zh-rTW")):
                     if (droot / sub).is_dir():
                         avail.append(lang)
-    except Exception:
+    except OSError:
         pass
     return [*avail, "en"]
 
@@ -42,7 +42,7 @@ def update_daemon_state_pob_dir(manager: DaemonManager) -> None:
         if isinstance(data, dict) and data.get("pid") == os.getpid():
             data["pob_dir"] = str(manager.pob_dir)
             write_private_json(state_file, data)
-    except Exception:
+    except (OSError, ValueError):
         pass
 
 
@@ -66,7 +66,7 @@ def hot_reload_update(
             saved[sname] = {"was_alive": w.is_alive(), "code": h.committed}
             try:
                 w.stop()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
         manager._read_cache.clear_all()
         manager.update_status = _daemon_pkg.check_and_apply_updates(

@@ -426,7 +426,7 @@ def load_build_into_worker(
                     f"({len(requested_nodes)} requested -> {len(loaded_nodes)} allocated; disconnected from class start "
                     "or invalid for active treeVersion)."
                 )
-        except Exception:
+        except (RuntimeError, OSError, ValueError, KeyError):
             pass
     if resolved.warnings:
         out["importWarnings"] = list(resolved.warnings)

@@ -54,7 +54,7 @@ def detect_local_versions(
                 v = root.find("Version")
                 if v is not None and v.attrib.get("number"):
                     pob_ver = v.attrib["number"].strip()
-            except Exception:
+            except (ET.ParseError, OSError, ValueError):
                 pass
 
         trans_path = resolve_data_root(eng, data_dir=data_dir) / "translations_version.json"
@@ -179,7 +179,7 @@ def probe_engine_gate(
     game_dir = resolve_game_dir(eng)
     try:
         cmd, extra_env = _pkg().build_engine_command(eng, data_dir=data_dir, runtime_dir=runtime_dir)
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         return {"ok": False, "error": str(exc), "stderrTail": []}
 
     out_queue: queue.Queue[dict[str, Any] | Exception | None] = queue.Queue()
@@ -226,7 +226,7 @@ def probe_engine_gate(
                 s = line.rstrip("\r\n")
                 if s:
                     stderr_tail.append(s)
-        except Exception:
+        except (OSError, ValueError):
             pass
 
     threading.Thread(target=_read_stdout, name="pob2-gate-stdout", daemon=True).start()
@@ -292,7 +292,7 @@ def probe_engine_gate(
                     if msg.get("id") == 1 and isinstance(msg.get("result"), dict):
                         ver_data = msg["result"]
                         break
-            except Exception:
+            except (OSError, ValueError, queue.Empty):
                 pass
 
         return {
@@ -309,7 +309,7 @@ def probe_engine_gate(
         try:
             proc.kill()
             proc.wait(timeout=3.0)
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
 
 

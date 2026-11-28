@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
+
+import httpx
 
 from .constants import POB2_CHANNEL_JSON_URL, POB2_DOWNLOAD_BASE, rewrite_github_url
 from .paths import get_posix_platform_tag, is_windows
 from .signature import SIG_NAME, SUMS_NAME, verify_sums
+
+_LOG = logging.getLogger(__name__)
 
 _VERSION_RE = re.compile(r"^(?:poe2-)?v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$")
 
@@ -40,7 +45,8 @@ def latest_release_tag(client: Any, mirror: str | None) -> str | None:
         if parse_version(ver) is None:
             return None
         return f"poe2-v{ver}"
-    except Exception:
+    except (httpx.HTTPError, OSError, ValueError, AttributeError) as exc:
+        _LOG.debug("Release channel lookup failed: %s", exc)
         return None
 
 

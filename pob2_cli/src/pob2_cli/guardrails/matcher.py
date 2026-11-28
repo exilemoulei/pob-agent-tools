@@ -260,12 +260,12 @@ def _tls_emitted_keys() -> set[tuple[str, str]]:
 def _write_stderr_line(msg: str) -> None:
     try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except Exception:
+    except (AttributeError, OSError, ValueError):
         pass
     try:
         sys.stderr.write(msg + "\n")
         sys.stderr.flush()
-    except Exception:
+    except (OSError, ValueError):
         pass
 
 

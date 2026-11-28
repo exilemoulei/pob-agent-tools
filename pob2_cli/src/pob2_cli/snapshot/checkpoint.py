@@ -126,5 +126,5 @@ def drop_snapshot(worker: Any, snap: BuildSnapshot | None) -> None:
         return
     try:
         worker.call("cow_drop", {"snapId": snap.token})
-    except Exception:
+    except (RuntimeError, OSError):
         pass

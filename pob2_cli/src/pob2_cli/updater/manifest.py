@@ -243,7 +243,7 @@ def diff_pob_manifest(
             try:
                 remote_full = parse_pob_manifest(remote_manifest.raw_xml, slim=False)
                 remote_rels |= {e.local_rel.lower() for e in remote_full.files.values()}
-            except Exception:
+            except (UpdateError, ValueError, KeyError):
                 pass
         for old_entry in local_manifest.files.values():
             if old_entry.local_rel.lower() not in remote_rels and (poe2 / old_entry.local_rel).is_file():

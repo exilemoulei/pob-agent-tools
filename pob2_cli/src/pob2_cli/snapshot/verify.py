@@ -53,7 +53,7 @@ def _points_after(worker: Any, res: dict[str, Any]) -> int | None:
     for rpc_name in ("get_build_info", "get_tree_state"):
         try:
             aux = worker.call(rpc_name, {}) or {}
-        except Exception:
+        except (RuntimeError, OSError):
             continue
         pts = extract_points_used(aux, pts=aux.get("points") if isinstance(aux, dict) else None)
         if pts is not None:

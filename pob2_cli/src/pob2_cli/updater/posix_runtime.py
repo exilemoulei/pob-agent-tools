@@ -7,13 +7,18 @@ uses compound assignment syntax (``+=`` / ``..=``) supported only by the pinned 
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from .. import __version__
 from ..game_profile import ENV_ENGINE_CMD, ENV_LUAJIT, env_str
@@ -33,6 +38,8 @@ from .constants import (
     rewrite_github_url,
 )
 from .releases import asset_url, latest_release_tag, release_platform_tag, signed_sums
+
+_LOG = logging.getLogger(__name__)
 
 RUNTIME_FILES = (Path("bin") / "luajit", Path("bin") / "lua-utf8.so")
 RUNTIME_STAMP = Path("bin") / "runtime.stamp"
@@ -196,7 +203,8 @@ def _try_download_prebuilt_posix_runtime(
                 shipped = extract_root / RUNTIME_STAMP
                 pin = shipped.read_text(encoding="utf-8").strip() if shipped.is_file() else runtime_pin()
                 return _stamped({rel: extract_root / rel for rel in RUNTIME_FILES}, staging_dir, pin)
-    except Exception:
+    except (OSError, ValueError, RuntimeError, tarfile.TarError, zipfile.BadZipFile, httpx.HTTPError) as exc:
+        _LOG.debug("Prebuilt POSIX runtime download/extract failed: %s", exc)
         return None
     return None
 
