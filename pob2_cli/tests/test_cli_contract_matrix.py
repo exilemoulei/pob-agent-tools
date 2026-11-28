@@ -8,16 +8,25 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import click
+import httpx
 import pytest
 from click.testing import CliRunner
 
 from pob2_cli import cli, cli_common, cli_inspect, cli_item, cli_mutate
-from pob2_cli.errors import DaemonRequestError
+from pob2_cli.analyzer.summary import inspect_tree
+from pob2_cli.cli_errors import _emit_error_and_resolve_code
+from pob2_cli.daemon.client import _rpc_result
+from pob2_cli.errors import DaemonRequestError, InternalBugError
+from pob2_cli.importers.share_urls import resolve_poe2_build_source
+from pob2_cli.snapshot.commands import undo_build
+from pob2_cli.snapshot.helpers import clean_points_dict
+from pob2_cli.snapshot.history import history_of
 
 _REPO_POB2_ROOT = Path(__file__).resolve().parents[1]
 _SRC_ROOT = _REPO_POB2_ROOT / "src"
@@ -142,3 +151,76 @@ def test_agents_md_has_zero_ghost_modules() -> None:
     assert not ghosts, f"Ghost modules found in pob2_cli/AGENTS.md: {ghosts}"
     missing = sorted(u for u in real_units if u not in declared)
     assert not missing, f"Real modules missing from pob2_cli/AGENTS.md: {missing}"
+
+
+class _StubWorker:
+    def __init__(self, responses: dict[str, Any] | None = None) -> None:
+        self.responses = responses or {}
+        self.lock = threading.RLock()
+
+    def call(self, method: str, params: dict[str, Any] | None = None, **_kw: Any) -> dict[str, Any]:
+        val = self.responses.get(method, {"ok": True})
+        return val(dict(params or {})) if callable(val) else dict(val)
+
+
+def test_error_envelopes_internal_error_and_empty_history() -> None:
+    # Internal Python bugs must map to rc=1 internal_error, NOT rc=5 daemon_error
+    assert _emit_error_and_resolve_code(None, AttributeError("CONFIG_KEY")) == 1
+    assert _emit_error_and_resolve_code(None, KeyError("missing")) == 1
+    with pytest.raises(InternalBugError):
+        _rpc_result({"ok": False, "errorKind": "internal_error", "error": "CONFIG_KEY"})
+
+    # Empty undo history raises [POE2-EMPTY-HISTORY]
+    worker = _StubWorker()
+    history_of(worker).load_build("dummy", "test")
+    with pytest.raises(DaemonRequestError, match="POE2-EMPTY-HISTORY"):
+        undo_build(worker)
+
+
+def test_poe_ninja_403_and_html_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("pob2_cli.importers.share_urls.check_public_https_url", lambda _u: None)
+    monkeypatch.setattr("pob2_cli.importers.url_guard.check_public_https_url", lambda _u: None)
+
+    transport_403 = httpx.MockTransport(
+        lambda req: httpx.Response(403, text="<html><title>Just a moment...</title></html>", request=req)
+    )
+    with pytest.raises(DaemonRequestError, match="POE2-FETCH-BLOCKED"):
+        resolve_poe2_build_source("https://poe.ninja/poe2/pob/abc123", transport=transport_403)
+
+    transport_html200 = httpx.MockTransport(
+        lambda req: httpx.Response(200, text="<!DOCTYPE html><html><title>Just a moment...</title></html>", request=req)
+    )
+    with pytest.raises(DaemonRequestError, match="POE2-FETCH-BLOCKED"):
+        resolve_poe2_build_source("https://poe.ninja/poe2/pob/abc123", transport=transport_html200)
+
+
+def test_strip_pob_color_codes_from_points_display() -> None:
+    cleaned = clean_points_dict({"used": 117, "usedMax": 123, "display": "^7117 / 123 ^xDD002224 / 24"})
+    assert cleaned["display"] == "117 / 123 24 / 24"
+    assert "^" not in cleaned["display"]
+
+    worker = _StubWorker(
+        {
+            "get_tree_state": {"allocatedNodes": [1, 2], "overrides": {}},
+            "get_weapon_set_state": {"ok": True},
+            "get_build_info": {
+                "classId": 9,
+                "className": "Mercenary",
+                "ascendClassName": "Gemling Legionnaire",
+                "treeVersion": "0_5",
+                "points": {"used": 117, "usedMax": 123, "display": "^7117 / 123 ^xDD002224 / 24"},
+            },
+        }
+    )
+    tree_out = inspect_tree(worker)
+    assert tree_out["points"]["display"] == "117 / 123 24 / 24"
+
+
+def test_skill_md_budget() -> None:
+    skill_path = Path(__file__).resolve().parents[2] / "skills" / "pob2" / "SKILL.md"
+    raw = skill_path.read_bytes()
+    text = raw.decode("utf-8")
+    lines = text.splitlines()
+    assert len(lines) <= 90, f"SKILL.md has {len(lines)} lines (>90)"
+    assert len(raw) <= 10240, f"SKILL.md is {len(raw)} bytes (>10240)"
+    assert all(len(ln) <= 500 for ln in lines), "SKILL.md has a line > 500 chars"

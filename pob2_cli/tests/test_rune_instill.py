@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from pob2_cli import bridge_protocol, updater
+from pob2_cli import bridge_protocol, cli_rune, updater
 from pob2_cli.bridge_client import BridgeWorker
 from pob2_cli.cli_rune import instill_group, rune_group
 from pob2_cli.craft.price_book import PriceBook
@@ -308,6 +308,51 @@ def test_cli_rune_instill_and_rank_instill(tmp_path: Path, monkeypatch: pytest.M
     assert d5["evalMode"] == "offline_heuristic"
     assert d5["evaluatedCount"] == 875 and d5["bisAnchor"] is not None
     assert any("offline heuristic" in w for w in d5.get("warnings") or [])
+
+
+def test_rune_rank_slot_mapping_and_empty_frontier_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("POB2_RUNTIME_DIR", str(tmp_path / "no_daemon"))
+    runner = CliRunner()
+
+    # Unique armour type auto-maps to Body Armour and echoes slot & itemType in JSON
+    r_body = runner.invoke(
+        rune_group,
+        ["rank", "--type", "Body Armour", "--metric", "TotalEHP", "--json"],
+    )
+    assert r_body.exit_code == 0, r_body.output
+    data = json.loads(r_body.output)
+    assert data["slot"] == "Body Armour"
+    assert data["itemType"] == "Body Armour"
+
+    # Ambiguous type without --slot fails fast with structured usage_error (rc=1)
+    r_ring = runner.invoke(rune_group, ["rank", "--type", "Ring", "--json"])
+    assert r_ring.exit_code == 1
+    err = json.loads(r_ring.output)
+    assert err["errorKind"] == "usage_error"
+    assert err["code"] == "POE2-USAGE-ERROR"
+
+    # Empty Pareto frontier prints explicit summary line in Markdown
+    md = cli_rune._format_pareto_human(
+        {
+            "patch": "0.5.5",
+            "kind": "rune",
+            "evalMode": "live_cow",
+            "slot": "Body Armour",
+            "itemType": "Body Armour",
+            "metric": "TotalEHP",
+            "evaluatedCount": 5,
+            "bisAnchor": None,
+            "budgetChampion": None,
+            "paretoFrontier": [],
+            "topCandidates": [{"name": "Iron Rune", "gain": -10.0, "costEx": 0.5}],
+            "warnings": [],
+        }
+    )
+    assert "slot=Body Armour" in md
+    assert "[Summary]" in md
+    assert "Iron Rune" in md
 
 
 # ---------------------------------------------------------------------------

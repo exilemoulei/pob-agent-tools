@@ -139,7 +139,7 @@ def craft_group() -> None:
 
 @craft_group.command("inspect")
 @click.option("--text", "item_text", default=None, help="直接传入 Ctrl+C 装备文本。")
-@click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False), default=None, help="从文件读取装备文本。")
+@click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False, allow_dash=True), default=None, help="从文件读取装备文本（`-` 表示 stdin）。")
 @click.option("--base", "base_override", default=None, help="手动指定底材名或类别 slug。")
 @click.option("--ilvl", "ilvl_override", type=int, default=None, help="手动覆盖物品等级。")
 @output_options
@@ -359,7 +359,7 @@ def cmd_craft_plan(
 @craft_group.command("next")
 @_reject_legacy_target_option
 @click.option("--text", "item_text", default=None, help="半成品 Ctrl+C 文本。")
-@click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False), default=None, help="半成品文本文件。")
+@click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False, allow_dash=True), default=None, help="半成品文本文件（`-` 表示 stdin）。")
 @click.option("--base", "base_override", default=None, help="可选底材覆盖。")
 @click.option("--ilvl", "ilvl_override", type=int, default=None, help="可选物品等级覆盖。")
 @click.option("--want", "wants", multiple=True, required=True, help=_WANT_HELP)

@@ -4,7 +4,11 @@
 from __future__ import annotations
 
 import json
+import os
 import random
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -437,3 +441,82 @@ def test_cli_craft_and_item_inspect_smoke() -> None:
         ["craft", "odds", "--base", "Attuned Wand", "--want", "T1 Spell Damage", "--lever", "Recombinator", "--json"],
     )
     assert r_block.exit_code == 1
+
+
+def test_craft_inspect_base_only_standalone() -> None:
+    runner = CliRunner()
+    r = runner.invoke(cli_main, ["craft", "inspect", "--base", "Desolate Crossbow", "--ilvl", "77", "--json"])
+    assert r.exit_code == 0, r.output
+    data = json.loads(r.output)
+    assert data["ok"] is True
+    assert data["mode"] == "base_pool"
+    assert data["baseType"] == "Desolate Crossbow"
+    assert data["ilvl"] == 77
+    assert data["totalPoolWeight"] > 0
+    assert data["familyCount"] > 0
+    assert isinstance(data["outcomes"], list) and len(data["outcomes"]) > 0
+
+
+def test_craft_inspect_base_only_non_tty_open_stdin_does_not_hang(tmp_path: Path) -> None:
+    """Regression: non-TTY subprocess with open stdin pipe must not deadlock on `craft inspect --base`."""
+    src_root = Path(__file__).resolve().parents[1] / "src"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(src_root)
+    env["POB2_OFFLINE"] = "1"
+    out_file = tmp_path / "stdout.json"
+    err_file = tmp_path / "stderr.txt"
+    with out_file.open("w", encoding="utf-8") as fout, err_file.open("w", encoding="utf-8") as ferr:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "pob2_cli.cli", "craft", "inspect", "--base", "Desolate Crossbow", "--ilvl", "77", "--json"],
+            stdin=subprocess.PIPE,
+            stdout=fout,
+            stderr=ferr,
+            env=env,
+        )
+        try:
+            # Deliberately keep proc.stdin open (do NOT close or write EOF) to simulate agent/non-TTY shell.
+            rc = proc.wait(timeout=10)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            if proc.stdin:
+                proc.stdin.close()
+
+    stdout = out_file.read_text(encoding="utf-8")
+    stderr = err_file.read_text(encoding="utf-8")
+    assert rc == 0, f"rc={rc}, stderr={stderr!r}, stdout={stdout[:400]!r}"
+    assert stderr == ""
+    data = json.loads(stdout)
+    assert data["ok"] is True
+    assert data["mode"] == "base_pool"
+    assert data["baseType"] == "Desolate Crossbow"
+    assert data["ilvl"] == 77
+
+
+def test_craft_inspect_file_dash_reads_stdin() -> None:
+    """Explicit `--file -` reads item text from stdin even when combined with `--base` override."""
+    runner = CliRunner()
+    sample = (
+        "Rarity: RARE\nStorm Spire\nAttuned Wand\n--------\nItem Level: 82\n--------\n"
+        "110% increased Spell Damage (fractured)\n+6 to Intelligence\n"
+    )
+    r = runner.invoke(
+        cli_main,
+        ["craft", "inspect", "--file", "-", "--base", "Attuned Wand", "--json"],
+        input=sample,
+    )
+    assert r.exit_code == 0, r.output
+    data = json.loads(r.output)
+    assert data["ok"] is True
+    assert data["baseType"] == "Attuned Wand"
+    assert data["slots"]["openPrefixes"] == 2
+
+
+def test_craft_target_migration_json_zero_stderr() -> None:
+    runner = CliRunner()
+    r = runner.invoke(cli_main, ["craft", "odds", "--base", "Desolate Crossbow", "--target", "main", "--json"])
+    assert r.exit_code == 1
+    assert r.stderr == ""
+    err = json.loads(r.stdout)
+    assert err["errorKind"] == "cli_migration"
+    assert err["code"] == "POE2-CLI-MIGRATION"

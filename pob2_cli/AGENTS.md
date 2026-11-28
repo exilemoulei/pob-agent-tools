@@ -30,7 +30,7 @@ POB2_OFFLINE=1 python -m pytest pob2_cli/tests -q
   - `L1`: `updater`, `bridge_protocol`, `bridge_client`, `bridge_boot`, `importers`, `game_data`
   - `L2`: `formatters`, `snapshot`, `analyzer`, `mutators`, `comparator`, `craft`, `rune`, `rebalance`
   - `L3`: `daemon`
-  - `L4`: `__main__`, `cli_common`, `cli_errors`, `cli`, `cli_craft`, `cli_item`, `cli_ground`, `cli_import`, `cli_lifecycle`, `cli_build_io`, `cli_inspect`, `cli_mutate`, `cli_rune`, `cli_rebalance`, `cli_help`
+  - `L4`: `__main__`, `cli_common`, `cli_errors`, `cli`, `cli_craft`, `cli_item`, `cli_ground`, `cli_import`, `cli_lifecycle`, `cli_build_io`, `cli_inspect`, `cli_mutate`, `cli_what_if_helpers`, `cli_rune`, `cli_rebalance`, `cli_help`
 - **Zero cross-package coupling**: NEVER `import pob_cli` or read `POB_*` env vars. Use `POB2_*` env vars (`POB2_RUNTIME_DIR`, `POB2_ENGINE_DIR`, `POB2_DATA_DIR`, `POB2_LANG`, `POB2_SLOT`, `POB2_OFFLINE`), `X-PoB2-Token`, `%LOCALAPPDATA%/pob24agents`, and `"game": "poe2"`.
 - **Code budgets (no ignore pragmas)**: hand-written `.py`/`.lua` `<=650L` & `<=24,000B` (worst-case CRLF), functions `<=200L`; test files `<=1,000L` & `<=38,000B`.
 - **Runtime dependencies**: strictly `click`, `httpx[socks]`, `tabulate` (NO `pydantic`, `typer`, `rich`, `mcp`).

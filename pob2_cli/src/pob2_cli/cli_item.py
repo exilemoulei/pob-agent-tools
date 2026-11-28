@@ -32,6 +32,8 @@ from .guardrails import check_input_item_raw, normalize_poe2_equipment_slot
 
 
 def read_item_source(item_text: str | None, file_path: str | None) -> str:
+    if file_path == "-":
+        return sys.stdin.read()
     if file_path:
         return Path(file_path).read_text(encoding="utf-8")
     if item_text:
@@ -231,16 +233,13 @@ def run_inspect_command(
         fallback_base = str(first_meta.get("baseName") or "").strip() or None
         check_input_item_raw(raw, expected_game="poe2", emit_stderr=not (as_json or ctx_wants_json(ctx)))
     elif item_text is None and file_path is None and base_override:
-        stdin_raw = "" if sys.stdin.isatty() else sys.stdin.read()
-        if not stdin_raw.strip():
-            _run_base_only_inspect(
-                ctx,
-                base_name=base_override,
-                ilvl=ilvl_override if ilvl_override is not None else 82,
-                as_json=as_json,
-            )
-            return
-        raw = stdin_raw
+        _run_base_only_inspect(
+            ctx,
+            base_name=base_override,
+            ilvl=ilvl_override if ilvl_override is not None else 82,
+            as_json=as_json,
+        )
+        return
     else:
         raw = read_item_source(item_text, file_path)
 
@@ -306,7 +305,13 @@ def item_group() -> None:
 @click.argument("slot_arg", metavar="[SLOT]", required=False, default=None)
 @click.option("--slot", "slot_opt", default=None, help="Equipped PoE2 equipment slot to inspect from the loaded build.")
 @click.option("--text", "item_text", default=None, help="Directly pass Ctrl+C PoE2 item text.")
-@click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False), default=None, help="Read PoE2 item text from a file.")
+@click.option(
+    "--file",
+    "file_path",
+    type=click.Path(exists=True, dir_okay=False, allow_dash=True),
+    default=None,
+    help="Read PoE2 item text from a file (or `-` for stdin).",
+)
 @click.option("--base", "base_override", default=None, help="Optional base item name or class slug override.")
 @click.option("--ilvl", "ilvl_override", type=int, default=None, help="Optional item level override.")
 @target_option(allow_slot_alias=False)

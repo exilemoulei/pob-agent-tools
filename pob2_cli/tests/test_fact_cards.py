@@ -88,3 +88,16 @@ def test_ground_blocks_poe1_terms_and_cli_smoke() -> None:
 
     blocked = runner.invoke(cli_main, ["ground", "法术压制", "--json"])
     assert blocked.exit_code == 1
+
+
+def test_ground_zh_recall_and_noise_rejection() -> None:
+    res_ws = ground_query("单武器双天赋")
+    assert any(c.slug == "spirit_reservation_and_weapon_sets" for c in res_ws.cards)
+
+    res_armour = ground_query("护甲")
+    assert any(c.slug == "armour_formula_and_before_resistances" for c in res_armour.cards)
+
+    # Unrelated / fuzzy noise queries must return 0 hits
+    for noisy in ("Kaom's", "War Cry", "Break Frost", "战吼"):
+        res = ground_query(noisy)
+        assert len(res.cards) == 0, f"Expected 0 hits for {noisy!r}, got {[c.slug for c in res.cards]}"

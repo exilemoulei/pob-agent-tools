@@ -59,6 +59,7 @@ _CLI_MODULES = (
     "pob2_cli.cli_mutate",
     "pob2_cli.cli_rebalance",
     "pob2_cli.cli_rune",
+    "pob2_cli.cli_what_if_helpers",
 )
 _SUBPACKAGES = (
     "pob2_cli.analyzer",
