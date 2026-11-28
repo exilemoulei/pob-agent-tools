@@ -19,9 +19,9 @@ USER_AGENT = f"{PACKAGE_NAME}/{__version__} (+https://github.com/exilemoulei/pob
 POBTOOLS_LATEST_URL = "https://github.com/Hsiung-Shao/PobTools-zh/releases/latest"
 POBTOOLS_DOWNLOAD_BASE = "https://github.com/Hsiung-Shao/PobTools-zh/releases/download"
 POB2_MANIFEST_URL = (
-    "https://raw.githubusercontent.com/PathOfBuildingCommunity/PathOfBuilding-PoE2/dev/manifest.xml"
+    "https://raw.githubusercontent.com/PathOfBuildingCommunity/PathOfBuilding-PoE2/master/manifest.xml"
 )
-POB2_DEFAULT_BRANCH = "dev"
+POB2_DEFAULT_BRANCH = "master"
 # Static channel pointer avoiding api.github.com and leaving /releases/latest untouched for PoE1.
 POB2_CHANNEL_JSON_URL = "https://raw.githubusercontent.com/exilemoulei/pob4agents/main/bucket/pob2.json"
 POB2_DOWNLOAD_BASE = "https://github.com/exilemoulei/pob4agents/releases/download"

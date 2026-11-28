@@ -49,7 +49,7 @@ Item Level: 10
 """
 
 
-def test_poe2_manifest_defaults_to_dev_branch_and_slim_filters_images() -> None:
+def test_poe2_manifest_defaults_to_master_branch_and_slim_filters_images() -> None:
     sample_xml = """<?xml version="1.0" encoding="UTF-8"?>
 <PoBVersion>
   <Version number="0.23.1"/>
@@ -65,17 +65,53 @@ def test_poe2_manifest_defaults_to_dev_branch_and_slim_filters_images() -> None:
 """
     win_m = manifest_mod.parse_pob_manifest(sample_xml, include_win32_runtime=True, slim=True)
     assert win_m.version == "0.23.1"
-    assert win_m.branch == "dev"
+    assert win_m.branch == "master"
     assert "lua51.dll" in win_m.files
     assert "Launch.lua" in win_m.files
     assert "TreeData/0_5/tree.lua" in win_m.files
     assert "Assets/huge_texture.dds.zst" not in win_m.files
     url = manifest_mod.build_manifest_file_url(win_m, win_m.files["Launch.lua"])
-    assert "/PathOfBuilding-PoE2/dev/src/Launch.lua" in url
+    assert "/PathOfBuilding-PoE2/master/src/Launch.lua" in url
 
     posix_m = manifest_mod.parse_pob_manifest(sample_xml, include_win32_runtime=False, slim=True)
     assert "lua51.dll" not in posix_m.files
     assert "Launch.lua" in posix_m.files
+
+
+def test_bootstrap_force_flag_and_cli_failure_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from click.testing import CliRunner
+
+    from pob2_cli import cli as cli_mod
+    from pob2_cli import cli_lifecycle
+
+    rt = tmp_path / "rt"
+    eng = rt / "engine"
+    (eng / "PoE2").mkdir(parents=True)
+    (eng / "PoE2" / "Launch.lua").write_text("-- launch\n", encoding="utf-8")
+    (eng / "Data" / "bridge").mkdir(parents=True)
+    (eng / "Data" / "bridge" / "bridge.lua").write_text("-- bridge\n", encoding="utf-8")
+    monkeypatch.setattr(updater, "is_windows", lambda: False)
+    (eng / "bin").mkdir(parents=True)
+    (eng / "bin" / "luajit").write_bytes(b"fake")
+
+    res = updater.bootstrap_engine(runtime_dir=rt, force=False)
+    assert res["state"] == updater.STATE_UP_TO_DATE
+    assert res["source"] == "existing"
+
+    monkeypatch.setattr(
+        cli_lifecycle,
+        "bootstrap_engine",
+        lambda **_kw: {"state": updater.STATE_BOOTSTRAP_MISSING, "userHint": "network down"},
+    )
+    out = CliRunner().invoke(cli_mod.main, ["bootstrap", "--json"])
+    assert out.exit_code == 1
+    payload = json.loads(out.output)
+    assert payload["ok"] is False
+    assert payload["errorKind"] == "bootstrap_missing"
 
 
 def test_posix_runtime_pins_2460b3f_and_rejects_stock_path_luajit(

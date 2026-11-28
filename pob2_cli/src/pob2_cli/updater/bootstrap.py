@@ -17,6 +17,7 @@ from .constants import (
     POBTOOLS_DATA_ONLY_PREFIXES,
     STATE_BOOTSTRAP_MISSING,
     STATE_DEGRADED_ROLLBACK,
+    STATE_UP_TO_DATE,
     STATE_UPDATED,
     EngineGateError,
     PobManifest,
@@ -206,6 +207,7 @@ def bootstrap_engine(
     mirror: str | None = None,
     include_zh: bool = True,
     from_dir: Path | None = None,
+    force: bool = False,
     probe_fn: Callable[[Path], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Bootstrap a managed PoB2 slim engine from a local read-only seed or GitHub upstreams."""
@@ -214,6 +216,19 @@ def bootstrap_engine(
     probe_callable = probe_fn or probe_engine_gate
 
     with engine_update_lock(eng_dir):
+        if not force and from_dir is None and is_valid_engine_dir(eng_dir):
+            vers = detect_local_versions(eng_dir, rt_dir)
+            state = {
+                "state": STATE_UP_TO_DATE,
+                "localPobVersion": vers["localPobVersion"],
+                "remotePobVersion": vers["localPobVersion"],
+                "dataVersion": vers["dataVersion"],
+                "checkedAt": time.time(),
+                "engineDir": str(eng_dir),
+                "source": "existing",
+            }
+            save_update_state(state, rt_dir)
+            return state
         if from_dir is not None:
             src = Path(from_dir)
             if not is_valid_engine_dir(src):

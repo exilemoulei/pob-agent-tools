@@ -17,7 +17,7 @@ from .errors import (
     LegacyPatchTrapError,
 )
 from .game_profile import GAME_ID
-from .updater import bootstrap_engine
+from .updater import OK_STATES, bootstrap_engine
 
 
 @pob2_command("bootstrap")
@@ -42,6 +42,9 @@ def cmd_bootstrap(
         raise
     except (ValueError, FileNotFoundError) as exc:
         raise DaemonRequestError(f"Bootstrap failed: {exc}") from exc
+    if res.get("state") not in OK_STATES:
+        msg = str(res.get("userHint") or res.get("networkError") or "PoB2 engine bootstrap failed.")
+        raise BootstrapMissingError(msg)
     payload = {"game": GAME_ID, **dict(res)}
     md = f"PoB2 engine bootstrap: state={payload.get('state')} engineDir={payload.get('engineDir')}"
     emit_output(ctx, payload, as_json=as_json, markdown_text=md)
