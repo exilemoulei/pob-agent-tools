@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: engine-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_call' && !startsWith(github.ref, 'refs/tags/') }}
+
 # uv installs packages only; the interpreter is always the official CPython from setup-python.
 env:
   UV_PYTHON_DOWNLOADS: never

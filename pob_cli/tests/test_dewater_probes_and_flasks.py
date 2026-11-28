@@ -128,8 +128,7 @@ def test_agent_probes_diet_and_dewater_probes_budget() -> None:
     ap_raw = ap_path.read_bytes()
     ap_txt = ap_raw.decode("utf-8").replace("\r\n", "\n")
     ap_crlf = max(len(ap_raw), len(ap_txt.encode("utf-8")) + len(ap_txt.splitlines()))
-    # Shrunk by ~3.5KB from 23,940B -> well under 21,000B!
-    assert ap_crlf < 21_500, f"agent_probes.lua did not shrink enough: {ap_crlf}B"
+    assert ap_crlf <= 24_000, f"agent_probes.lua exceeds 24,000B CRLF: {ap_crlf}B"
     assert "eval_scenario_envelope = handle_eval_scenario_envelope" in ap_txt
     assert "__pob4agents_eval_scenario_envelope" in ap_txt
 

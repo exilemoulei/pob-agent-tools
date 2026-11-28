@@ -148,13 +148,25 @@ An engine error is split by `bridge_protocol.py`. A timeout, crash or failed wri
 
 It never blocks PoE1-legal terms: `Elemental Focus`, `Combat Focus`, `while Focused` / 专注, `Titanium Spirit Shield` / 灵盾, `Summon Raging Spirit`, `Spirit Offering`, `Distilled Perfection`, `Ancient Waystones`, and, outside `SLOT` / `CATEGORY`, the level 45 staff base `Quarterstaff` and the `Buckler` shield bases (`Crusader Buckler`).
 
+## Common Pitfalls & Engine Invariants
+
+Verified real-engine and architecture traps to check before editing code:
+
+- **No cross-layer copy-paste to bypass `arch_lint`:** extract shared logic into L1 or a shared L2 module instead of duplicating helpers across layers; copy-pasted wrappers have silently swallowed `RateLimited` / `CookieRequired` exit codes (`3` / `4`).
+- **`opt_bool` key order and `null` semantics:** `mutators/strict_args.opt_bool` returns `False` on the first present key whose value is `null`; keep batch preflight alias checks aligned with execution-time `opt_bool` key order and `null` handling.
+- **PoB 2.69/3.30 `list_items` socket & Viscera gating:** `list_items` exposes every jewel socket with `inactive = not allocNodes[nodeId]` and 4 Wickerman Viscera slots (`Head`/`Body`/`Arm`/`Leg`) on all builds gated by `shown`; always check `inactive` and `shown`, and verify slot parsing against real-engine `list_items` output rather than minimal mock fixtures.
+- **Catalyst `{tags:...}` requirement:** PoB's `getCatalystScalar` only scales mod lines carrying `{tags:...}`; raw item mod headers without `{tags:...}` produce zero delta in the real engine.
+- **Profile import markup stripping order:** run `strip_poe_markup` *before* `split("\n")` and base-enchant lookup.
+- **Chinese trade polarity templates:** `apt_trade_supplements.json.gz` maps Chinese negative phrasings directly onto English `#% increased ...` templates; English-only polarity/negation logic silently inverts Chinese queries unless tested with Chinese inputs.
+- **Single source of truth for file budgets:** `pob_cli/scripts/arch_lint.py` (`650L / 24,000B` CRLF) is the sole authority for source-file budgets; never add hidden `< 24,000B` byte caps inside unit tests.
+
 ## Adding a command
 
 1. **Put the logic in L2** (`analyzer/`, `mutators/`, `comparator/` and so on), on fakes first. Numbers come from the engine, never from a formula of our own (see "Numbers").
 2. **Reach the engine through the daemon.** A new engine call is a handler in `daemon/rpc_handlers.py` (or `rpc_mutate.py` for edits) that calls the engine through its `BridgeWorker`, never with an RPC from "Engine RPCs" above. Every build edit runs through `snapshot.run_mutation` or inside a `snapshot.BuildTransaction` declaring its `BuildScope`, which rolls a what-if back and commits only with `--apply`; never restore or commit a build by hand.
 3. **Add the CLI in L4.** Register it from an existing `cli_*.py` through its `register_*_commands`, or, for a group with heavy imports, add a `cli_<name>` module to `_LAZY_SUBCOMMANDS` in `cli.py` (`packaging/pob.spec` bundles every `pob_cli` submodule, so nothing is added there; `[spec-sync]` checks it). Give a new top-level module its layer in `LAYER_MAP` (`scripts/arch_lint.py`).
 4. **Keep the contracts**: exit codes (`1` for a bad request, `5` for a daemon or engine fault), Chinese names folded with `game_data.fold_han`, and PoE2 terms refused by `guardrails/` without blocking a PoE1 term.
-5. **Test** offline on fakes. A command that reaches the engine also gets a real-engine test that skips without an engine; a new real-engine test raises the ratchets in `engine.yml` in the same change.
+5. **Test** offline on fakes. A command that reaches the engine also gets a real-engine test that skips without an engine (do not edit `engine.yml` ratchets in regular PRs; ratchets are raised once before a release).
 6. **Document** every flag in `docs/guides/commands.md` and both READMEs, and the recipe in `skills/pob/SKILL.md` (or its `references/`) when agents should use it.
 
 ## Verification

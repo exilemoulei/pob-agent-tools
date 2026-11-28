@@ -25,12 +25,6 @@ from pob_cli.game_data.queries_core import _query_mods, _query_uniques
 from pob_cli.game_data.sqlite_lock import _create_schema
 
 
-def _crlf_bytes(path: Path) -> int:
-    raw = path.read_bytes()
-    text = raw.decode("utf-8").replace("\r\n", "\n")
-    return max(len(raw), len(text.encode("utf-8")) + len(text.splitlines()))
-
-
 def test_cli_research_split_lazy_wiring_and_budgets() -> None:
     for cmd_name in ("poedb", "wiki", "research"):
         assert cli._LAZY_SUBCOMMANDS[cmd_name][0] == ".cli_research"
@@ -41,11 +35,6 @@ def test_cli_research_split_lazy_wiring_and_budgets() -> None:
     assert cli_data.cmd_poedb is cli_research.cmd_poedb
     assert cli_data.cmd_wiki is cli_research.cmd_wiki
     assert cli_data.cmd_research is cli_research.cmd_research
-
-    pkg_dir = Path(cli.__file__).resolve().parent
-    for fname in ("cli_data.py", "cli_data_render.py", "cli_research.py"):
-        assert _crlf_bytes(pkg_dir / fname) <= 18_000, f"{fname} exceeded 18,000B CRLF"
-    assert _crlf_bytes(pkg_dir / "analyzer" / "tree_inspect.py") < 23_500
 
 
 def test_inspect_tree_default_100_and_unlimited_zero_scales_hover_limit(
