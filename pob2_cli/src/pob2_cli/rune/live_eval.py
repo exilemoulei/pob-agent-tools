@@ -7,9 +7,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from ..guardrails import POB_COLOR_CODE_RE as _POB_COLOR_RE
 from ..snapshot import BuildScope, BuildTransaction
 
-_POB_COLOR_RE = re.compile(r"\^x[0-9A-Fa-f]{6}|\^\d")
 _DELTA_LINE_RE = re.compile(r"^([+-][\d,]+(?:\.\d+)?)\s+(.+?)(?:\s*\(([+-]?[\d.]+)%\))?$")
 _PER_DENOM_RE = re.compile(r"\bper\s+\d[\d,.]*")
 _PCT_RE = re.compile(r"(\d+(?:\.\d+)?)%")

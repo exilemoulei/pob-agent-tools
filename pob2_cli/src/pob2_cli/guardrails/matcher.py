@@ -32,7 +32,15 @@ class GuardrailScope(StrEnum):
 
 ALL_QUERY_SCOPES: frozenset[GuardrailScope] = frozenset(GuardrailScope)
 
-_POB_ESC_RE = re.compile(r"\^x[0-9A-Fa-f]{6}|\^\d")
+POB_COLOR_CODE_RE = re.compile(r"\^(?:x[0-9A-Fa-f]{6}|\d)")
+_POB_ESC_RE = POB_COLOR_CODE_RE
+
+
+def strip_pob_color_codes(text: str | None) -> str:
+    """Strip PoB colour escape codes (`^xRRGGBB`, `^0`..`^9`) while preserving line breaks."""
+    if not isinstance(text, str) or not text:
+        return ""
+    return POB_COLOR_CODE_RE.sub("", text).replace("\r\n", "\n").replace("\r", "\n").strip()
 _POE2_LINK_RE = re.compile(r"\[[^\]|]+\|([^\]]+)\]|\[([^\]]+)\]")
 _FOLD_MAP = str.maketrans({
     "\u2018": "'",

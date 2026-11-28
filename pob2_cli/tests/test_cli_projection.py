@@ -151,3 +151,70 @@ def test_core_read_commands_support_section_and_fields(
     assert r_bad.stderr == ""
     err = json.loads(r_bad.stdout)
     assert err["ok"] is False and err["errorKind"] == "invalid_section"
+
+
+def test_loop_guard_json_byte_determinism_and_markdown_notice(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pob2_cli.daemon.read_cache import LOOP_GUARD_WARNING, SlotReadCache
+
+    cache = SlotReadCache(max_entries=16)
+
+    def _cached_daemon(action: str, params: dict[str, Any] | None = None, **_kw: Any) -> dict[str, Any]:
+        p = dict(params or {})
+        hit = cache.lookup("main", rev=1, lang="zh-CN", action=action, params=p)
+        if hit is not None:
+            return hit
+        payload = dict(_SAMPLE_SUMMARY) if action == "summary" else {"ok": True, "game": "poe2", "items": [{"id": 1, "name": "Wand"}], "slots": []}
+        cache.store("main", rev=1, lang="zh-CN", action=action, params=p, payload=payload)
+        return dict(payload)
+
+    monkeypatch.setattr(cli_inspect, "daemon_call_cli", _cached_daemon)
+    runner = CliRunner()
+
+    # 3 consecutive summary --json calls must be 100% byte-identical with zero stderr
+    r1 = runner.invoke(cli.main, ["summary", "--json"])
+    r2 = runner.invoke(cli.main, ["summary", "--json"])
+    r3 = runner.invoke(cli.main, ["summary", "--json"])
+    assert r1.exit_code == r2.exit_code == r3.exit_code == 0
+    assert r1.stderr == r2.stderr == r3.stderr == ""
+    assert r1.stdout == r2.stdout == r3.stdout
+    parsed = json.loads(r3.stdout)
+    assert "cached" not in parsed and "loopGuardWarning" not in parsed
+
+    # 3 consecutive items --json calls must also be 100% byte-identical
+    i1 = runner.invoke(cli.main, ["items", "--json"])
+    i2 = runner.invoke(cli.main, ["items", "--json"])
+    i3 = runner.invoke(cli.main, ["items", "--json"])
+    assert i1.exit_code == i2.exit_code == i3.exit_code == 0
+    assert i1.stdout == i2.stdout == i3.stdout
+
+    # Human Markdown mode still surfaces loop-guard notice on repeated calls
+    r_md = runner.invoke(cli.main, ["summary"])
+    assert r_md.exit_code == 0
+    assert LOOP_GUARD_WARNING in r_md.stdout
+
+
+def test_item_inspect_base_only_projection_fields() -> None:
+    runner = CliRunner()
+    r = runner.invoke(
+        cli.main,
+        [
+            "item",
+            "inspect",
+            "--base",
+            "Desolate Crossbow",
+            "--json",
+            "--fields",
+            "baseType,quality,corrupted,sanctified,implicits,legalityIssues,warnings",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    assert r.stderr == ""
+    data = json.loads(r.stdout)
+    assert data["ok"] is True and data["game"] == "poe2"
+    assert data["baseType"] == "Desolate Crossbow"
+    assert data["quality"] == 0
+    assert data["corrupted"] is False
+    assert data["sanctified"] is False
+    assert data["implicits"] == []
+    assert data["legalityIssues"] == []
+    assert data["warnings"] == []

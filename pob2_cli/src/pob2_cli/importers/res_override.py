@@ -8,7 +8,8 @@ import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from typing import Any
 
-_POB_COLOR_RE = re.compile(r"\^(?:x[0-9A-Fa-f]{6}|[0-9])")
+from ..guardrails import POB_COLOR_CODE_RE as _POB_COLOR_RE
+
 _LEADING_BRACE_TAGS_RE = re.compile(r"^(?:\{[^}]*\}\s*)+")
 _VARIANT_TAG_RE = re.compile(r"\{variant:([0-9,\s]+)\}", re.IGNORECASE)
 _SELECTED_VARIANT_RE = re.compile(r"^Selected\s+(?:Alt\s+)?Variant:\s*(\d+)\s*$", re.IGNORECASE)

@@ -51,6 +51,10 @@ def _classify_daemon_request_error(msg: str) -> tuple[str, str]:
         return "invalid_spec", code
     if code == "POE2-NO-OP":
         return "no_op", code
+    if code == "POE2-INVALID-CONFIG-VAR" or "unknown config var" in low or "value not in list for" in low:
+        return "request_error", "POE2-INVALID-CONFIG-VAR"
+    if code == "POE2-EMPTY-STDIN":
+        return "empty_stdin", code
     if code == "POE2-FETCH-BLOCKED":
         return "fetch_blocked", code
     if code == "POE2-FETCH-HTTP-ERROR":
@@ -98,10 +102,10 @@ def _emit_error_and_resolve_code(ctx: click.Context | None, exc: BaseException) 
             echo_utf8(f"Error: {single}", err=True)
         return EXIT_REQUEST_ERROR
 
-    if isinstance(exc, DaemonRequestError):
+    if isinstance(exc, DaemonRequestError) or getattr(exc, "kind", None) == "request":
         exit_code = int(getattr(exc, "exit_code", EXIT_REQUEST_ERROR))
         to_dict_fn = getattr(exc, "to_dict", None)
-        single = _single_line(str(exc))
+        single = _single_line(_sanitize_err(str(exc)) if not isinstance(exc, DaemonRequestError) else str(exc))
         if wants_json:
             if callable(to_dict_fn):
                 payload = dict(to_dict_fn())
@@ -111,6 +115,9 @@ def _emit_error_and_resolve_code(ctx: click.Context | None, exc: BaseException) 
             else:
                 kind, code = _classify_daemon_request_error(single)
                 payload = {"errorKind": kind, "code": code, "error": single}
+            sugg = getattr(exc, "suggestions", None)
+            if isinstance(sugg, (list, tuple)) and sugg:
+                payload["suggestions"] = list(sugg)
             emit_output(ctx, payload, as_json=True, ok=False, ignore_ctx_out=True, skip_projection=True)
         else:
             echo_utf8(f"Error: {single}", err=True)
@@ -166,9 +173,17 @@ def _emit_error_and_resolve_code(ctx: click.Context | None, exc: BaseException) 
 
     single = _single_line(_sanitize_err(str(exc)))
     if wants_json:
+        daemon_payload: dict[str, Any] = {
+            "errorKind": "daemon_error",
+            "code": "POE2-DAEMON-ERROR",
+            "error": single,
+        }
+        eng_code = getattr(exc, "engine_code", None) or getattr(exc, "code", None)
+        if isinstance(eng_code, str) and eng_code.strip():
+            daemon_payload["engineCode"] = eng_code.strip()
         emit_output(
             ctx,
-            {"errorKind": "daemon_error", "code": "POE2-DAEMON-ERROR", "error": single},
+            daemon_payload,
             as_json=True,
             ok=False,
             ignore_ctx_out=True,

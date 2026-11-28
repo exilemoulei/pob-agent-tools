@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import math
-import re
 from typing import Any
 
-_POB_ESCAPE_RE = re.compile(r"\^(?:x[0-9A-Fa-f]{6}|\d)")
+from ..guardrails import POB_COLOR_CODE_RE as _POB_ESCAPE_RE
 
 CORE_STAT_KEYS: list[tuple[str, str, str]] = [
     ("FullDPS", "Full DPS", ""),

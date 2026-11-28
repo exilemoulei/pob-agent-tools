@@ -30,6 +30,7 @@ from .gates import (
 )
 from .matcher import (
     ALL_QUERY_SCOPES,
+    POB_COLOR_CODE_RE,
     GuardrailScope,
     emit_stderr_warnings_from_dicts,
     extract_scannable_item_parts,
@@ -41,6 +42,7 @@ from .matcher import (
     normalize_zh_compact,
     record_warning,
     reset_cli_warnings,
+    strip_pob_color_codes,
     strip_scope_suffix,
     warning_context,
 )
@@ -64,8 +66,6 @@ from .zh_mistranslations import (
     resolve_poe1_zh_alias,
 )
 
-_POB_ESC_RE = re.compile(r"\^x[0-9A-Fa-f]{6}|\^\d")
-
 
 def _match_trap(
     raw: str, norm: str, exact_en: str, exact_zh: str, rule: TrapRule
@@ -88,7 +88,7 @@ def _match_trap(
         if hit is not None:
             return hit
     if rule.regex is not None:
-        m = rule.regex.search(_POB_ESC_RE.sub("", raw))
+        m = rule.regex.search(POB_COLOR_CODE_RE.sub("", raw))
         if m is not None and (rule.exclude_en_re is None or not rule.exclude_en_re.search(norm)):
             return m.group(0).strip()
     return None
@@ -276,6 +276,7 @@ def normalize_poe2_equipment_slot(
 
 __all__ = [
     "ALL_QUERY_SCOPES",
+    "POB_COLOR_CODE_RE",
     "POE1_ONLY_CLASSES",
     "POE1_ONLY_TRAPS_FOR_POB2",
     "POE1_ZH_TO_POE2_ALIAS",
@@ -310,6 +311,7 @@ __all__ = [
     "reset_cli_warnings",
     "resolve_poe1_zh_alias",
     "resolve_poe2_slot_name",
+    "strip_pob_color_codes",
     "validate_build_xml",
     "validate_command",
     "validate_engine_root",

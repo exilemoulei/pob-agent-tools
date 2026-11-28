@@ -99,6 +99,10 @@ _UNIQUE_TYPE_TO_SLOT: dict[str, str] = {
     "boots": "Boots",
     "amulet": "Amulet",
     "belt": "Belt",
+    "focus": "Weapon 2",
+    "shield": "Weapon 2",
+    "buckler": "Weapon 2",
+    "quiver": "Weapon 2",
 }
 
 
@@ -173,8 +177,6 @@ def cmd_rune_rank(
             mapped_slot = _UNIQUE_TYPE_TO_SLOT.get(item_type.strip().lower())
             if mapped_slot:
                 slot_name = mapped_slot
-            elif offline_heuristic:
-                slot_name = "Weapon 1"
             else:
                 raise click.UsageError(
                     f"`--type {item_type}` cannot be uniquely mapped to a single equipment slot; "

@@ -98,6 +98,14 @@ def test_ground_zh_recall_and_noise_rejection() -> None:
     assert any(c.slug == "armour_formula_and_before_resistances" for c in res_armour.cards)
 
     # Unrelated / fuzzy noise queries must return 0 hits
-    for noisy in ("Kaom's", "War Cry", "Break Frost", "战吼"):
+    for noisy in ("Kaom's", "War Cry", "Break Frost", "战吼", "warcry", "a", "the"):
         res = ground_query(noisy)
         assert len(res.cards) == 0, f"Expected 0 hits for {noisy!r}, got {[c.slug for c in res.cards]}"
+
+    # Breach recalls relevant PoE2 0.5.5 mechanics cards and dead alias "战吼" is removed
+    from pob2_cli.game_data.fact_cards import _ZH_GROUND_ALIASES
+
+    assert "战吼" not in _ZH_GROUND_ALIASES
+    res_breach = ground_query("Breach")
+    assert len(res_breach.cards) >= 1
+    assert any("breach" in c.poe2_live_rule.lower() for c in res_breach.cards)

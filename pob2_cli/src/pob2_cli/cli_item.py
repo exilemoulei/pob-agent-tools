@@ -33,7 +33,12 @@ from .guardrails import check_input_item_raw, normalize_poe2_equipment_slot
 
 def read_item_source(item_text: str | None, file_path: str | None) -> str:
     if file_path == "-":
-        return sys.stdin.read()
+        raw = sys.stdin.read()
+        if not raw.strip():
+            raise DaemonRequestError(
+                "[POE2-EMPTY-STDIN] `--file -` requires item text on stdin, but stdin was empty."
+            )
+        return raw
     if file_path:
         return Path(file_path).read_text(encoding="utf-8")
     if item_text:
@@ -165,6 +170,10 @@ def _run_base_only_inspect(
         "baseType": base.name,
         "baseSlug": base.poe2db_slug,
         "ilvl": ilvl,
+        "quality": 0,
+        "catalystTag": None,
+        "corrupted": False,
+        "sanctified": False,
         "slots": {
             "prefixes": 0,
             "maxPrefixes": base.max_prefixes,
@@ -176,6 +185,12 @@ def _run_base_only_inspect(
         "craftedSlot": {"used": 0, "limit": 1, "fracturedLocked": False, "canAddCrafted": True},
         "desecratedSlot": {"used": 0, "limit": 1, "canDesecrate": True},
         "isLegal055": True,
+        "legalityIssues": [],
+        "warnings": [],
+        "prefixes": [],
+        "suffixes": [],
+        "implicits": [],
+        "whittlingPreview": None,
         "totalPoolWeight": outcomes_payload["totalPoolWeight"],
         "familyCount": outcomes_payload["familyCount"],
         "weightConfidence": outcomes_payload["weightConfidence"],
@@ -282,7 +297,7 @@ def run_unique_slot_ranking(
     from .formatters import format_uniques_md
 
     canon_slot = normalize_poe2_equipment_slot(slot, command=command_label)
-    raw_res = daemon_call_cli(
+    res = daemon_call_cli(
         "uniques",
         {
             "target": resolve_target_slot(target),
@@ -292,7 +307,6 @@ def run_unique_slot_ranking(
             "eval_sanctified": not no_sanctified,
         },
     )
-    res = {k: v for k, v in raw_res.items() if k not in ("loopGuardWarning", "cached")}
     emit_output(ctx, res, as_json=as_json, markdown_text=format_uniques_md(res))
 
 

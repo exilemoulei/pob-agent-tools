@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import difflib
+import logging
 from typing import Any
 
 from ..analyzer.version_stamp import attach_version_stamp
@@ -17,6 +19,8 @@ from ..guardrails import (
 )
 from ..importers.share_urls import resolve_poe2_build_source
 from ..snapshot import BuildScope, BuildTransaction, capture_digest, diff_digest, run_mutation
+
+_LOG = logging.getLogger(__name__)
 
 
 def _normalize_slot_name(raw_slot: str | None) -> str:
@@ -204,6 +208,59 @@ def _apply_item_equip_op(worker: Any, spec: dict[str, Any]) -> dict[str, Any]:
     return entry
 
 
+def _suggest_config_vars(worker: Any, query: str, *, limit: int = 5) -> list[str]:
+    """Return top close-matching PoB2 config var names from `list_config` for typo suggestions."""
+    try:
+        cfg = worker.call("list_config", {}) or {}
+    except Exception as exc:
+        _LOG.debug("list_config unavailable for config suggestions: %s", exc)
+        return []
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for sec in cfg.get("sections") or ():
+        if not isinstance(sec, dict):
+            continue
+        for item in sec.get("items") or ():
+            if not isinstance(item, dict):
+                continue
+            v = str(item.get("var") or "").strip()
+            if v and v not in seen:
+                seen.add(v)
+                candidates.append(v)
+    for key in ("vars", "inputs"):
+        raw_map = cfg.get(key)
+        if isinstance(raw_map, dict):
+            for k in raw_map:
+                v = str(k).strip()
+                if v and v not in seen:
+                    seen.add(v)
+                    candidates.append(v)
+    if not candidates:
+        return []
+    low_map: dict[str, str] = {}
+    for c in candidates:
+        low_map.setdefault(c.lower(), c)
+    q_low = query.strip().lower()
+    matched_low = difflib.get_close_matches(q_low, list(low_map.keys()), n=limit, cutoff=0.45)
+    return [low_map[m] for m in matched_low]
+
+
+def _set_config_or_raise(worker: Any, ckey: str, cval: Any) -> None:
+    try:
+        worker.call("set_config", {"var": ckey, "value": cval})
+    except Exception as exc:
+        msg = str(exc)
+        low = msg.lower()
+        if "unknown config var" in low or "value not in list" in low:
+            suggestions = _suggest_config_vars(worker, ckey) if "unknown config var" in low else []
+            hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+            raise DaemonRequestError(
+                f"[POE2-INVALID-CONFIG-VAR] {msg}{hint}",
+                suggestions=suggestions,
+            ) from exc
+        raise
+
+
 def _apply_mutation_ops(worker: Any, spec: dict[str, Any], *, apply_flag: bool = False) -> list[dict[str, Any]]:
     """Execute one or more atomic PoE2 mutations on ``worker`` inside a BuildTransaction."""
     applied_ops: list[dict[str, Any]] = []
@@ -276,26 +333,20 @@ def _apply_mutation_ops(worker: Any, spec: dict[str, Any], *, apply_flag: bool =
             if spec.get("set2") is not None:
                 wsp["set2"] = bool(spec["set2"])
             ws_res = worker.call("set_skill_weapon_set", wsp) or {}
-            if isinstance(ws_res, dict) and ws_res.get("noOp") is True:
-                raise DaemonRequestError(
-                    f"[POE2-NO-OP] Skill group {grp_idx} weapon-set state did not change "
-                    f"(requested set1={wsp.get('set1')}, set2={wsp.get('set2')}; "
-                    f"current set1={ws_res.get('set1')}, set2={ws_res.get('set2')}, "
-                    f"gem1EnableGlobal1={ws_res.get('gem1EnableGlobal1')}, "
-                    f"gem1EnableGlobal2={ws_res.get('gem1EnableGlobal2')})."
-                )
             op_rec: dict[str, Any] = {"op": "set_skill_weapon_set", **wsp}
             if isinstance(ws_res, dict):
-                for k in ("set1", "set2", "gem1EnableGlobal1", "gem1EnableGlobal2", "changed"):
+                for k in ("set1", "set2", "gem1EnableGlobal1", "gem1EnableGlobal2", "changed", "noOp"):
                     if k in ws_res:
                         op_rec[k] = ws_res[k]
+                if "noOp" not in op_rec and "changed" in op_rec:
+                    op_rec["noOp"] = not bool(op_rec["changed"])
             applied_ops.append(op_rec)
 
     if spec.get("config_key"):
         ckey = str(spec["config_key"]).strip()
         check_input(ckey, GuardrailScope.CONFIG_VAR, expected_game="poe2", emit_stderr=False)
         cval = spec.get("config_value")
-        worker.call("set_config", {"var": ckey, "value": cval})
+        _set_config_or_raise(worker, ckey, cval)
         applied_ops.append({"op": "set_config", "var": ckey, "value": cval})
 
     if isinstance(spec.get("config_vars"), dict):
@@ -304,7 +355,7 @@ def _apply_mutation_ops(worker: Any, spec: dict[str, Any], *, apply_flag: bool =
             if not ckey:
                 continue
             check_input(ckey, GuardrailScope.CONFIG_VAR, expected_game="poe2", emit_stderr=False)
-            worker.call("set_config", {"var": ckey, "value": cval})
+            _set_config_or_raise(worker, ckey, cval)
             applied_ops.append({"op": "set_config", "var": ckey, "value": cval})
 
     if spec.get("custom_mods") is not None:
@@ -334,6 +385,13 @@ def run_what_if(
         apply=apply,
         scope=BuildScope.ACTIVE_SETS,
     )
+    detail_ops = res.get("detail")
+    if isinstance(detail_ops, list) and detail_ops:
+        flagged = [op for op in detail_ops if isinstance(op, dict) and "changed" in op]
+        if flagged and len(flagged) == len(detail_ops):
+            any_changed = any(bool(op.get("changed")) for op in flagged)
+            res["changed"] = any_changed
+            res["noOp"] = not any_changed
     info = worker.call("get_build_info", {}) or {}
     return attach_version_stamp(
         res,

@@ -48,7 +48,7 @@ pob2 item inspect [--slot S | --text "<txt>" | --file f] [--base B] [--ilvl 82] 
 pob2 item db --slot S [--sort CombinedDPS|TotalEHP] [--limit 15] [--no-sanctified] # Unique ranking (JSON key: results)
 pob2 instill rank [--metric M] [--budget N] [--limit 15] # Pareto cost-efficiency across 875 ordered amulet instillations
 pob2 instill lookup "<kw>" | pob2 instill bridge "<emotion>"  # Ordered [Slot 1->2->3] & Distilled/Liquid emotion bridge
-pob2 rune rank --slot S [--type T] [--base B] [--shaman] | pob2 rune inspect "<name>" # `--type` auto-maps unique armour slots; pass `--slot` for weapons/rings
+pob2 rune rank --slot S [--type T] [--base B] [--shaman] | pob2 rune inspect "<name>" # `--type` auto-maps unique slots (armour/Focus/Shield/Buckler/Quiver); pass `--slot` for weapons/rings
 pob2 fix-gaps [--overcap 20] [--chaos-target 0] [--apply]     # 5-stage zero-buy attribute & res cap/overcap solver
 pob2 spirit [--budget 220] [--apply]                          # Discrete Spirit deficit rescue or forward buff knapsack
 ```
