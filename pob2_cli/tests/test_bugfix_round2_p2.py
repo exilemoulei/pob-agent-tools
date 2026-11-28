@@ -99,8 +99,8 @@ def test_p2a_uniques_bad_slot_rejected_before_build_loaded_without_daemon(
 
     runner = CliRunner()
 
-    # X05 exact repro: `pob2 uniques --slot "Ring 9" --json` with NO build loaded & NO daemon running
-    res = runner.invoke(cli_main, ["uniques", "--slot", "Ring 9", "--json"])
+    # X05 exact repro: `pob2 item db --slot "Ring 9" --json` with NO build loaded & NO daemon running
+    res = runner.invoke(cli_main, ["item", "db", "--slot", "Ring 9", "--json"])
     assert res.exit_code == 1
     assert "[POE2-INVALID-SLOT]" in res.output
     assert "Ring 9" in res.output
@@ -108,23 +108,24 @@ def test_p2a_uniques_bad_slot_rejected_before_build_loaded_without_daemon(
     assert "Ring 1" in res.output and "Charm 1" in res.output
     assert "has no build loaded" not in res.output
     assert "Traceback" not in res.output
-    assert "\n" not in res.stderr.strip()
+    assert res.stderr == ""
     err_json = json.loads(res.stdout)
     assert err_json["ok"] is False and err_json["game"] == "poe2"
     assert err_json["code"] == "POE2-INVALID-SLOT"
     assert not (rt_dir / "daemon_poe2.json").exists(), "Invalid --slot must fail before spawning daemon!"
 
     # PoE1 Flask 3..5 still raises CrossGameHallucinationError before daemon
-    res_f5 = runner.invoke(cli_main, ["uniques", "--slot", "Flask 5", "--json"])
+    res_f5 = runner.invoke(cli_main, ["item", "db", "--slot", "Flask 5", "--json"])
     assert res_f5.exit_code == 1
-    assert "[POE2-CROSS-GAME-BLOCK]" in res_f5.output
+    assert res_f5.stderr == ""
+    assert json.loads(res_f5.stdout)["code"] == "POE2-CROSS-GAME-BLOCK"
     assert "has no build loaded" not in res_f5.output
     assert not (rt_dir / "daemon_poe2.json").exists()
 
     # Other `--slot` / `--unequip` CLI commands share identical pre-validation before daemon contact
     for argv in (
-        ["what-if", "--slot", "Ring 9", "--item-text", _RARE_HELMET_EN, "--json"],
-        ["what-if", "--unequip", "Ring 9", "--json"],
+        ["what-if", "equip", "--slot", "Ring 9", "--item-text", _RARE_HELMET_EN, "--json"],
+        ["what-if", "equip", "--unequip", "Ring 9", "--json"],
         ["items", "--slot", "Ring 9", "--json"],
         ["rune", "rank", "--slot", "Ring 9", "--json"],
     ):
@@ -284,7 +285,7 @@ def test_p2b_chinese_inspect_parity_cache_hits_and_warm_latency() -> None:
     assert r_cn_cli.exit_code == 0 and json.loads(r_cn_cli.output)["baseSlug"] == "Gloves_dex_int"
 
     r_vj = runner.invoke(cli_main, ["craft", "inspect", "--text", _POE1_VIRIDIAN_JEWEL, "--json"])
-    assert r_vj.exit_code == 1 and "[POE2-CROSS-GAME-BLOCK]" in r_vj.output and "Traceback" not in r_vj.output
+    assert r_vj.exit_code == 1 and r_vj.stderr == "" and json.loads(r_vj.stdout)["code"] == "POE2-CROSS-GAME-BLOCK" and "Traceback" not in r_vj.output
 
     r_gb = runner.invoke(cli_main, ["craft", "inspect", "--text", "garbage", "--json"])
-    assert r_gb.exit_code == 1 and "[POE2-UNKNOWN-BASE]" in r_gb.output and "Traceback" not in r_gb.output
+    assert r_gb.exit_code == 1 and r_gb.stderr == "" and "[POE2-UNKNOWN-BASE]" in r_gb.output and "Traceback" not in r_gb.output

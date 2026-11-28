@@ -202,20 +202,20 @@ def test_n2_unified_json_error_envelope_across_all_error_classes(
     monkeypatch.setenv("POB2_OFFLINE", "1")
     runner = CliRunner()
 
-    # 1. Invalid equipment slot (`rc=1`, `code="POE2-INVALID-SLOT"`)
-    r_slot = runner.invoke(cli.main, ["uniques", "--slot", "Ring 9", "--json"])
+    # 1. Invalid equipment slot (`rc=1`, `code="POE2-INVALID-SLOT"`, zero stderr on `--json`)
+    r_slot = runner.invoke(cli.main, ["item", "db", "--slot", "Ring 9", "--json"])
     assert r_slot.exit_code == 1
-    assert r_slot.stderr.strip().startswith("Error:") and "\n" not in r_slot.stderr.strip()
+    assert r_slot.stderr == ""
     d_slot = json.loads(r_slot.stdout)
     assert d_slot["ok"] is False and d_slot["game"] == "poe2"
     assert d_slot["errorKind"] == "invalid_slot"
     assert d_slot["code"] == "POE2-INVALID-SLOT"
     assert "\n" not in d_slot["error"]
 
-    # 2. Self-compare (`rc=1`, `errorKind="same_slot"`)
+    # 2. Self-compare (`rc=1`, `errorKind="same_slot"`, zero stderr on `--json`)
     r_cmp = runner.invoke(cli.main, ["compare", "main", "main", "--json", "--compact"])
     assert r_cmp.exit_code == 1
-    assert r_cmp.stderr.strip().startswith("Error:") and "\n" not in r_cmp.stderr.strip()
+    assert r_cmp.stderr == ""
     assert "\n" not in r_cmp.stdout.strip()
     d_cmp = json.loads(r_cmp.stdout)
     assert d_cmp["ok"] is False and d_cmp["game"] == "poe2"
@@ -232,7 +232,7 @@ def test_n2_unified_json_error_envelope_across_all_error_classes(
     ):
         r_use = runner.invoke(cli.main, usage_argv)
         assert r_use.exit_code == 1, f"{usage_argv}: {r_use.output}"
-        assert r_use.stderr.strip().startswith("Error:") and "\n" not in r_use.stderr.strip()
+        assert r_use.stderr == ""
         d_use = json.loads(r_use.stdout)
         assert d_use["ok"] is False and d_use["game"] == "poe2"
         assert d_use["errorKind"] == "usage_error"
@@ -261,7 +261,7 @@ def test_n2_unified_json_error_envelope_across_all_error_classes(
 
     r_empty = runner.invoke(cli.main, ["summary", "--target", "never-loaded", "--json"])
     assert r_empty.exit_code == 1
-    assert r_empty.stderr.strip().startswith("Error:") and "\n" not in r_empty.stderr.strip()
+    assert r_empty.stderr == ""
     d_empty = json.loads(r_empty.stdout)
     assert d_empty["ok"] is False and d_empty["game"] == "poe2"
     assert d_empty["errorKind"] == "empty_slot" and d_empty["code"] == "POE2-EMPTY-SLOT"
@@ -280,7 +280,7 @@ def test_n2_unified_json_error_envelope_across_all_error_classes(
     # 5. Daemon / unexpected fault (`rc=5`, `errorKind="daemon_error"`, Lua traceback sanitized to single line)
     r_fault = runner.invoke(cli.main, ["tree", "--json", "--compact"])
     assert r_fault.exit_code == 5
-    assert r_fault.stderr.strip().startswith("Error:") and "\n" not in r_fault.stderr.strip()
+    assert r_fault.stderr == ""
     assert "\n" not in r_fault.stdout.strip()
     d_fault = json.loads(r_fault.stdout)
     assert d_fault["ok"] is False and d_fault["game"] == "poe2"
@@ -424,9 +424,9 @@ def test_n5_item_db_and_uniques_identical_schema_across_cache_hits_and_help(
     monkeypatch.setattr(cli_item, "daemon_call_cli", _cached_daemon)
     runner = CliRunner()
 
-    # 1st call (`uniques`, cache miss), 2nd call (`uniques`, cache hit), 3rd call (`item db`, loop-guard threshold!)
-    r_u1 = runner.invoke(cli.main, ["uniques", "--slot", "Helmet", "--json"])
-    r_u2 = runner.invoke(cli.main, ["uniques", "--slot", "Helmet", "--json"])
+    # 1st call (cache miss), 2nd call (cache hit), 3rd call (loop-guard threshold!) via canonical `item db`
+    r_u1 = runner.invoke(cli.main, ["item", "db", "--slot", "Helmet", "--json"])
+    r_u2 = runner.invoke(cli.main, ["item", "db", "--slot", "Helmet", "--json"])
     r_db3 = runner.invoke(cli.main, ["item", "db", "--slot", "Helmet", "--json"])
     assert r_u1.exit_code == 0 and r_u2.exit_code == 0 and r_db3.exit_code == 0
 
@@ -439,13 +439,11 @@ def test_n5_item_db_and_uniques_identical_schema_across_cache_hits_and_help(
     assert set(j_u1.keys()) == set(j_db3.keys())
     assert "loopGuardWarning" not in j_db3 and "cached" not in j_db3
 
-    # Help & brief clarity
+    # Help & brief clarity (top-level `uniques` alias removed)
     h_db = runner.invoke(cli.main, ["item", "db", "--help"]).stdout
-    h_un = runner.invoke(cli.main, ["uniques", "--help"]).stdout
     h_br = runner.invoke(cli.main, ["help", "--brief"]).stdout
-    assert "--target" in h_db and "results" in h_db and "uniques" in h_db
-    assert "--target" in h_un and "results" in h_un and "item db" in h_un
-    assert "item db" in h_br and "uniques" in h_br and "results" in h_br
+    assert "--target" in h_db and "results" in h_db
+    assert "item db" in h_br and "results" in h_br
 
 
 # ---------------------------------------------------------------------------

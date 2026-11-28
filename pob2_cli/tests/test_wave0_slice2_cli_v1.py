@@ -267,7 +267,7 @@ def test_every_leaf_cli_command_supports_trailing_json_compact_out_and_envelope(
         ("cli_lifecycle.py:status", ["status", "--no-start"]),
         ("cli_build_io.py:notes", ["notes", "--target", "main"]),
         ("cli_inspect.py:summary", ["summary", "--slot", "ref"]),
-        ("cli_mutate.py:what-if", ["what-if", "--level", "92", "--target", "main"]),
+        ("cli_mutate.py:what-if", ["what-if", "config", "--level", "92", "--target", "main"]),
         ("cli_craft.py:odds", ["craft", "odds", "--base", "Attuned Wand", "--want", "T2 Spell Damage"]),
         ("cli_item.py:db", ["item", "db", "--slot", "Ring 1", "--sort", "CombinedDPS", "--limit", "5"]),
         ("cli_item.py:inspect", ["item", "inspect", "--slot", "Weapon 1", "--target", "main"]),
@@ -443,13 +443,14 @@ def test_item_db_and_item_inspect_slot_prevalidation_and_mocked_pipeline(
         {"target": "ref", "slot": "Ring 1", "stat": "TotalEHP", "top": 5, "eval_sanctified": True},
     )
 
-    # Top-level `pob2 uniques` delegates to the exact same implementation
+    # Top-level duplicate alias `pob2 uniques` is removed under D1=A (merged into `pob2 item db`)
     r_uniq = runner.invoke(
         cli.main,
-        ["uniques", "--slot", "ring1", "--sort", "TotalEHP", "--limit", "5", "--target", "ref", "--json"],
+        ["uniques", "--slot", "ring1", "--json"],
     )
-    assert r_uniq.exit_code == 0, r_uniq.output
-    assert json.loads(r_uniq.output) == db_json
+    assert r_uniq.exit_code == 1
+    assert r_uniq.stderr == ""
+    assert json.loads(r_uniq.stdout)["errorKind"] == "usage_error"
 
     # `pob2 item inspect --slot` fetches equipped item and runs full craft/affix inspection
     r_insp = runner.invoke(

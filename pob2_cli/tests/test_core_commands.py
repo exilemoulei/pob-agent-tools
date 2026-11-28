@@ -65,16 +65,17 @@ Adds 80 to 140 Physical Damage
 
 def test_cli_preregisters_neon_craft_wave2_optional_hooks_and_core_commands() -> None:
     opt = cli._OPTIONAL_SUBCOMMANDS
-    for name in ("rune", "instill", "rank-instill", "fix-gaps", "spirit"):
+    for name in ("rune", "instill", "fix-gaps", "spirit"):
         assert name in opt, f"Missing Wave 2 optional hook `{name}` in cli._OPTIONAL_SUBCOMMANDS"
+    assert "rank-instill" not in opt
     assert opt["rune"][:2] == (".cli_rune", "rune_group")
     assert opt["instill"][:2] == (".cli_rune", "instill_group")
-    assert opt["rank-instill"][:2] == (".cli_rune", "cmd_rank_instill")
     assert opt["fix-gaps"][:2] == (".cli_rebalance", "cmd_fix_gaps")
     assert opt["spirit"][:2] == (".cli_rebalance", "cmd_spirit")
 
-    for core in ("bootstrap", "status", "stop", "load", "export", "notes", "summary", "audit", "diagnose", "uniques", "compare", "what-if", "diff", "undo", "redo"):
+    for core in ("bootstrap", "status", "stop", "load", "export", "notes", "summary", "audit", "diagnose", "compare", "what-if", "diff", "undo", "redo"):
         assert core in cli._LAZY_SUBCOMMANDS
+    assert "uniques" not in cli._LAZY_SUBCOMMANDS
 
 
 def test_share_url_parsing_mock_transport_and_poe1_block() -> None:

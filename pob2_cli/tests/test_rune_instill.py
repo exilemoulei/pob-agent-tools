@@ -14,7 +14,7 @@ from click.testing import CliRunner
 
 from pob2_cli import bridge_protocol, updater
 from pob2_cli.bridge_client import BridgeWorker
-from pob2_cli.cli_rune import cmd_rank_instill, instill_group, rune_group
+from pob2_cli.cli_rune import instill_group, rune_group
 from pob2_cli.craft.price_book import PriceBook
 from pob2_cli.craft.weights_loader import norm_key
 from pob2_cli.rune import (
@@ -302,7 +302,7 @@ def test_cli_rune_instill_and_rank_instill(tmp_path: Path, monkeypatch: pytest.M
     r4 = runner.invoke(instill_group, ["bridge", "Ancient Diluted Liquid Ire"])
     assert r4.exit_code != 0  # Rejects Ancient radiusJewel=true emotion!
 
-    r5 = runner.invoke(cmd_rank_instill, ["--metric", "CombinedDPS", "--limit", "5", "--json"])
+    r5 = runner.invoke(instill_group, ["rank", "--metric", "CombinedDPS", "--limit", "5", "--json"])
     assert r5.exit_code == 0, r5.output
     d5 = json.loads(r5.output)
     assert d5["evalMode"] == "offline_heuristic"

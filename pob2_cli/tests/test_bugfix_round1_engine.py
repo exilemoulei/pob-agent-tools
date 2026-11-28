@@ -713,7 +713,7 @@ def test_live_daemon_cli_empty_slot_invalid_class_missing_file_and_no_lua_traceb
         # 5. Load valid build, then trigger invalid tree node -> rc=1, clean single-line error, ZERO stack traceback
         r_ok = runner.invoke(cli.main, ["load", str(valid_xml)])
         assert r_ok.exit_code == 0
-        r_bad_node = runner.invoke(cli.main, ["what-if", "--tree-node", "999999"])
+        r_bad_node = runner.invoke(cli.main, ["what-if", "tree", "--tree-node", "999999"])
         assert r_bad_node.exit_code == 1
         assert "no node 999999" in r_bad_node.output
         assert "stack traceback" not in r_bad_node.output.lower()

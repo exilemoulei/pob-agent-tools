@@ -509,8 +509,8 @@ def test_live_daemon_cli_chain_load_rune_instill_fix_gaps_spirit_and_undo(
         assert d_rune["bisAnchor"] is not None and d_rune["bisAnchor"]["gain"] > 0.0
         assert rune_sec < 5.0, f"`pob2 rune rank --slot 'Weapon 1'` took {rune_sec:.2f}s"
 
-        # 3. `pob2 rank-instill --json` (live node_power + CoW on equipped Amulet)
-        res_inst = runner.invoke(cli.main, ["rank-instill", "--top-live", "10", "--json"])
+        # 3. `pob2 instill rank --json` (live node_power + CoW on equipped Amulet)
+        res_inst = runner.invoke(cli.main, ["instill", "rank", "--top-live", "10", "--json"])
         assert res_inst.exit_code == 0, res_inst.output
         d_inst = json.loads(res_inst.output)
         assert d_inst["evalMode"] == "live_cow"
