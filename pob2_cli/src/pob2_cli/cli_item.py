@@ -115,15 +115,81 @@ def handle_craft_or_inspect_error(ctx: click.Context, exc: Exception, *, as_json
         if as_json or ctx_wants_json(ctx):
             emit_output(
                 ctx,
-                {"ok": False, "game": "poe2", "errorKind": "invalid_input", "error": str(exc)},
+                {
+                    "ok": False,
+                    "game": "poe2",
+                    "errorKind": "invalid_input",
+                    "code": "POE2-INVALID-INPUT",
+                    "error": str(exc),
+                },
                 as_json=True,
                 ok=False,
+                ignore_ctx_out=True,
                 skip_projection=True,
             )
         else:
             echo_utf8(f"Error: {exc}", err=True)
         ctx.exit(EXIT_REQUEST_ERROR)
     raise exc
+
+
+def _run_base_only_inspect(
+    ctx: click.Context,
+    *,
+    base_name: str,
+    ilvl: int,
+    as_json: bool,
+) -> None:
+    """Inspect a PoE2 crafting base's slot structure and eligible mod pool without requiring item text."""
+    from .craft import ModPoolEngine
+    from .craft.models import CraftingState, ItemRarity
+    from .craft.pool_outcomes import compute_next_step_outcomes, render_outcomes_md
+
+    eng = ModPoolEngine()
+    try:
+        base = eng.resolve_base(base_name)
+        state = CraftingState(base=base, ilvl=ilvl, rarity=ItemRarity.NORMAL)
+        outcomes_payload = compute_next_step_outcomes(eng, state)
+    except Exception as exc:
+        handle_craft_or_inspect_error(ctx, exc, as_json=as_json)
+        return
+
+    payload: dict[str, Any] = {
+        "game": "poe2",
+        "patch": eng.patch,
+        "mode": "base_pool",
+        "rarity": ItemRarity.NORMAL.value,
+        "itemName": base.name,
+        "baseType": base.name,
+        "baseSlug": base.poe2db_slug,
+        "ilvl": ilvl,
+        "slots": {
+            "prefixes": 0,
+            "maxPrefixes": base.max_prefixes,
+            "openPrefixes": base.max_prefixes,
+            "suffixes": 0,
+            "maxSuffixes": base.max_suffixes,
+            "openSuffixes": base.max_suffixes,
+        },
+        "craftedSlot": {"used": 0, "limit": 1, "fracturedLocked": False, "canAddCrafted": True},
+        "desecratedSlot": {"used": 0, "limit": 1, "canDesecrate": True},
+        "isLegal055": True,
+        "totalPoolWeight": outcomes_payload["totalPoolWeight"],
+        "familyCount": outcomes_payload["familyCount"],
+        "weightConfidence": outcomes_payload["weightConfidence"],
+        "outcomes": outcomes_payload["outcomes"],
+    }
+    md_header = (
+        f"### 底材词缀池体检 [PoE2 {eng.patch}] — {base.name} (`{base.poe2db_slug}`, ilvl {ilvl})\n"
+        f"- 稀有槽位上限: 前缀 `0/{base.max_prefixes}` | 后缀 `0/{base.max_suffixes}` | "
+        f"`Crafted` `0/1` | `Desecrated` `0/1`\n\n"
+    )
+    emit_output(
+        ctx,
+        payload,
+        as_json=as_json,
+        markdown_text=md_header + render_outcomes_md(outcomes_payload),
+    )
 
 
 def run_inspect_command(
@@ -137,7 +203,7 @@ def run_inspect_command(
     slot_name: str | None = None,
     target_slot: str | None = None,
 ) -> None:
-    """Unified execution pipeline for `craft inspect` and `item inspect` (`--slot` / `--text` / `--file`)."""
+    """Unified execution pipeline for `craft inspect` and `item inspect` (`--slot` / `--text` / `--file` / `--base`)."""
     if item_text is not None and file_path is not None:
         raise click.UsageError("Use either `--text` or `--file`, not both.")
     if slot_name and (item_text is not None or file_path is not None):
@@ -164,6 +230,17 @@ def run_inspect_command(
         raw = str(raw_val)
         fallback_base = str(first_meta.get("baseName") or "").strip() or None
         check_input_item_raw(raw, expected_game="poe2", emit_stderr=not (as_json or ctx_wants_json(ctx)))
+    elif item_text is None and file_path is None and base_override:
+        stdin_raw = "" if sys.stdin.isatty() else sys.stdin.read()
+        if not stdin_raw.strip():
+            _run_base_only_inspect(
+                ctx,
+                base_name=base_override,
+                ilvl=ilvl_override if ilvl_override is not None else 82,
+                as_json=as_json,
+            )
+            return
+        raw = stdin_raw
     else:
         raw = read_item_source(item_text, file_path)
 

@@ -9,6 +9,7 @@ from ..game_profile import GAME_ID
 from ..guardrails import normalize_poe2_equipment_slot
 from ..importers.post_load_fixups import fetch_clean_notes
 from ..snapshot import capture_digest, compact_digest_summary
+from ..snapshot.helpers import clean_points_dict
 from .deep_audit import DEFAULT_OVERCAP_TARGET, run_deep_audit
 from .version_stamp import attach_version_stamp
 
@@ -169,7 +170,7 @@ def inspect_tree(worker: Any) -> dict[str, Any]:
             "classId": info.get("classId"),
             "className": info.get("className"),
             "ascendClassName": info.get("ascendClassName"),
-            "points": info.get("points") or {},
+            "points": clean_points_dict(info.get("points")),
             "allocatedCount": len(state.get("allocatedNodes") or []),
             "allocatedNodes": state.get("allocatedNodes") or [],
             "overrides": state.get("overrides") or {},

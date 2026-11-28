@@ -167,9 +167,27 @@ def _default_fetch_text(
         raise DaemonRequestError(
             f"Failed fetching PoE2 build URL `{redact_secrets(url)}`: {redact_secrets(str(exc))}"
         ) from exc
+    if resp.status_code in (403, 429, 503) or resp.headers.get("cf-mitigated"):
+        raise DaemonRequestError(
+            f"[POE2-FETCH-BLOCKED] PoE2 build URL `{redact_secrets(url)}` returned HTTP {resp.status_code} "
+            "(anti-bot / Cloudflare challenge). Open the link in a browser, export the PoB2 share code, "
+            "and pass the code or XML file to `pob2 load`."
+        )
     if resp.status_code != 200:
-        raise DaemonRequestError(f"PoE2 build URL `{redact_secrets(url)}` returned HTTP {resp.status_code}.")
+        raise DaemonRequestError(
+            f"[POE2-FETCH-HTTP-ERROR] PoE2 build URL `{redact_secrets(url)}` returned HTTP {resp.status_code}."
+        )
     return resp.text
+
+
+def _looks_like_html_page(text: str) -> bool:
+    head = text[:512].lstrip().lower()
+    return (
+        head.startswith(("<!doctype html", "<html", "<!--"))
+        or "<title>just a moment" in head
+        or "cf-browser-verification" in head
+        or ("<head>" in head and "<body>" in head)
+    )
 
 
 def _extract_code_or_xml_from_body(
@@ -184,6 +202,11 @@ def _extract_code_or_xml_from_body(
     if len(text.encode("utf-8", errors="replace")) > MAX_SHARE_XML_BYTES:
         raise DaemonRequestError(
             f"Build XML from `{site_kind}` exceeds {MAX_SHARE_XML_BYTES // (1024 * 1024)} MiB limit."
+        )
+    if _looks_like_html_page(text):
+        raise DaemonRequestError(
+            f"[POE2-FETCH-BLOCKED] `{site_kind}` returned an HTML page instead of a PoB2 build code "
+            "(anti-bot / Cloudflare challenge or invalid link). Export the PoB2 share code manually and pass it to `pob2 load`."
         )
     if text.startswith("{"):
         try:
@@ -399,7 +422,11 @@ def load_build_into_worker(
     imp_res = worker.call("import_code", {"code": resolved.code, "mode": "replace"})
     worker.has_build = True
     fixups = apply_post_load_fixups(worker, auto_fix=auto_fix)
-    info = worker.call("get_build_info", {})
+    info = dict(worker.call("get_build_info", {}) or {})
+    if isinstance(info.get("points"), dict) and isinstance(info["points"].get("display"), str):
+        pts_clean = dict(info["points"])
+        pts_clean["display"] = re.sub(r"\^(?:x[0-9A-Fa-f]{6}|\d)", "", pts_clean["display"]).strip()
+        info["points"] = pts_clean
 
     out: dict[str, Any] = {
         "game": "poe2",

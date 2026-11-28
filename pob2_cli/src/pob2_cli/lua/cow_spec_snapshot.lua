@@ -216,6 +216,25 @@ function M.restore_spec(b, snap, j_dirty)
 	return true
 end
 
+-- Compatible wrapper for bridge.lua `set_gem` accepting both `index` and legacy `gem` with 1-based bounds checks.
+function M.rpc_set_gem(params, bridge_dispatcher)
+	params = type(params) == "table" and shallow_copy(params) or {}
+	local b = H.get_build({ rebuild = false })
+	local st = b.skillsTab
+	local grp_idx = tonumber(params.group or b.mainSocketGroup or 1)
+	local sg = st and st.socketGroupList and grp_idx and st.socketGroupList[grp_idx]
+	if not sg then error("no socket group at index " .. tostring(grp_idx), 0) end
+	local raw_idx = params.index ~= nil and params.index or params.gem
+	local gem_idx = tonumber(raw_idx)
+	local gl = type(sg.gemList) == "table" and sg.gemList or {}
+	if not gem_idx or gem_idx < 1 or gem_idx > #gl or not gl[gem_idx] then
+		error("gem index " .. tostring(raw_idx) .. " out of range (1-based; group " .. tostring(grp_idx) .. " has " .. tostring(#gl) .. " gems)", 0)
+	end
+	params.group = grp_idx
+	params.index = gem_idx
+	return bridge_dispatcher("set_gem", params)
+end
+
 -- PoE2 0.5.5+ (#2498) per-skill weapon-set binding mutator & state reader (works on both 0.23.1 & 0.5.5+ dev).
 function M.rpc_set_skill_weapon_set(params)
 	params = type(params) == "table" and params or {}
@@ -224,13 +243,42 @@ function M.rpc_set_skill_weapon_set(params)
 	local idx = tonumber(params.index or b.mainSocketGroup or 1)
 	local sg = st and st.socketGroupList and st.socketGroupList[idx]
 	if not sg then error("no socket group at index " .. tostring(idx), 0) end
-	if params.set1 ~= nil then sg.set1 = params.set1 and true or false end
-	if params.set2 ~= nil then sg.set2 = params.set2 and true or false end
+	local gl = type(sg.gemList) == "table" and sg.gemList or {}
+	local target_gems = {}
+	if params.gemIndex ~= nil then
+		local gi = tonumber(params.gemIndex)
+		if not gi or gi < 1 or gi > #gl or not gl[gi] then
+			error("gem index " .. tostring(params.gemIndex) .. " out of range (1-based; group " .. tostring(idx) .. " has " .. tostring(#gl) .. " gems)", 0)
+		end
+		target_gems[1] = gl[gi]
+	else
+		for i = 1, #gl do target_gems[i] = gl[i] end
+	end
+
+	local prev_s1, prev_s2, prev_fb = sg.set1, sg.set2, sg.forcedBoth
+	local prev_g1, prev_g2 = {}, {}
+	for i, gem in ipairs(target_gems) do
+		prev_g1[i] = gem.enableGlobal1
+		prev_g2[i] = gem.enableGlobal2
+	end
+
+	if params.set1 ~= nil then
+		local v1 = params.set1 and true or false
+		sg.set1 = v1
+		if params.enableGlobal1 == nil then
+			for _, gem in ipairs(target_gems) do gem.enableGlobal1 = v1 end
+		end
+	end
+	if params.set2 ~= nil then
+		local v2 = params.set2 and true or false
+		sg.set2 = v2
+		if params.enableGlobal2 == nil then
+			for _, gem in ipairs(target_gems) do gem.enableGlobal2 = v2 end
+		end
+	end
 	if params.forcedBoth ~= nil then sg.forcedBoth = params.forcedBoth and true or false end
-	if (params.enableGlobal1 ~= nil or params.enableGlobal2 ~= nil) and type(sg.gemList) == "table" then
-		local gi = tonumber(params.gemIndex or 1)
-		local gem = sg.gemList[gi]
-		if gem then
+	if params.enableGlobal1 ~= nil or params.enableGlobal2 ~= nil then
+		for _, gem in ipairs(target_gems) do
 			if params.enableGlobal1 ~= nil then gem.enableGlobal1 = params.enableGlobal1 and true or false end
 			if params.enableGlobal2 ~= nil then gem.enableGlobal2 = params.enableGlobal2 and true or false end
 		end
@@ -241,7 +289,22 @@ function M.rpc_set_skill_weapon_set(params)
 	if b.calcsTab and type(b.calcsTab.mainEnv) == "table" then b.calcsTab.mainEnv.weaponSetEnvs = nil end
 	b.buildFlag = true
 	H.frame()
-	return { ok = true, index = idx, set1 = sg.set1, set2 = sg.set2, forcedBoth = sg.forcedBoth }
+
+	local changed = (sg.set1 ~= prev_s1) or (sg.set2 ~= prev_s2) or (sg.forcedBoth ~= prev_fb)
+	if not changed then
+		for i, gem in ipairs(target_gems) do
+			if gem.enableGlobal1 ~= prev_g1[i] or gem.enableGlobal2 ~= prev_g2[i] then
+				changed = true
+				break
+			end
+		end
+	end
+	local g1 = gl[1]
+	return {
+		ok = true, index = idx, set1 = sg.set1, set2 = sg.set2, forcedBoth = sg.forcedBoth,
+		gem1EnableGlobal1 = g1 and g1.enableGlobal1, gem1EnableGlobal2 = g1 and g1.enableGlobal2,
+		changed = changed, noOp = not changed,
+	}
 end
 
 function M.rpc_get_weapon_set_state(_)

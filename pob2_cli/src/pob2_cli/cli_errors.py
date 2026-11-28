@@ -16,6 +16,7 @@ from .errors import (
     BootstrapMissingError,
     CrossGameHallucinationError,
     DaemonRequestError,
+    InternalBugError,
     LegacyPatchTrapError,
 )
 
@@ -36,7 +37,7 @@ def _single_line(text: str) -> str:
     return collapsed or "Request failed."
 
 
-def _classify_daemon_request_error(msg: str) -> tuple[str, str | None]:
+def _classify_daemon_request_error(msg: str) -> tuple[str, str]:
     m_code = _BRACKET_CODE_RE.match(msg)
     code = m_code.group(1) if m_code else None
     low = msg.lower()
@@ -48,13 +49,21 @@ def _classify_daemon_request_error(msg: str) -> tuple[str, str | None]:
         return "invalid_field", code
     if code == "POE2-INVALID-SPEC":
         return "invalid_spec", code
+    if code == "POE2-NO-OP":
+        return "no_op", code
+    if code == "POE2-FETCH-BLOCKED":
+        return "fetch_blocked", code
+    if code == "POE2-FETCH-HTTP-ERROR":
+        return "fetch_http_error", code
+    if code == "POE2-EMPTY-HISTORY" or "stack is empty" in low:
+        return "empty_history", code or "POE2-EMPTY-HISTORY"
     if "has no build loaded" in low or "is empty in build slot" in low:
         return "empty_slot", code or "POE2-EMPTY-SLOT"
     if "file not found" in low or "no such file" in low:
         return "file_not_found", code or "POE2-FILE-NOT-FOUND"
     if "against itself" in low or ("both `--target" in low and "`--slot" in low):
         return "same_slot", code or "POE2-SAME-SLOT"
-    return "request_error", code
+    return "request_error", code or "POE2-REQUEST-ERROR"
 
 
 def _emit_error_and_resolve_code(ctx: click.Context | None, exc: BaseException) -> int:
@@ -74,6 +83,21 @@ def _emit_error_and_resolve_code(ctx: click.Context | None, exc: BaseException) 
             echo_utf8(exc.format_human(), err=True)
         return EXIT_REQUEST_ERROR
 
+    if isinstance(exc, (InternalBugError, AttributeError, TypeError, KeyError)):
+        single = _single_line(_sanitize_err(f"{exc.__class__.__name__}: {exc}" if not isinstance(exc, InternalBugError) else str(exc)))
+        if wants_json:
+            emit_output(
+                ctx,
+                {"errorKind": "internal_error", "code": "POE2-INTERNAL-ERROR", "error": single},
+                as_json=True,
+                ok=False,
+                ignore_ctx_out=True,
+                skip_projection=True,
+            )
+        else:
+            echo_utf8(f"Error: {single}", err=True)
+        return EXIT_REQUEST_ERROR
+
     if isinstance(exc, DaemonRequestError):
         exit_code = int(getattr(exc, "exit_code", EXIT_REQUEST_ERROR))
         to_dict_fn = getattr(exc, "to_dict", None)
@@ -82,12 +106,11 @@ def _emit_error_and_resolve_code(ctx: click.Context | None, exc: BaseException) 
             if callable(to_dict_fn):
                 payload = dict(to_dict_fn())
                 m_code = _BRACKET_CODE_RE.match(single)
-                if m_code:
-                    payload.setdefault("code", m_code.group(1))
+                payload.setdefault("code", m_code.group(1) if m_code else "POE2-REQUEST-ERROR")
                 payload["error"] = _single_line(str(payload.get("error") or single))
             else:
                 kind, code = _classify_daemon_request_error(single)
-                payload = {"errorKind": kind, **({"code": code} if code else {}), "error": single}
+                payload = {"errorKind": kind, "code": code, "error": single}
             emit_output(ctx, payload, as_json=True, ok=False, ignore_ctx_out=True, skip_projection=True)
         else:
             echo_utf8(f"Error: {single}", err=True)

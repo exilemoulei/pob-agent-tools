@@ -35,11 +35,11 @@ pob2 ground "<kw>" [--category C] [--limit 10]           # <15ms daemon-free PoE
 
 ### CoW Zero-Residue What-If (Rolls back by default; pass `--apply` to persist, `pob2 undo` / `pob2 redo` to revert)
 ```powershell
-pob2 what-if equip --slot "Weapon 1" (--item-text "<txt>" | --item-file f | --unequip) [--weapon-swap] [--apply]
+pob2 what-if equip --slot "Weapon 1" (--item-text "<txt>" | --item-file f | --unequip) [--weapon-swap] [--apply]  # or `--unequip "Body Armour"`
 pob2 what-if tree --tree-node <id> [--alloc-mode 0|1|2] [--attribute-node <id> --attribute str|dex|int] [--apply]
-pob2 what-if skill --gem-group G --gem-index I [--gem-level N] [--gem-quality Q] [--gem-enabled/--no-gem-enabled] [--set1/--set2] [--apply]
+pob2 what-if skill --gem-group G [--gem-index I] [--gem-level N] [--gem-quality Q] [--gem-enabled/--no-gem-enabled] [--set1/--set2] [--apply]
 pob2 what-if config [--level N] [--config-key K --config-value V] [--custom-mods "<txt>"] [--apply]
-pob2 what-if apply (--spec '<JSON>' | --spec-file ops.json) [--apply]   # Atomic multi-domain CoW transaction
+pob2 what-if apply --spec '{"config":{"level":95,"enemyLevel":82},"tree":{"tree_node":331}}' [--apply]  # Flat or nested JSON / `--spec-file`
 ```
 
 ### Solvers: Gear, Instillations, Runes, Gaps & Spirit
@@ -48,14 +48,14 @@ pob2 item inspect [--slot S | --text "<txt>" | --file f] [--base B] [--ilvl 82] 
 pob2 item db --slot S [--sort CombinedDPS|TotalEHP] [--limit 15] [--no-sanctified] # Unique ranking (JSON key: results)
 pob2 instill rank [--metric M] [--budget N] [--limit 15] # Pareto cost-efficiency across 875 ordered amulet instillations
 pob2 instill lookup "<kw>" | pob2 instill bridge "<emotion>"  # Ordered [Slot 1->2->3] & Distilled/Liquid emotion bridge
-pob2 rune rank --type <item_type> [--slot S] [--base B] [--shaman] | pob2 rune inspect "<name>" # Runes, Soul Cores & Idols
+pob2 rune rank --slot S [--type T] [--base B] [--shaman] | pob2 rune inspect "<name>" # `--type` auto-maps unique armour slots; pass `--slot` for weapons/rings
 pob2 fix-gaps [--overcap 20] [--chaos-target 0] [--apply]     # 5-stage zero-buy attribute & res cap/overcap solver
 pob2 spirit [--budget 220] [--apply]                          # Discrete Spirit deficit rescue or forward buff knapsack
 ```
 
 ### PoE2 `0.5.5` Crafting Solver (Always use `--want`, NEVER `--target`)
 ```powershell
-pob2 craft inspect [--text "<txt>" | --file f] [--base B] [--ilvl 82]
+pob2 craft inspect [--text "<txt>" | --file f | --base B [--ilvl 82]]  # `--base` works standalone for base mod-pool summary
 pob2 craft odds --base "<Base>" --ilvl 82 (--want "T1 Spell Damage" [--want ...] | --outcomes) [--lever L] [--omen O]
 pob2 craft plan --base "<Base>" --ilvl 82 --want "<mod>" [--want ...] [--base-cost 2] [--buy-price P] [--exclude X]
 pob2 craft next (--text "<txt>" | --file f) --want "<mod>" [--want ...] [--protect-existing] [--buy-price P]

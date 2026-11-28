@@ -166,6 +166,8 @@ def rank_runes_for_slot(
             top_candidates=(),
             warnings=("Target item is Mirrored; socketed runes cannot be changed.",),
             eval_mode="live_cow" if worker is not None else "offline_heuristic",
+            slot=slot_name,
+            item_type=item_type or None,
         )
 
     eligible = eligible_runes_for_item(
@@ -246,6 +248,8 @@ def rank_runes_for_slot(
         warnings=tuple(warnings),
         eval_mode=eff_mode,
         shortlisted_from=total_eligible if eff_mode == "live_cow" else None,
+        slot=slot_name,
+        item_type=item_type or None,
     )
 
 

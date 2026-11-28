@@ -25,6 +25,13 @@ class DaemonRequestError(RuntimeError):
     exit_code: int = EXIT_REQUEST_ERROR
 
 
+class InternalBugError(DaemonRequestError):
+    """Raised when an internal Python programming error (AttributeError/TypeError/KeyError) occurs."""
+
+    error_kind: str = "internal_error"
+    exit_code: int = EXIT_REQUEST_ERROR
+
+
 class BootstrapMissingError(RuntimeError):
     """Raised when no local PoB2 engine exists and bootstrap failed or is offline."""
 

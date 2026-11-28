@@ -24,6 +24,7 @@ from ..game_profile import GAME_ID
 from ..guardrails import normalize_poe2_equipment_slot
 from ..mutators import diff_against_source, run_what_if
 from ..snapshot import history_of, load_build, redo_build, undo_build
+from ..snapshot.helpers import clean_points_dict
 from .read_cache import compute_source_hash, is_live_source
 from .rpc_rebalance import REBALANCE_SLOT_HANDLERS
 from .runtime import normalize_slot_name
@@ -147,12 +148,16 @@ def _h_stats(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str,
 
 def _h_build_info(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     res = dict(w.call("get_build_info", {}))
+    if isinstance(res.get("points"), dict):
+        res["points"] = clean_points_dict(res["points"])
     res["game"] = GAME_ID
     return m._attach_warning_if_degraded(res)
 
 
 def _h_tree_state(m: DaemonManager, _p: dict[str, Any], w: BridgeWorker) -> dict[str, Any]:
     res = dict(w.call("get_tree_state", {}))
+    if isinstance(res.get("points"), dict):
+        res["points"] = clean_points_dict(res["points"])
     res["game"] = GAME_ID
     return m._attach_warning_if_degraded(res)
 

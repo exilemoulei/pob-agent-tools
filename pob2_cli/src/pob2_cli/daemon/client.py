@@ -11,7 +11,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..errors import CrossGameHallucinationError, DaemonRequestError, LegacyPatchTrapError
+from ..errors import (
+    CrossGameHallucinationError,
+    DaemonRequestError,
+    InternalBugError,
+    LegacyPatchTrapError,
+)
 from ..json_io import read_json_dict
 from ..os_util import spawn_detached_process
 from ..updater import STATE_BOOTSTRAP_MISSING, load_update_state
@@ -321,6 +326,8 @@ def _rpc_result(data: dict[str, Any]) -> dict[str, Any]:
         if data.get("errorKind") == "legacy_patch_trap":
             raise LegacyPatchTrapError.from_dict(data)
         message = data.get("error") or "PoB2 daemon error"
+        if data.get("errorKind") == "internal_error":
+            raise InternalBugError(message)
         if data.get("errorKind") == "request":
             raise DaemonRequestError(message)
         raise RuntimeError(message)

@@ -12,6 +12,7 @@ from ..bridge_protocol import decode_share_code_xml, encode_xml_share_code, vali
 from ..errors import DaemonRequestError
 from ..game_profile import GAME_ID
 from .digest import capture_digest, diff_digest
+from .helpers import clean_points_dict
 from .history import history_of
 from .transaction import BuildScope, BuildTransaction
 
@@ -23,7 +24,7 @@ def _headline(digest: dict[str, Any]) -> dict[str, Any]:
         "totalEhp": digest["totalEhp"],
         "life": digest["life"],
         "spirit": digest.get("spirit", 0.0),
-        "points": digest.get("buildInfo", {}).get("points", {}),
+        "points": clean_points_dict(digest.get("buildInfo", {}).get("points")),
     }
 
 
@@ -72,7 +73,7 @@ def _step_history(worker: BridgeWorker, *, action: str) -> dict[str, Any]:
     with worker.lock:
         history = history_of(worker)
         if not (history.undo if action == "undo" else history.redo):
-            raise DaemonRequestError(f"{action.capitalize()} stack is empty.")
+            raise DaemonRequestError(f"[POE2-EMPTY-HISTORY] {action.capitalize()} stack is empty.")
         with BuildTransaction(worker, scope=BuildScope.REPLACES_BUILD, will_commit=True) as tx:
             src_stack = tx.history.undo if action == "undo" else tx.history.redo
             digest_before = capture_digest(worker)
@@ -150,7 +151,9 @@ def load_build(
 
         code, label = _resolve_inline_code(source, xml_code)
         imp_res = worker.call("import_code", {"code": code, "mode": "replace"})
-        info = worker.call("get_build_info", {})
+        info = dict(worker.call("get_build_info", {}) or {})
+        if isinstance(info.get("points"), dict):
+            info["points"] = clean_points_dict(info["points"])
         tx.commit_load(label)
         worker.has_build = True
         out_payload: dict[str, Any] = {

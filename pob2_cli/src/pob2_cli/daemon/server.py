@@ -120,8 +120,20 @@ def make_handler(manager: DaemonManager) -> type[BaseHTTPRequestHandler]:
                 if isinstance(exc, BridgeRejectedError) and exc.code:
                     payload["engineCode"] = exc.code
                 self._send_json(400, payload)
-            except Exception as exc:
+            except (AttributeError, TypeError, KeyError) as exc:
                 err_payload: dict[str, Any] = {
+                    "ok": False,
+                    "game": GAME_ID,
+                    "error": _error_text(exc, sanitize_bridge=True),
+                    "type": exc.__class__.__name__,
+                    "errorKind": "internal_error",
+                    "code": "POE2-INTERNAL-ERROR",
+                }
+                if is_debug_enabled():
+                    err_payload["trace"] = redact_secrets(traceback.format_exc(limit=4))
+                self._send_json(400, err_payload)
+            except Exception as exc:
+                err_payload = {
                     "ok": False,
                     "game": GAME_ID,
                     "error": _error_text(exc, sanitize_bridge=True),

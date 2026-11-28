@@ -281,7 +281,7 @@ def test_cli_rune_instill_and_rank_instill(tmp_path: Path, monkeypatch: pytest.M
     r_missing = runner.invoke(rune_group, ["rank", "--slot", "Weapon 1"])
     assert r_missing.exit_code != 0
 
-    r2 = runner.invoke(rune_group, ["rank", "--type", "Wand", "--level", "90", "--json"])
+    r2 = runner.invoke(rune_group, ["rank", "--type", "Wand", "--slot", "Weapon 1", "--level", "90", "--json"])
     assert r2.exit_code == 0, r2.output
     d2 = json.loads(r2.output)
     assert d2["game"] == "poe2" and d2["evalMode"] == "offline_heuristic"

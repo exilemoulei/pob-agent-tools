@@ -38,7 +38,6 @@ _CRAFT_TARGET_MIGRATION_ERROR = (
 def _on_legacy_craft_target(ctx: click.Context, _param: click.Parameter, value: tuple[str, ...]) -> None:
     if not value or ctx.resilient_parsing:
         return
-    echo_utf8(f"Error: {_CRAFT_TARGET_MIGRATION_ERROR}", err=True)
     if ctx_wants_json(ctx):
         emit_output(
             ctx,
@@ -46,13 +45,18 @@ def _on_legacy_craft_target(ctx: click.Context, _param: click.Parameter, value: 
                 "ok": False,
                 "game": "poe2",
                 "errorKind": "cli_migration",
+                "code": "POE2-CLI-MIGRATION",
                 "ruleId": "POE2_CLI_CRAFT_TARGET_TO_WANT",
                 "trigger": "--target",
                 "error": _CRAFT_TARGET_MIGRATION_ERROR,
             },
             as_json=True,
             ok=False,
+            ignore_ctx_out=True,
+            skip_projection=True,
         )
+    else:
+        echo_utf8(f"Error: {_CRAFT_TARGET_MIGRATION_ERROR}", err=True)
     ctx.exit(EXIT_REQUEST_ERROR)
 
 

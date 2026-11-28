@@ -13,6 +13,7 @@ from .helpers import (
     _OFFENCE_SUMMARY_KEYS,
     CORE_STAT_KEYS,
     call_batch,
+    clean_points_dict,
     extract_points_used,
     fmt_delta,
     fmt_num,
@@ -78,7 +79,7 @@ def capture_direct_digest(
     skill_flags = res.get("skillFlags") if isinstance(res, dict) else None
     build_info = dict(base_digest.get("buildInfo") or {}) if isinstance(base_digest, dict) else {}
     if isinstance(res, dict) and isinstance(res.get("points"), dict):
-        build_info["points"] = res["points"]
+        build_info["points"] = clean_points_dict(res["points"])
     build_header = dict(base_digest.get("buildHeader") or {}) if isinstance(base_digest, dict) else {}
     warns: list[str] = []
     for w in (res.get("warnings") or []) if isinstance(res, dict) else []:
@@ -109,7 +110,9 @@ def capture_digest(worker: BridgeWorker) -> dict[str, Any]:
     stats = stats_res.get("stats", {}) if isinstance(stats_res, dict) else {}
     info_dict = dict(info_res) if isinstance(info_res, dict) else {}
     if "points" not in info_dict and isinstance(stats_res, dict) and isinstance(stats_res.get("points"), dict):
-        info_dict["points"] = stats_res["points"]
+        info_dict["points"] = clean_points_dict(stats_res["points"])
+    elif isinstance(info_dict.get("points"), dict):
+        info_dict["points"] = clean_points_dict(info_dict["points"])
     sidebar_warnings = sidebar_res.get("warnings", []) if isinstance(sidebar_res, dict) else []
     warnings = [
         strip_pob_escapes(w.get("raw") or w.get("text") or "")
@@ -242,6 +245,6 @@ def diff_digest(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]
         "newWarnings": sorted(a_warn - b_warn),
         "resolvedWarnings": sorted(b_warn - a_warn),
         "allWarningsAfter": after.get("warnings", []),
-        "pointsBefore": before.get("buildInfo", {}).get("points", {}),
-        "pointsAfter": after.get("buildInfo", {}).get("points", {}),
+        "pointsBefore": clean_points_dict(before.get("buildInfo", {}).get("points")),
+        "pointsAfter": clean_points_dict(after.get("buildInfo", {}).get("points")),
     }

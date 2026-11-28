@@ -309,6 +309,7 @@ M.rpc_handlers = {
 	cow_snapshot = rpc_cow_snapshot,
 	cow_restore = rpc_cow_restore,
 	cow_drop = rpc_cow_drop,
+	set_gem = SP.rpc_set_gem,
 	set_skill_weapon_set = SP.rpc_set_skill_weapon_set,
 	get_weapon_set_state = SP.rpc_get_weapon_set_state,
 }

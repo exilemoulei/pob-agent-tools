@@ -57,6 +57,8 @@ class ParetoRankingReport:
     warnings: tuple[str, ...] = ()
     eval_mode: str = "offline_heuristic"
     shortlisted_from: int | None = None
+    slot: str | None = None
+    item_type: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -72,6 +74,10 @@ class ParetoRankingReport:
             "topCandidates": [c.to_dict() for c in self.top_candidates],
             "warnings": list(self.warnings),
         }
+        if self.slot is not None:
+            out["slot"] = self.slot
+        if self.item_type is not None:
+            out["itemType"] = self.item_type
         if self.shortlisted_from is not None:
             out["shortlistedFrom"] = self.shortlisted_from
         return out

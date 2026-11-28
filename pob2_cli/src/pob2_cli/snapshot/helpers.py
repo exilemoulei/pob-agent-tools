@@ -98,6 +98,16 @@ def strip_pob_escapes(text: Any) -> str:
     return _POB_ESCAPE_RE.sub("", text).strip()
 
 
+def clean_points_dict(pts: Any) -> dict[str, Any]:
+    """Return a shallow copy of a PoB2 `points` dict with PoB color escapes stripped from text fields."""
+    if not isinstance(pts, dict):
+        return {}
+    out = dict(pts)
+    if isinstance(out.get("display"), str):
+        out["display"] = strip_pob_escapes(out["display"])
+    return out
+
+
 def parse_numeric_or_none(val: Any) -> float | None:
     """Parse int/float or numeric string into float (supports inf/-inf/nan); reject booleans."""
     if val is None or isinstance(val, bool):

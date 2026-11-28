@@ -245,10 +245,15 @@ def _apply_mutation_ops(worker: Any, spec: dict[str, Any], *, apply_flag: bool =
 
     if spec.get("gem_group") is not None or spec.get("set1") is not None or spec.get("set2") is not None:
         grp_idx = int(spec.get("gem_group") or 1)
+        if grp_idx < 1:
+            raise DaemonRequestError(f"Invalid --gem-group {grp_idx}; skill socket group index is 1-based (>= 1).")
         if spec.get("gem_index") is not None and any(
             spec.get(k) is not None for k in ("gem_level", "gem_quality", "gem_enabled")
         ):
-            gp: dict[str, Any] = {"group": grp_idx, "gem": int(spec["gem_index"])}
+            gem_idx = int(spec["gem_index"])
+            if gem_idx < 1:
+                raise DaemonRequestError(f"Invalid --gem-index {gem_idx}; gem index inside socket group is 1-based (>= 1).")
+            gp: dict[str, Any] = {"group": grp_idx, "index": gem_idx}
             if spec.get("gem_level") is not None:
                 gp["level"] = int(spec["gem_level"])
             if spec.get("gem_quality") is not None:
@@ -259,19 +264,48 @@ def _apply_mutation_ops(worker: Any, spec: dict[str, Any], *, apply_flag: bool =
             applied_ops.append({"op": "set_gem", **gp})
         if spec.get("set1") is not None or spec.get("set2") is not None:
             wsp: dict[str, Any] = {"index": grp_idx}
+            if spec.get("gem_index") is not None:
+                gem_idx = int(spec["gem_index"])
+                if gem_idx < 1:
+                    raise DaemonRequestError(
+                        f"Invalid --gem-index {gem_idx}; gem index inside socket group is 1-based (>= 1)."
+                    )
+                wsp["gemIndex"] = gem_idx
             if spec.get("set1") is not None:
                 wsp["set1"] = bool(spec["set1"])
             if spec.get("set2") is not None:
                 wsp["set2"] = bool(spec["set2"])
-            worker.call("set_skill_weapon_set", wsp)
-            applied_ops.append({"op": "set_skill_weapon_set", **wsp})
+            ws_res = worker.call("set_skill_weapon_set", wsp) or {}
+            if isinstance(ws_res, dict) and ws_res.get("noOp") is True:
+                raise DaemonRequestError(
+                    f"[POE2-NO-OP] Skill group {grp_idx} weapon-set state did not change "
+                    f"(requested set1={wsp.get('set1')}, set2={wsp.get('set2')}; "
+                    f"current set1={ws_res.get('set1')}, set2={ws_res.get('set2')}, "
+                    f"gem1EnableGlobal1={ws_res.get('gem1EnableGlobal1')}, "
+                    f"gem1EnableGlobal2={ws_res.get('gem1EnableGlobal2')})."
+                )
+            op_rec: dict[str, Any] = {"op": "set_skill_weapon_set", **wsp}
+            if isinstance(ws_res, dict):
+                for k in ("set1", "set2", "gem1EnableGlobal1", "gem1EnableGlobal2", "changed"):
+                    if k in ws_res:
+                        op_rec[k] = ws_res[k]
+            applied_ops.append(op_rec)
 
     if spec.get("config_key"):
         ckey = str(spec["config_key"]).strip()
-        check_input(ckey, GuardrailScope.CONFIG_KEY, expected_game="poe2", emit_stderr=False)
+        check_input(ckey, GuardrailScope.CONFIG_VAR, expected_game="poe2", emit_stderr=False)
         cval = spec.get("config_value")
         worker.call("set_config", {"var": ckey, "value": cval})
         applied_ops.append({"op": "set_config", "var": ckey, "value": cval})
+
+    if isinstance(spec.get("config_vars"), dict):
+        for raw_k, cval in spec["config_vars"].items():
+            ckey = str(raw_k).strip()
+            if not ckey:
+                continue
+            check_input(ckey, GuardrailScope.CONFIG_VAR, expected_game="poe2", emit_stderr=False)
+            worker.call("set_config", {"var": ckey, "value": cval})
+            applied_ops.append({"op": "set_config", "var": ckey, "value": cval})
 
     if spec.get("custom_mods") is not None:
         cmods = str(spec["custom_mods"])

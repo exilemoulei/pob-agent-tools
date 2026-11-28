@@ -89,6 +89,19 @@ def cmd_rune_inspect(ctx: click.Context, name: str, as_json: bool) -> None:
     emit_output(ctx, stamp_game(payload), as_json=as_json, markdown_text="\n".join(lines))
 
 
+_UNIQUE_TYPE_TO_SLOT: dict[str, str] = {
+    "body armour": "Body Armour",
+    "body armor": "Body Armour",
+    "chest": "Body Armour",
+    "helmet": "Helmet",
+    "helm": "Helmet",
+    "gloves": "Gloves",
+    "boots": "Boots",
+    "amulet": "Amulet",
+    "belt": "Belt",
+}
+
+
 @rune_group.command("rank")
 @click.option(
     "--type",
@@ -97,7 +110,12 @@ def cmd_rune_inspect(ctx: click.Context, name: str, as_json: bool) -> None:
     metavar="ITEM_TYPE",
     help="Optional item type (Wand, Quarterstaff, Buckler, Body Armour, Helmet, Gloves, Boots, Shield, Focus). Omit to read equipped `--slot` from live daemon.",
 )
-@click.option("--slot", "slot_name", default="Weapon 1", show_default=True, help="Equipped slot label.")
+@click.option(
+    "--slot",
+    "slot_name",
+    default=None,
+    help="Equipped slot label (default: 'Weapon 1', or auto-mapped when `--type` uniquely identifies an equipment slot).",
+)
 @click.option("--base", "base_name", default="", help="Optional item base name (for Buckler/subtype parity).")
 @click.option(
     "--level",
@@ -135,7 +153,7 @@ def cmd_rune_inspect(ctx: click.Context, name: str, as_json: bool) -> None:
 def cmd_rune_rank(
     ctx: click.Context,
     item_type: str,
-    slot_name: str,
+    slot_name: str | None,
     base_name: str,
     char_level: int | None,
     is_shaman: bool | None,
@@ -148,9 +166,23 @@ def cmd_rune_rank(
     as_json: bool,
 ) -> None:
     """Rank legal runes/soul cores/idols for a slot (live daemon CoW by default, offline fallback with `--type`)."""
-    slot_name = normalize_poe2_equipment_slot(slot_name, command="rune rank")
     if item_type:
         check_input(item_type, GuardrailScope.CATEGORY, expected_game="poe2")
+    if slot_name is None:
+        if item_type:
+            mapped_slot = _UNIQUE_TYPE_TO_SLOT.get(item_type.strip().lower())
+            if mapped_slot:
+                slot_name = mapped_slot
+            elif offline_heuristic:
+                slot_name = "Weapon 1"
+            else:
+                raise click.UsageError(
+                    f"`--type {item_type}` cannot be uniquely mapped to a single equipment slot; "
+                    'pass `--slot <SLOT>` explicitly (e.g. `--slot "Weapon 1"`, `--slot "Weapon 2"`, or `--slot "Ring 1"`).'
+                )
+        else:
+            slot_name = "Weapon 1"
+    slot_name = normalize_poe2_equipment_slot(slot_name, command="rune rank")
 
     data_out: dict[str, Any] | None = None
     fallback_note: str | None = None
@@ -190,6 +222,12 @@ def cmd_rune_rank(
         data_out = report.to_dict()
         if fallback_note and not offline_heuristic:
             data_out["warnings"] = [*list(data_out.get("warnings") or []), fallback_note]
+
+    data_out.setdefault("slot", slot_name)
+    if item_type:
+        data_out.setdefault("itemType", item_type)
+    elif "itemType" not in data_out:
+        data_out["itemType"] = None
 
     emit_output(
         ctx,
@@ -389,8 +427,10 @@ def cmd_instill_rank(
 def _format_pareto_human(data: dict[str, Any]) -> str:
     mode = data.get("evalMode", "offline_heuristic")
     shortlist_tag = f"/{data['shortlistedFrom']}" if data.get("shortlistedFrom") else ""
+    slot_tag = f" | slot={data['slot']}" if data.get("slot") else ""
+    type_tag = f" | itemType={data['itemType']}" if data.get("itemType") else ""
     lines = [
-        f"PoE2 {data['patch']} Pareto Ranking ({data['kind']} | mode={mode} | "
+        f"PoE2 {data['patch']} Pareto Ranking ({data['kind']} | mode={mode}{slot_tag}{type_tag} | "
         f"metric={data['metric']} | evaluated={data['evaluatedCount']}{shortlist_tag})"
     ]
     bis = data.get("bisAnchor")
@@ -401,9 +441,17 @@ def _format_pareto_human(data: dict[str, Any]) -> str:
         lines.append(
             f"  [Budget Pareto] {champ['name']} ({champ['zhCn']}) | {champ['pctOfBis']:.1f}% of BiS | cost={champ['costEx']:.1f} Ex"
         )
-    for row in data.get("paretoFrontier") or []:
+    frontier = data.get("paretoFrontier") or []
+    for row in frontier:
         order = f" | {row['orderedDisplayEn']}" if "orderedDisplayEn" in row else ""
         lines.append(f"  - {row['name']}: gain={row['gain']:.2f} ({row['pctOfBis']:.1f}% BiS), cost={row['costEx']:.1f} Ex{order}")
+    if not frontier and int(data.get("evaluatedCount") or 0) > 0:
+        lines.append(
+            f"  [Summary] All {data['evaluatedCount']} evaluated candidates had <= 0 gain for {data['metric']} "
+            "(no positive upgrade over current setup)."
+        )
+        for row in (data.get("topCandidates") or [])[:5]:
+            lines.append(f"  - {row['name']}: gain={row['gain']:+.2f}, cost={row['costEx']:.1f} Ex")
     for warn in data.get("warnings") or []:
         lines.append(f"  [note] {warn}")
     return "\n".join(lines)
