@@ -16,6 +16,7 @@ from .cli_common import (
     emit_output,
     output_options,
     pob2_group,
+    projection_options,
     resolve_target_slot,
     target_option,
 )
@@ -111,14 +112,16 @@ def handle_craft_or_inspect_error(ctx: click.Context, exc: Exception, *, as_json
     if isinstance(exc, (UnknownBaseError, UnknownTargetError)):
         raise exc
     if isinstance(exc, ValueError):
-        echo_utf8(f"Error: {exc}", err=True)
         if as_json or ctx_wants_json(ctx):
             emit_output(
                 ctx,
                 {"ok": False, "game": "poe2", "errorKind": "invalid_input", "error": str(exc)},
                 as_json=True,
                 ok=False,
+                skip_projection=True,
             )
+        else:
+            echo_utf8(f"Error: {exc}", err=True)
         ctx.exit(EXIT_REQUEST_ERROR)
     raise exc
 
@@ -219,7 +222,7 @@ def run_unique_slot_ranking(
 
 @pob2_group("item")
 def item_group() -> None:
-    """Inspect PoE2 items (`--slot`/`--text`/`--file`) and rank uniques against loaded `--target` build (`item db` == `uniques`)."""
+    """Inspect PoE2 items (`--slot`/`--text`/`--file`) and rank uniques against loaded `--target` build (`item db`)."""
 
 
 @item_group.command("inspect")
@@ -230,6 +233,7 @@ def item_group() -> None:
 @click.option("--base", "base_override", default=None, help="Optional base item name or class slug override.")
 @click.option("--ilvl", "ilvl_override", type=int, default=None, help="Optional item level override.")
 @target_option(allow_slot_alias=False)
+@projection_options
 @output_options
 @click.pass_context
 def cmd_item_inspect(
@@ -264,6 +268,7 @@ def cmd_item_inspect(
 @click.option("--limit", "--top", "limit", type=click.IntRange(min=1), default=15, show_default=True, help="Maximum top uniques to return.")
 @click.option("--no-sanctified", "no_sanctified", is_flag=True, default=False, help="Skip 0.78x-1.22x Sanctified roll-range evaluation.")
 @target_option(allow_slot_alias=False)
+@projection_options
 @output_options
 @click.pass_context
 def cmd_item_db(
@@ -275,7 +280,7 @@ def cmd_item_db(
     target: str,
     as_json: bool,
 ) -> None:
-    """Rank PoE2 unique items for `--slot` against the loaded build in `--target` (identical alias of `pob2 uniques`; JSON output key: `results`)."""
+    """Rank PoE2 unique items for `--slot` against the loaded build in `--target` (JSON output key: `results`)."""
     run_unique_slot_ranking(
         ctx,
         slot=slot,

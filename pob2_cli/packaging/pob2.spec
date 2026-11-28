@@ -49,6 +49,7 @@ _CLI_MODULES = (
     "pob2_cli.cli_build_io",
     "pob2_cli.cli_common",
     "pob2_cli.cli_craft",
+    "pob2_cli.cli_errors",
     "pob2_cli.cli_ground",
     "pob2_cli.cli_help",
     "pob2_cli.cli_import",

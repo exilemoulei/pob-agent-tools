@@ -97,7 +97,9 @@ def format_brief_help(root: click.Group, root_ctx: click.Context) -> str:
         f"{CLI_NAME} — Headless Path of Exile 2 (0.5.5+) CLI (run `{CLI_NAME} <cmd> --help` for full details)",
         "Global: [--offline] [--json] [--compact] [--out PATH (writes file instead of stdout)] | Daemon build slot: [--target SLUG] (default POB2_SLOT or 'main')",
         "Equipment slot: [--slot SLOT] (Weapon 1..2, Weapon 1..2 Swap, Helmet, Body Armour, Gloves, Boots, Amulet, Ring 1..3, Belt, Flask 1..2, Charm 1..3)",
-        "Unique ranking: `pob2 uniques` and `pob2 item db` are identical aliases ranking PoE2 uniques against the loaded build in `--target` (JSON key: `results`)",
+        "Unique ranking: `pob2 item db --slot <SLOT>` ranks PoE2 uniques against the loaded build in `--target` (JSON key: `results`)",
+        "Instill ranking: `pob2 instill rank` Pareto-ranks all 875 ordered amulet instillations (`instill lookup|bridge|rank`)",
+        "Read projection: core read commands accept `--section <s1,s2>` and `--fields <p1,p2>` to slice output payloads",
         "Crafting target mods: use `--want <mod>` (repeatable) on `pob2 craft odds|plan|next` (`--target` is strictly for daemon build slots)",
     ]
     rows: list[tuple[str, str]] = []

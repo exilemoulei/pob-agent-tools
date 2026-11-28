@@ -54,13 +54,12 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
     "summary": (".cli_inspect", "cmd_summary", "Show PoE2 build summary with version & patch stamp."),
     "audit": (".cli_inspect", "cmd_audit", "Run S4/T3.4 PoE2 deep audit, 4-dim dehydration, and [PoB2未模拟] red cards."),
     "diagnose": (".cli_inspect", "cmd_diagnose", "One-shot PoE2 build diagnosis (summary + deep audit + notes)."),
-    "uniques": (".cli_inspect", "cmd_uniques", "Rank PoE2 uniques against loaded build (--target, alias of item db; key: results)."),
     "compare": (".cli_inspect", "cmd_compare", "5-dimension Compare Power Report against a reference build."),
     "items": (".cli_inspect", "cmd_items", "Inspect equipped PoE2 items and slots."),
     "skills": (".cli_inspect", "cmd_skills", "Inspect PoE2 skill groups, gems, and weapon-set bindings."),
     "tree": (".cli_inspect", "cmd_tree", "Inspect allocated PoE2 passive tree nodes and attribute overrides."),
     "config": (".cli_inspect", "cmd_config", "Inspect PoB2 Configuration toggles and custom modifiers."),
-    "what-if": (".cli_mutate", "cmd_what_if", "Run CoW what-if gear/tree/gem/config mutations (or --apply)."),
+    "what-if": (".cli_mutate", "what_if_group", "Run CoW what-if mutations by domain (equip|tree|skill|config|apply)."),
     "diff": (".cli_mutate", "cmd_diff", "Diff the active build against another PoE2 build source."),
 }
 
@@ -68,12 +67,11 @@ _LAZY_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
 # in the package tree (enables conflict-free parallel feature branch merges).
 _OPTIONAL_SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
     "craft": (".cli_craft", "craft_group", "PoE2 crafting odds, MDP solver, and step-by-step plans."),
-    "item": (".cli_item", "item_group", "Inspect PoE2 items (--slot/--text/--file) and rank uniques against loaded build (item db == uniques)."),
+    "item": (".cli_item", "item_group", "Inspect PoE2 items (--slot/--text/--file) and rank uniques against loaded build (item db)."),
     "ground": (".cli_ground", "cmd_ground", "Fast (<15ms, daemon-free) PoE2 entity & mechanic grounding."),
     "import": (".cli_import", "cmd_import", "Import PoE2 builds (PoB2 code, share URL, CN WeGame link)."),
     "rune": (".cli_rune", "rune_group", "Rank PoE2 runes, soul cores, and idols with socket parity."),
-    "instill": (".cli_rune", "instill_group", "Lookup and Pareto-rank 875 PoE2 amulet instillations."),
-    "rank-instill": (".cli_rune", "cmd_rank_instill", "Pareto cost-efficiency ranking for 875 amulet instillations."),
+    "instill": (".cli_rune", "instill_group", "Lookup, bridge, and Pareto-rank 875 PoE2 amulet instillations."),
     "fix-gaps": (".cli_rebalance", "cmd_fix_gaps", "5-stage zero-buy attribute & resistance cap/overcap gap solver."),
     "spirit": (".cli_rebalance", "cmd_spirit", "PoE2 discrete Spirit reservation & support-tier knapsack solver."),
 }

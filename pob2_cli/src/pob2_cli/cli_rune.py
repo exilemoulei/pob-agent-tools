@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""Click CLI entry points for `pob2 rune`, `pob2 instill`, and `pob2 rank-instill` (L4)."""
+"""Click CLI entry points for `pob2 rune` and `pob2 instill` (L4)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import click
 from .cli_common import (
     emit_output,
     output_options,
-    pob2_command,
     pob2_group,
     resolve_target_slot,
     target_option,
@@ -38,7 +37,7 @@ def _try_live_daemon_slot(action: str, params: dict[str, Any]) -> tuple[dict[str
         return call_daemon(action, params, auto_start=False, timeout=90.0), None
     except (CrossGameHallucinationError, LegacyPatchTrapError):
         raise
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         return None, f"[live-eval-degraded] Live daemon slot unavailable ({exc}); fell back to offline heuristic ranking."
 
 
@@ -327,7 +326,7 @@ def cmd_instill_bridge(ctx: click.Context, emotion: str, as_json: bool) -> None:
     emit_output(ctx, stamp_game(payload), as_json=as_json, markdown_text=md)
 
 
-@pob2_command("rank-instill")
+@instill_group.command("rank")
 @click.option("--metric", default="CombinedDPS", show_default=True, help="Target metric (CombinedDPS | TotalEHP).")
 @click.option("--budget", "max_budget_ex", type=float, default=None, help="Optional max instillation cost in Exalted Orbs.")
 @click.option("--limit", type=int, default=15, show_default=True, help="Maximum top candidates to output.")
@@ -348,7 +347,7 @@ def cmd_instill_bridge(ctx: click.Context, emotion: str, as_json: bool) -> None:
 )
 @output_options
 @click.pass_context
-def cmd_rank_instill(
+def cmd_instill_rank(
     ctx: click.Context,
     metric: str,
     max_budget_ex: float | None,
@@ -387,9 +386,6 @@ def cmd_rank_instill(
     )
 
 
-instill_group.add_command(cmd_rank_instill, name="rank")
-
-
 def _format_pareto_human(data: dict[str, Any]) -> str:
     mode = data.get("evalMode", "offline_heuristic")
     shortlist_tag = f"/{data['shortlistedFrom']}" if data.get("shortlistedFrom") else ""
@@ -414,7 +410,7 @@ def _format_pareto_human(data: dict[str, Any]) -> str:
 
 
 __all__ = [
-    "cmd_rank_instill",
+    "cmd_instill_rank",
     "instill_group",
     "rune_group",
 ]

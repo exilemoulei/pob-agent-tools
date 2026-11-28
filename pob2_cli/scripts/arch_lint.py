@@ -48,6 +48,7 @@ LAYER_MAP: dict[str, int] = {
     "daemon": 3,
     "__main__": 4,
     "cli_common": 4,
+    "cli_errors": 4,
     "cli": 4,
     "cli_craft": 4,
     "cli_item": 4,
