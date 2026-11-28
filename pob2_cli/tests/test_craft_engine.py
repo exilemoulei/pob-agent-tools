@@ -457,36 +457,31 @@ def test_craft_inspect_base_only_standalone() -> None:
     assert isinstance(data["outcomes"], list) and len(data["outcomes"]) > 0
 
 
-def test_craft_inspect_base_only_non_tty_open_stdin_does_not_hang(tmp_path: Path) -> None:
-    """Regression: non-TTY subprocess with open stdin pipe must not deadlock on `craft inspect --base`."""
+def test_craft_inspect_base_only_non_tty_open_stdin_does_not_hang() -> None:
+    """Regression: non-TTY subprocess with genuinely open `os.pipe()` stdin must not deadlock on `craft inspect --base`."""
     src_root = Path(__file__).resolve().parents[1] / "src"
     env = os.environ.copy()
     env["PYTHONPATH"] = str(src_root)
     env["POB2_OFFLINE"] = "1"
-    out_file = tmp_path / "stdout.json"
-    err_file = tmp_path / "stderr.txt"
-    with out_file.open("w", encoding="utf-8") as fout, err_file.open("w", encoding="utf-8") as ferr:
-        proc = subprocess.Popen(
+    r_fd, w_fd = os.pipe()
+    try:
+        # Keep w_fd open in parent so any sys.stdin.read() in child blocks forever until timeout=10.
+        proc = subprocess.run(
             [sys.executable, "-m", "pob2_cli.cli", "craft", "inspect", "--base", "Desolate Crossbow", "--ilvl", "77", "--json"],
-            stdin=subprocess.PIPE,
-            stdout=fout,
-            stderr=ferr,
+            stdin=r_fd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
             env=env,
+            timeout=10,
         )
-        try:
-            # Deliberately keep proc.stdin open (do NOT close or write EOF) to simulate agent/non-TTY shell.
-            rc = proc.wait(timeout=10)
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-            if proc.stdin:
-                proc.stdin.close()
+    finally:
+        os.close(r_fd)
+        os.close(w_fd)
 
-    stdout = out_file.read_text(encoding="utf-8")
-    stderr = err_file.read_text(encoding="utf-8")
-    assert rc == 0, f"rc={rc}, stderr={stderr!r}, stdout={stdout[:400]!r}"
-    assert stderr == ""
-    data = json.loads(stdout)
+    assert proc.returncode == 0, f"rc={proc.returncode}, stderr={proc.stderr!r}, stdout={proc.stdout[:400]!r}"
+    assert proc.stderr == ""
+    data = json.loads(proc.stdout)
     assert data["ok"] is True
     assert data["mode"] == "base_pool"
     assert data["baseType"] == "Desolate Crossbow"

@@ -235,7 +235,9 @@ def test_what_if_skill_weapon_set_noop_rejected_and_real_change_ok() -> None:
     assert ops[0]["gem1EnableGlobal1"] is False
 
 
-def test_what_if_equip_unequip_does_not_swallow_json(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_what_if_equip_unequip_does_not_swallow_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     captured: list[dict[str, Any]] = []
 
     def _fake_call(action: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -245,18 +247,31 @@ def test_what_if_equip_unequip_does_not_swallow_json(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(cli_mutate, "daemon_call_cli", _fake_call)
     runner = CliRunner()
 
-    # Flag form: --slot "Body Armour" --unequip --json
+    # 1) Flag form: --slot "Body Armour" --unequip --json
     r1 = runner.invoke(cli.main, ["what-if", "equip", "--slot", "Body Armour", "--unequip", "--json"])
     assert r1.exit_code == 0, r1.output
     assert json.loads(r1.output)["ok"] is True
     assert captured[-1]["unequip_slot"] == "Body Armour"
     assert "slot" not in captured[-1]
 
-    # Backwards-compatible value form: --unequip "Body Armour" --json
+    # 2) Backwards-compatible value form: --unequip "Body Armour" --json
     r2 = runner.invoke(cli.main, ["what-if", "equip", "--unequip", "Body Armour", "--json"])
     assert r2.exit_code == 0, r2.output
     assert json.loads(r2.output)["ok"] is True
     assert captured[-1]["unequip_slot"] == "Body Armour"
+
+    # 3) Item file form: --slot "Body Armour" --item-file <file> --json
+    armour_file = tmp_path / "body_armour.txt"
+    armour_file.write_text("Rarity: RARE\nTest Vest\nVile Robe\n+80 to maximum Energy Shield\n", encoding="utf-8")
+    r_file = runner.invoke(
+        cli.main,
+        ["what-if", "equip", "--slot", "Body Armour", "--item-file", str(armour_file), "--json"],
+    )
+    assert r_file.exit_code == 0, r_file.output
+    assert json.loads(r_file.output)["ok"] is True
+    assert captured[-1]["slot"] == "Body Armour"
+    assert "Vile Robe" in captured[-1]["item_text"]
+    assert "unequip_slot" not in captured[-1]
 
     # Bare --unequip without --slot fails cleanly as JSON usage_error (not "Invalid slot '--json'")
     r3 = runner.invoke(cli.main, ["what-if", "equip", "--unequip", "--json"])
